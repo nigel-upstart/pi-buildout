@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { findMarkdownPointers, formatBacklinkTable, type MarkdownBacklink } from "./markdown-backlinks/helpers.ts";
+import { findMarkdownPointers, formatBacklinkTable, type MarkdownBacklink } from "./helpers.ts";
 
 function textFromContent(content: unknown): string {
 	if (typeof content === "string") return content;

@@ -25,14 +25,22 @@ Use `PI_AGENT_DIR` to select another pi agent directory:
 PI_AGENT_DIR=/tmp/pi-agent ./scripts/install-extensions.sh
 ```
 
-The installer copies the extension directories and reapplies the versioned `/skills` runtime patch. It does not modify pi settings. Use `--skip-skill-loading-patch` to install only the extensions.
+For a custom pi installation whose package path cannot be derived from `pi`, point `PI_PACKAGE_DIR` to the directory containing pi's `package.json`:
+
+```bash
+PI_PACKAGE_DIR=/opt/pi/lib/node_modules/@earendil-works/pi-coding-agent ./scripts/install-extensions.sh
+```
+
+The installer validates and stages the complete versioned `/skills` patch before replacing its runtime files. It does not modify pi settings. Use `--skip-skill-loading-patch` to install only the extensions.
 
 ## Verification
 
 Run all extension helper tests:
 
 ```bash
-for test in extensions/*/*.test.mjs; do node --test "$test"; done
+status=0
+for test in extensions/*/*.test.mjs; do node --test "$test" || status=$?; done
+exit "$status"
 ```
 
 Extensions are TypeScript modules loaded directly by pi's extension loader. Use `/reload` after reinstalling them in a running pi session.

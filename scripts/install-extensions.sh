@@ -5,6 +5,25 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
+EXTENSIONS=(clear effort markdown-backlinks)
+PATCH_FILES=(
+  dist/core/resource-loader.js
+  dist/core/skill-management.js
+  dist/core/slash-commands.js
+  dist/main.js
+  dist/modes/interactive/interactive-mode.js
+  docs/skills.md
+)
+PATCH_STAGE_DIR=
+PATCH_BACKUP_DIR=
+
+cleanup() {
+  local status=$?
+  [[ -z "$PATCH_STAGE_DIR" ]] || rm -rf "$PATCH_STAGE_DIR" || true
+  [[ -z "$PATCH_BACKUP_DIR" ]] || rm -rf "$PATCH_BACKUP_DIR" || true
+  exit "$status"
+}
+trap cleanup EXIT
 
 for arg in "$@"; do
   case "$arg" in
@@ -17,11 +36,13 @@ for arg in "$@"; do
   esac
 done
 
-mkdir -p "$EXTENSION_DIR"
-for extension in clear effort markdown-backlinks; do
-  mkdir -p "$EXTENSION_DIR/$extension"
-  cp "$ROOT_DIR/extensions/$extension/index.ts" "$EXTENSION_DIR/$extension/index.ts"
-  cp "$ROOT_DIR/extensions/$extension/helpers.ts" "$EXTENSION_DIR/$extension/helpers.ts"
+for extension in "${EXTENSIONS[@]}"; do
+  for file in index.ts helpers.ts; do
+    if [[ ! -f "$ROOT_DIR/extensions/$extension/$file" ]]; then
+      printf 'Missing packaged extension file: %s\n' "$ROOT_DIR/extensions/$extension/$file" >&2
+      exit 1
+    fi
+  done
 done
 
 if (( APPLY_SKILLS_PATCH )); then
@@ -43,12 +64,47 @@ if (( APPLY_SKILLS_PATCH )); then
     printf 'No packaged /skills patch exists for pi %s. Use --skip-skill-loading-patch.\n' "$PI_VERSION" >&2
     exit 1
   fi
-  cp "$PATCH_DIR/dist/core/resource-loader.js" "$PI_PACKAGE_DIR/dist/core/resource-loader.js"
-  cp "$PATCH_DIR/dist/core/skill-management.js" "$PI_PACKAGE_DIR/dist/core/skill-management.js"
-  cp "$PATCH_DIR/dist/core/slash-commands.js" "$PI_PACKAGE_DIR/dist/core/slash-commands.js"
-  cp "$PATCH_DIR/dist/main.js" "$PI_PACKAGE_DIR/dist/main.js"
-  cp "$PATCH_DIR/dist/modes/interactive/interactive-mode.js" "$PI_PACKAGE_DIR/dist/modes/interactive/interactive-mode.js"
-  cp "$PATCH_DIR/docs/skills.md" "$PI_PACKAGE_DIR/docs/skills.md"
+
+  for file in "${PATCH_FILES[@]}"; do
+    if [[ ! -f "$PATCH_DIR/$file" ]]; then
+      printf 'Patch is incomplete: %s\n' "$PATCH_DIR/$file" >&2
+      exit 1
+    fi
+    if [[ ! -f "$PI_PACKAGE_DIR/$file" ]]; then
+      printf 'Installed pi package is incomplete: %s\n' "$PI_PACKAGE_DIR/$file" >&2
+      exit 1
+    fi
+  done
+
+  PATCH_STAGE_DIR=$(mktemp -d "$PI_PACKAGE_DIR/.pi-skills-patch.XXXXXX")
+  PATCH_BACKUP_DIR=$(mktemp -d "$PI_PACKAGE_DIR/.pi-skills-backup.XXXXXX")
+  for file in "${PATCH_FILES[@]}"; do
+    mkdir -p "$(dirname "$PATCH_STAGE_DIR/$file")" "$(dirname "$PATCH_BACKUP_DIR/$file")"
+    cp -p "$PATCH_DIR/$file" "$PATCH_STAGE_DIR/$file"
+    cp -p "$PI_PACKAGE_DIR/$file" "$PATCH_BACKUP_DIR/$file"
+  done
+fi
+
+mkdir -p "$EXTENSION_DIR"
+for extension in "${EXTENSIONS[@]}"; do
+  mkdir -p "$EXTENSION_DIR/$extension"
+  cp "$ROOT_DIR/extensions/$extension/index.ts" "$EXTENSION_DIR/$extension/index.ts"
+  cp "$ROOT_DIR/extensions/$extension/helpers.ts" "$EXTENSION_DIR/$extension/helpers.ts"
+done
+
+if (( APPLY_SKILLS_PATCH )); then
+  applied=()
+  for file in "${PATCH_FILES[@]}"; do
+    if ! mv "$PATCH_STAGE_DIR/$file" "$PI_PACKAGE_DIR/$file"; then
+      printf 'Could not apply /skills patch; restoring previously replaced files.\n' >&2
+      for restored in "${applied[@]}"; do
+        cp -p "$PATCH_BACKUP_DIR/$restored" "$PI_PACKAGE_DIR/$restored" ||
+          printf 'Could not restore %s\n' "$PI_PACKAGE_DIR/$restored" >&2
+      done
+      exit 1
+    fi
+    applied+=("$file")
+  done
   printf 'Applied /skills patch for pi %s\n' "$PI_VERSION"
 fi
 

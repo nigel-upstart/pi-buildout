@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildFreshContextDisclosure } from "./helpers.ts";
+import clearExtension from "./index.ts";
+
+describe("clearExtension", () => {
+  it("loads and registers the clear command", () => {
+    const commands = new Map();
+    clearExtension({ registerCommand: (name, command) => commands.set(name, command) });
+
+    assert.equal(commands.get("clear")?.description, "Discard conversation context and start fresh with project instructions, skills, and tools");
+  });
+});
 
 describe("buildFreshContextDisclosure", () => {
   it("discloses reloaded instruction files, skills, and active tools", () => {

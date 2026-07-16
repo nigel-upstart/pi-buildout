@@ -12,7 +12,7 @@ export function findMarkdownPointers(text: string): string[] {
 
 export function formatBacklinkTable(backlinks: MarkdownBacklink[]): string {
 	if (backlinks.length === 0) return "";
-	const rows = backlinks
+	const rows = [...backlinks]
 		.sort((a, b) => a.targetPath.localeCompare(b.targetPath) || a.sourcePath.localeCompare(b.sourcePath))
 		.map((link) => `- \`${link.pointer}\` → \`${link.targetPath}\` (from \`${link.sourcePath}\`)`)
 		.join("\n");

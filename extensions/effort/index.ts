@@ -10,9 +10,9 @@ import {
 	type ApplyMode,
 	type ThinkingLevel,
 	updateDefaultThinkingLevelJson,
-} from "./effort/helpers.ts";
+} from "./helpers.ts";
 
-export { cycleApplyMode, updateDefaultThinkingLevelJson } from "./effort/helpers.ts";
+export { cycleApplyMode, updateDefaultThinkingLevelJson } from "./helpers.ts";
 
 function applyModeLabel(mode: ApplyMode): string {
 	return mode === "default" ? "Default + current session" : "Current session only";
@@ -43,8 +43,11 @@ export default function effortExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const currentLevel = pi.getThinkingLevel() as ThinkingLevel;
-			let selectedIndex = Math.max(0, THINKING_LEVELS.indexOf(currentLevel));
+			const reportedLevel = pi.getThinkingLevel();
+			const currentLevel = THINKING_LEVELS.includes(reportedLevel as ThinkingLevel)
+				? (reportedLevel as ThinkingLevel)
+				: undefined;
+			let selectedIndex = currentLevel ? THINKING_LEVELS.indexOf(currentLevel) : 0;
 			let applyMode: ApplyMode = "default";
 
 			const selected = await ctx.ui.custom<{ level: ThinkingLevel; applyMode: ApplyMode } | null>(

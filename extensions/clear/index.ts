@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { buildFreshContextDisclosure, type ContextFile } from "./clear/helpers.ts";
+import { buildFreshContextDisclosure, type ContextFile } from "./helpers.ts";
 
 const CONTEXT_FILE_NAMES = new Set(["AGENTS.MD", "CLAUDE.MD"]);
 
