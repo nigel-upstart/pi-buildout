@@ -1,0 +1,54 @@
+# Subagents
+
+A deliberately small Pi extension for long-lived, isolated child sessions.
+
+## Natural-language use
+
+No slash command or agent profile is required. Ask Pi normally:
+
+```text
+Create a subagent to review the authentication changes.
+Create a subagent and ask it to implement the migration with gpt-5.6-luna at high effort.
+Spy on the subagent.
+Steer that subagent to focus on backward compatibility.
+Queue a follow-up asking it to run the integration tests.
+Interrupt the subagent, then ask it to investigate the failing test instead.
+```
+
+The extension's `subagent` tool supports `create`, `list`, `status`, `steer`, `follow_up`, `interrupt`, and `stop`. Creation is asynchronous and returns a direct-child id.
+
+## Context and model selection
+
+Before launch, the extension creates an in-memory copy of the current context and runs Pi's real `AgentSession.compact()` path (the SDK equivalent of `/compact`) with task-specific instructions. A synthetic retained boundary allows even small parent sessions to be compacted. Only that compacted context and the delegated task are sent into a new child session; the parent session file is never resumed, forked, or replaced by the child.
+
+If either model or effort is omitted, a classifier call sees the task, the compacted context, and all authenticated models (including capabilities, context size, and pricing). Its choice is validated against Pi's model registry. If classification fails, missing values inherit the parent model and effort. Explicit user choices are never silently replaced; invalid or unauthenticated explicit models fail creation.
+
+## Isolation and inheritance
+
+- Children run as independent Pi RPC processes in the same working directory.
+- Normal Pi discovery remains enabled, so children inherit the skills, extensions, MCP adapters, project instructions, and built-in tools available under the parent's trusted working directory.
+- The extension itself is explicitly loaded so every child can create its own children.
+- Each extension process keeps a private registry containing only its direct children. There is no child-to-parent or sibling messaging API.
+- Child output is retained privately and enters parent model context only when the parent explicitly calls `status`.
+- Parent control uses the child's one-way RPC stdin: `steer`, `follow_up`, `interrupt`, and `stop`.
+- Parent/session shutdown terminates its direct children; their own shutdown handlers terminate the next generation.
+
+The default safety bounds are 12 active direct children and 8 generations.
+
+## Direct tool shape
+
+```json
+{ "action": "create", "task": "Review the diff", "model": "gpt-5.6-luna", "effort": "high" }
+{ "action": "status", "id": "a1b2c3d4e5" }
+{ "action": "steer", "id": "a1b2c3d4e5", "task": "Focus on data races" }
+{ "action": "follow_up", "id": "a1b2c3d4e5", "task": "Then run tests" }
+{ "action": "interrupt", "id": "a1b2c3d4e5" }
+{ "action": "stop", "id": "a1b2c3d4e5" }
+```
+
+## Verification
+
+```bash
+node --test extensions/subagents/*.test.mjs
+pi -e extensions/subagents/index.ts --list-models >/dev/null
+```
