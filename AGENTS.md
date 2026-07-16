@@ -1,6 +1,6 @@
 # Pi Buildout 
 
-Monorepo of pi tooling to modify vanilla pi.
+Monorepo of pi tooling to modify the stock LLM coding agent harness [Pi](https://github.com/earendil-works/pi).
 
 ## Before making changes
 
