@@ -1,0 +1,4 @@
+pre-push:
+  commands:
+    quality:
+      run: ./scripts/test.sh

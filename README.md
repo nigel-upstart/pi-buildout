@@ -35,12 +35,10 @@ The installer verifies the installed pi package against the versioned `/skills` 
 
 ## Verification
 
-Run all extension helper tests:
+Run the full quality suite (installer syntax, extension tests with coverage, and a hermetic pi 0.80.6 patch verification):
 
 ```bash
-status=0
-for test in extensions/*/*.test.mjs; do node --test "$test" || status=$?; done
-exit "$status"
+./scripts/test.sh
 ```
 
 Extensions are TypeScript modules loaded directly by pi's extension loader. Use `/reload` after reinstalling them in a running pi session.
