@@ -27,7 +27,7 @@ pi --version
 ls /opt/homebrew/Cellar/pi-coding-agent
 ```
 
-Important files in the installed package tend to be:
+Important files in the installed pi 0.80.6 package were, at the time this was written:
 
 ```text
 dist/core/resource-loader.js      # resource discovery/loading, skills/prompts/themes/extensions
