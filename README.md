@@ -9,6 +9,7 @@ This repository contains the local pi customizations and supporting notes used o
 | `extensions/effort` | `/effort`: select and persist thinking effort | [`extensions/effort/README.md`](extensions/effort/README.md) |
 | `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior | [skill README](.agents/skills/installed-pi-patching/README.md) |
 | `docs/superpowers` | Design specifications and implementation plans | [`docs/superpowers/README.md`](docs/superpowers/README.md) |
+| `patches/pi-0.80.6` | Versioned runtime snapshot for the opt-in `/skills` behavior | [`patches/pi-0.80.6/README.md`](patches/pi-0.80.6/README.md) |
 
 ## Installation
 
@@ -24,7 +25,7 @@ Use `PI_AGENT_DIR` to select another pi agent directory:
 PI_AGENT_DIR=/tmp/pi-agent ./scripts/install-extensions.sh
 ```
 
-The installer copies the extension directories and does not modify pi's installed runtime or settings.
+The installer copies the extension directories and reapplies the versioned `/skills` runtime patch. It does not modify pi settings. Use `--skip-skill-loading-patch` to install only the extensions.
 
 ## Verification
 
