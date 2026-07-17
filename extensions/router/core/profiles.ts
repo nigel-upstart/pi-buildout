@@ -2,7 +2,8 @@ import type { Archetype } from "./archetype.ts";
 
 export const EFFORT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
-export type ModelVendor = "openai" | "anthropic" | "google";
+export const MODEL_VENDORS = ["openai", "anthropic", "google"] as const;
+export type ModelVendor = (typeof MODEL_VENDORS)[number];
 
 export type PromptProfile = {
   id: string;

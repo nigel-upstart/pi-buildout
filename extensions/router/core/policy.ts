@@ -1,4 +1,5 @@
 import type { Archetype } from "./archetype.ts";
+import { MODEL_VENDORS } from "./profiles.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
 export const POLICY_VERSION = "router-policy-v2";
@@ -152,7 +153,7 @@ const REVIEWER_TIERS: Record<ModelVendor, readonly (readonly CandidateRef[])[]> 
 // regex heuristic in pi-state.ts.
 const ALL_CANDIDATE_REFS: readonly CandidateRef[] = [
   ...Object.values(BOOTSTRAP_ROUTE_POLICIES).flatMap((policy) => [...policy.primary, ...policy.fallback]),
-  ...Object.values(REVIEWER_TIERS).flat(2),
+  ...MODEL_VENDORS.flatMap((vendor) => REVIEWER_TIERS[vendor].flat()),
 ];
 
 // Ability is a per-(model, effort) judgment calibrated per model family, not a uniform
