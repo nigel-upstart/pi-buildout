@@ -20,6 +20,7 @@ import {
 	THINKING_LEVELS,
 	boundContextForModel,
 	clampThinkingLevel,
+	excludeCurrentDelegationTurn,
 	extractTextContent,
 	formatModelCatalog,
 	parseClassifierDecision,
@@ -42,8 +43,8 @@ const SELF_EXTENSION_PATH = fileURLToPath(import.meta.url);
 const AUTH_BRIDGE_PATH = join(dirname(SELF_EXTENSION_PATH), "auth-bridge.ts");
 
 const SubagentParameters = Type.Object({
-	action: StringEnum(["create", "list", "status", "steer", "follow_up", "interrupt", "stop"] as const, {
-		description: "create a child; inspect it; steer now; queue follow_up; interrupt its current operation; or stop its process",
+	action: StringEnum(["create", "list", "status", "wait", "steer", "follow_up", "interrupt", "stop"] as const, {
+		description: "create a child; inspect it; explicitly wait for it; steer now; queue follow_up; interrupt its current operation; or stop its process",
 	}),
 	task: Type.Optional(Type.String({
 		description: "For create: the complete task. For steer/follow_up: the additional message.",
@@ -55,6 +56,11 @@ const SubagentParameters = Type.Object({
 	})),
 	effort: Type.Optional(StringEnum(THINKING_LEVELS, {
 		description: "Optional reasoning effort. Preserve an effort explicitly requested by the user, for example high.",
+	})),
+	timeoutMs: Type.Optional(Type.Integer({
+		description: "For wait only: maximum time in milliseconds without stopping the child. Use 120000 for 120 seconds (default 120000, max 600000).",
+		minimum: 1,
+		maximum: 600_000,
 	})),
 });
 
@@ -115,10 +121,14 @@ async function utilityCompletion(
 
 async function compactContextForTask(pi: ExtensionAPI, ctx: ExtensionContext, task: string): Promise<{ summary: string; fallback: boolean }> {
 	const built = ctx.sessionManager.buildSessionContext();
-	if (built.messages.length === 0) return { summary: "", fallback: false };
+	// The current turn contains the user's orchestration request and this
+	// subagent tool call. The delegated task is supplied separately; including
+	// this turn in the seed can make a child recursively repeat orchestration.
+	const parentMessages = excludeCurrentDelegationTurn(built.messages);
+	if (parentMessages.length === 0) return { summary: "", fallback: false };
 
 	const sessionManager = SessionManager.inMemory(ctx.cwd);
-	for (const message of built.messages) sessionManager.appendMessage(message);
+	for (const message of parentMessages) sessionManager.appendMessage(message);
 	// Pi compaction retains a recent boundary. A synthetic final boundary lets the
 	// compactor summarize all real parent messages even when the parent is small.
 	sessionManager.appendMessage({
@@ -308,6 +318,12 @@ function snapshotSummary(snapshot: ChildSnapshot): Omit<ChildSnapshot, "transcri
 	};
 }
 
+function formatTokenCount(value: number): string {
+	if (value < 1_000) return String(value);
+	if (value < 1_000_000) return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)}k`;
+	return `${(value / 1_000_000).toFixed(1)}m`;
+}
+
 function formatSnapshot(snapshot: ChildSnapshot): string {
 	const age = Math.max(0, Math.round((Date.now() - snapshot.startedAt) / 1000));
 	const lines = [
@@ -316,6 +332,17 @@ function formatSnapshot(snapshot: ChildSnapshot): string {
 		`selection=${snapshot.classification}${snapshot.classificationRationale ? ` — ${snapshot.classificationRationale}` : ""}`,
 		`task: ${snapshot.task}`,
 	];
+	if (snapshot.currentTool) {
+		lines.push(`current tool: ${snapshot.currentTool.name} ${snapshot.currentTool.argsPreview}`);
+	}
+	if (snapshot.stats) {
+		const context = snapshot.stats.contextUsage
+			? ` context=${snapshot.stats.contextUsage.tokens === null ? "?" : formatTokenCount(snapshot.stats.contextUsage.tokens)}/${formatTokenCount(snapshot.stats.contextUsage.contextWindow)} (${snapshot.stats.contextUsage.percent === null ? "?" : `${snapshot.stats.contextUsage.percent.toFixed(1)}%`})`
+			: "";
+		lines.push(`usage: tokens=${formatTokenCount(snapshot.stats.tokens.total)} input=${formatTokenCount(snapshot.stats.tokens.input)} output=${formatTokenCount(snapshot.stats.tokens.output)} cost=$${snapshot.stats.cost.toFixed(4)}${context} compactions=${snapshot.compactions}`);
+	} else if (snapshot.compactions > 0) {
+		lines.push(`compactions=${snapshot.compactions}`);
+	}
 	if (snapshot.sessionFile) lines.push(`session: ${snapshot.sessionFile}`);
 	if (snapshot.error) lines.push(`error: ${snapshot.error}`);
 	if (snapshot.stderr) lines.push(`stderr:\n${truncateMiddle(snapshot.stderr, 4_000)}`);
@@ -343,15 +370,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: "Create and control isolated, asynchronous child Pi sessions. Use action=create whenever the user naturally asks to create a subagent, ask a subagent to do work, or delegate work. Preserve any user-requested model and effort. Creation task-compacts the current parent context for that task, automatically classifies model/effort when either is omitted, and returns immediately with an id. Use status to spy on a direct child's transcript, steer to interrupt its direction at the next turn boundary, follow_up to queue later work, interrupt to abort the current operation while retaining the session, and stop to terminate it. Each process can see and control only children it created; child results never enter the parent context unless status is explicitly requested.",
-		promptSnippet: "Create, inspect, steer, queue messages for, interrupt, or stop isolated asynchronous child Pi sessions",
+		description: "Create and control isolated, asynchronous child Pi sessions. Use action=create whenever the user naturally asks to create a subagent, ask a subagent to do work, or delegate work. Preserve any user-requested model and effort. Creation task-compacts the current parent context for that task, automatically classifies model/effort when either is omitted, and returns immediately with an id. Use status to spy on a direct child's transcript and usage, wait only when the current request needs its result synchronously, steer to interrupt its direction at the next turn boundary, follow_up to queue later work, interrupt to abort the current operation while retaining the session, and stop to terminate it. Each process can see and control only children it created; child results never enter the parent context unless status or wait is explicitly requested.",
+		promptSnippet: "Create, inspect, wait for, steer, queue messages for, interrupt, or stop isolated asynchronous child Pi sessions",
 		promptGuidelines: [
 			"Use subagent with action=create when the user asks in natural language to create, ask, launch, or delegate to a subagent; pass through any explicit model and reasoning effort.",
-			"Use subagent status to inspect child work; child completion is intentionally not pushed into the parent conversation.",
+			"Use subagent status to inspect child work; use subagent wait only when this turn must consume the result. Child completion is intentionally not pushed into the parent conversation.",
 		],
 		parameters: SubagentParameters,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (params.action === "create") {
 				pruneChildren();
 				if (!params.task?.trim()) throw new Error("Creating a subagent requires a non-empty task.");
@@ -419,7 +446,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					}
 					const warning = compacted.fallback ? " Targeted compaction failed open, so the child started with fresh context." : "";
 					return {
-						content: [{ type: "text", text: `Created ${id} (${name}) with ${selection.model.provider}/${selection.model.id} at ${selection.effort} effort.${warning} It is running asynchronously; use subagent status with id=${id} to spy on it.` }],
+						content: [{ type: "text", text: `Created ${id} (${name}) with ${selection.model.provider}/${selection.model.id} at ${selection.effort} effort.${warning} It is running asynchronously; use subagent status with id=${id} to spy, or wait only when this turn needs the result.` }],
 						details: { action: "create", child: snapshotSummary(child.snapshot()), compactionFallback: compacted.fallback },
 					};
 				} finally {
@@ -444,6 +471,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				await child.refresh();
 				const snapshot = child.snapshot();
 				return { content: [{ type: "text", text: formatSnapshot(snapshot) }], details: { action: "status", child: snapshot } };
+			}
+			if (params.action === "wait") {
+				const settled = await child.waitForIdle(params.timeoutMs ?? 120_000, signal);
+				await child.refresh();
+				const snapshot = child.snapshot();
+				const heading = settled ? `Subagent ${params.id} settled.` : `Wait timed out; subagent ${params.id} is still active.`;
+				return {
+					content: [{ type: "text", text: `${heading}\n\n${formatSnapshot(snapshot)}` }],
+					details: { action: "wait", settled, child: snapshot },
+				};
 			}
 			if (params.action === "steer" || params.action === "follow_up") {
 				if (!params.task?.trim()) throw new Error(`${params.action} requires a non-empty task/message.`);

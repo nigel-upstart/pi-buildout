@@ -22,6 +22,20 @@ input.on("line", (line) => {
 		});
 		return;
 	}
+	if (command.type === "get_session_stats") {
+		send({
+			id: command.id,
+			type: "response",
+			command: "get_session_stats",
+			success: true,
+			data: {
+				tokens: { input: 100, output: 25, cacheRead: 50, cacheWrite: 0, total: 175 },
+				cost: 0.0123,
+				contextUsage: { tokens: 2_000, contextWindow: 100_000, percent: 2 },
+			},
+		});
+		return;
+	}
 	if (command.type === "abort") {
 		streaming = false;
 		send({ id: command.id, type: "response", command: "abort", success: true });
@@ -37,7 +51,13 @@ input.on("line", (line) => {
 		streaming = true;
 		send({ id: command.id, type: "response", command: "prompt", success: true });
 		send({ type: "agent_start" });
+		if (String(command.message).includes("SLOW_WAIT")) {
+			send({ type: "tool_execution_start", toolCallId: "slow-tool", toolName: "bash", args: { command: "sleep" } });
+		}
 		setTimeout(() => {
+			if (String(command.message).includes("COMPACT")) {
+				send({ type: "compaction_end", aborted: false, result: { tokensBefore: 10_000 } });
+			}
 			if (String(command.message).includes("SPAWN_DESCENDANT")) {
 				const descendant = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });
 				const text = `descendant:${descendant.pid}`;
@@ -51,8 +71,11 @@ input.on("line", (line) => {
 				send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `answer-${prompts}` }], stopReason: "stop" } });
 				send({ type: "turn_end" });
 			}
+			if (String(command.message).includes("SLOW_WAIT")) {
+				send({ type: "tool_execution_end", toolCallId: "slow-tool", toolName: "bash", isError: false });
+			}
 			streaming = false;
 			send({ type: "agent_settled" });
-		}, 15);
+		}, String(command.message).includes("SLOW_WAIT") ? 150 : 15);
 	}
 });

@@ -152,6 +152,13 @@ export function boundContextForModel(
 	return maxChars < 256 ? "" : truncateMiddle(summary, maxChars);
 }
 
+export function excludeCurrentDelegationTurn<T extends { role?: string }>(messages: T[]): T[] {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		if (messages[index]?.role === "user") return messages.slice(0, index);
+	}
+	return [...messages];
+}
+
 export function appendBoundedTail(current: string, addition: string, maxChars: number): string {
 	const combined = current + addition;
 	if (combined.length <= maxChars) return combined;

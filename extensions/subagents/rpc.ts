@@ -84,6 +84,58 @@ export interface ChildLaunchOptions {
 	classificationRationale?: string;
 }
 
+export interface ChildSessionStats {
+	tokens: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+	};
+	cost: number;
+	contextUsage?: {
+		tokens: number | null;
+		contextWindow: number;
+		percent: number | null;
+	};
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+export function parseSessionStats(value: unknown): ChildSessionStats | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const input = value as Record<string, unknown>;
+	if (!input.tokens || typeof input.tokens !== "object" || Array.isArray(input.tokens)) return undefined;
+	const rawTokens = input.tokens as Record<string, unknown>;
+	const tokens = {
+		input: finiteNumber(rawTokens.input),
+		output: finiteNumber(rawTokens.output),
+		cacheRead: finiteNumber(rawTokens.cacheRead),
+		cacheWrite: finiteNumber(rawTokens.cacheWrite),
+		total: finiteNumber(rawTokens.total),
+	};
+	if (tokens.total === 0) tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
+	let contextUsage: ChildSessionStats["contextUsage"];
+	if (input.contextUsage && typeof input.contextUsage === "object" && !Array.isArray(input.contextUsage)) {
+		const rawContext = input.contextUsage as Record<string, unknown>;
+		const contextWindow = finiteNumber(rawContext.contextWindow);
+		if (contextWindow > 0) {
+			contextUsage = {
+				tokens: rawContext.tokens === null ? null : finiteNumber(rawContext.tokens),
+				contextWindow,
+				percent: rawContext.percent === null ? null : finiteNumber(rawContext.percent),
+			};
+		}
+	}
+	return {
+		tokens,
+		cost: finiteNumber(input.cost),
+		...(contextUsage ? { contextUsage } : {}),
+	};
+}
+
 export interface ChildSnapshot {
 	id: string;
 	name: string;
@@ -98,7 +150,10 @@ export interface ChildSnapshot {
 	updatedAt: number;
 	turns: number;
 	toolCalls: number;
+	currentTool?: { name: string; argsPreview: string; startedAt: number };
 	pendingMessages: number;
+	compactions: number;
+	stats?: ChildSessionStats;
 	sessionFile?: string;
 	lastAssistantText?: string;
 	transcriptTail: string;
@@ -149,6 +204,9 @@ export class ManagedSubagent {
 	private pendingMessages = 0;
 	private turns = 0;
 	private toolCalls = 0;
+	private activeTools = new Map<string, NonNullable<ChildSnapshot["currentTool"]>>();
+	private compactions = 0;
+	private stats?: ChildSessionStats;
 	private requestSequence = 0;
 	private pending = new Map<string, PendingRequest>();
 	private stdoutBytes = 0;
@@ -255,15 +313,54 @@ export class ManagedSubagent {
 			try {
 				const response = await this.request({ type: "get_state" }, 3_000);
 				const data = response.data as Record<string, unknown> | undefined;
-				if (!data) return;
-				this.pendingMessages = typeof data.pendingMessageCount === "number" ? data.pendingMessageCount : this.pendingMessages;
-				this.sessionFile = typeof data.sessionFile === "string" ? data.sessionFile : this.sessionFile;
-				if (data.isStreaming === true) this.state = "running";
-				else if (this.state !== "starting") this.state = "idle";
-				this.touch();
+				if (data) {
+					this.pendingMessages = typeof data.pendingMessageCount === "number" ? data.pendingMessageCount : this.pendingMessages;
+					this.sessionFile = typeof data.sessionFile === "string" ? data.sessionFile : this.sessionFile;
+					if (data.isStreaming === true) this.state = "running";
+					else if (this.state !== "starting") this.state = "idle";
+				}
 			} catch {
 				// Cached state remains useful if a refresh races process shutdown.
 			}
+			try {
+				const response = await this.request({ type: "get_session_stats" }, 3_000);
+				const parsed = parseSessionStats(response.data);
+				if (parsed) this.stats = parsed;
+			} catch {
+				// Older/custom RPC implementations may not expose stats.
+			}
+			this.touch();
+		});
+	}
+
+	waitForIdle(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+		if (this.isSettled()) return Promise.resolve(true);
+		return new Promise((resolve, reject) => {
+			let done = false;
+			const finish = (settled: boolean) => {
+				if (done) return;
+				done = true;
+				clearInterval(poll);
+				clearTimeout(timeout);
+				signal?.removeEventListener("abort", onAbort);
+				resolve(settled);
+			};
+			const onAbort = () => {
+				if (done) return;
+				done = true;
+				clearInterval(poll);
+				clearTimeout(timeout);
+				signal?.removeEventListener("abort", onAbort);
+				const error = new Error("Subagent wait was aborted; the child is still running.");
+				error.name = "AbortError";
+				reject(error);
+			};
+			const poll = setInterval(() => {
+				if (this.isSettled()) finish(true);
+			}, 50);
+			const timeout = setTimeout(() => finish(this.isSettled()), timeoutMs);
+			if (signal?.aborted) onAbort();
+			else signal?.addEventListener("abort", onAbort, { once: true });
 		});
 	}
 
@@ -285,6 +382,7 @@ export class ManagedSubagent {
 	}
 
 	snapshot(): ChildSnapshot {
+		const currentTool = [...this.activeTools.values()].sort((left, right) => right.startedAt - left.startedAt)[0];
 		return {
 			id: this.id,
 			name: this.name,
@@ -299,7 +397,10 @@ export class ManagedSubagent {
 			updatedAt: this.updatedAt,
 			turns: this.turns,
 			toolCalls: this.toolCalls,
+			...(currentTool ? { currentTool: { ...currentTool } } : {}),
 			pendingMessages: this.pendingMessages,
+			compactions: this.compactions,
+			...(this.stats ? { stats: this.stats } : {}),
 			...(this.sessionFile ? { sessionFile: this.sessionFile } : {}),
 			...(this.lastAssistantText ? { lastAssistantText: this.lastAssistantText } : {}),
 			transcriptTail: this.transcript,
@@ -312,6 +413,11 @@ export class ManagedSubagent {
 		const run = this.controlTail.then(operation, operation);
 		this.controlTail = run.then(() => undefined, () => undefined);
 		return run;
+	}
+
+	private isSettled(): boolean {
+		return this.state === "failed" || this.state === "stopped"
+			|| (this.state === "idle" && this.pendingMessages === 0);
 	}
 
 	private assertControllable(): void {
@@ -449,6 +555,7 @@ export class ManagedSubagent {
 				this.state = "running";
 				break;
 			case "agent_settled":
+				this.activeTools.clear();
 				if (this.state !== "failed" && this.state !== "stopped") this.state = "idle";
 				break;
 			case "turn_end":
@@ -477,12 +584,29 @@ export class ManagedSubagent {
 				}
 				break;
 			}
-			case "tool_execution_start":
+			case "tool_execution_start": {
+				const name = String(event.toolName ?? "tool");
+				const argsPreview = JSON.stringify(event.args ?? {}).slice(0, 500);
+				const startedAt = Date.now();
+				const key = typeof event.toolCallId === "string" ? event.toolCallId : `${name}:${startedAt}:${this.toolCalls}`;
 				this.toolCalls++;
-				this.appendTranscript(`\n→ ${String(event.toolName ?? "tool")} ${JSON.stringify(event.args ?? {}).slice(0, 500)}\n`);
+				this.activeTools.set(key, { name, argsPreview, startedAt });
+				this.appendTranscript(`\n→ ${name} ${argsPreview}\n`);
 				break;
-			case "tool_execution_end":
+			}
+			case "tool_execution_end": {
+				if (typeof event.toolCallId === "string") this.activeTools.delete(event.toolCallId);
+				else {
+					const name = String(event.toolName ?? "tool");
+					for (const [key, tool] of this.activeTools) {
+						if (tool.name === name) this.activeTools.delete(key);
+					}
+				}
 				this.appendTranscript(`\n← ${String(event.toolName ?? "tool")}${event.isError === true ? " (error)" : ""}\n`);
+				break;
+			}
+			case "compaction_end":
+				if (event.aborted !== true && event.result) this.compactions++;
 				break;
 			case "extension_error":
 				this.appendTranscript(`\n[extension error] ${String(event.error ?? "unknown")}\n`);

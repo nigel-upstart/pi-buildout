@@ -4,6 +4,7 @@ import {
 	appendBoundedTail,
 	boundContextForModel,
 	clampThinkingLevel,
+	excludeCurrentDelegationTurn,
 	formatModelCatalog,
 	parseClassifierDecision,
 	supportedThinkingLevels,
@@ -57,6 +58,14 @@ test("bounded text helpers retain useful tails without exceeding limits", () => 
 	assert.match(compact, /^begin-/);
 	assert.match(compact, /-end$/);
 	assert.equal(appendBoundedTail("abcdef", "ghij", 5), "fghij");
+});
+
+test("current delegation turn is excluded from child context compaction", () => {
+	const prior = { role: "assistant", content: "prior decision" };
+	const currentUser = { role: "user", content: "create a subagent" };
+	const toolCall = { role: "assistant", content: "subagent tool call" };
+	assert.deepEqual(excludeCurrentDelegationTurn([prior, currentUser, toolCall]), [prior]);
+	assert.deepEqual(excludeCurrentDelegationTurn([prior]), [prior]);
 });
 
 test("child context is bounded to a conservative fraction of its model window", () => {

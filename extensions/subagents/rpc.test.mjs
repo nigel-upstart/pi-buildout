@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { buildKickoffPrompt, ManagedSubagent } from "./rpc.ts";
+import { buildKickoffPrompt, ManagedSubagent, parseSessionStats } from "./rpc.ts";
 
 const mockPath = fileURLToPath(new URL("./mock-rpc-child.mjs", import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -11,11 +11,24 @@ test("fresh kickoff omits the context wrapper when compaction is unavailable", (
 	assert.match(buildKickoffPrompt("Do the task", "seed"), /<context>\nseed\n<\/context>/);
 });
 
+test("session stats parser validates and normalizes RPC data", () => {
+	assert.equal(parseSessionStats(null), undefined);
+	assert.deepEqual(parseSessionStats({
+		tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1 },
+		cost: 0.25,
+		contextUsage: { tokens: null, contextWindow: 8_000, percent: null },
+	}), {
+		tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, total: 18 },
+		cost: 0.25,
+		contextUsage: { tokens: null, contextWindow: 8_000, percent: null },
+	});
+});
+
 test("managed child starts, streams a bounded transcript, accepts more work, and stops", async (t) => {
 	const child = new ManagedSubagent({
 		id: "child123",
 		name: "test-child",
-		task: "do the task",
+		task: "COMPACT do the task",
 		model: "test/model",
 		effort: "high",
 		contextSummary: "relevant parent context",
@@ -30,13 +43,16 @@ test("managed child starts, streams a bounded transcript, accepts more work, and
 
 	await child.start();
 	assert.ok(["running", "idle"].includes(child.snapshot().state));
-	await sleep(40);
+	assert.equal(await child.waitForIdle(500), true);
 	await child.refresh();
 	let snapshot = child.snapshot();
 	assert.equal(snapshot.state, "idle");
 	assert.equal(snapshot.sessionFile, "/tmp/mock-child.jsonl");
 	assert.equal(snapshot.lastAssistantText, "answer-1");
 	assert.match(snapshot.transcriptTail, /answer-1/);
+	assert.equal(snapshot.compactions, 1);
+	assert.equal(snapshot.stats?.tokens.total, 175);
+	assert.equal(snapshot.stats?.contextUsage?.percent, 2);
 
 	await child.followUp("do one more thing");
 	await sleep(40);
@@ -52,6 +68,30 @@ test("managed child starts, streams a bounded transcript, accepts more work, and
 	await assert.rejects(lateFollowUp, /stopped.*cannot accept messages/);
 	await child.stop();
 	assert.equal(child.snapshot().state, "stopped");
+});
+
+test("wait times out without stopping the child", async (t) => {
+	const child = new ManagedSubagent({
+		id: "slow123",
+		name: "slow-child",
+		task: "SLOW_WAIT",
+		model: "test/model",
+		effort: "off",
+		contextSummary: "",
+		cwd: process.cwd(),
+		command: process.execPath,
+		args: [mockPath],
+		env: { ...process.env },
+		classification: "explicit",
+	});
+	t.after(async () => child.stop());
+	await child.start();
+	assert.equal(await child.waitForIdle(10), false);
+	assert.equal(child.snapshot().state, "running");
+	assert.equal(child.snapshot().currentTool?.name, "bash");
+	assert.equal(await child.waitForIdle(500), true);
+	assert.equal(child.snapshot().lastAssistantText, "answer-1");
+	assert.equal(child.snapshot().currentTool, undefined);
 });
 
 test("stop terminates descendant processes, not only the Pi child", async (t) => {
