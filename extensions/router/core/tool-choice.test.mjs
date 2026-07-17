@@ -9,10 +9,9 @@ describe("requireToolCall", () => {
       model: "model",
       tool_choice: { type: "function", function: { name: "report" } },
     });
-    assert.deepEqual(requireToolCall(payload, "openai-responses", "report").tool_choice, {
-      type: "function",
-      name: "report",
-    });
+    const responsesToolChoice = { type: "function", name: "report" };
+    assert.deepEqual(requireToolCall(payload, "openai-responses", "report").tool_choice, responsesToolChoice);
+    assert.deepEqual(requireToolCall(payload, "openai-codex-responses", "report").tool_choice, responsesToolChoice);
     assert.deepEqual(requireToolCall(payload, "anthropic-messages", "report").tool_choice, {
       type: "tool",
       name: "report",

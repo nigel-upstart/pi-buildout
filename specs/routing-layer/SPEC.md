@@ -4,7 +4,8 @@ Status: **implemented (shadow-first rollout)**. The TypeScript extension is in
 [`extensions/router`](../../extensions/router), defaults to shadow mode, and has passed deterministic, installer,
 shadow, active-canary, and full explicit-Bifrost checks. See [`decisions.md`](decisions.md),
 [`implementation-decisions.md`](implementation-decisions.md), [`eval.md`](eval.md),
-[`source-basis.md`](source-basis.md), and the [2026-07-17 real-provider results](eval-results-2026-07-17.md).
+[`source-basis.md`](source-basis.md), the [2026-07-17 real-provider results](eval-results-2026-07-17.md), and the
+[2026-07-18 premium-route tuning results](eval-results-2026-07-18.md).
 
 ## Context
 
@@ -117,7 +118,12 @@ arguments — never accept free-form JSON parsed out of prose.
 - Low confidence or high/critical risk → call a secondary classifier from a **different provider**; reconcile
   conservatively (max of risk/horizon, union of review intent, prefer the second archetype when the first is
   low-confidence or the second finds higher risk).
-- Malformed classifier output fails closed to a conservative route, never to an unvalidated one.
+- If the primary transport fails but the provider-diverse secondary returns a schema-valid result, use that validated
+  result as a classifier failover; never merge it with synthetic conservative defaults, which would manufacture high
+  risk and a program horizon without task evidence.
+- If the required classifier stages do not yield sufficient validated output, fail closed by declining automatic routing
+  and retaining the current selection. In particular, classifier failure is never positive evidence for the premium
+  large-program or highest-risk routes.
 
 ## Eligibility, ranking, and fallback
 
@@ -268,6 +274,8 @@ under another model family's prompt profile.
 ## Hard policy invariants
 
 - High/critical-risk implementation routes require a sequential independent review.
+- Premium large-program and highest-risk routes require positive, schema-valid semantic evidence; a failed-closed
+  classifier cannot select them.
 - No unknown model, unsupported effort, context-window violation, or unvalidated model/archetype/profile combination may
   reach execution.
 - Explicit manual model or effort selection bypasses automatic routing until the next task boundary or until the user

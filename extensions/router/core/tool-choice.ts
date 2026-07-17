@@ -15,6 +15,7 @@ export function requireToolCall(payload: unknown, api: string, toolName: string)
       next.tool_choice = { type: "function", function: { name: toolName } };
       break;
     case "openai-responses":
+    case "openai-codex-responses":
       next.tool_choice = { type: "function", name: toolName };
       break;
     case "anthropic-messages":

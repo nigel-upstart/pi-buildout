@@ -70,6 +70,14 @@ function registry() {
 
 const models = registry();
 const requirements = { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true };
+const PREMIUM_ARCHETYPES = new Set(["large_program_planning", "highest_risk_advisory"]);
+
+function isPremiumChoice(choice) {
+  return (
+    (choice.modelId === "gpt-5.6-sol" && choice.effort === "max") ||
+    (choice.modelId === "claude-fable-5" && choice.effort === "high")
+  );
+}
 
 describe("routing golden corpus", () => {
   for (const fixture of fixtures) {
@@ -98,6 +106,9 @@ describe("routing golden corpus", () => {
       if (fixture.expected.builderFallbackVendor) {
         assert.equal(decision.kind, "review");
         assert.equal(decision.builderFallback.vendor, fixture.expected.builderFallbackVendor);
+      }
+      if (!PREMIUM_ARCHETYPES.has(fixture.expected.archetype)) {
+        assert.equal(isPremiumChoice(decision.primary), false, `${fixture.id} received a premium primary`);
       }
       for (const choice of [
         decision.primary,

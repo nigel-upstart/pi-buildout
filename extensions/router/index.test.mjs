@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { conservativeFeatures } from "./core/features.ts";
-import routerExtension, { deterministicCheckCommand } from "./index.ts";
+import routerExtension, { automaticRoutingBlockReason, deterministicCheckCommand } from "./index.ts";
+
+describe("automatic routing gate", () => {
+  it("requires validated semantic evidence instead of promoting classifier failure to a premium route", () => {
+    assert.match(automaticRoutingBlockReason({ failedClosed: true }), /validated semantic evidence/);
+    assert.equal(automaticRoutingBlockReason({ failedClosed: false }), undefined);
+  });
+});
 
 describe("deterministicCheckCommand", () => {
   it("accepts exit-preserving checks and rejects shell constructs that can mask failure", () => {

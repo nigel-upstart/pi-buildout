@@ -63,4 +63,6 @@ explicitly skips real-provider calls so local credentials do not make quality ch
 - New sessions, post-compaction turns, upstream-ref changes, and forks are hard boundaries.
 - Explicit model or effort changes bypass automatic routing until the next task boundary.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
+- A validated provider-diverse classifier result may serve as failover, but complete classification failure retains the
+  current selection instead of manufacturing evidence for a premium route.
 - The request remains a native user message and is never paraphrased into system policy.

@@ -54,6 +54,8 @@ async function completeWithStopRetry(run, maximumAttempts = 4) {
 }
 
 const limit = positiveInteger(process.env.ROUTER_EVAL_LIMIT, fixtures.length);
+const classifierOffset = Math.max(0, Number.parseInt(process.env.ROUTER_EVAL_OFFSET ?? "0", 10) || 0);
+const PREMIUM_ARCHETYPES = new Set(["large_program_planning", "highest_risk_advisory"]);
 
 function model(id, provider) {
   const vendor = provider.replace(/^bifrost-/, "");
@@ -157,7 +159,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
     const secondaryVendor = classifierVendor(secondaryId);
     assert.notEqual(primaryVendor, secondaryVendor, "classifier eval requires provider-diverse models");
     const results = [];
-    for (const fixture of fixtures.slice(0, limit)) {
+    for (const fixture of fixtures.slice(classifierOffset, classifierOffset + limit)) {
       const classification = await classifyTask({
         prompt: fixture.prompt,
         synopsis,
@@ -187,6 +189,8 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         correct: score.accuracy === 1,
         archetype: classification.archetype.archetype,
         expectedArchetype: fixture.expected.archetype,
+        premiumRoute: PREMIUM_ARCHETYPES.has(classification.archetype.archetype),
+        expectedPremiumRoute: PREMIUM_ARCHETYPES.has(fixture.expected.archetype),
         expectedReview,
         actualReview,
         disagreement,
@@ -212,6 +216,12 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
     const cost = attempts.reduce((total, attempt) => total + (attempt.usage?.cost ?? 0), 0);
     const hardPolicyViolations = results.filter((result) => result.expectedReview && !result.actualReview).length;
     const failedClosedCount = results.filter((result) => result.failedClosed).length;
+    const premiumFalsePositives = results.filter((result) => result.premiumRoute && !result.expectedPremiumRoute);
+    const premiumRouteFalsePositiveRate =
+      premiumFalsePositives.length / Math.max(1, results.filter((result) => !result.expectedPremiumRoute).length);
+    const premiumRouteMissRate =
+      results.filter((result) => !result.premiumRoute && result.expectedPremiumRoute).length /
+      Math.max(1, results.filter((result) => result.expectedPremiumRoute).length);
     console.log(
       JSON.stringify(
         {
@@ -223,6 +233,9 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
           disagreementRate,
           hardPolicyViolations,
           failedClosedCount,
+          premiumRouteFalsePositiveRate,
+          premiumRouteMissRate,
+          premiumFalsePositiveIds: premiumFalsePositives.map((result) => result.id),
           classificationLatencyMs: latencyMs,
           classificationCost: cost,
           results,
@@ -241,6 +254,11 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
     const review = results.find((result) => result.id === "code-review-001");
     if (review) assert.equal(review.archetype, "code_review", "explicit review intent was missed");
     assert.equal(hardPolicyViolations, 0, "real classifier produced a hard-policy violation");
+    assert.equal(
+      premiumFalsePositives.length,
+      0,
+      `non-premium fixtures were over-routed: ${premiumFalsePositives.map((result) => result.id).join(", ")}`,
+    );
   });
 
   it("evaluates every archetype as a model/profile paired treatment", async () => {

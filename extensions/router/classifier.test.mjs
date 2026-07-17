@@ -111,6 +111,39 @@ describe("classifyTask", () => {
     assert.deepEqual([result.primaryVendor, result.secondaryVendor], ["openai", "anthropic"]);
   });
 
+  it("uses a validated secondary failover without merging synthetic conservative defaults", async () => {
+    let primaryCalls = 0;
+    const secondaryFeatures = features({
+      intent: "operate",
+      workflowType: "noncoding_tool_workflow",
+      actionMode: "reversible_mutation",
+      horizon: "one_response",
+      risk: "low",
+      confidence: 0.9,
+      expectedAgentTurns: 2,
+      expectedFilesRead: 0,
+      expectedFilesChanged: 0,
+      expectedToolOutputTokens: 500,
+      evidence: ["The request is one bounded local operation"],
+    });
+    const result = await classifyTask({
+      prompt: "Create one worktree",
+      synopsis,
+      primary: async () => {
+        primaryCalls++;
+        throw new Error("primary transport unavailable");
+      },
+      secondary: transport(secondaryFeatures, "anthropic"),
+    });
+    assert.equal(primaryCalls, 2);
+    assert.equal(result.escalated, true);
+    assert.equal(result.failedClosed, false);
+    assert.equal(result.features, secondaryFeatures);
+    assert.equal(result.features.risk, "low");
+    assert.equal(result.features.horizon, "one_response");
+    assert.equal(result.archetype.archetype, "deliberate_tool_workflow");
+  });
+
   it("retries malformed output and fails closed when validation never succeeds", async () => {
     let primaryCalls = 0;
     let secondaryCalls = 0;

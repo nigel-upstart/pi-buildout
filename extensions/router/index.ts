@@ -70,6 +70,14 @@ type AttemptMetrics = {
 
 type AttemptDisposition = "unknown" | "pending" | "success" | "aborted" | "incomplete" | "failed";
 
+export function automaticRoutingBlockReason(
+  classification: Pick<ClassificationResult, "failedClosed">,
+): string | undefined {
+  return classification.failedClosed
+    ? "classification failed closed; premium routes require validated semantic evidence"
+    : undefined;
+}
+
 export function deterministicCheckCommand(command: string): string | undefined {
   const normalized = command.trim();
   if (!/\b(?:test|check|lint|typecheck|audit|scan)\b/i.test(normalized)) return undefined;
@@ -256,6 +264,19 @@ export default function routerExtension(pi: ExtensionAPI): void {
     explorationKey: string,
   ): Promise<{ decision: RouteDecision; registry: RegistryModelSnapshot[] }> {
     const registry = buildRegistrySnapshot(ctx);
+    const blockReason = automaticRoutingBlockReason(classification);
+    if (blockReason) {
+      return {
+        registry,
+        decision: {
+          kind: "unroutable",
+          policyVersion: POLICY_VERSION,
+          archetype: classification.archetype.archetype,
+          reason: blockReason,
+          exclusions: [],
+        },
+      };
+    }
     const requirements = routeRequirements(currentTokens(ctx), classification.features, hasImages);
     let events: RouterTelemetryEvent[] = [];
     try {

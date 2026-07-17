@@ -2,7 +2,7 @@ import type { Archetype } from "./archetype.ts";
 import { MODEL_VENDORS } from "./profiles.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
-export const POLICY_VERSION = "router-policy-v2";
+export const POLICY_VERSION = "router-policy-v3";
 
 export type CandidateRef = {
   provider: string;

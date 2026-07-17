@@ -156,7 +156,8 @@ extensions/router/
 
 1. `core/` first, with no pi imports — the deterministic spine, unit-tested directly against `SPEC.md`'s invariants.
 2. `classifier.ts` — primary + provider-diverse secondary structured-output calls via pi-ai's `complete()` and
-   registry-resolved auth; conservative reconciliation; fail-closed fallback route.
+   registry-resolved auth; conservative reconciliation; validated single-stage failover; fail-closed routing block when
+   the required output remains unavailable.
 3. `index.ts` — the pi adapter: wire `input`/session boundary events to lease decisions; apply via
    `setModel`/`setThinkingLevel`; inject the compiled profile via `before_agent_start.systemPrompt`; map bootstrap
    aliases via `registerProvider`; add the `/route` status command.
@@ -186,7 +187,7 @@ semantic summary only if it outperforms the deterministic round-robin baseline.
 3. **Provider endpoint:** production classification uses the endpoint already resolved on the chosen pi model. A
    Bifrost-configured model therefore uses Bifrost; direct-provider configurations keep working. The real-call eval
    runner requires explicit `BIFROST_*` configuration and never silently changes endpoints.
-4. **Concrete registry mapping:** policy v2 uses exact IDs present in pi v0.80.7's live registry
+4. **Concrete registry mapping:** policy v3 uses exact IDs present in pi v0.80.7's live registry
    (`gpt-5.6-{luna,terra,sol}`, `claude-{haiku-4-5,sonnet-5,opus-4-8,fable-5}`, `gemini-3.5-flash`) plus the configured
    `bifrost/bedrock/anthropic.claude-sonnet-5` endpoint as a Sonnet 5 availability alternative. These have version-aware
    profile families and deterministic lower-tier fallback resolution when a preferred exact ID is unavailable. Bifrost

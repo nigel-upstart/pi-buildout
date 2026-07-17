@@ -40,6 +40,8 @@ Metrics (mirroring `SPEC.md`'s classifier-metrics list):
 
 - exact-match and per-axis accuracy across the required classification axes (intent, action mode, archetype, planning
   horizon, risk, review intent, …);
+- premium-route false-positive and miss rates for `large_program_planning` and `highest_risk_advisory`, with zero false
+  premium activation as a hard gate;
 - confidence calibration (does stated confidence track actual correctness);
 - false and missed review-intent rate;
 - hard-policy violation rate (a fixture whose expected output the classifier must never contradict — e.g. a review
@@ -80,11 +82,12 @@ checked-in [`PromptProfile`](../../extensions/router/core/profiles.ts) contract:
 }
 ```
 
-Corpus composition: one fixture per archetype row in `SPEC.md`'s bootstrap priors table. Separate lease and classifier
-tests target every hard boundary (new window, post-compaction, post-push, subagent) and the confidence-escalation paths
-(low confidence, high risk, disagreement), because boundary state is deterministic input to the classifier rather than
-an archetype fixture. Fixtures are sourced from this repository's spec and real, anonymized task shapes. Their exact
-shape is the checked-in corpus rather than a historical design example.
+Corpus composition: one fixture per archetype row in `SPEC.md`'s bootstrap priors table, plus anonymized trace-derived
+regressions for ordinary tasks that were falsely promoted during live use. Separate lease and classifier tests target
+every hard boundary (new window, post-compaction, post-push, subagent) and the confidence-escalation paths (low
+confidence, high risk, disagreement), because boundary state is deterministic input to the classifier rather than an
+archetype fixture. Fixtures are sourced from this repository's spec and real, anonymized task shapes. Their exact shape
+is the checked-in corpus rather than a historical design example.
 
 ## Harness shape
 
@@ -96,8 +99,8 @@ extensions/router/eval/
   score.ts               # per-axis accuracy and confidence-calibration scoring
 ```
 
-- Runs explicitly via `npm run test:eval:real`. `ROUTER_EVAL_LIMIT`, `ROUTER_EVAL_PROFILE_LIMIT`, and
-  `ROUTER_EVAL_PROFILE_OFFSET` support bounded canaries without weakening the full-run gates. Exported
+- Runs explicitly via `npm run test:eval:real`. `ROUTER_EVAL_LIMIT`, `ROUTER_EVAL_OFFSET`, `ROUTER_EVAL_PROFILE_LIMIT`,
+  and `ROUTER_EVAL_PROFILE_OFFSET` support bounded canaries without weakening the full-run gates. Exported
   `BIFROST_BASE_URL` plus `BIFROST_VIRTUAL_KEY` take precedence; missing values are filled from the gitignored `.env`,
   if present. The explicit command skips cleanly when credentials remain absent, while ordinary `npm test` always
   excludes provider calls. Start from `.env.example`; never commit the populated local file.

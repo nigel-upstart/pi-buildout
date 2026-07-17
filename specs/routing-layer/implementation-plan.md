@@ -38,7 +38,8 @@ Exit: `npm run check`, `npm audit`, and both installed hooks pass.
 
 ### 1. Deterministic contracts and policy
 
-- TypeBox semantic feature schema and fail-closed conservative feature object.
+- TypeBox semantic feature schema and fail-closed conservative audit object; automatic routing requires validated
+  semantic evidence.
 - Archetype derivation and provider-neutral effort selection.
 - Exact-ID policy/model snapshot types, canonical vendor mapping, profile compatibility.
 - 70% finished-context eligibility, ordinary and review topology validation.
@@ -60,8 +61,8 @@ Exit: invariant unit tests and compiler golden tests pass.
 ### 3. Classification and adapter MVP
 
 - Primary `complete()` call with one schema tool; validate the tool call.
-- Different-vendor secondary classification for low-confidence/high-risk cases; conservative reconciliation; malformed
-  output routes conservatively.
+- Different-vendor secondary classification for low-confidence/high-risk cases; conservative reconciliation; a valid
+  secondary can serve as failover, while insufficient validated output blocks automatic routing.
 - Wire pi lifecycle hooks, apply model/effort only in active mode, inject profile scaffolding, persist lease snapshots,
   and expose `/route` status/mode/outcome controls.
 - Start in shadow mode; a manual mode switch is required before decisions act.
