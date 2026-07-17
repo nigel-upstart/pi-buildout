@@ -4,6 +4,7 @@ import { deriveArchetype } from "./archetype.ts";
 import { conservativeFeatures } from "./features.ts";
 import {
 	canonicalVendor,
+	isControlledHoldout,
 	registrySnapshotId,
 	robustCostToDone,
 	selectOrdinaryRoute,
@@ -120,6 +121,23 @@ describe("ordinary route selection", () => {
 			humanInterventionCost: 0,
 			retryCost: 0,
 		});
+
+		const holdoutKey = Array.from({ length: 100 }, (_, index) => `task-${index}`).find((key) =>
+			isControlledHoldout(key),
+		);
+		assert.ok(holdoutKey);
+		const holdout = selectOrdinaryRoute(
+			"median_repository_implementation",
+			registry(),
+			REQUIREMENTS,
+			[...samples, { ...samples[0], provider: "anthropic", modelId: "claude-sonnet-5", p75ModelAndToolCost: 1 }],
+			undefined,
+			holdoutKey,
+		);
+		assert.equal(holdout.kind, "ordinary");
+		assert.equal(holdout.controlledHoldout, true);
+		assert.equal(holdout.primary.modelId, "gpt-5.6-terra");
+		assert.equal(holdout.primary.rankReason, "controlled_holdout");
 	});
 });
 

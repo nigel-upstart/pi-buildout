@@ -62,7 +62,7 @@ export interface RouteChoice {
 	contextWindow: number;
 	score?: number;
 	scoreComponents?: RouteScoreComponents;
-	rankReason: "bootstrap" | "telemetry" | "review_ability" | "fixed_builder_fallback";
+	rankReason: "bootstrap" | "telemetry" | "controlled_holdout" | "review_ability" | "fixed_builder_fallback";
 }
 
 export interface RouteSample {
@@ -99,6 +99,7 @@ export interface OrdinaryRouteDecision {
 	fallback: RouteChoice;
 	exclusions: CandidateExclusion[];
 	telemetryMature: boolean;
+	controlledHoldout: boolean;
 }
 
 export interface ReviewRouteDecision {
@@ -237,13 +238,23 @@ function deduplicateChoices(choices: readonly RouteChoice[], exclusions: Candida
 	});
 }
 
+export function isControlledHoldout(key: string, oneIn = 20): boolean {
+	let hash = 2166136261;
+	for (const character of key) {
+		hash ^= character.codePointAt(0) ?? 0;
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0) % Math.max(1, oneIn) === 0;
+}
+
 function telemetryOrder(
 	choices: RouteChoice[],
 	archetype: Archetype,
 	qualityFloor: number,
 	samples: readonly RouteSample[],
 	weights?: CostWeights,
-): { choices: RouteChoice[]; mature: boolean } {
+	explorationKey?: string,
+): { choices: RouteChoice[]; mature: boolean; controlledHoldout: boolean } {
 	const comparable = choices.map((choice) =>
 		samples.find(
 			(sample) =>
@@ -253,31 +264,36 @@ function telemetryOrder(
 	const mature =
 		choices.length > 0 &&
 		comparable.every((sample) => sample && sample.comparableSamples >= 30 && sample.acceptedRate >= qualityFloor);
-	if (!mature) return { choices, mature: false };
+	if (!mature) return { choices, mature: false, controlledHoldout: false };
 
 	const appliedWeights = weights ?? DEFAULT_COST_WEIGHTS;
+	const scored = choices.map((choice, index) => {
+		const sample = comparable[index];
+		return {
+			...choice,
+			score: sample ? robustCostToDone(sample, appliedWeights) : Number.POSITIVE_INFINITY,
+			...(sample
+				? {
+						scoreComponents: {
+							p75ModelAndToolCost: sample.p75ModelAndToolCost,
+							developerWaitCost: appliedWeights.developerWaitValuePerMs * sample.p75WallTimeMs,
+							humanInterventionCost: appliedWeights.humanInterventionCost * sample.probabilityHumanIntervention,
+							retryCost: appliedWeights.retryCost * sample.probabilityRetry,
+						},
+					}
+				: {}),
+			rankReason: "telemetry" as const,
+		};
+	});
+	const controlledHoldout = explorationKey ? isControlledHoldout(explorationKey) : false;
 	return {
 		mature: true,
-		choices: choices
-			.map((choice, index) => {
-				const sample = comparable[index];
-				return {
-					...choice,
-					score: sample ? robustCostToDone(sample, appliedWeights) : Number.POSITIVE_INFINITY,
-					...(sample
-						? {
-								scoreComponents: {
-									p75ModelAndToolCost: sample.p75ModelAndToolCost,
-									developerWaitCost: appliedWeights.developerWaitValuePerMs * sample.p75WallTimeMs,
-									humanInterventionCost: appliedWeights.humanInterventionCost * sample.probabilityHumanIntervention,
-									retryCost: appliedWeights.retryCost * sample.probabilityRetry,
-								},
-							}
-						: {}),
-					rankReason: "telemetry" as const,
-				};
-			})
-			.sort((left, right) => (left.score ?? Number.POSITIVE_INFINITY) - (right.score ?? Number.POSITIVE_INFINITY)),
+		controlledHoldout,
+		choices: controlledHoldout
+			? scored.map((choice) => ({ ...choice, rankReason: "controlled_holdout" as const }))
+			: scored.sort(
+					(left, right) => (left.score ?? Number.POSITIVE_INFINITY) - (right.score ?? Number.POSITIVE_INFINITY),
+				),
 	};
 }
 
@@ -287,6 +303,7 @@ export function selectOrdinaryRoute(
 	requirements: RouteRequirements,
 	samples: readonly RouteSample[] = [],
 	weights?: CostWeights,
+	explorationKey?: string,
 ): RouteDecision {
 	const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
 	const exclusions: CandidateExclusion[] = [];
@@ -294,7 +311,7 @@ export function selectOrdinaryRoute(
 		.map((candidate) => evaluateCandidate(candidate, registry, archetype, requirements, exclusions))
 		.filter((choice): choice is RouteChoice => choice !== undefined);
 	const deduplicated = deduplicateChoices(evaluated, exclusions);
-	const ranked = telemetryOrder(deduplicated, archetype, policy.qualityFloor, samples, weights);
+	const ranked = telemetryOrder(deduplicated, archetype, policy.qualityFloor, samples, weights, explorationKey);
 	const primary = ranked.choices[0];
 	const fallback = ranked.choices.find((choice) =>
 		choice.vendor === "openai" || choice.vendor === "anthropic" ? choice.modelId !== primary?.modelId : false,
@@ -317,6 +334,7 @@ export function selectOrdinaryRoute(
 		fallback,
 		exclusions,
 		telemetryMature: ranked.mature,
+		controlledHoldout: ranked.controlledHoldout,
 	};
 }
 

@@ -217,6 +217,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		classification: ClassificationResult,
 		hasImages: boolean,
 		languageBucket: string,
+		explorationKey: string,
 	): Promise<{ decision: RouteDecision; registry: RegistryModelSnapshot[] }> {
 		const registry = buildRegistrySnapshot(ctx);
 		const requirements = routeRequirements(currentTokens(ctx), classification.features, hasImages);
@@ -270,7 +271,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		}
 		return {
 			registry,
-			decision: selectOrdinaryRoute(archetype, registry, requirements, routeSamples),
+			decision: selectOrdinaryRoute(archetype, registry, requirements, routeSamples, undefined, explorationKey),
 		};
 	}
 
@@ -630,6 +631,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					classification,
 					pending?.hasImages ?? Boolean(event.images?.length),
 					languageBucket,
+					promptFingerprint(event.prompt),
 				);
 				lastRoute = { ...lastRoute, classification, decision: routed.decision };
 				if (routed.decision.kind === "unroutable") {
@@ -686,6 +688,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 						exclusions: routed.decision.exclusions,
 						selection: routed.decision.primary,
 						telemetryMature: routed.decision.telemetryMature,
+						controlledHoldout: routed.decision.kind === "ordinary" ? routed.decision.controlledHoldout : false,
 						fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
 						classifierAttempts: classification.attempts,
 					},
