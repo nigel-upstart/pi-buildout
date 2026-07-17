@@ -45,6 +45,13 @@ export interface CandidateExclusion {
 	detail: string;
 }
 
+export interface RouteScoreComponents {
+	p75ModelAndToolCost: number;
+	developerWaitCost: number;
+	humanInterventionCost: number;
+	retryCost: number;
+}
+
 export interface RouteChoice {
 	provider: string;
 	modelId: string;
@@ -54,6 +61,7 @@ export interface RouteChoice {
 	profileId: string;
 	contextWindow: number;
 	score?: number;
+	scoreComponents?: RouteScoreComponents;
 	rankReason: "bootstrap" | "telemetry" | "review_ability" | "fixed_builder_fallback";
 }
 
@@ -61,10 +69,18 @@ export interface RouteSample {
 	provider: string;
 	modelId: string;
 	archetype: Archetype;
+	contextBucket?: string;
+	risk?: string;
+	interactivity?: string;
+	languageBucket?: string;
 	comparableSamples: number;
 	acceptedRate: number;
+	p50ModelAndToolCost?: number;
 	p75ModelAndToolCost: number;
+	p90ModelAndToolCost?: number;
+	p50WallTimeMs?: number;
 	p75WallTimeMs: number;
+	p90WallTimeMs?: number;
 	probabilityHumanIntervention: number;
 	probabilityRetry: number;
 }
@@ -239,6 +255,7 @@ function telemetryOrder(
 		comparable.every((sample) => sample && sample.comparableSamples >= 30 && sample.acceptedRate >= qualityFloor);
 	if (!mature) return { choices, mature: false };
 
+	const appliedWeights = weights ?? DEFAULT_COST_WEIGHTS;
 	return {
 		mature: true,
 		choices: choices
@@ -246,7 +263,17 @@ function telemetryOrder(
 				const sample = comparable[index];
 				return {
 					...choice,
-					score: sample ? robustCostToDone(sample, weights) : Number.POSITIVE_INFINITY,
+					score: sample ? robustCostToDone(sample, appliedWeights) : Number.POSITIVE_INFINITY,
+					...(sample
+						? {
+								scoreComponents: {
+									p75ModelAndToolCost: sample.p75ModelAndToolCost,
+									developerWaitCost: appliedWeights.developerWaitValuePerMs * sample.p75WallTimeMs,
+									humanInterventionCost: appliedWeights.humanInterventionCost * sample.probabilityHumanIntervention,
+									retryCost: appliedWeights.retryCost * sample.probabilityRetry,
+								},
+							}
+						: {}),
 					rankReason: "telemetry" as const,
 				};
 			})

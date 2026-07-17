@@ -8,6 +8,7 @@ import { compilePrompt } from "./core/compiler.ts";
 import { type FailureKind, resolveFallback } from "./core/fallback.ts";
 import {
 	type BoundaryGateResult,
+	changeEffortWithinLease,
 	createTaskLease,
 	deterministicBoundaryGate,
 	installLease,
@@ -150,6 +151,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
 	let attemptStartedAt = 0;
 	let attemptTurns = 0;
 	let attemptToolCalls = 0;
+	let deterministicChecksPassed = 0;
+	let deterministicChecksFailed = 0;
+	const deterministicCheckCalls = new Set<string>();
+	const validatedPlanAttempts = new Set<string>();
 	let lastAttemptMetrics: AttemptMetrics | undefined;
 
 	function persistState(): void {
@@ -211,11 +216,33 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		classification: ClassificationResult,
 		hasImages: boolean,
+		languageBucket: string,
 	): Promise<{ decision: RouteDecision; registry: RegistryModelSnapshot[] }> {
 		const registry = buildRegistrySnapshot(ctx);
 		const requirements = routeRequirements(currentTokens(ctx), classification.features, hasImages);
-		const routeSamples: RouteSample[] = aggregateRouteSamples(telemetryOutcomes(await telemetry.read()));
+		const routeSamples: RouteSample[] = aggregateRouteSamples(telemetryOutcomes(await telemetry.read())).filter(
+			(sample) =>
+				sample.contextBucket === classification.features.contextShape &&
+				sample.risk === classification.features.risk &&
+				sample.interactivity === classification.features.interactivity &&
+				sample.languageBucket === languageBucket,
+		);
 		const archetype = classification.archetype.archetype;
+		if (
+			(archetype === "implementation_planning" || archetype === "large_program_planning") &&
+			!pi.getActiveTools().includes("submit_implementation_plan")
+		) {
+			return {
+				registry,
+				decision: {
+					kind: "unroutable",
+					policyVersion: "router-policy-v1",
+					archetype,
+					reason: "planning route requires the active submit_implementation_plan validator tool",
+					exclusions: [],
+				},
+			};
+		}
 		if (archetype === "code_review") {
 			const builder = snapshotForModel(ctx.model, registry);
 			if (!builder) {
@@ -338,6 +365,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			attemptStartedAt = Date.now();
 			attemptTurns = 0;
 			attemptToolCalls = 0;
+			deterministicChecksPassed = 0;
+			deterministicChecksFailed = 0;
+			deterministicCheckCalls.clear();
 			persistState();
 			updateStatus(ctx);
 			if (triggerTurn) {
@@ -419,6 +449,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			modelSnapshotId: registrySnapshotId(registry),
 			policyVersion: decision.policyVersion,
 			lastPromptFingerprint: promptFingerprint(`review:${parent.taskId}`),
+			...(parent.repositoryLanguageBucket ? { repositoryLanguageBucket: parent.repositoryLanguageBucket } : {}),
 		});
 		const applied = await applyWithAvailabilityFallback(ctx, child);
 		if (!applied) {
@@ -431,6 +462,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		attemptStartedAt = Date.now();
 		attemptTurns = 0;
 		attemptToolCalls = 0;
+		deterministicChecksPassed = 0;
+		deterministicChecksFailed = 0;
+		deterministicCheckCalls.clear();
 		await record(
 			ctx,
 			"route_decision",
@@ -488,6 +522,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				{ taskId: active.taskId, archetype: active.archetype },
 			);
 			if (!validation.success) throw new Error(`Invalid implementation plan: ${validation.errors.join("; ")}`);
+			validatedPlanAttempts.add(`${active.taskId}:${active.attemptIndex}`);
 			return {
 				content: [
 					{
@@ -589,7 +624,13 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					{ "router.mode": state.mode },
 					() => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
 				);
-				const routed = await route(ctx, classification, pending?.hasImages ?? Boolean(event.images?.length));
+				const languageBucket = repository.languageBuckets.join("+") || "unknown";
+				const routed = await route(
+					ctx,
+					classification,
+					pending?.hasImages ?? Boolean(event.images?.length),
+					languageBucket,
+				);
 				lastRoute = { ...lastRoute, classification, decision: routed.decision };
 				if (routed.decision.kind === "unroutable") {
 					await record(
@@ -622,6 +663,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					lastPromptFingerprint: promptFingerprint(event.prompt),
 					reviewRequired: classification.archetype.requiresIndependentReview,
 					reviewCompleted: false,
+					repositoryLanguageBucket: languageBucket,
 				});
 				state = installLease(state, lease);
 				persistState();
@@ -629,6 +671,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				attemptStartedAt = Date.now();
 				attemptTurns = 0;
 				attemptToolCalls = 0;
+				deterministicChecksPassed = 0;
+				deterministicChecksFailed = 0;
+				deterministicCheckCalls.clear();
 				await record(
 					ctx,
 					"route_decision",
@@ -639,6 +684,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 						failedClosed: classification.failedClosed,
 						reviewRequired: lease.reviewRequired === true,
 						exclusions: routed.decision.exclusions,
+						selection: routed.decision.primary,
+						telemetryMature: routed.decision.telemetryMature,
 						fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
 						classifierAttempts: classification.attempts,
 					},
@@ -700,13 +747,35 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		state = markManualOverride(state);
 		persistState();
 		updateStatus(ctx);
+		await record(
+			ctx,
+			"outcome",
+			{ manualOverride: "model", provider: event.model.provider, modelId: event.model.id },
+			state.active ? { taskId: state.active.taskId, archetype: state.active.archetype } : {},
+		);
 	});
 
-	pi.on("thinking_level_select", async (_event, ctx) => {
+	pi.on("thinking_level_select", async (event, ctx) => {
 		if (applyingSelection) return;
+		const active = state.active;
+		const changed = active
+			? changeEffortWithinLease(active, event.level as EffortLevel, new Date().toISOString())
+			: undefined;
+		if (changed?.success) state = { ...state, active: changed.lease };
 		state = markManualOverride(state);
 		persistState();
 		updateStatus(ctx);
+		await record(
+			ctx,
+			"outcome",
+			{
+				manualOverride: "effort",
+				effort: event.level,
+				leaseUpdated: changed?.success ?? false,
+				...(!changed?.success && changed ? { reason: changed.reason } : {}),
+			},
+			state.active ? { taskId: state.active.taskId, archetype: state.active.archetype } : {},
+		);
 	});
 
 	pi.on("agent_start", () => {
@@ -718,15 +787,37 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		attemptTurns++;
 	});
 
-	pi.on("tool_execution_end", () => {
+	pi.on("tool_execution_end", (event) => {
 		attemptToolCalls++;
+		if (deterministicCheckCalls.delete(event.toolCallId)) {
+			if (event.isError) deterministicChecksFailed++;
+			else deterministicChecksPassed++;
+		}
 	});
 
 	pi.on("tool_call", (event) => {
-		if (!state.active?.parentLease) return;
-		if (event.toolName === "edit" || event.toolName === "write") {
-			return { block: true, reason: "Independent review lease is read-only" };
+		if (event.toolName === "bash") {
+			const command = typeof event.input.command === "string" ? event.input.command : "";
+			if (/\b(?:test|check|lint|typecheck|audit|scan)\b/i.test(command)) deterministicCheckCalls.add(event.toolCallId);
 		}
+		if (!state.active?.parentLease) return;
+		if (
+			event.toolName === "read" ||
+			event.toolName === "grep" ||
+			event.toolName === "find" ||
+			event.toolName === "ls"
+		) {
+			return;
+		}
+		if (event.toolName === "bash") {
+			const command = typeof event.input.command === "string" ? event.input.command.trim() : "";
+			const safeCommand =
+				/^(?:git\s+(?:diff|status|show|log|rev-parse|ls-files)\b|rg\b|grep\b|find\b|ls\b|pwd\b|wc\b|head\b|tail\b|file\b)/.test(
+					command,
+				) && !/[;&|><`$(){}\n]/.test(command);
+			if (safeCommand) return;
+		}
+		return { block: true, reason: "Independent review lease is read-only" };
 	});
 
 	pi.on("after_provider_response", (event) => {
@@ -737,42 +828,64 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		const active = state.active;
 		if (!active) return;
 		const assistants = event.messages.filter(assistantMessage);
-		const relevant = assistants.filter(
-			(message) => message.provider === active.selected.provider && message.model === active.selected.modelId,
-		);
+		const isActiveAttempt = state.mode === "active";
+		const relevant = isActiveAttempt
+			? assistants.filter(
+					(message) => message.provider === active.selected.provider && message.model === active.selected.modelId,
+				)
+			: assistants;
 		const cost = relevant.reduce((total, message) => total + message.usage.cost.total, 0);
 		const last = relevant.at(-1);
-		lastAttemptMetrics = {
-			provider: active.selected.provider,
-			modelId: active.selected.modelId,
-			archetype: active.archetype,
-			modelAndToolCost: cost,
-			wallTimeMs: attemptStartedAt > 0 ? Date.now() - attemptStartedAt : 0,
-			retried: active.attemptIndex > 0,
-		};
+		const attemptedProvider = last?.provider ?? active.selected.provider;
+		const attemptedModel = last?.model ?? active.selected.modelId;
+		const wallTimeMs = attemptStartedAt > 0 ? Date.now() - attemptStartedAt : 0;
+		lastAttemptMetrics = isActiveAttempt
+			? {
+					provider: attemptedProvider,
+					modelId: attemptedModel,
+					archetype: active.archetype,
+					modelAndToolCost: cost,
+					wallTimeMs,
+					retried: active.attemptIndex > 0,
+				}
+			: undefined;
+		const inputTokens = relevant.reduce((total, message) => total + message.usage.input, 0);
+		const cachedInputTokens = relevant.reduce((total, message) => total + message.usage.cacheRead, 0);
 		await record(
 			ctx,
 			"attempt_completed",
 			{
+				shadow: !isActiveAttempt,
+				proposedProvider: active.selected.provider,
+				proposedModelId: active.selected.modelId,
 				cost,
-				wallTimeMs: lastAttemptMetrics.wallTimeMs,
-				inputTokens: relevant.reduce((total, message) => total + message.usage.input, 0),
-				cachedInputTokens: relevant.reduce((total, message) => total + message.usage.cacheRead, 0),
+				wallTimeMs,
+				inputTokens,
+				cachedInputTokens,
+				cacheHitRatio: inputTokens > 0 ? cachedInputTokens / inputTokens : 0,
 				outputTokens: relevant.reduce((total, message) => total + message.usage.output, 0),
 				turns: attemptTurns,
 				toolCalls: attemptToolCalls,
+				deterministicChecksPassed,
+				deterministicChecksFailed,
 				stopReason: last?.stopReason,
 			},
 			{
 				taskId: active.taskId,
 				archetype: active.archetype,
-				provider: active.selected.provider,
-				modelId: active.selected.modelId,
-				effort: active.selected.effort,
-				promptProfileId: active.promptProfileId,
+				provider: attemptedProvider,
+				modelId: attemptedModel,
+				effort: isActiveAttempt ? active.selected.effort : pi.getThinkingLevel(),
+				...(isActiveAttempt ? { promptProfileId: active.promptProfileId } : {}),
 			},
 		);
-		if (state.mode === "active" && last?.stopReason === "error") {
+		const planValidationMissing =
+			isActiveAttempt &&
+			(active.archetype === "implementation_planning" || active.archetype === "large_program_planning") &&
+			!validatedPlanAttempts.has(`${active.taskId}:${active.attemptIndex}`);
+		if (planValidationMissing) {
+			await transitionFallback(ctx, "deterministic_verification", true);
+		} else if (isActiveAttempt && last?.stopReason === "error") {
 			const failure = lastProviderFailure ?? "model_error";
 			lastProviderFailure = undefined;
 			await transitionFallback(ctx, failure, true);
@@ -794,7 +907,16 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const [command, value] = args.trim().split(/\s+/, 2);
 			if (command === "active" || command === "shadow" || command === "off") {
-				state = { ...state, mode: command };
+				state = {
+					...state,
+					mode: command,
+					...(command === "active"
+						? {
+								manualOverride: false,
+								...(state.active ? { active: { ...state.active, manualOverride: false } } : {}),
+							}
+						: {}),
+				};
 				persistState();
 				updateStatus(ctx);
 				ctx.ui.notify(`Model router mode set to ${command}`, "info");
@@ -819,6 +941,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
 						...lastAttemptMetrics,
 						accepted: command === "accept",
 						humanIntervention: command === "reject",
+						contextBucket: state.active.features.contextShape,
+						risk: state.active.features.risk,
+						interactivity: state.active.features.interactivity,
+						languageBucket: state.active.repositoryLanguageBucket ?? "unknown",
 					},
 					{ taskId: state.active.taskId, archetype: state.active.archetype },
 				);

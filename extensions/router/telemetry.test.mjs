@@ -45,16 +45,27 @@ describe("telemetry aggregates", () => {
 			provider: "openai-codex",
 			modelId: "gpt-5.6-terra",
 			archetype: "median_repository_implementation",
+			contextBucket: "multi_file_repository",
+			risk: "medium",
+			interactivity: "developer_loop",
+			languageBucket: "typescript",
 			accepted: index < 28,
 			modelAndToolCost: index + 1,
 			wallTimeMs: (index + 1) * 100,
 			humanIntervention: index === 29,
 			retried: index >= 28,
 		}));
-		const [sample] = aggregateRouteSamples(outcomes);
+		outcomes.push({ ...outcomes[0], contextBucket: "long_repository" });
+		const samples = aggregateRouteSamples(outcomes);
+		assert.equal(samples.length, 2);
+		const sample = samples.find((candidate) => candidate.contextBucket === "multi_file_repository");
 		assert.equal(sample.comparableSamples, 30);
+		assert.equal(sample.p50ModelAndToolCost, 15);
 		assert.equal(sample.p75ModelAndToolCost, 23);
+		assert.equal(sample.p90ModelAndToolCost, 27);
+		assert.equal(sample.p50WallTimeMs, 1_500);
 		assert.equal(sample.p75WallTimeMs, 2_300);
+		assert.equal(sample.p90WallTimeMs, 2_700);
 		assert.equal(sample.acceptedRate, 28 / 30);
 	});
 });

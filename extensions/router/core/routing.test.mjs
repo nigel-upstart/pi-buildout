@@ -101,6 +101,25 @@ describe("ordinary route selection", () => {
 		assert.equal(decision.kind, "ordinary");
 		assert.equal(decision.telemetryMature, false);
 		assert.equal(decision.primary.modelId, "gpt-5.6-terra");
+
+		const mature = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS, [
+			...samples,
+			{
+				...samples[0],
+				provider: "anthropic",
+				modelId: "claude-sonnet-5",
+				p75ModelAndToolCost: 1,
+			},
+		]);
+		assert.equal(mature.kind, "ordinary");
+		assert.equal(mature.telemetryMature, true);
+		assert.equal(mature.primary.modelId, "claude-sonnet-5");
+		assert.deepEqual(mature.primary.scoreComponents, {
+			p75ModelAndToolCost: 1,
+			developerWaitCost: 0,
+			humanInterventionCost: 0,
+			retryCost: 0,
+		});
 	});
 });
 

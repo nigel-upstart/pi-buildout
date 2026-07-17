@@ -172,7 +172,16 @@ describe("routerExtension", () => {
 			assert.equal(child.parentTaskId, parent.taskId);
 			assert.equal(child.archetype, "code_review");
 			assert.notEqual(child.selected.vendor, "openai");
-			assert.deepEqual(hooks.get("tool_call")({ toolName: "edit" }), {
+			assert.deepEqual(hooks.get("tool_call")({ toolName: "edit", input: {} }), {
+				block: true,
+				reason: "Independent review lease is read-only",
+			});
+			assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff --stat" } }), undefined);
+			assert.deepEqual(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff | sh" } }), {
+				block: true,
+				reason: "Independent review lease is read-only",
+			});
+			assert.deepEqual(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }), {
 				block: true,
 				reason: "Independent review lease is read-only",
 			});

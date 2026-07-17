@@ -33,6 +33,10 @@ export interface AttemptOutcome {
 	provider: string;
 	modelId: string;
 	archetype: Archetype;
+	contextBucket?: string;
+	risk?: string;
+	interactivity?: string;
+	languageBucket?: string;
 	accepted: boolean;
 	modelAndToolCost: number;
 	wallTimeMs: number;
@@ -84,7 +88,15 @@ export function percentile(values: readonly number[], quantile: number): number 
 export function aggregateRouteSamples(outcomes: readonly AttemptOutcome[]): RouteSample[] {
 	const groups = new Map<string, AttemptOutcome[]>();
 	for (const outcome of outcomes) {
-		const key = `${outcome.provider}/${outcome.modelId}/${outcome.archetype}`;
+		const key = [
+			outcome.provider,
+			outcome.modelId,
+			outcome.archetype,
+			outcome.contextBucket ?? "unknown-context",
+			outcome.risk ?? "unknown-risk",
+			outcome.interactivity ?? "unknown-interactivity",
+			outcome.languageBucket ?? "unknown-language",
+		].join("/");
 		groups.set(key, [...(groups.get(key) ?? []), outcome]);
 	}
 	return [...groups.values()].map((samples) => {
@@ -96,15 +108,35 @@ export function aggregateRouteSamples(outcomes: readonly AttemptOutcome[]): Rout
 			provider: first.provider,
 			modelId: first.modelId,
 			archetype: first.archetype,
+			...(first.contextBucket ? { contextBucket: first.contextBucket } : {}),
+			...(first.risk ? { risk: first.risk } : {}),
+			...(first.interactivity ? { interactivity: first.interactivity } : {}),
+			...(first.languageBucket ? { languageBucket: first.languageBucket } : {}),
 			comparableSamples: samples.length,
 			acceptedRate: ratio((sample) => sample.accepted),
+			p50ModelAndToolCost: percentile(
+				samples.map((sample) => sample.modelAndToolCost),
+				0.5,
+			),
 			p75ModelAndToolCost: percentile(
 				samples.map((sample) => sample.modelAndToolCost),
 				0.75,
 			),
+			p90ModelAndToolCost: percentile(
+				samples.map((sample) => sample.modelAndToolCost),
+				0.9,
+			),
+			p50WallTimeMs: percentile(
+				samples.map((sample) => sample.wallTimeMs),
+				0.5,
+			),
 			p75WallTimeMs: percentile(
 				samples.map((sample) => sample.wallTimeMs),
 				0.75,
+			),
+			p90WallTimeMs: percentile(
+				samples.map((sample) => sample.wallTimeMs),
+				0.9,
 			),
 			probabilityHumanIntervention: ratio((sample) => sample.humanIntervention),
 			probabilityRetry: ratio((sample) => sample.retried),
