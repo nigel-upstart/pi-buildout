@@ -450,7 +450,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
   async function transitionFallback(ctx: ExtensionContext, failure: FailureKind, triggerTurn: boolean): Promise<void> {
     const active = state.active;
-    if (!active || state.mode !== "active") return;
+    if (!active || state.mode !== "active" || active.executionFailed) return;
     const fallback = resolveFallback(active, failure, new Date().toISOString());
     await record(
       ctx,
@@ -1106,7 +1106,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
   pi.on("agent_end", async (event, ctx) => {
     const active = state.active;
-    if (!active) return;
+    if (!active || active.executionFailed) return;
     const assistants = event.messages.filter(assistantMessage);
     const isActiveAttempt =
       state.mode === "active" &&
@@ -1177,7 +1177,50 @@ export default function routerExtension(pi: ExtensionAPI): void {
       isActiveAttempt &&
       (active.archetype === "implementation_planning" || active.archetype === "large_program_planning") &&
       !validatedPlanAttempts.has(`${active.taskId}:${String(active.attemptIndex)}:${String(agentRunSequence)}`);
-    if (deterministicVerificationFailed || planValidationMissing) {
+    const planValidationRepairable =
+      planValidationMissing &&
+      !deterministicVerificationFailed &&
+      last?.stopReason === "stop" &&
+      active.planValidationRepairAttempted !== true;
+    if (planValidationRepairable) {
+      const repaired = {
+        ...active,
+        updatedAt: new Date().toISOString(),
+        planValidationRepairAttempted: true,
+      };
+      state = installLease(state, repaired);
+      attemptDisposition = "pending";
+      persistState();
+      updateStatus(ctx);
+      await record(
+        ctx,
+        "outcome",
+        { planValidationRepair: "requested", attemptIndex: active.attemptIndex },
+        {
+          taskId: active.taskId,
+          archetype: active.archetype,
+          provider: active.selected.provider,
+          modelId: active.selected.modelId,
+          effort: active.selected.effort,
+          promptProfileId: active.promptProfileId,
+          policyVersion: active.policyVersion,
+          modelSnapshotId: active.modelSnapshotId,
+        },
+      );
+      pi.sendMessage(
+        {
+          customType: CONTEXT_MESSAGE,
+          content: [
+            "The planning response did not call submit_implementation_plan.",
+            "Continue the same attempt: submit the complete implementation-plan DAG with that tool, then return the concise validated-program summary.",
+            "Do not broaden scope.",
+          ].join("\n"),
+          display: false,
+          details: { taskId: active.taskId, repairReason: "missing_plan_validation" },
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    } else if (deterministicVerificationFailed || planValidationMissing) {
       attemptDisposition = "failed";
       await transitionFallback(ctx, "deterministic_verification", true);
     } else if (isActiveAttempt && (last?.stopReason === "error" || (!last && lastProviderFailure !== undefined))) {

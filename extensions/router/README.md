@@ -33,7 +33,8 @@ reconstruct behavior from the historical export.
   routes never get a third choice.
 
 Planning routes must call `submit_implementation_plan`; the tool validates the PR dependency DAG, acceptance criteria,
-rollout, and rollback. A request to start implementation always receives a new lease. High-risk mutating tasks
+rollout, and rollback. A normal response that omits the tool gets one same-lease corrective follow-up before the bounded
+fallback policy applies. A request to start implementation always receives a new lease. High-risk mutating tasks
 automatically run a read-only, provider-independent child review before restoring the builder lease.
 
 `PI_ROUTER_MODE=shadow|active|off` controls the initial mode when a session has no persisted router state. The default

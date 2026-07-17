@@ -142,7 +142,8 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     typeof lease.modelSnapshotId !== "string" ||
     typeof lease.policyVersion !== "string" ||
     typeof lease.lastPromptFingerprint !== "string" ||
-    typeof lease.manualOverride !== "boolean"
+    typeof lease.manualOverride !== "boolean" ||
+    (lease.planValidationRepairAttempted !== undefined && typeof lease.planValidationRepairAttempted !== "boolean")
   ) {
     return false;
   }

@@ -123,6 +123,158 @@ describe("routerExtension", () => {
     }
   });
 
+  it("repairs one missing planning validation before bounded fallback and reports exhaustion once", async () => {
+    const hooks = new Map();
+    const commands = new Map();
+    const appended = [];
+    const sent = [];
+    const selectedModels = [];
+    const notifications = [];
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-plan-repair-"));
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    const now = new Date().toISOString();
+    const primaryChoice = {
+      provider: "anthropic",
+      modelId: "claude-opus-4-8",
+      vendor: "anthropic",
+      effort: "high",
+      ability: 3,
+      profileId: "anthropic-claude-planning-v1",
+      contextWindow: 1_000_000,
+      rankReason: "bootstrap",
+    };
+    const fallbackChoice = {
+      provider: "openai-codex",
+      modelId: "gpt-5.6-sol",
+      vendor: "openai",
+      effort: "high",
+      ability: 3,
+      profileId: "openai-gpt-5.6-agent-v1",
+      contextWindow: 1_000_000,
+      rankReason: "bootstrap",
+    };
+    const lease = {
+      version: 1,
+      taskId: "planning-task",
+      startedAt: now,
+      updatedAt: now,
+      archetype: "implementation_planning",
+      features: conservativeFeatures("planning validation repair test"),
+      selected: primaryChoice,
+      fallbacks: [fallbackChoice],
+      attemptIndex: 0,
+      promptProfileId: primaryChoice.profileId,
+      modelSnapshotId: "snapshot",
+      policyVersion: "router-policy-v3",
+      lastPromptFingerprint: "fingerprint",
+      manualOverride: false,
+      reviewRequired: false,
+      reviewCompleted: false,
+    };
+    const makeModel = (choice) => ({
+      provider: choice.provider,
+      id: choice.modelId,
+      name: choice.modelId,
+      api: choice.vendor === "anthropic" ? "anthropic-messages" : "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
+      contextWindow: choice.contextWindow,
+      maxTokens: 128_000,
+    });
+    const models = [makeModel(primaryChoice), makeModel(fallbackChoice)];
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "active", manualOverride: false, active: lease },
+      },
+    ];
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: (name, command) => commands.set(name, command),
+      registerTool: () => {},
+      appendEntry: (customType, data) => appended.push({ customType, data }),
+      sendMessage: (message, options) => sent.push({ message, options }),
+      setModel: async (model) => {
+        selectedModels.push(model);
+        return true;
+      },
+      setThinkingLevel: () => {},
+      getThinkingLevel: () => "high",
+      exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+    };
+    routerExtension(pi);
+    const ctx = {
+      cwd: telemetryDirectory,
+      model: models[0],
+      modelRegistry: {
+        getAll: () => models,
+        getAvailable: () => models,
+        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+      },
+      sessionManager: {
+        getBranch: () => branch,
+        getSessionId: () => "plan-repair-session",
+      },
+      getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        notify: (message, type) => notifications.push({ message, type }),
+      },
+    };
+    const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    const completeRun = async (model) => {
+      ctx.model = model;
+      hooks.get("agent_start")();
+      await hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: model.provider,
+              model: model.id,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+
+      await completeRun(models[0]);
+      assert.equal(latestLease().attemptIndex, 0, "contract repair must not consume the fallback");
+      assert.equal(latestLease().planValidationRepairAttempted, true);
+      assert.match(sent[0].message.content, /submit_implementation_plan/);
+      assert.equal(sent[0].message.details.repairReason, "missing_plan_validation");
+      assert.equal(selectedModels.length, 0);
+
+      await completeRun(models[0]);
+      assert.equal(latestLease().attemptIndex, 1, "a repeated omission must use the existing fallback");
+      assert.equal(latestLease().selected.modelId, fallbackChoice.modelId);
+      assert.equal(selectedModels[0].id, fallbackChoice.modelId);
+      assert.match(sent[1].message.content, /previous routed attempt failed/i);
+
+      await completeRun(models[1]);
+      assert.equal(latestLease().executionFailed, true);
+      assert.equal(notifications.length, 1);
+      assert.match(notifications[0].message, /primary and fallback exhausted/);
+
+      await completeRun(models[1]);
+      await commands.get("route").handler("fail deterministic_verification", ctx);
+      assert.equal(notifications.length, 1, "an exhausted lease must not repeat its error notification");
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+    }
+  });
+
   it("runs a required review as a read-only child lease and restores the builder", async () => {
     const hooks = new Map();
     const appended = [];

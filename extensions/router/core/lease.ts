@@ -29,6 +29,7 @@ export type TaskLease = {
   reviewCompleted?: boolean;
   repositoryLanguageBucket?: string;
   contextSizeBucket?: string;
+  planValidationRepairAttempted?: boolean;
   executionFailed?: boolean;
 };
 

@@ -149,11 +149,22 @@ describe("lease restoration and context estimates", () => {
       policyVersion: "policy",
       lastPromptFingerprint: "fingerprint",
     });
+    active.planValidationRepairAttempted = true;
     const restored = restoreLeaseState(
       [{ type: "custom", customType: "model-router-state", data: { mode: "active", active } }],
       "shadow",
     );
     assert.equal(restored.active.taskId, "task");
+    assert.equal(restored.active.planValidationRepairAttempted, true);
+    const malformedRepair = structuredClone(active);
+    malformedRepair.planValidationRepairAttempted = "yes";
+    assert.equal(
+      restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: malformedRepair } }],
+        "shadow",
+      ).active,
+      undefined,
+    );
     const tampered = structuredClone(active);
     tampered.selected.modelId = "unknown-model";
     assert.equal(
