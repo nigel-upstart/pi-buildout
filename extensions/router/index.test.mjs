@@ -10,9 +10,11 @@ describe("routerExtension", () => {
 	it("registers the routing lifecycle and status command without starting background work", () => {
 		const hooks = new Map();
 		const commands = new Map();
+		const tools = new Map();
 		routerExtension({
 			on: (event, handler) => hooks.set(event, handler),
 			registerCommand: (name, command) => commands.set(name, command),
+			registerTool: (tool) => tools.set(tool.name, tool),
 		});
 		for (const event of [
 			"session_start",
@@ -33,6 +35,7 @@ describe("routerExtension", () => {
 			assert.equal(hooks.has(event), true, `missing ${event}`);
 		}
 		assert.match(commands.get("route").description, /model-router mode/);
+		assert.equal(tools.has("submit_implementation_plan"), true);
 	});
 
 	it("runs a required review as a read-only child lease and restores the builder", async () => {
@@ -104,6 +107,7 @@ describe("routerExtension", () => {
 		const pi = {
 			on: (event, handler) => hooks.set(event, handler),
 			registerCommand: () => {},
+			registerTool: () => {},
 			appendEntry: (customType, data) => appended.push({ customType, data }),
 			sendMessage: (message, options) => sent.push({ message, options }),
 			setModel: async (model) => selectedModels.push(model),

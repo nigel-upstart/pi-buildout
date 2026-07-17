@@ -16,6 +16,11 @@ effort, or system prompt. This is intentional.
 - `/route fail availability|quality|deterministic_verification` — apply the authorized sequential
   fallback. Ordinary routes never get a third choice.
 
+Planning routes must call `submit_implementation_plan`; the tool validates the PR dependency DAG,
+acceptance criteria, rollout, and rollback. A request to start implementation always receives a new
+lease. High-risk mutating tasks automatically run a read-only, provider-independent child review
+before restoring the builder lease.
+
 `PI_ROUTER_MODE=shadow|active|off` controls the initial mode when a session has no persisted router
 state. The default is `shadow`.
 

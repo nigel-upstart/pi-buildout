@@ -65,6 +65,18 @@ describe("compilePrompt", () => {
 		assert.ok(result.systemPrompt.indexOf("<model_profile>") < result.systemPrompt.indexOf("<trusted_task_context>"));
 	});
 
+	it("requires deterministic DAG submission on planning routes", () => {
+		const planningProfile = profile("anthropic");
+		const compiled = compilePrompt({
+			baseSystemPrompt: "BASE",
+			profile: planningProfile,
+			synopsis,
+			userRequest: "Plan the migration",
+			archetype: "implementation_planning",
+		});
+		assert.match(compiled.systemPrompt, /submit_implementation_plan/);
+	});
+
 	it("places Google context first and critical restrictions last", () => {
 		const result = compilePrompt({
 			baseSystemPrompt: "Stable policy",

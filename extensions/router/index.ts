@@ -18,6 +18,7 @@ import {
 	setHardBoundary,
 	type TaskLease,
 } from "./core/lease.ts";
+import { ProgramPlanSchema, validateProgramPlan } from "./core/planning.ts";
 import { type EffortLevel, findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import {
 	type RegistryModelSnapshot,
@@ -460,6 +461,44 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		);
 	}
 
+	pi.registerTool({
+		name: "submit_implementation_plan",
+		label: "Validate implementation plan",
+		description:
+			"Submit a complete implementation-plan DAG. Required on implementation_planning and large_program_planning routes. Validates IDs, dependencies, cycles, acceptance criteria, rollout, and rollback.",
+		parameters: ProgramPlanSchema,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const active = state.active;
+			if (
+				!active ||
+				(active.archetype !== "implementation_planning" && active.archetype !== "large_program_planning")
+			) {
+				throw new Error("submit_implementation_plan is only valid inside a planning lease");
+			}
+			const validation = validateProgramPlan(params);
+			await record(
+				ctx,
+				"outcome",
+				{
+					planValidated: validation.success,
+					validationErrors: validation.errors,
+					topologicalOrder: validation.topologicalOrder,
+				},
+				{ taskId: active.taskId, archetype: active.archetype },
+			);
+			if (!validation.success) throw new Error(`Invalid implementation plan: ${validation.errors.join("; ")}`);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Validated implementation-plan DAG (${validation.topologicalOrder.length} PRs): ${validation.topologicalOrder.join(" -> ")}`,
+					},
+				],
+				details: { plan: params, topologicalOrder: validation.topologicalOrder },
+			};
+		},
+	});
+
 	pi.on("session_start", async (event, ctx) => {
 		state = restoreLeaseState(ctx.sessionManager.getBranch(), defaultMode());
 		if (event.reason !== "reload") state = setHardBoundary(state, "new_session");
@@ -628,6 +667,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			profile,
 			synopsis: currentSynopsis,
 			userRequest: event.prompt,
+			archetype: active.archetype,
 		});
 		return {
 			systemPrompt: compiled.systemPrompt,

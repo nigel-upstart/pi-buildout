@@ -120,6 +120,28 @@ describe("task boundary gate", () => {
 		assert.equal(hasSignificantReusableCache(19_999, 1), false);
 	});
 
+	it("starts implementation under a lease separate from planning", () => {
+		const active = {
+			...lease(),
+			archetype: "implementation_planning",
+			features: { ...lease().features, intent: "plan", workflowType: "implementation_planning" },
+		};
+		for (const prompt of ["Implement the plan.", "Start building PR one", "Now execute it"]) {
+			const result = deterministicBoundaryGate(
+				{ mode: "active", active, manualOverride: false },
+				{
+					isUserInput: true,
+					source: "interactive",
+					prompt,
+					cachedTokens: 100_000,
+					expectedReuseRatio: 1,
+				},
+			);
+			assert.equal(result.action, "new_task");
+			assert.match(result.reason, /separate leases/);
+		}
+	});
+
 	it("honors manual override until a hard boundary", () => {
 		const active = lease();
 		const overridden = markManualOverride({ mode: "active", active, manualOverride: false });

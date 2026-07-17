@@ -81,6 +81,12 @@ export function deterministicBoundaryGate(state: LeaseState, input: BoundaryInpu
 	if (!state.active) return { action: "new_task", reason: "no active task lease" };
 
 	const prompt = input.prompt.trim();
+	if (
+		(state.active.archetype === "implementation_planning" || state.active.archetype === "large_program_planning") &&
+		/\b(?:implement|execute|start|begin|apply|build|code)\b/i.test(prompt)
+	) {
+		return { action: "new_task", reason: "planning and implementation require separate leases" };
+	}
 	if (DISCONTINUITY_PATTERN.test(prompt)) {
 		return { action: "new_task", reason: "explicit semantic discontinuity" };
 	}

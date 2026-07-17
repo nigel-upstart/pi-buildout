@@ -1,3 +1,4 @@
+import type { Archetype } from "./archetype.ts";
 import type { PromptProfile } from "./profiles.ts";
 import type { SessionSynopsis } from "./synopsis.ts";
 
@@ -6,6 +7,7 @@ export interface PromptCompilationInput {
 	profile: PromptProfile;
 	synopsis: SessionSynopsis;
 	userRequest: string;
+	archetype?: Archetype;
 }
 
 export interface CompiledPrompt {
@@ -40,6 +42,14 @@ function untrustedContext(synopsis: SessionSynopsis): Record<string, unknown> {
 	};
 }
 
+function returnContract(input: PromptCompilationInput): string {
+	const planning =
+		input.archetype === "implementation_planning" || input.archetype === "large_program_planning"
+			? "\nPlanning route requirement: call submit_implementation_plan with the complete PR dependency DAG before the final response."
+			: "";
+	return `${input.profile.outputContract}${planning}`;
+}
+
 function examples(profile: PromptProfile): string {
 	if (!profile.includeExamples) return "";
 	return [
@@ -60,7 +70,7 @@ function openAiSystem(input: PromptCompilationInput): { text: string; order: str
 		{ name: "model_profile", text: input.profile.guidelines.map((line) => `- ${line}`).join("\n") },
 		{
 			name: "tools_and_return_contract",
-			text: `Active tools: ${input.synopsis.activeTools.join(", ") || "none"}\n${input.profile.outputContract}`,
+			text: `Active tools: ${input.synopsis.activeTools.join(", ") || "none"}\n${returnContract(input)}`,
 		},
 		{ name: "trusted_task_context", text: JSON.stringify(trustedContext(input.synopsis)) },
 		...(input.profile.includeExamples ? [{ name: "examples", text: examples(input.profile) }] : []),
@@ -85,7 +95,7 @@ function anthropicSystem(input: PromptCompilationInput): { text: string; order: 
 		{ name: "model_profile", text: input.profile.guidelines.map(escapeXml).join("\n") },
 		{
 			name: "tools_and_return_contract",
-			text: `${escapeXml(input.synopsis.activeTools.join(", ") || "none")}\n${escapeXml(input.profile.outputContract)}`,
+			text: `${escapeXml(input.synopsis.activeTools.join(", ") || "none")}\n${escapeXml(returnContract(input))}`,
 		},
 		{ name: "trusted_task_context", text: escapeXml(JSON.stringify(trustedContext(input.synopsis))) },
 		...(input.profile.includeExamples ? [{ name: "examples", text: escapeXml(examples(input.profile)) }] : []),
@@ -110,7 +120,7 @@ function googleSystem(input: PromptCompilationInput): { text: string; order: str
 		},
 		{ name: "model_profile", text: input.profile.guidelines.map((line) => `- ${line}`).join("\n") },
 		...(input.profile.includeExamples ? [{ name: "examples", text: examples(input.profile) }] : []),
-		{ name: "tools_and_return_contract", text: input.profile.outputContract },
+		{ name: "tools_and_return_contract", text: returnContract(input) },
 		{
 			name: "critical_constraints",
 			text: input.profile.criticalConstraints.map((line) => `- ${line}`).join("\n"),
