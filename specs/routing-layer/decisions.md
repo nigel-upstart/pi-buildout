@@ -25,12 +25,12 @@ pi's `ExtensionAPI` (`@earendil-works/pi-coding-agent`, verified against v0.80.7
 |---|---|
 | Only a user-input turn triggers boundary evaluation | `on("input", …)` |
 | Hard boundaries: new window / post-compaction / subagent | `session_start`, `session_compact`, `session_before_fork` |
-| Exact token counts & context-window feasibility | `ctx.getContextUsage()` → `ContextUsage` |
+| Estimated token counts & context-window feasibility | `ctx.getContextUsage()` plus provider-reported usage |
 | Model eligibility, context window, cost, API keys | `ctx.modelRegistry` / `ModelRegistry` |
 | Builder identity (for independent review routing) | `ctx.model` |
 | Apply the lease (model + effort) | `setModel(model)`, `setThinkingLevel(level)` |
 | Inject the compiled model-specific prompt profile | `before_agent_start` → `systemPrompt` result |
-| Map bootstrap aliases → real endpoints | `registerProvider(...)` |
+| Resolve exact policy IDs against live endpoints | `ctx.modelRegistry.getAll()` / `.getAvailable()` |
 | Persist/reevaluate the lease across turns | `appendEntry` + re-check on `input` |
 
 The existing extensions in this repo (`extensions/{clear,effort,markdown-backlinks}`, each
@@ -61,7 +61,7 @@ equivalents:
 
 | Need | Reuse (already available) |
 |---|---|
-| Schema/validation | **TypeBox**, re-exported from `@earendil-works/pi-ai`: `import { Type, type Static, type TSchema } from "@earendil-works/pi-ai"`. Not Zod — TypeBox is a first-class pi dependency and matches pi's own `ToolDefinition` model. |
+| Schema/validation | **TypeBox** through its canonical `typebox` / `typebox/value` exports. Not Zod — TypeBox is a first-class pi dependency and matches pi's own `ToolDefinition` model. |
 | Structured classifier output | forced **tool call** with TypeBox parameters, validated via pi-ai's `validateToolCall`/`validateToolArguments` (+ `parseJsonWithRepair` for recovery). There is no `response_format`-style enforcement path. |
 | One-shot LLM call | pi-ai's public `complete()` compatibility export, with registry-resolved auth (verified live). |
 | Provider access | **Bifrost** (Upstart's sanctioned AI gateway) — see the Provider access section below. |
@@ -104,10 +104,10 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
 - **Runtime:** Node.js / ESM, matching pi's own `"type": "module"`. pi loads `.ts` extensions
   directly — no build step for the extension itself.
 - **Tests:** `node --test` over `*.test.mjs`, matching this repo's existing convention.
-- **Schema/validation:** **TypeBox**, reused from pi-ai's own dependency tree
-  (`import { Type, type Static, type TSchema } from "@earendil-works/pi-ai"`) — not Zod. One
-  definition yields runtime validation (fail closed on malformed classifier output), static TS
-  types, and the schema used for the forced tool-call. No new validation dependency needed.
+- **Schema/validation:** **TypeBox**, reused from pi's dependency tree through its canonical
+  `typebox` / `typebox/value` exports — not Zod. One definition yields runtime validation (fail
+  closed on malformed classifier output), static TS types, and the schema used for the required
+  classifier tool call. No separate extension-local install is needed.
 - **Telemetry — local JSONL store, plus OTel spans via `pi-telemetry-otel`:**
   - pi itself has **no OpenTelemetry plumbing to build on**. Its only telemetry is an install-ping
     toggle (`isInstallTelemetryEnabled`, gated by env `PI_TELEMETRY`); it reads no `OTEL_*`
@@ -145,23 +145,26 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
   reinstalling. Use the repo's `patches/` snapshot mechanism only if some required hook turns out not
   to be reachable through the public `ExtensionAPI` — unlikely, per the table above.
 
-## Proposed directory layout
+## Implemented directory layout
 
 ```
 extensions/router/
   core/                 # pure TS, zero pi imports — unit-testable, portable
-    features.ts         # TypeBox feature schema, reused from @earendil-works/pi-ai
-    synopsis.ts         # deterministic context-synopsis builder
-    archetype.ts        # feature object -> route key (archetype map)
-    eligibility.ts      # availability + 70% context-headroom filter
-    ranking.ts          # robust cost-to-done; secondary OpenAI/Anthropic rule
-    lease.ts            # task-lease state machine (boundary-only evaluation)
-    profiles.ts         # model-specific prompt-profile registry
-    compiler.ts         # provider-aware prompt compiler (verbatim user request)
-  classifier.ts         # primary + provider-diverse secondary via pi-ai complete()
-  telemetry.ts          # local JSONL store, plus pi-telemetry-otel spans (Symbol-registry primary)
-  index.ts              # pi ExtensionAPI adapter + /route TUI command
-  index.test.mjs        # + core/*.test.mjs
+    features.ts         # TypeBox semantic-feature schema
+    synopsis.ts         # deterministic bounded context synopsis
+    archetype.ts        # feature object -> route key
+    routing.ts          # eligibility, headroom, review selection, and mature ranking
+    fallback.ts         # bounded ordinary/review fallback state machines
+    lease.ts            # task lease and boundary gate
+    planning.ts         # typed PR-DAG validation
+    profiles.ts         # versioned model-specific prompt profiles
+    compiler.ts         # provider-aware prompt compiler
+  eval/                 # offline corpus and explicit-Bifrost real-call suites
+  classifier.ts         # semantic classification and conservative reconciliation
+  pi-classifier.ts      # pi registry/auth transport via pi-ai complete()
+  pi-state.ts           # persisted-state validation and pi metadata adapters
+  telemetry.ts          # JSONL aggregates plus optional parented OTel spans
+  index.ts              # pi lifecycle adapter, tools, and /route command
 ```
 
 ## Build sequence (completed)

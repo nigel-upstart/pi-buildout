@@ -20,9 +20,10 @@ makes real calls** rather than reaching into an external Python eval platform:
 
 - One language, living next to the code it evaluates, runnable the same way as the router's own
   unit tests (`node --test`).
-- **Real calls, no mocks** — through Bifrost, the same sanctioned gateway the router itself uses
-  (see `decisions.md`'s Provider access section), so the eval measures the same request path the
-  router runs in production, not a stand-in.
+- **Real calls, no mocks** — through Bifrost, the sanctioned gateway required for evaluation (see
+  `decisions.md`'s Provider access section). It exercises the same pi-ai OpenAI-compatible transport
+  and schemas as production while deliberately refusing to fall back to a locally configured direct
+  provider.
 - Adds no new institutional platform dependency; if a future company-wide eval platform decision
   lands, this harness's real-call, no-mock discipline transfers directly — only the runner/scoring
   glue would move, not the philosophy.
@@ -41,9 +42,8 @@ Two separate things, per `SPEC.md`'s "Evaluation" section — always scored **as
 ### 1. Classifier accuracy
 
 Real calls to the configured primary (and, for ambiguous/high-risk fixtures, secondary)
-classifier — through Bifrost, using whichever entrypoint `decisions.md`'s Open Items resolve to
-(`completeSimple` or the bundled-SDK fallback) — scored against a golden corpus of
-(prompt, context synopsis) fixtures with hand-authored expected feature objects.
+classifier through Bifrost, using pi-ai's public `complete()` compatibility export, scored against a
+golden corpus of (prompt, context synopsis) fixtures with hand-authored expected feature objects.
 
 Metrics (mirroring `SPEC.md`'s classifier-metrics list):
 - exact-match and per-axis accuracy across the required classification axes (intent, action mode,
@@ -86,12 +86,12 @@ versioned corpus file:
 }
 ```
 
-Corpus composition: at least one fixture per archetype row in `SPEC.md`'s bootstrap priors table,
-plus fixtures specifically targeting each hard boundary (new window, post-compaction, post-push,
-subagent) and each confidence-escalation path (low confidence, high risk, disagreement). Sourced from
-this repo's own spec and from real (anonymized) task descriptions — never copied from the external
-reference document's examples, consistent with `SPEC.md`'s "spec is the authority, not the
-reference" stance.
+Corpus composition: one fixture per archetype row in `SPEC.md`'s bootstrap priors table. Separate
+lease and classifier tests target every hard boundary (new window, post-compaction, post-push,
+subagent) and the confidence-escalation paths (low confidence, high risk, disagreement), because
+boundary state is deterministic input to the classifier rather than an archetype fixture. Fixtures
+are sourced from this repo's own spec and real, anonymized task shapes — never copied from the
+external reference document's examples.
 
 ## Harness shape
 
@@ -104,8 +104,9 @@ extensions/router/eval/
 ```
 
 - Runs via `node --test extensions/router/eval/*.test.mjs`, alongside the router's own unit tests,
-  but is **gated on `BIFROST_VIRTUAL_KEY` being present in the environment** — skip cleanly (not
-  fail) when absent, so ordinary `npm test`/CI runs that don't have a provisioned key still pass.
+  but is **gated on both `BIFROST_BASE_URL` and `BIFROST_VIRTUAL_KEY` being present in the
+  environment** — skip cleanly (not fail) when either is absent, so ordinary `npm test`/CI runs that
+  don't have a provisioned endpoint and key still pass.
   Provision a key via the `/bifrost-virtual-key` skill for local/CI runs that do want real coverage.
 - Never mocks the provider. If Bifrost is unreachable or the key is invalid, the run fails loudly
   rather than silently falling back to a stub.
@@ -119,9 +120,9 @@ extensions/router/eval/
 - **In CI**, on PRs touching `extensions/router/**`, using a CI-scoped Bifrost virtual key
   (one key per use case per environment, per Upstart's ADR-005) — never the same key as production
   routing traffic.
-- **Before shadow mode ends** (`SPEC.md`'s implementation-sequence step 7 → 8 gate): a full corpus
-  run with no hard-policy violations and no regression against the last accepted baseline is a
-  precondition for letting the router influence live routing.
+- **Before making active mode the default**: a full corpus run with no hard-policy violations and no
+  regression against the last accepted baseline is a precondition. Explicit active canaries may run
+  earlier, while normal installation remains shadow-first.
 
 ## Non-goals
 
