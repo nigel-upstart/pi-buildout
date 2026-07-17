@@ -102,11 +102,12 @@ smoke tests pass.
 
 ## Verification record
 
-- 80 deterministic/unit/adapter/installer checks pass; ordinary checks explicitly skip provider calls even when local
+- 84 deterministic/unit/adapter/installer checks pass; ordinary checks explicitly skip provider calls even when local
   credentials exist.
 - `npm audit --audit-level=high --registry=https://registry.npmjs.org/` reports zero vulnerabilities.
 - Shadow and active live pi canaries passed, including actual-vs-proposed telemetry attribution and an active route from
-  `gpt-5.5/medium` to `gpt-5.6-terra/medium`.
+  `gpt-5.5/medium` to `gpt-5.6-terra/medium`. After the final reinstall, the installed/source router entrypoint hashes
+  matched and another isolated shadow canary completed with seven audit events.
 - A live planning task routed to `anthropic/claude-opus-4-8` at high effort, called `submit_implementation_plan`, passed
   deterministic DAG validation, and made no file changes.
 - The full Bifrost suite passed: classifier axis accuracy 0.8167, archetype accuracy 0.8182, zero
