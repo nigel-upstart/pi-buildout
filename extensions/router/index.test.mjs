@@ -38,6 +38,34 @@ describe("routerExtension", () => {
 		assert.equal(tools.has("submit_implementation_plan"), true);
 	});
 
+	it("acknowledges input immediately and shows the routing spinner before repository I/O finishes", async () => {
+		const hooks = new Map();
+		const workingMessages = [];
+		const visibility = [];
+		const never = new Promise(() => {});
+		routerExtension({
+			on: (event, handler) => hooks.set(event, handler),
+			registerCommand: () => {},
+			registerTool: () => {},
+			appendEntry: () => {},
+			exec: () => never,
+		});
+		const result = await hooks.get("input")(
+			{ text: "New task", source: "interactive" },
+			{
+				cwd: "/repo",
+				sessionManager: { getBranch: () => [] },
+				ui: {
+					setWorkingMessage: (message) => workingMessages.push(message),
+					setWorkingVisible: (visible) => visibility.push(visible),
+				},
+			},
+		);
+		assert.deepEqual(result, { action: "continue" });
+		assert.deepEqual(workingMessages, ["Routing..."]);
+		assert.deepEqual(visibility, [true]);
+	});
+
 	it("runs a required review as a read-only child lease and restores the builder", async () => {
 		const hooks = new Map();
 		const appended = [];

@@ -55,9 +55,10 @@ const CONTEXT_MESSAGE = "model-router-context";
 
 interface PendingInput {
 	gate: BoundaryGateResult;
-	repository: RepositoryMetadata;
+	repository: Promise<RepositoryMetadata>;
 	cache: { cachedTokens: number; expectedReuseRatio: number };
 	hasImages: boolean;
+	source: "interactive" | "rpc" | "extension";
 }
 
 interface LastRoute {
@@ -521,13 +522,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
 	pi.on("input", async (event, ctx) => {
 		if (state.mode === "off") return { action: "continue" as const };
-		const repository = await readRepositoryMetadata(pi, ctx.cwd);
-		if (lastUpstream && repository.upstream && repository.upstream !== lastUpstream) {
-			state = setHardBoundary(state, "post_push");
-		}
-		lastUpstream = repository.upstream;
-		const entries = ctx.sessionManager.getBranch();
-		const cache = cacheEstimate(entries);
+		const cache = cacheEstimate(ctx.sessionManager.getBranch());
 		const gate = deterministicBoundaryGate(state, {
 			isUserInput: true,
 			source: event.source,
@@ -536,148 +531,168 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			cachedTokens: cache.cachedTokens,
 			expectedReuseRatio: cache.expectedReuseRatio,
 		});
-		pendingInput = { gate, repository, cache, hasImages: Boolean(event.images?.length) };
+		pendingInput = {
+			gate,
+			repository: readRepositoryMetadata(pi, ctx.cwd),
+			cache,
+			hasImages: Boolean(event.images?.length),
+			source: event.source,
+		};
 		lastRoute = { boundaryReason: gate.reason };
-		await record(
-			ctx,
-			"boundary",
-			{ action: gate.action, reason: gate.reason, cache, source: event.source },
-			state.active ? { taskId: state.active.taskId } : {},
-		);
+		ctx.ui.setWorkingMessage("Routing...");
+		ctx.ui.setWorkingVisible(true);
 		return { action: "continue" as const };
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (state.mode === "off") return;
-		const pending = pendingInput;
-		pendingInput = undefined;
-		const repository = pending?.repository ?? (await readRepositoryMetadata(pi, ctx.cwd));
-		const currentSynopsis = await synopsis(ctx, repository);
-		let active = state.active;
-		let classification: ClassificationResult | undefined;
-		let requiresNewLease = pending?.gate.action === "new_task";
+		try {
+			const pending = pendingInput;
+			pendingInput = undefined;
+			const repository = pending ? await pending.repository : await readRepositoryMetadata(pi, ctx.cwd);
+			if (pending && lastUpstream && repository.upstream && repository.upstream !== lastUpstream) {
+				state = setHardBoundary(state, "post_push");
+				pending.gate = { action: "new_task", reason: "hard boundary: post_push", hardBoundary: "post_push" };
+			}
+			lastUpstream = repository.upstream;
+			if (pending) {
+				lastRoute = { boundaryReason: pending.gate.reason };
+				await record(
+					ctx,
+					"boundary",
+					{ action: pending.gate.action, reason: pending.gate.reason, cache: pending.cache, source: pending.source },
+					state.active ? { taskId: state.active.taskId } : {},
+				);
+			}
+			const currentSynopsis = await synopsis(ctx, repository);
+			let active = state.active;
+			let classification: ClassificationResult | undefined;
+			let requiresNewLease = pending?.gate.action === "new_task";
 
-		if (pending?.gate.action === "classify_continuity") {
-			classification = await withRouterSpan(
-				ctx.sessionManager.getSessionId(),
-				"router.classify_continuity",
-				{ "router.mode": state.mode },
-				() => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
-			);
-			const continuity = resolveContinuity(pending.gate.lease, classification.features, pending.cache);
-			requiresNewLease = continuity.action === "new_task";
-			lastRoute.boundaryReason = continuity.reason;
-			if (!requiresNewLease) active = pending.gate.lease;
-		}
+			if (pending?.gate.action === "classify_continuity") {
+				classification = await withRouterSpan(
+					ctx.sessionManager.getSessionId(),
+					"router.classify_continuity",
+					{ "router.mode": state.mode },
+					() => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
+				);
+				const continuity = resolveContinuity(pending.gate.lease, classification.features, pending.cache);
+				requiresNewLease = continuity.action === "new_task";
+				lastRoute.boundaryReason = continuity.reason;
+				if (!requiresNewLease) active = pending.gate.lease;
+			}
 
-		if (requiresNewLease) {
-			classification ??= await withRouterSpan(
-				ctx.sessionManager.getSessionId(),
-				"router.classify",
-				{ "router.mode": state.mode },
-				() => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
-			);
-			const routed = await route(ctx, classification, pending?.hasImages ?? Boolean(event.images?.length));
-			lastRoute = { ...lastRoute, classification, decision: routed.decision };
-			if (routed.decision.kind === "unroutable") {
+			if (requiresNewLease) {
+				classification ??= await withRouterSpan(
+					ctx.sessionManager.getSessionId(),
+					"router.classify",
+					{ "router.mode": state.mode },
+					() => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
+				);
+				const routed = await route(ctx, classification, pending?.hasImages ?? Boolean(event.images?.length));
+				lastRoute = { ...lastRoute, classification, decision: routed.decision };
+				if (routed.decision.kind === "unroutable") {
+					await record(
+						ctx,
+						"route_decision",
+						{ kind: "unroutable", reason: routed.decision.reason, exclusions: routed.decision.exclusions },
+						{ archetype: routed.decision.archetype, policyVersion: routed.decision.policyVersion },
+					);
+					ctx.ui.notify(`Router retained current model: ${routed.decision.reason}`, "warning");
+					return;
+				}
+				const now = new Date().toISOString();
+				const currentSnapshot = snapshotForModel(ctx.model, routed.registry);
+				const currentEffort = pi.getThinkingLevel() as EffortLevel;
+				const priorSelection = previousChoice(currentSnapshot, currentEffort, routed.decision.archetype);
+				const lease = createTaskLease({
+					taskId: randomUUID(),
+					startedAt: now,
+					updatedAt: now,
+					archetype: routed.decision.archetype,
+					features: classification.features,
+					selected: routed.decision.primary,
+					...(priorSelection ? { previousSelection: priorSelection } : {}),
+					fallbacks:
+						routed.decision.kind === "review"
+							? [routed.decision.fallback, routed.decision.builderFallback]
+							: [routed.decision.fallback],
+					modelSnapshotId: registrySnapshotId(routed.registry),
+					policyVersion: routed.decision.policyVersion,
+					lastPromptFingerprint: promptFingerprint(event.prompt),
+					reviewRequired: classification.archetype.requiresIndependentReview,
+					reviewCompleted: false,
+				});
+				state = installLease(state, lease);
+				persistState();
+				active = lease;
+				attemptStartedAt = Date.now();
+				attemptTurns = 0;
+				attemptToolCalls = 0;
 				await record(
 					ctx,
 					"route_decision",
-					{ kind: "unroutable", reason: routed.decision.reason, exclusions: routed.decision.exclusions },
-					{ archetype: routed.decision.archetype, policyVersion: routed.decision.policyVersion },
+					{
+						kind: routed.decision.kind,
+						confidence: classification.features.confidence,
+						risk: classification.features.risk,
+						failedClosed: classification.failedClosed,
+						reviewRequired: lease.reviewRequired === true,
+						exclusions: routed.decision.exclusions,
+						fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
+						classifierAttempts: classification.attempts,
+					},
+					{
+						taskId: lease.taskId,
+						routeKey: lease.archetype,
+						archetype: lease.archetype,
+						provider: lease.selected.provider,
+						modelId: lease.selected.modelId,
+						effort: lease.selected.effort,
+						promptProfileId: lease.promptProfileId,
+						policyVersion: lease.policyVersion,
+						modelSnapshotId: lease.modelSnapshotId,
+					},
 				);
-				ctx.ui.notify(`Router retained current model: ${routed.decision.reason}`, "warning");
+			}
+
+			if (!active || active.manualOverride || state.manualOverride) return;
+			updateStatus(ctx);
+			if (state.mode === "shadow") {
+				ctx.ui.notify(
+					`Shadow route: ${active.archetype} → ${active.selected.provider}/${active.selected.modelId} (${active.selected.effort})`,
+					"info",
+				);
 				return;
 			}
-			const now = new Date().toISOString();
-			const currentSnapshot = snapshotForModel(ctx.model, routed.registry);
-			const currentEffort = pi.getThinkingLevel() as EffortLevel;
-			const priorSelection = previousChoice(currentSnapshot, currentEffort, routed.decision.archetype);
-			const lease = createTaskLease({
-				taskId: randomUUID(),
-				startedAt: now,
-				updatedAt: now,
-				archetype: routed.decision.archetype,
-				features: classification.features,
-				selected: routed.decision.primary,
-				...(priorSelection ? { previousSelection: priorSelection } : {}),
-				fallbacks:
-					routed.decision.kind === "review"
-						? [routed.decision.fallback, routed.decision.builderFallback]
-						: [routed.decision.fallback],
-				modelSnapshotId: registrySnapshotId(routed.registry),
-				policyVersion: routed.decision.policyVersion,
-				lastPromptFingerprint: promptFingerprint(event.prompt),
-				reviewRequired: classification.archetype.requiresIndependentReview,
-				reviewCompleted: false,
+			const applied = await applyWithAvailabilityFallback(ctx, active);
+			if (!applied) return;
+			if (applied !== active) {
+				state = installLease(state, applied);
+				persistState();
+				active = applied;
+			}
+			const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active?.promptProfileId);
+			if (!profile) return;
+			const compiled = compilePrompt({
+				baseSystemPrompt: event.systemPrompt,
+				profile,
+				synopsis: currentSynopsis,
+				userRequest: event.prompt,
+				archetype: active.archetype,
 			});
-			state = installLease(state, lease);
-			persistState();
-			active = lease;
-			attemptStartedAt = Date.now();
-			attemptTurns = 0;
-			attemptToolCalls = 0;
-			await record(
-				ctx,
-				"route_decision",
-				{
-					kind: routed.decision.kind,
-					confidence: classification.features.confidence,
-					risk: classification.features.risk,
-					failedClosed: classification.failedClosed,
-					reviewRequired: lease.reviewRequired === true,
-					exclusions: routed.decision.exclusions,
-					fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
-					classifierAttempts: classification.attempts,
+			return {
+				systemPrompt: compiled.systemPrompt,
+				message: {
+					customType: CONTEXT_MESSAGE,
+					content: compiled.contextMessage ?? "",
+					display: false,
+					details: { taskId: active.taskId, profileId: active.promptProfileId },
 				},
-				{
-					taskId: lease.taskId,
-					routeKey: lease.archetype,
-					archetype: lease.archetype,
-					provider: lease.selected.provider,
-					modelId: lease.selected.modelId,
-					effort: lease.selected.effort,
-					promptProfileId: lease.promptProfileId,
-					policyVersion: lease.policyVersion,
-					modelSnapshotId: lease.modelSnapshotId,
-				},
-			);
+			};
+		} finally {
+			ctx.ui.setWorkingMessage();
 		}
-
-		if (!active || active.manualOverride || state.manualOverride) return;
-		updateStatus(ctx);
-		if (state.mode === "shadow") {
-			ctx.ui.notify(
-				`Shadow route: ${active.archetype} → ${active.selected.provider}/${active.selected.modelId} (${active.selected.effort})`,
-				"info",
-			);
-			return;
-		}
-		const applied = await applyWithAvailabilityFallback(ctx, active);
-		if (!applied) return;
-		if (applied !== active) {
-			state = installLease(state, applied);
-			persistState();
-			active = applied;
-		}
-		const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active?.promptProfileId);
-		if (!profile) return;
-		const compiled = compilePrompt({
-			baseSystemPrompt: event.systemPrompt,
-			profile,
-			synopsis: currentSynopsis,
-			userRequest: event.prompt,
-			archetype: active.archetype,
-		});
-		return {
-			systemPrompt: compiled.systemPrompt,
-			message: {
-				customType: CONTEXT_MESSAGE,
-				content: compiled.contextMessage ?? "",
-				display: false,
-				details: { taskId: active.taskId, profileId: active.promptProfileId },
-			},
-		};
 	});
 
 	pi.on("model_select", async (event, ctx) => {

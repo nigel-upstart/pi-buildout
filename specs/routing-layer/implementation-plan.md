@@ -64,6 +64,10 @@ Exit: invariant unit tests and compiler golden tests pass.
 
 Exit: install into a disposable `PI_AGENT_DIR`, load with pi, and observe a shadow route.
 
+Adapter UX follow-up (completed): return from the `input` hook before repository I/O/telemetry so the
+native user message appears immediately, and show pi's animated working indicator with `Routing...`
+while the deferred boundary, classification, and route work runs.
+
 ### 4. Fallback, review topology, and telemetry
 
 - Sequential fallback controller with reason codes and parent-lease restoration.
