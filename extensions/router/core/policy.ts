@@ -140,21 +140,19 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   },
 };
 
+const REVIEWER_TIERS: Record<ModelVendor, readonly (readonly CandidateRef[])[]> = {
+  openai: [LUNA_LOW, TERRA_HIGH, SOL_HIGH, SOL_MAX],
+  anthropic: [HAIKU_LOW, SONNET_HIGH, OPUS_HIGH, FABLE_HIGH],
+  google: [GEMINI_MEDIUM, GEMINI_HIGH],
+};
+
+// Derived, never hand-maintained: every candidate reachable through the bootstrap
+// route policies or the reviewer tiers is automatically part of the authoritative
+// ability table, so a newly added candidate cannot silently fall through to the
+// regex heuristic in pi-state.ts.
 const ALL_CANDIDATE_REFS: readonly CandidateRef[] = [
-  ...LUNA_LOW,
-  ...TERRA_MEDIUM,
-  ...TERRA_HIGH,
-  ...SOL_HIGH,
-  ...SOL_MAX,
-  ...GPT_55_MEDIUM,
-  ...GPT_54_MEDIUM,
-  ...HAIKU_LOW,
-  ...SONNET_MEDIUM,
-  ...SONNET_HIGH,
-  ...OPUS_HIGH,
-  ...FABLE_HIGH,
-  ...GEMINI_MEDIUM,
-  ...GEMINI_HIGH,
+  ...Object.values(BOOTSTRAP_ROUTE_POLICIES).flatMap((policy) => [...policy.primary, ...policy.fallback]),
+  ...Object.values(REVIEWER_TIERS).flat(2),
 ];
 
 // Ability is a per-(model, effort) judgment calibrated per model family, not a uniform
@@ -166,11 +164,7 @@ export function policyAbility(modelId: string, effort: EffortLevel): CandidateRe
 }
 
 export function reviewerRefs(vendor: ModelVendor, minimumAbility: number): readonly CandidateRef[] {
-  const tiers: Record<ModelVendor, readonly CandidateRef[][]> = {
-    openai: [LUNA_LOW, TERRA_HIGH, SOL_HIGH, SOL_MAX],
-    anthropic: [HAIKU_LOW, SONNET_HIGH, OPUS_HIGH, FABLE_HIGH],
-    google: [GEMINI_MEDIUM, GEMINI_HIGH],
-  };
-  const eligibleTiers = tiers[vendor].filter((tier) => (tier[0]?.ability ?? 0) >= minimumAbility);
-  return eligibleTiers.length > 0 ? eligibleTiers.flat() : (tiers[vendor].at(-1) ?? []);
+  const tiers = REVIEWER_TIERS[vendor];
+  const eligibleTiers = tiers.filter((tier) => (tier[0]?.ability ?? 0) >= minimumAbility);
+  return eligibleTiers.length > 0 ? eligibleTiers.flat() : [...(tiers.at(-1) ?? [])];
 }
