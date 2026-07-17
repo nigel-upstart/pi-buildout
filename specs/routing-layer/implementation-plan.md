@@ -101,3 +101,13 @@ single credential prerequisite explicitly, and installation/live-load smoke test
 - The extension defaults to safe shadow mode and manual model/effort overrides win.
 - Installer copies every router source/config file atomically and verifies runtime loading.
 - `npm run check`, install smoke, deterministic evals, and Lefthook pre-push pass.
+
+## Verification record
+
+- 75 deterministic/unit/adapter/installer tests pass; the Bifrost-only suite skips without its two
+  explicit credentials.
+- `npm audit --audit-level=high --registry=https://registry.npmjs.org/` reports zero vulnerabilities.
+- Shadow and active live pi canaries passed, including actual-vs-proposed telemetry attribution and
+  an active route from `gpt-5.5/medium` to `gpt-5.6-terra/medium`.
+- A live planning task routed to `anthropic/claude-opus-4-8` at high effort, called
+  `submit_implementation_plan`, passed deterministic DAG validation, and made no file changes.
