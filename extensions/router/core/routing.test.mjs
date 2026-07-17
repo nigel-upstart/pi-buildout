@@ -151,6 +151,19 @@ describe("review route selection", () => {
 		assert.equal(decision.builderFallback.vendor, "openai");
 		assert.equal(decision.builderFallback.rankReason, "fixed_builder_fallback");
 	});
+
+	it("tries a stronger reviewer tier when the closest at-or-above model is unavailable", () => {
+		const models = registry().map((candidate) =>
+			candidate.modelId === "claude-opus-4-8" || candidate.modelId === "claude-sonnet-5"
+				? { ...candidate, available: false }
+				: candidate,
+		);
+		const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+		const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
+		assert.equal(decision.kind, "review");
+		const anthropic = [decision.primary, decision.fallback].find((choice) => choice.vendor === "anthropic");
+		assert.equal(anthropic.modelId, "claude-fable-5");
+	});
 });
 
 describe("routing helpers", () => {
@@ -178,6 +191,8 @@ describe("routing helpers", () => {
 			),
 			9,
 		);
-		assert.equal(registrySnapshotId(registry()), registrySnapshotId([...registry()].reverse()));
+		const snapshot = registrySnapshotId(registry());
+		assert.equal(snapshot, registrySnapshotId([...registry()].reverse()));
+		assert.match(snapshot, /^registry-v1:10:[0-9a-f]{16}$/);
 	});
 });

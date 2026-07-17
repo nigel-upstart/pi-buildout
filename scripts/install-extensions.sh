@@ -173,8 +173,21 @@ for extension in "${EXTENSIONS[@]}"; do
     mkdir -p "$extension_stage/$(dirname "$relative_file")"
     cp "$source_file" "$extension_stage/$relative_file"
   done < <(find "$ROOT_DIR/extensions/$extension" -type f -name '*.ts' ! -name '*.test.*' -print0)
-  rm -rf "$EXTENSION_DIR/$extension"
-  mv "$extension_stage" "$EXTENSION_DIR/$extension"
+  extension_target="$EXTENSION_DIR/$extension"
+  extension_backup="$EXTENSION_DIR/.${extension}.backup.$$"
+  rm -rf "$extension_backup"
+  if [[ -e "$extension_target" ]]; then
+    mv "$extension_target" "$extension_backup"
+  fi
+  if mv "$extension_stage" "$extension_target"; then
+    rm -rf "$extension_backup"
+  else
+    rm -rf "$extension_target"
+    if [[ -e "$extension_backup" ]]; then
+      mv "$extension_backup" "$extension_target"
+    fi
+    exit 1
+  fi
 done
 
 if [[ -n "$PATCH_STAGE_DIR" ]]; then

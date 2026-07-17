@@ -133,5 +133,5 @@ export function reviewerRefs(vendor: ModelVendor, minimumAbility: number): reado
 		google: [GEMINI_MEDIUM, GEMINI_HIGH],
 	};
 	const eligibleTiers = tiers[vendor].filter((tier) => (tier[0]?.ability ?? 0) >= minimumAbility);
-	return eligibleTiers[0] ?? tiers[vendor].at(-1) ?? [];
+	return eligibleTiers.length > 0 ? eligibleTiers.flat() : (tiers[vendor].at(-1) ?? []);
 }

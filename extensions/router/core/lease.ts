@@ -27,6 +27,7 @@ export interface TaskLease {
 	reviewRequired?: boolean;
 	reviewCompleted?: boolean;
 	repositoryLanguageBucket?: string;
+	executionFailed?: boolean;
 }
 
 export interface LeaseState {

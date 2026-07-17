@@ -411,8 +411,19 @@ export function selectReviewRoute(
 }
 
 export function registrySnapshotId(models: readonly RegistryModelSnapshot[]): string {
-	return models
-		.map((model) => `${modelKey(model)}:${model.contextWindow}:${model.available ? "1" : "0"}`)
+	const canonical = models
+		.map(
+			(model) =>
+				`${modelKey(model)}:${model.contextWindow}:${model.maxOutputTokens}:${model.available ? "1" : "0"}:${model.supportedEfforts.join(",")}`,
+		)
 		.sort()
 		.join("|");
+	let first = 2166136261;
+	let second = 2246822507;
+	for (const character of canonical) {
+		const code = character.codePointAt(0) ?? 0;
+		first = Math.imul(first ^ code, 16777619);
+		second = Math.imul(second ^ code, 3266489909);
+	}
+	return `registry-v1:${models.length}:${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
 }

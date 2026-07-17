@@ -93,7 +93,7 @@ function currentTokens(ctx: ExtensionContext): number {
 function statusLabel(state: LeaseState): string {
 	const lease = state.active;
 	if (!lease) return `route:${state.mode}`;
-	return `route:${state.mode} ${lease.selected.vendor}/${lease.selected.modelId} ${lease.selected.effort}`;
+	return `route:${state.mode}${lease.executionFailed ? ":failed" : ""} ${lease.selected.vendor}/${lease.selected.modelId} ${lease.selected.effort}`;
 }
 
 function previousChoice(
@@ -144,6 +144,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 	);
 	let state: LeaseState = { mode: defaultMode(), manualOverride: false };
 	let pendingInput: PendingInput | undefined;
+	let nextParentTaskId: string | undefined;
 	let lastRoute: LastRoute = {};
 	let lastUpstream: string | undefined;
 	let applyingSelection = false;
@@ -151,9 +152,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 	let attemptStartedAt = 0;
 	let attemptTurns = 0;
 	let attemptToolCalls = 0;
-	let deterministicChecksPassed = 0;
-	let deterministicChecksFailed = 0;
-	const deterministicCheckCalls = new Set<string>();
+	const deterministicCheckCalls = new Map<string, string>();
+	const deterministicCheckResults = new Map<string, boolean>();
 	const validatedPlanAttempts = new Set<string>();
 	let lastAttemptMetrics: AttemptMetrics | undefined;
 
@@ -366,9 +366,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			attemptStartedAt = Date.now();
 			attemptTurns = 0;
 			attemptToolCalls = 0;
-			deterministicChecksPassed = 0;
-			deterministicChecksFailed = 0;
 			deterministicCheckCalls.clear();
+			deterministicCheckResults.clear();
 			persistState();
 			updateStatus(ctx);
 			if (triggerTurn) {
@@ -385,7 +384,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			}
 			return;
 		}
-		if (fallback.action === "restore_previous" && fallback.choice) await applyChoice(ctx, fallback.choice);
+		if (fallback.action === "restore_previous") {
+			if (fallback.choice) await applyChoice(ctx, fallback.choice);
+			state = installLease(state, { ...fallback.lease, executionFailed: true });
+			persistState();
+			updateStatus(ctx);
+		}
 		if (fallback.action === "skip_review" && active.parentLease) {
 			await restoreParentAfterReview(ctx, active, "skipped");
 		}
@@ -463,9 +467,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		attemptStartedAt = Date.now();
 		attemptTurns = 0;
 		attemptToolCalls = 0;
-		deterministicChecksPassed = 0;
-		deterministicChecksFailed = 0;
 		deterministicCheckCalls.clear();
+		deterministicCheckResults.clear();
 		await record(
 			ctx,
 			"route_decision",
@@ -538,7 +541,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		state = restoreLeaseState(ctx.sessionManager.getBranch(), defaultMode());
-		if (event.reason !== "reload") state = setHardBoundary(state, "new_session");
+		nextParentTaskId = event.reason === "fork" ? state.active?.taskId : undefined;
+		if (event.reason !== "reload") state = setHardBoundary(state, event.reason === "fork" ? "subagent" : "new_session");
 		const repository = await readRepositoryMetadata(pi, ctx.cwd);
 		lastUpstream = repository.upstream;
 		updateStatus(ctx);
@@ -551,9 +555,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_before_fork", async (_event, ctx) => {
-		state = setHardBoundary(state, "subagent");
-		persistState();
-		await record(ctx, "boundary", { boundary: "subagent" }, state.active ? { taskId: state.active.taskId } : {});
+		await record(
+			ctx,
+			"boundary",
+			{ boundary: "subagent_fork_requested" },
+			state.active ? { taskId: state.active.taskId } : {},
+		);
 	});
 
 	pi.on("input", async (event, ctx) => {
@@ -625,13 +632,44 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					{ "router.mode": state.mode },
 					() => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
 				);
+				const routedClassification = classification;
+				for (const attempt of routedClassification.attempts) {
+					await record(
+						ctx,
+						"classifier_attempt",
+						{ ...attempt },
+						{
+							archetype: routedClassification.archetype.archetype,
+							...(attempt.provider ? { provider: attempt.provider } : {}),
+							...(attempt.modelId ? { modelId: attempt.modelId } : {}),
+						},
+					);
+				}
 				const languageBucket = repository.languageBuckets.join("+") || "unknown";
-				const routed = await route(
-					ctx,
-					classification,
-					pending?.hasImages ?? Boolean(event.images?.length),
-					languageBucket,
-					promptFingerprint(event.prompt),
+				const routed = await withRouterSpan(
+					ctx.sessionManager.getSessionId(),
+					"router.route",
+					{
+						"router.mode": state.mode,
+						"router.archetype": routedClassification.archetype.archetype,
+						"router.risk": routedClassification.features.risk,
+					},
+					async (span) => {
+						const result = await route(
+							ctx,
+							routedClassification,
+							pending?.hasImages ?? Boolean(event.images?.length),
+							languageBucket,
+							promptFingerprint(event.prompt),
+						);
+						span?.setAttribute("router.decision", result.decision.kind);
+						if (result.decision.kind !== "unroutable") {
+							span?.setAttribute("router.provider", result.decision.primary.provider);
+							span?.setAttribute("router.model", result.decision.primary.modelId);
+							span?.setAttribute("router.profile", result.decision.primary.profileId);
+						}
+						return result;
+					},
 				);
 				lastRoute = { ...lastRoute, classification, decision: routed.decision };
 				if (routed.decision.kind === "unroutable") {
@@ -650,6 +688,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				const priorSelection = previousChoice(currentSnapshot, currentEffort, routed.decision.archetype);
 				const lease = createTaskLease({
 					taskId: randomUUID(),
+					...(nextParentTaskId ? { parentTaskId: nextParentTaskId } : {}),
 					startedAt: now,
 					updatedAt: now,
 					archetype: routed.decision.archetype,
@@ -668,14 +707,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					repositoryLanguageBucket: languageBucket,
 				});
 				state = installLease(state, lease);
+				nextParentTaskId = undefined;
 				persistState();
 				active = lease;
 				attemptStartedAt = Date.now();
 				attemptTurns = 0;
 				attemptToolCalls = 0;
-				deterministicChecksPassed = 0;
-				deterministicChecksFailed = 0;
 				deterministicCheckCalls.clear();
+				deterministicCheckResults.clear();
 				await record(
 					ctx,
 					"route_decision",
@@ -719,7 +758,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			const applied = await applyWithAvailabilityFallback(ctx, active);
-			if (!applied) return;
+			if (!applied) {
+				state = installLease(state, { ...active, executionFailed: true });
+				persistState();
+				updateStatus(ctx);
+				return;
+			}
 			if (applied !== active) {
 				state = installLease(state, applied);
 				persistState();
@@ -795,16 +839,19 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_execution_end", (event) => {
 		attemptToolCalls++;
-		if (deterministicCheckCalls.delete(event.toolCallId)) {
-			if (event.isError) deterministicChecksFailed++;
-			else deterministicChecksPassed++;
+		const check = deterministicCheckCalls.get(event.toolCallId);
+		if (check) {
+			deterministicCheckCalls.delete(event.toolCallId);
+			deterministicCheckResults.set(check, !event.isError);
 		}
 	});
 
 	pi.on("tool_call", (event) => {
 		if (event.toolName === "bash") {
 			const command = typeof event.input.command === "string" ? event.input.command : "";
-			if (/\b(?:test|check|lint|typecheck|audit|scan)\b/i.test(command)) deterministicCheckCalls.add(event.toolCallId);
+			if (/\b(?:test|check|lint|typecheck|audit|scan)\b/i.test(command)) {
+				deterministicCheckCalls.set(event.toolCallId, command.trim().slice(0, 500));
+			}
 		}
 		if (!state.active?.parentLease) return;
 		if (
@@ -872,8 +919,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				outputTokens: relevant.reduce((total, message) => total + message.usage.output, 0),
 				turns: attemptTurns,
 				toolCalls: attemptToolCalls,
-				deterministicChecksPassed,
-				deterministicChecksFailed,
+				deterministicChecksPassed: [...deterministicCheckResults.values()].filter(Boolean).length,
+				deterministicChecksFailed: [...deterministicCheckResults.values()].filter((passed) => !passed).length,
 				stopReason: last?.stopReason,
 			},
 			{
@@ -885,11 +932,13 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				...(isActiveAttempt ? { promptProfileId: active.promptProfileId } : {}),
 			},
 		);
+		const deterministicVerificationFailed =
+			isActiveAttempt && [...deterministicCheckResults.values()].some((passed) => !passed);
 		const planValidationMissing =
 			isActiveAttempt &&
 			(active.archetype === "implementation_planning" || active.archetype === "large_program_planning") &&
 			!validatedPlanAttempts.has(`${active.taskId}:${active.attemptIndex}`);
-		if (planValidationMissing) {
+		if (deterministicVerificationFailed || planValidationMissing) {
 			await transitionFallback(ctx, "deterministic_verification", true);
 		} else if (isActiveAttempt && last?.stopReason === "error") {
 			const failure = lastProviderFailure ?? "model_error";
@@ -900,7 +949,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		const active = state.active;
-		if (!active || state.mode !== "active") return;
+		if (!active || state.mode !== "active" || active.executionFailed) return;
 		if (active.parentLease) {
 			await restoreParentAfterReview(ctx, active, "completed");
 			return;
@@ -974,6 +1023,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 						`effort=${lease.selected.effort}`,
 						`profile=${lease.promptProfileId}`,
 						`attempt=${lease.attemptIndex + 1}/${lease.fallbacks.length + 1}`,
+						`execution=${lease.executionFailed ? "failed" : "ready"}`,
 						`boundary=${lastRoute.boundaryReason ?? "n/a"}`,
 					].join("\n")
 				: `mode=${state.mode}\nNo active task lease`;
