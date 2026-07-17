@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { extname } from "node:path";
 import { type Api, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TaskFeatures } from "./core/features.ts";
+import { ARCHETYPES, type Archetype } from "./core/archetype.ts";
+import { validateFallbackTopology } from "./core/fallback.ts";
+import { type TaskFeatures, validateTaskFeatures } from "./core/features.ts";
 import type { LeaseState, TaskLease } from "./core/lease.ts";
-import type { EffortLevel, ModelVendor } from "./core/profiles.ts";
+import { EFFORT_LEVELS, type EffortLevel, findPromptProfile, type ModelVendor } from "./core/profiles.ts";
 import { canonicalVendor, type RegistryModelSnapshot, type RouteRequirements } from "./core/routing.ts";
 import type { RepositoryMetadata, SynopsisEntry } from "./core/synopsis.ts";
 
@@ -92,16 +94,58 @@ export function normalizeSessionEntries(entries: readonly unknown[]): SynopsisEn
 	return result;
 }
 
-function isTaskLease(value: unknown): value is TaskLease {
-	const lease = object(value);
-	const selected = object(lease?.selected);
+function isRouteChoice(value: unknown, archetype: Archetype): boolean {
+	const choice = object(value);
+	if (
+		!choice ||
+		typeof choice.provider !== "string" ||
+		typeof choice.modelId !== "string" ||
+		(choice.vendor !== "openai" && choice.vendor !== "anthropic" && choice.vendor !== "google") ||
+		typeof choice.effort !== "string" ||
+		!EFFORT_LEVELS.includes(choice.effort as EffortLevel) ||
+		typeof choice.profileId !== "string" ||
+		typeof choice.contextWindow !== "number" ||
+		typeof choice.ability !== "number"
+	) {
+		return false;
+	}
 	return (
-		lease?.version === 1 &&
-		typeof lease.taskId === "string" &&
-		typeof lease.archetype === "string" &&
-		typeof selected?.provider === "string" &&
-		typeof selected.modelId === "string" &&
-		typeof lease.promptProfileId === "string"
+		findPromptProfile(choice.vendor, choice.modelId, archetype, choice.effort as EffortLevel)?.id === choice.profileId
+	);
+}
+
+function isTaskLease(value: unknown, depth = 0): value is TaskLease {
+	if (depth > 1) return false;
+	const lease = object(value);
+	if (!lease || typeof lease.archetype !== "string" || !ARCHETYPES.includes(lease.archetype as Archetype)) return false;
+	const archetype = lease.archetype as Archetype;
+	if (
+		lease.version !== 1 ||
+		typeof lease.taskId !== "string" ||
+		typeof lease.startedAt !== "string" ||
+		typeof lease.updatedAt !== "string" ||
+		!validateTaskFeatures(lease.features).success ||
+		!isRouteChoice(lease.selected, archetype) ||
+		!Array.isArray(lease.fallbacks) ||
+		!lease.fallbacks.every((choice) => isRouteChoice(choice, archetype)) ||
+		!Number.isInteger(lease.attemptIndex) ||
+		(lease.attemptIndex as number) < 0 ||
+		(lease.attemptIndex as number) > lease.fallbacks.length ||
+		(lease.previousSelection !== undefined && !isRouteChoice(lease.previousSelection, archetype)) ||
+		(lease.parentTaskId !== undefined && typeof lease.parentTaskId !== "string") ||
+		typeof lease.promptProfileId !== "string" ||
+		object(lease.selected)?.profileId !== lease.promptProfileId ||
+		typeof lease.modelSnapshotId !== "string" ||
+		typeof lease.policyVersion !== "string" ||
+		typeof lease.lastPromptFingerprint !== "string" ||
+		typeof lease.manualOverride !== "boolean"
+	) {
+		return false;
+	}
+	const candidate = lease as unknown as TaskLease;
+	return (
+		validateFallbackTopology(candidate).length === 0 &&
+		(lease.parentLease === undefined || isTaskLease(lease.parentLease, depth + 1))
 	);
 }
 
@@ -189,8 +233,12 @@ export function promptFingerprint(prompt: string): string {
 }
 
 async function git(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string | undefined> {
-	const result = await pi.exec("git", ["-C", cwd, ...args], { timeout: 5_000 });
-	return result.code === 0 ? result.stdout.replace(/\s+$/, "") : undefined;
+	try {
+		const result = await pi.exec("git", ["-C", cwd, ...args], { timeout: 5_000 });
+		return result.code === 0 ? result.stdout.replace(/\s+$/, "") : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function languageBuckets(files: readonly string[]): string[] {

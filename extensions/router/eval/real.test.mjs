@@ -267,6 +267,9 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
 				instructionAdherence: Type.Number({ minimum: 0, maximum: 1 }),
 				unnecessaryClarification: Type.Boolean(),
 				prematureStop: Type.Boolean(),
+				outputSchemaValid: Type.Boolean(),
+				toolSelectionAccurate: Type.Boolean(),
+				progressClaimsAccurate: Type.Boolean(),
 				rationale: Type.String({ maxLength: 500 }),
 			},
 			{ additionalProperties: false },
@@ -360,7 +363,26 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
 		const unnecessaryClarificationRate =
 			results.filter((result) => result.judgment.unnecessaryClarification).length / results.length;
 		const prematureStopRate = results.filter((result) => result.judgment.prematureStop).length / results.length;
-		console.log(JSON.stringify({ passRate, unnecessaryClarificationRate, prematureStopRate, results }, null, 2));
+		const outputSchemaValidity = results.filter((result) => result.judgment.outputSchemaValid).length / results.length;
+		const toolSelectionAccuracy =
+			results.filter((result) => result.judgment.toolSelectionAccurate).length / results.length;
+		const progressClaimAccuracy =
+			results.filter((result) => result.judgment.progressClaimsAccurate).length / results.length;
+		console.log(
+			JSON.stringify(
+				{
+					passRate,
+					unnecessaryClarificationRate,
+					prematureStopRate,
+					outputSchemaValidity,
+					toolSelectionAccuracy,
+					progressClaimAccuracy,
+					results,
+				},
+				null,
+				2,
+			),
+		);
 		assert.ok(passRate >= 0.8, `paired-treatment pass rate ${passRate} is below 0.8`);
 	});
 });

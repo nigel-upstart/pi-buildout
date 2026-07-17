@@ -27,6 +27,7 @@ export interface TaskLease {
 	reviewRequired?: boolean;
 	reviewCompleted?: boolean;
 	repositoryLanguageBucket?: string;
+	contextSizeBucket?: string;
 	executionFailed?: boolean;
 }
 

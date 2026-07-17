@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { conservativeFeatures } from "./core/features.ts";
+import { createTaskLease } from "./core/lease.ts";
 import {
 	cacheEstimate,
 	estimateFinishedTokens,
@@ -48,6 +50,53 @@ describe("lease restoration and context estimates", () => {
 			"shadow",
 		);
 		assert.deepEqual(state, { mode: "active", manualOverride: true });
+
+		const active = createTaskLease({
+			taskId: "task",
+			startedAt: "2026-07-17T00:00:00.000Z",
+			updatedAt: "2026-07-17T00:00:00.000Z",
+			archetype: "highest_risk_advisory",
+			features: conservativeFeatures(),
+			selected: {
+				provider: "openai-codex",
+				modelId: "gpt-5.6-sol",
+				vendor: "openai",
+				effort: "max",
+				ability: 4,
+				profileId: "openai-gpt-5.6-agent-v1",
+				contextWindow: 1_000_000,
+				rankReason: "bootstrap",
+			},
+			fallbacks: [
+				{
+					provider: "anthropic",
+					modelId: "claude-opus-4-8",
+					vendor: "anthropic",
+					effort: "high",
+					ability: 3,
+					profileId: "anthropic-claude-planning-v1",
+					contextWindow: 1_000_000,
+					rankReason: "bootstrap",
+				},
+			],
+			modelSnapshotId: "snapshot",
+			policyVersion: "policy",
+			lastPromptFingerprint: "fingerprint",
+		});
+		const restored = restoreLeaseState(
+			[{ type: "custom", customType: "model-router-state", data: { mode: "active", active } }],
+			"shadow",
+		);
+		assert.equal(restored.active.taskId, "task");
+		const tampered = structuredClone(active);
+		tampered.selected.modelId = "unknown-model";
+		assert.equal(
+			restoreLeaseState(
+				[{ type: "custom", customType: "model-router-state", data: { mode: "active", active: tampered } }],
+				"shadow",
+			).active,
+			undefined,
+		);
 	});
 
 	it("adds deterministic tool, response, change, and compaction reserves", () => {

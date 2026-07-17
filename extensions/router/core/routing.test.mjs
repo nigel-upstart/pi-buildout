@@ -115,12 +115,10 @@ describe("ordinary route selection", () => {
 		assert.equal(mature.kind, "ordinary");
 		assert.equal(mature.telemetryMature, true);
 		assert.equal(mature.primary.modelId, "claude-sonnet-5");
-		assert.deepEqual(mature.primary.scoreComponents, {
-			p75ModelAndToolCost: 1,
-			developerWaitCost: 0,
-			humanInterventionCost: 0,
-			retryCost: 0,
-		});
+		assert.equal(mature.primary.scoreComponents.p75ModelAndToolCost, 1);
+		assert.ok(Math.abs(mature.primary.scoreComponents.developerWaitCost - 0.0001) < 1e-12);
+		assert.equal(mature.primary.scoreComponents.humanInterventionCost, 0);
+		assert.equal(mature.primary.scoreComponents.retryCost, 0);
 
 		const holdoutKey = Array.from({ length: 100 }, (_, index) => `task-${index}`).find((key) =>
 			isControlledHoldout(key),
@@ -163,6 +161,20 @@ describe("review route selection", () => {
 		assert.equal(decision.kind, "review");
 		const anthropic = [decision.primary, decision.fallback].find((choice) => choice.vendor === "anthropic");
 		assert.equal(anthropic.modelId, "claude-fable-5");
+	});
+
+	it("rejects an unavailable fixed builder fallback", () => {
+		const models = registry();
+		const builder = { ...models.find((candidate) => candidate.modelId === "gpt-5.6-terra"), available: false };
+		const decision = selectReviewRoute(
+			models.map((candidate) => (candidate.modelId === builder.modelId ? builder : candidate)),
+			REQUIREMENTS,
+			builder,
+			"medium",
+			2,
+		);
+		assert.equal(decision.kind, "unroutable");
+		assert.ok(decision.exclusions.some((exclusion) => exclusion.code === "unavailable"));
 	});
 });
 

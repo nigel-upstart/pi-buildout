@@ -91,6 +91,13 @@ function currentTokens(ctx: ExtensionContext): number {
 	return Math.max(ctx.getContextUsage()?.tokens ?? 0, latestReportedContextTokens(ctx.sessionManager.getBranch()));
 }
 
+function contextSizeBucket(ctx: ExtensionContext, features: TaskLease["features"]): string {
+	const tokens = routeRequirements(currentTokens(ctx), features, false).estimatedFinishedTokens;
+	const numeric =
+		tokens < 32_000 ? "lt32k" : tokens < 128_000 ? "32k-128k" : tokens < 512_000 ? "128k-512k" : "gte512k";
+	return `${features.contextShape}:${numeric}`;
+}
+
 function statusLabel(state: LeaseState): string {
 	const lease = state.active;
 	if (!lease) return `route:${state.mode}`;
@@ -153,10 +160,15 @@ export default function routerExtension(pi: ExtensionAPI): void {
 	let attemptStartedAt = 0;
 	let attemptTurns = 0;
 	let attemptToolCalls = 0;
+	let agentRunSequence = 0;
 	const deterministicCheckCalls = new Map<string, string>();
 	const deterministicCheckResults = new Map<string, boolean>();
 	const validatedPlanAttempts = new Set<string>();
 	let lastAttemptMetrics: AttemptMetrics | undefined;
+	let reviewParentAttemptMetrics: AttemptMetrics | undefined;
+	const accumulatedTaskCosts = new Map<string, number>();
+	const taskStartedAt = new Map<string, number>();
+	let telemetryHealthy = true;
 
 	function persistState(): void {
 		pi.appendEntry(STATE_ENTRY, {
@@ -178,15 +190,29 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
 		> = {},
 	): Promise<void> {
-		await telemetry.append({
-			version: 1,
-			eventId: randomUUID(),
-			timestamp: new Date().toISOString(),
-			kind,
-			sessionId: ctx.sessionManager.getSessionId(),
-			...extra,
-			data,
-		});
+		if (!telemetryHealthy) return;
+		try {
+			await telemetry.append({
+				version: 1,
+				eventId: randomUUID(),
+				timestamp: new Date().toISOString(),
+				kind,
+				sessionId: ctx.sessionManager.getSessionId(),
+				...extra,
+				data,
+			});
+		} catch (error) {
+			telemetryHealthy = false;
+			if (state.mode === "active") {
+				state = { ...state, mode: "shadow" };
+				persistState();
+				updateStatus(ctx);
+			}
+			ctx.ui.notify(
+				`Router telemetry failed; automatic routing is disabled for this session: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+		}
 	}
 
 	async function synopsis(ctx: ExtensionContext, repository: RepositoryMetadata): Promise<SessionSynopsis> {
@@ -218,13 +244,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		classification: ClassificationResult,
 		hasImages: boolean,
 		languageBucket: string,
+		contextBucket: string,
 		explorationKey: string,
 	): Promise<{ decision: RouteDecision; registry: RegistryModelSnapshot[] }> {
 		const registry = buildRegistrySnapshot(ctx);
 		const requirements = routeRequirements(currentTokens(ctx), classification.features, hasImages);
 		const routeSamples: RouteSample[] = aggregateRouteSamples(telemetryOutcomes(await telemetry.read())).filter(
 			(sample) =>
-				sample.contextBucket === classification.features.contextShape &&
+				sample.contextBucket === contextBucket &&
 				sample.risk === classification.features.risk &&
 				sample.interactivity === classification.features.interactivity &&
 				sample.languageBucket === languageBucket,
@@ -274,6 +301,23 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			registry,
 			decision: selectOrdinaryRoute(archetype, registry, requirements, routeSamples, undefined, explorationKey),
 		};
+	}
+
+	function leasedChoiceEligible(ctx: ExtensionContext, lease: TaskLease, hasImages: boolean): boolean {
+		const registry = buildRegistrySnapshot(ctx);
+		const model = registry.find(
+			(candidate) => candidate.provider === lease.selected.provider && candidate.modelId === lease.selected.modelId,
+		);
+		if (!model?.available) return false;
+		const requirements = routeRequirements(currentTokens(ctx), lease.features, hasImages);
+		if (requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.7)) return false;
+		if (requirements.requiresImages && !model.inputTypes.includes("image")) return false;
+		if (requirements.requiresTools && !model.toolCapable) return false;
+		if (!model.supportedEfforts.includes(lease.selected.effort)) return false;
+		return Boolean(
+			findPromptProfile(model.vendor, model.modelId, lease.archetype, lease.selected.effort)?.id ===
+				lease.promptProfileId,
+		);
 	}
 
 	async function applyChoice(ctx: ExtensionContext, choice: RouteChoice): Promise<boolean> {
@@ -331,6 +375,16 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		};
 		await applyChoice(ctx, parent.selected);
 		state = installLease(state, parent);
+		const reviewMetrics = lastAttemptMetrics;
+		lastAttemptMetrics = reviewParentAttemptMetrics
+			? {
+					...reviewParentAttemptMetrics,
+					modelAndToolCost: reviewParentAttemptMetrics.modelAndToolCost + (reviewMetrics?.modelAndToolCost ?? 0),
+					wallTimeMs: reviewParentAttemptMetrics.wallTimeMs + (reviewMetrics?.wallTimeMs ?? 0),
+					retried: reviewParentAttemptMetrics.retried || (reviewMetrics?.retried ?? false),
+				}
+			: undefined;
+		reviewParentAttemptMetrics = undefined;
 		persistState();
 		updateStatus(ctx);
 		await record(
@@ -395,6 +449,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 	async function startIndependentReview(ctx: ExtensionContext, parent: TaskLease): Promise<void> {
 		if (
 			state.mode !== "active" ||
+			state.manualOverride ||
+			parent.manualOverride ||
 			!parent.reviewRequired ||
 			parent.reviewCompleted ||
 			parent.parentLease ||
@@ -427,6 +483,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			);
 			return;
 		}
+		reviewParentAttemptMetrics = lastAttemptMetrics;
+		lastAttemptMetrics = undefined;
 		const now = new Date().toISOString();
 		const reviewFeatures = {
 			...parent.features,
@@ -451,6 +509,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			policyVersion: decision.policyVersion,
 			lastPromptFingerprint: promptFingerprint(`review:${parent.taskId}`),
 			...(parent.repositoryLanguageBucket ? { repositoryLanguageBucket: parent.repositoryLanguageBucket } : {}),
+			...(parent.contextSizeBucket ? { contextSizeBucket: parent.contextSizeBucket } : {}),
 		});
 		const applied = await applyWithAvailabilityFallback(ctx, child);
 		if (!applied) {
@@ -458,6 +517,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		state = installLease(state, applied);
+		accumulatedTaskCosts.set(applied.taskId, 0);
+		taskStartedAt.set(applied.taskId, Date.now());
 		persistState();
 		updateStatus(ctx);
 		attemptStartedAt = Date.now();
@@ -522,7 +583,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				{ taskId: active.taskId, archetype: active.archetype },
 			);
 			if (!validation.success) throw new Error(`Invalid implementation plan: ${validation.errors.join("; ")}`);
-			validatedPlanAttempts.add(`${active.taskId}:${active.attemptIndex}`);
+			validatedPlanAttempts.add(`${active.taskId}:${active.attemptIndex}:${agentRunSequence}`);
 			return {
 				content: [
 					{
@@ -562,7 +623,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 	pi.on("input", async (event, ctx) => {
 		if (state.mode === "off") return { action: "continue" as const };
 		const cache = cacheEstimate(ctx.sessionManager.getBranch());
-		const gate = deterministicBoundaryGate(state, {
+		let gate = deterministicBoundaryGate(state, {
 			isUserInput: true,
 			source: event.source,
 			...(event.streamingBehavior ? { streamingBehavior: event.streamingBehavior } : {}),
@@ -570,11 +631,21 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			cachedTokens: cache.cachedTokens,
 			expectedReuseRatio: cache.expectedReuseRatio,
 		});
+		const hasImages = Boolean(event.images?.length);
+		if (hasImages && state.active) {
+			const selected = buildRegistrySnapshot(ctx).find(
+				(candidate) =>
+					candidate.provider === state.active?.selected.provider && candidate.modelId === state.active.selected.modelId,
+			);
+			if (!selected?.inputTypes.includes("image")) {
+				gate = { action: "new_task", reason: "image input requires a newly eligible route" };
+			}
+		}
 		pendingInput = {
 			gate,
 			repository: readRepositoryMetadata(pi, ctx.cwd),
 			cache,
-			hasImages: Boolean(event.images?.length),
+			hasImages,
 			source: event.source,
 		};
 		lastRoute = { boundaryReason: gate.reason };
@@ -642,6 +713,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					);
 				}
 				const languageBucket = repository.languageBuckets.join("+") || "unknown";
+				const contextBucket = contextSizeBucket(ctx, routedClassification.features);
 				const routed = await withRouterSpan(
 					ctx.sessionManager.getSessionId(),
 					"router.route",
@@ -656,6 +728,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 							routedClassification,
 							pending?.hasImages ?? Boolean(event.images?.length),
 							languageBucket,
+							contextBucket,
 							promptFingerprint(event.prompt),
 						);
 						span?.setAttribute("router.decision", result.decision.kind);
@@ -688,6 +761,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					!(pending?.gate.action === "new_task" && "hardBoundary" in pending.gate)
 						? state.active
 						: undefined;
+				if (reviewParent) {
+					reviewParentAttemptMetrics = lastAttemptMetrics;
+					lastAttemptMetrics = undefined;
+				}
 				const lease = createTaskLease({
 					taskId: randomUUID(),
 					...(reviewParent
@@ -711,8 +788,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
 					reviewRequired: classification.archetype.requiresIndependentReview,
 					reviewCompleted: false,
 					repositoryLanguageBucket: languageBucket,
+					contextSizeBucket: contextBucket,
 				});
 				state = installLease(state, lease);
+				accumulatedTaskCosts.set(lease.taskId, 0);
+				taskStartedAt.set(lease.taskId, Date.now());
 				nextParentTaskId = undefined;
 				persistState();
 				active = lease;
@@ -755,6 +835,17 @@ export default function routerExtension(pi: ExtensionAPI): void {
 			}
 
 			if (!active || active.manualOverride || state.manualOverride) return;
+			if (
+				state.mode === "active" &&
+				pending &&
+				active.reviewRequired &&
+				active.reviewCompleted &&
+				!active.parentLease
+			) {
+				active = { ...active, reviewCompleted: false, updatedAt: new Date().toISOString() };
+				state = installLease(state, active);
+				persistState();
+			}
 			updateStatus(ctx);
 			if (state.mode === "shadow") {
 				ctx.ui.notify(
@@ -763,6 +854,17 @@ export default function routerExtension(pi: ExtensionAPI): void {
 				);
 				return;
 			}
+			for (
+				let guard = 0;
+				guard < 3 && active && !leasedChoiceEligible(ctx, active, pending?.hasImages ?? false);
+				guard++
+			) {
+				const previousAttempt = active.attemptIndex;
+				await transitionFallback(ctx, "availability", false);
+				active = state.active;
+				if (!active || active.executionFailed || active.attemptIndex === previousAttempt) return;
+			}
+			if (!active || !leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) return;
 			const applied = await applyWithAvailabilityFallback(ctx, active);
 			if (!applied) {
 				state = installLease(state, { ...active, executionFailed: true });
@@ -836,7 +938,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", () => {
 		lastProviderFailure = undefined;
-		if (attemptStartedAt === 0) attemptStartedAt = Date.now();
+		agentRunSequence++;
+		attemptStartedAt = Date.now();
+		attemptTurns = 0;
+		attemptToolCalls = 0;
+		deterministicCheckCalls.clear();
+		deterministicCheckResults.clear();
 	});
 
 	pi.on("turn_start", () => {
@@ -898,13 +1005,18 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		const attemptedProvider = last?.provider ?? active.selected.provider;
 		const attemptedModel = last?.model ?? active.selected.modelId;
 		const wallTimeMs = attemptStartedAt > 0 ? Date.now() - attemptStartedAt : 0;
+		const accumulatedCost = (accumulatedTaskCosts.get(active.taskId) ?? 0) + (isActiveAttempt ? cost : 0);
+		if (isActiveAttempt) accumulatedTaskCosts.set(active.taskId, accumulatedCost);
+		const accumulatedStartedAt =
+			taskStartedAt.get(active.taskId) ?? (attemptStartedAt > 0 ? attemptStartedAt : Date.now());
+		const accumulatedWallTimeMs = Date.now() - accumulatedStartedAt;
 		lastAttemptMetrics = isActiveAttempt
 			? {
 					provider: attemptedProvider,
 					modelId: attemptedModel,
 					archetype: active.archetype,
-					modelAndToolCost: cost,
-					wallTimeMs,
+					modelAndToolCost: accumulatedCost,
+					wallTimeMs: Math.max(wallTimeMs, accumulatedWallTimeMs),
 					retried: active.attemptIndex > 0,
 				}
 			: undefined;
@@ -943,7 +1055,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		const planValidationMissing =
 			isActiveAttempt &&
 			(active.archetype === "implementation_planning" || active.archetype === "large_program_planning") &&
-			!validatedPlanAttempts.has(`${active.taskId}:${active.attemptIndex}`);
+			!validatedPlanAttempts.has(`${active.taskId}:${active.attemptIndex}:${agentRunSequence}`);
 		if (deterministicVerificationFailed || planValidationMissing) {
 			await transitionFallback(ctx, "deterministic_verification", true);
 		} else if (isActiveAttempt && last?.stopReason === "error") {
@@ -968,6 +1080,13 @@ export default function routerExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const [command, value] = args.trim().split(/\s+/, 2);
 			if (command === "active" || command === "shadow" || command === "off") {
+				if (command === "active" && !telemetryHealthy) {
+					ctx.ui.notify(
+						"Router cannot enter active mode after a telemetry failure; reload after fixing the path",
+						"error",
+					);
+					return;
+				}
 				state = {
 					...state,
 					mode: command,
@@ -978,6 +1097,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
 							}
 						: {}),
 				};
+				if (command === "active" && state.active) {
+					accumulatedTaskCosts.set(state.active.taskId, 0);
+					taskStartedAt.set(state.active.taskId, Date.now());
+				}
 				persistState();
 				updateStatus(ctx);
 				ctx.ui.notify(`Model router mode set to ${command}`, "info");
@@ -1002,7 +1125,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 						...lastAttemptMetrics,
 						accepted: command === "accept",
 						humanIntervention: command === "reject",
-						contextBucket: state.active.features.contextShape,
+						contextBucket: state.active.contextSizeBucket ?? state.active.features.contextShape,
 						risk: state.active.features.risk,
 						interactivity: state.active.features.interactivity,
 						languageBucket: state.active.repositoryLanguageBucket ?? "unknown",

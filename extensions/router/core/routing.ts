@@ -125,7 +125,7 @@ export interface UnroutableDecision {
 export type RouteDecision = OrdinaryRouteDecision | ReviewRouteDecision | UnroutableDecision;
 
 const DEFAULT_COST_WEIGHTS: CostWeights = {
-	developerWaitValuePerMs: 0,
+	developerWaitValuePerMs: 0.000_001,
 	humanInterventionCost: 25,
 	retryCost: 10,
 };
@@ -342,19 +342,27 @@ function builderChoice(
 	builder: RegistryModelSnapshot,
 	builderEffort: EffortLevel,
 	builderAbility: number,
+	registry: readonly RegistryModelSnapshot[],
+	requirements: RouteRequirements,
+	exclusions: CandidateExclusion[],
 ): RouteChoice | undefined {
-	const profile = findPromptProfile(builder.vendor, builder.modelId, "code_review", builderEffort);
-	if (!profile) return undefined;
-	return {
-		provider: builder.provider,
-		modelId: builder.modelId,
-		vendor: builder.vendor,
-		effort: builderEffort,
-		ability: builderAbility,
-		profileId: profile.id,
-		contextWindow: builder.contextWindow,
-		rankReason: "fixed_builder_fallback",
-	};
+	const ability = Math.max(1, Math.min(4, Math.round(builderAbility))) as CandidateRef["ability"];
+	const eligible = evaluateCandidate(
+		{
+			provider: builder.provider,
+			modelId: builder.modelId,
+			vendor: builder.vendor,
+			effort: builderEffort,
+			ability,
+			allowAlias: false,
+			restricted: false,
+		},
+		registry,
+		"code_review",
+		requirements,
+		exclusions,
+	);
+	return eligible ? { ...eligible, rankReason: "fixed_builder_fallback" } : undefined;
 }
 
 export function selectReviewRoute(
@@ -385,7 +393,7 @@ export function selectReviewRoute(
 		const rightDistance = Math.abs(right.ability - builderAbility);
 		return leftDistance - rightDistance;
 	});
-	const fixedBuilder = builderChoice(builder, builderEffort, builderAbility);
+	const fixedBuilder = builderChoice(builder, builderEffort, builderAbility, registry, requirements, exclusions);
 	const primary = choices[0];
 	const fallback = choices[1];
 	if (choices.length !== 2 || !primary || !fallback || !fixedBuilder) {

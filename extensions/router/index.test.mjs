@@ -66,6 +66,45 @@ describe("routerExtension", () => {
 		assert.deepEqual(visibility, [true]);
 	});
 
+	it("fails active mode back to shadow when the audit log cannot append", async () => {
+		const hooks = new Map();
+		const commands = new Map();
+		const appended = [];
+		const notifications = [];
+		const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-telemetry-failure-"));
+		const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+		const previousMode = process.env.PI_ROUTER_MODE;
+		process.env.PI_ROUTER_TELEMETRY_PATH = telemetryDirectory;
+		process.env.PI_ROUTER_MODE = "active";
+		const pi = {
+			on: (event, handler) => hooks.set(event, handler),
+			registerCommand: (name, command) => commands.set(name, command),
+			registerTool: () => {},
+			appendEntry: (customType, data) => appended.push({ customType, data }),
+		};
+		routerExtension(pi);
+		const ctx = {
+			sessionManager: { getSessionId: () => "telemetry-failure" },
+			ui: {
+				theme: { fg: (_color, text) => text },
+				setStatus: () => {},
+				notify: (message, type) => notifications.push({ message, type }),
+			},
+		};
+		try {
+			await hooks.get("model_select")({ source: "set", model: { provider: "openai-codex", id: "gpt-5.6-terra" } }, ctx);
+			assert.equal(appended.at(-1).data.mode, "shadow");
+			assert.match(notifications.at(-1).message, /telemetry failed/i);
+			await commands.get("route").handler("active", ctx);
+			assert.match(notifications.at(-1).message, /cannot enter active mode/i);
+		} finally {
+			if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+			else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+			if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
+			else process.env.PI_ROUTER_MODE = previousMode;
+		}
+	});
+
 	it("runs a required review as a read-only child lease and restores the builder", async () => {
 		const hooks = new Map();
 		const appended = [];
@@ -92,13 +131,24 @@ describe("routerExtension", () => {
 				provider: "openai-codex",
 				modelId: "gpt-5.6-sol",
 				vendor: "openai",
-				effort: "max",
+				effort: "high",
 				ability: 4,
 				profileId: "openai-gpt-5.6-agent-v1",
 				contextWindow: 1_000_000,
 				rankReason: "bootstrap",
 			},
-			fallbacks: [],
+			fallbacks: [
+				{
+					provider: "anthropic",
+					modelId: "claude-opus-4-8",
+					vendor: "anthropic",
+					effort: "high",
+					ability: 3,
+					profileId: "anthropic-claude-planning-v1",
+					contextWindow: 1_000_000,
+					rankReason: "bootstrap",
+				},
+			],
 			attemptIndex: 0,
 			promptProfileId: "openai-gpt-5.6-agent-v1",
 			modelSnapshotId: "snapshot",
@@ -140,7 +190,7 @@ describe("routerExtension", () => {
 			sendMessage: (message, options) => sent.push({ message, options }),
 			setModel: async (model) => selectedModels.push(model),
 			setThinkingLevel: () => {},
-			getThinkingLevel: () => "max",
+			getThinkingLevel: () => "high",
 			exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
 		};
 		routerExtension(pi);
