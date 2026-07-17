@@ -17,9 +17,6 @@
 		"test": "node --test 'extensions/**/*.test.mjs'",
 		"typecheck": "tsc --noEmit"
 	},
-	"dependencies": {
-		"zod": "4.3.6"
-	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.8",
 		"@earendil-works/pi-agent-core": "0.80.7",

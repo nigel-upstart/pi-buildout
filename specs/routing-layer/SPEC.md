@@ -24,8 +24,10 @@ For each new task, decide:
 
 1. **Prompt archetype** — from the immediate user prompt plus a bounded, deterministically-built
    synopsis of the active session (not the raw session).
-2. **Model and effort** — a ranked first choice, a required second choice, and an optional
-   availability-only third choice. Explicit review routes get only a primary and fallback.
+2. **Model and effort** — ordinary routes get exactly one primary and one required fallback.
+   Explicit review routes get one candidate from each non-builder model vendor (OpenAI, Anthropic,
+   or Google), followed by the existing builder model as a fixed loss-of-independence fallback only
+   if both independent attempts fail.
 3. **Model-specific prompt profile** — a validated, versioned profile compiled into the final request
    without altering the user's intent.
 
@@ -80,8 +82,9 @@ user-turn task-boundary gate
 ```
 
 The classifier returns **semantic features only, never a model name**. A deterministic layer then:
-selects the archetype; filters eligible models; ranks first/second/optional-third; enforces the
-second choice is OpenAI or Anthropic; selects a validated prompt profile; compiles the final request.
+selects the archetype; filters eligible models; ranks the ordinary primary/fallback or the review
+sequence; enforces every ordinary fallback is OpenAI or Anthropic; selects a validated prompt
+profile; compiles the final request.
 
 ### Feature schema (required axes)
 
@@ -120,9 +123,14 @@ Deterministic, not LLM-assisted:
   for the estimated finished size).
 - Prompt-profile compatibility (a model without a validated profile for the archetype/effort is not
   eligible).
-- Review-provider exclusion: the reviewer must not be the builder's provider; prefer the closest
-  reviewer at or above the builder's effective ability.
-- The second-ranked candidate must be OpenAI or Anthropic.
+- Review-provider exclusion uses the model's canonical vendor, not merely the endpoint/gateway name:
+  select one candidate from each of the two vendors other than the builder's vendor and prefer the
+  closest reviewer at or above the builder's effective ability. If a vendor has no model at that
+  level, select its strongest eligible model and record the ceiling mismatch.
+- Every ordinary second-ranked candidate must be OpenAI or Anthropic.
+- Candidate IDs are exact and version-aware. Unknown IDs and silently moving aliases are ineligible
+  unless a policy entry explicitly permits that alias; preview/restricted/safeguarded models require
+  explicit registry flags and configured fallbacks.
 - Until local telemetry is mature (≥30 comparable samples per candidate, passing the route's quality
   floor), preserve the bootstrap ordering below. After maturity, rank by a robust cost-to-done score:
 
@@ -133,10 +141,12 @@ Deterministic, not LLM-assisted:
   + retry cost × P(retry)
   ```
 
-**Sequential fallback:** the second choice is the normal fallback after a failed attempt. The third
-choice is authorized only for *availability* failures (quota, outage, rate limit) affecting both first
-and second — never for quality/test failure. Review routes get exactly two sequential attempts; if
-both fail, skip review, keep the existing task lease, and continue without blocking the task.
+**Sequential fallback:** ordinary routes stop after the primary and fallback. If both fail, retain
+(or restore) the pre-existing task selection; there is no ordinary third choice. Review routes try the
+two independent reviewers sequentially. If both fail, run the review with the existing builder model,
+record `review_fell_back_to_builder`, and preserve the parent task lease. These are sequential
+attempts, never a panel. Deterministic tests, type checks, linters, scanners, and policy gates outrank
+an LLM verdict and can authorize fallback or escalation; an LLM may only recommend one.
 
 ### Bootstrap archetype → model priors
 
@@ -151,14 +161,18 @@ measured telemetry per route:
 | Median repository implementation (1 PR) | strong coding model, medium effort | different-provider high-effort fallback |
 | Terminal-heavy implementation | strong coding model, medium/high effort | different-provider high-effort fallback |
 | Algorithmic/rapid iterative coding | fast iterative model, medium effort | strong coding model, medium |
-| Code review | closest different-provider reviewer ≥ builder ability | one OpenAI/Anthropic fallback; no third |
+| Code review | closest non-builder-vendor reviewer ≥ builder ability | candidate from the other non-builder vendor; fixed builder fallback after both fail |
 | Ordinary implementation planning (2–10 PRs) | top planning model, high/xhigh | different-provider planning model, high |
 | Large program planning (11–100 PRs) | top long-run planning model, high/xhigh | different-provider planning model, high/max |
 | Long-context synthesis | long-context model, medium, or top reasoning model, high | different-provider fallback |
 | Highest-risk ambiguous advisory work | top reasoning model, high/max | different-provider top reasoning model |
 
 Concrete model IDs, effort labels, and quality floors are a **configuration/registry concern**,
-resolved against pi's actual `ModelRegistry` at build time — not hardcoded into this spec.
+resolved against pi's actual `ModelRegistry` at build time — not hardcoded into this spec. Planning
+and implementation are separate attempts with separate leases, success criteria, and telemetry: a
+multi-PR planning route emits a validated program (PR boundaries, dependency DAG, migration/rollout
+order, acceptance checks, risks, rollback points, and unknowns), then each approved PR is routed as
+its own implementation task.
 
 ## Deterministic prompt compiler
 
@@ -182,6 +196,10 @@ Provider-aware ordering:
   action/checkpoint policy.
 - **Google:** long source context first, task instructions next, core request and critical
   restrictions last; consistent few-shot examples when selected.
+
+The adapter must keep the actual user message in its native user-message position; it may compile
+only the surrounding system scaffolding rather than duplicate the request in the system prompt. In
+either representation, byte-for-byte preservation of the request is an invariant.
 
 The compiler must never: paraphrase away a user constraint; invent permissions or expand scope;
 transplant a prompt profile across model generations without validation; treat classifier prose as
@@ -238,10 +256,23 @@ cross-PR rework; review precision/recall/false-positive burden.
 Always evaluate model and prompt profile as a **paired treatment** — never conclude one model is
 better when tested under another model family's prompt profile.
 
+## Hard policy invariants
+
+- High/critical-risk implementation routes require a sequential independent review.
+- No unknown model, unsupported effort, context-window violation, or unvalidated
+  model/archetype/profile combination may reach execution.
+- Explicit manual model or effort selection bypasses automatic routing until the next task boundary
+  or until the user re-enables it.
+- Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
+- A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child
+  reviews are explicit lease transitions, not fresh classifications.
+- Every decision records the policy version, model snapshot, classifier output, exclusion reasons,
+  score components, fallback reason, and prompt-profile ID.
+
 ## Non-goals
 
-- Parallel/multi-agent review panels (this spec's independence requirement is limited to a single
-  different-provider reviewer with one fallback).
+- Parallel/multi-agent review panels or advisor arbitration. Review attempts are sequential and use
+  at most the two non-builder vendors plus the fixed builder fallback.
 - A general-purpose simulator or "what-if" routing sandbox (explicitly deferred until the classifier
   and profile registry stabilize).
 - Replacing manual override — a user must still be able to force a model/effort directly (e.g. via

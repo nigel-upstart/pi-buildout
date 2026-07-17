@@ -2,7 +2,8 @@
 
 Companion to [`SPEC.md`](SPEC.md) (the functional spec) and [`eval.md`](eval.md) (the evaluation
 harness). This document records *how* it will be built and why — language, framework, tooling —
-plus the open items to confirm before implementation starts. Not implemented yet.
+plus the implementation-time findings that resolve the original open items. Implementation is in
+progress.
 
 ## Decision: TypeScript, in-process, as a pi extension
 
@@ -68,11 +69,12 @@ equivalents:
 | Eligibility/ranking inputs | `ctx.modelRegistry.getAvailable()`/`.find()`, `Model.{cost,contextWindow,maxTokens,reasoning}`, pi-ai's `calculateCost()`. |
 | Lease/state persistence | `pi.appendEntry()` (per-session custom entries) + `getAgentDir()`. |
 | Telemetry store | append-only **JSONL** (pi's own `JsonlSessionStorage` idiom) — not sqlite; nothing in pi's dependency tree uses sqlite. |
-| OTel spans | **`pi-telemetry-otel`** — see the Telemetry section below. |
+| OTel spans | Optional **`pi-telemetry-otel`** Symbol registries — see the Telemetry section below. |
 
-The only **new runtime dependency** is `pi-telemetry-otel`. Everything else in the table above is
-already present in pi's own dependency tree. New **dev-only** tooling (typecheck/lint/test) is a
-separate, later concern and never ships — the installer copies raw `.ts` and pi loads it via `jiti`.
+There are **no new extension runtime dependencies**. `pi-telemetry-otel` remains a separately
+installed companion: the router consumes its global Symbol registries when present and no-ops when
+absent. Everything else above is exported by pi's bundled packages. This removes extension-local
+`node_modules` installation without reducing schema validation, inference, or tracing behavior.
 
 ## Framework
 
@@ -81,24 +83,18 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
 - **Integration surface:** `@earendil-works/pi-coding-agent`'s `ExtensionAPI`.
 - **UI:** `@earendil-works/pi-tui`, for a `/route` status command modeled on the existing
   `extensions/effort`.
-- **Classifier / continuity LLM calls:** `ExtensionAPI` itself has no one-shot inference method.
-  Preferred path: pi-ai's `Models.completeSimple()`/`.complete()`, **if an extension can obtain a
-  `Models` handle** — this is unverified; the interface exists in pi-ai's `.d.ts` but nothing found so
-  far shows how an extension instance reaches it (`ctx.modelRegistry` is a `ModelRegistry`, a
-  different type, exposing auth/availability rather than inference). Fallback, and the path with no
-  open question: use the provider SDKs pi-ai already bundles (`openai`, `@anthropic-ai/sdk`) directly,
-  authenticated via `ctx.modelRegistry.getApiKeyAndHeaders()`, pointed at Bifrost. Either way the call
-  stays "a fast model, low temperature, no tools other than the schema tool-call, response validated"
-  as the spec requires. Confirm the reachable path at build time (see Open items).
-- **Provider access — Bifrost.** Point calls at Upstart's sanctioned AI gateway rather than a
-  provider endpoint directly: base URL `https://bifrost.upstart.com` (staging:
-  `https://bifrost-s1.upstart.com` / `-s2`), OpenAI-compatible path `/v1` or native `/anthropic`,
-  authenticated with a virtual key (`sk-bf-...`) as the SDK `api_key` or an `x-bf-vk` header.
-  Provision a key via the `/bifrost-virtual-key` skill (`llm-dev-tools` Claude Code plugin) or
-  `#ask-bifrost-gateway`; read it from env (`BIFROST_BASE_URL` / `BIFROST_VIRTUAL_KEY`), never
-  hardcode it. If the `completeSimple` path above is reachable, wire it through pi-ai's
-  `registerProvider(name, { baseUrl, apiKey, api })` pointed at Bifrost; if using the SDK fallback,
-  point the SDK's own `baseURL`/`apiKey` at Bifrost instead.
+- **Classifier / continuity LLM calls:** `ExtensionAPI` itself has no one-shot inference method, but
+  pi v0.80.7 exports `complete()` from `@earendil-works/pi-ai/compat`; pi's own `qna.ts` and
+  `custom-compaction.ts` examples call it from extensions using a model plus
+  `ctx.modelRegistry.getApiKeyAndHeaders()`. Use that proven path. The classifier exposes a tiny
+  transport interface for deterministic tests, but production always uses `complete()` with one
+  TypeBox schema tool, low temperature where supported, and validated tool arguments.
+- **Provider access — registry-resolved, with Bifrost preferred where configured.** Production calls
+  use the selected model's `baseUrl` and `ModelRegistry`-resolved auth. Upstart deployments should
+  configure those models through Bifrost, its sanctioned gateway, with credentials read from
+  environment/settings and never hardcoded. Local pi installations may use their already-configured
+  direct or OAuth endpoint. The eval harness is stricter: real eval calls require explicit
+  `BIFROST_BASE_URL` and `BIFROST_VIRTUAL_KEY` so an evaluation cannot silently hit another endpoint.
 - **Deterministic core** (eligibility, ranking, lease, compiler): a standalone TS module tree with
   **zero pi imports**, so it stays unit-testable in isolation and portable if the router is ever
   needed outside pi.
@@ -127,17 +123,12 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
     `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` env vars (plus `PI_AGENT_TRACE_ID`/
     `PI_AGENT_SPAN_ID` for subprocess linking) — this is exactly Upstart's standard OTel→Datadog
     path (via the in-cluster OTel Collector / `corp-otel-gateway`), so no bespoke config to invent.
-  - **Two integration paths, in preference order:**
-    1. **Primary — the Symbol-registry.** `pi-telemetry-otel` exposes
-       `Symbol.for("pi.telemetry-otel.runtimeRegistry.v1")` (tracer/export pipeline) and
-       `Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1")` (active span context), keyed
-       by `ctx.sessionManager.getSessionId()`. This is **resolution-decoupled** — it needs no static
-       import of the package, so it works even if a copied-`.ts` extension can't resolve
-       `pi-telemetry-otel` as a module. Prefer this as the primary hook.
-    2. **Secondary — `withPiSpan`.** `import { withPiSpan } from "pi-telemetry-otel/helpers"` gives
-       a cleaner call (`await withPiSpan(ctx, "router.route", async (span) => { span?.setAttribute(...) })`),
-       but requires the package to resolve as a static import under `jiti` from a `.ts` file copied
-       into the agent dir — **unverified**; use it only once that resolves (see Open items).
+  - **One resolution-decoupled integration path:** `pi-telemetry-otel` exposes
+    `Symbol.for("pi.telemetry-otel.runtimeRegistry.v1")` (tracer/export pipeline) and
+    `Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1")` (active span context), keyed by
+    `ctx.sessionManager.getSessionId()`. This needs no static import or copied dependency. A static
+    `withPiSpan` import adds a second integration path with no additional capability, so it is
+    intentionally omitted.
   - **Local JSONL remains the source of truth regardless of OTel configuration:** the spec's
     telemetry-promoted cost ranking requires the router to read its own history back in-process,
     and an OTel export is fire-and-forget to an external backend — it cannot be queried back for
@@ -167,7 +158,7 @@ extensions/router/
     lease.ts            # task-lease state machine (boundary-only evaluation)
     profiles.ts         # model-specific prompt-profile registry
     compiler.ts         # provider-aware prompt compiler (verbatim user request)
-  classifier.ts         # primary + provider-diverse secondary via Bifrost (pi-ai or SDK fallback)
+  classifier.ts         # primary + provider-diverse secondary via pi-ai complete()
   telemetry.ts          # local JSONL store, plus pi-telemetry-otel spans (Symbol-registry primary)
   index.ts              # pi ExtensionAPI adapter + /route TUI command
   index.test.mjs        # + core/*.test.mjs
@@ -177,9 +168,8 @@ extensions/router/
 
 1. `core/` first, with no pi imports — the deterministic spine, unit-tested directly against
    `SPEC.md`'s invariants.
-2. `classifier.ts` — primary + provider-diverse secondary structured-output calls against Bifrost
-   (via pi-ai's `completeSimple` if reachable, else the bundled-SDK fallback); conservative
-   reconciliation; fail-closed fallback route.
+2. `classifier.ts` — primary + provider-diverse secondary structured-output calls via pi-ai's
+   `complete()` and registry-resolved auth; conservative reconciliation; fail-closed fallback route.
 3. `index.ts` — the pi adapter: wire `input`/session boundary events to lease decisions; apply via
    `setModel`/`setThinkingLevel`; inject the compiled profile via `before_agent_start.systemPrompt`;
    map bootstrap aliases via `registerProvider`; add the `/route` status command.
@@ -189,26 +179,19 @@ extensions/router/
 5. Ship in **shadow mode** first (log decisions without acting on them), per `SPEC.md`'s
    implementation sequence.
 
-## Open items to confirm before implementation
+## Implementation-time findings (resolved)
 
-These refine *how*, not *whether* — the language/architecture decision above is settled regardless
-of how they resolve.
-
-1. **Classifier inference entrypoint.** Confirm whether an extension can obtain a pi-ai `Models`
-   handle to call `completeSimple()`/`complete()` directly, or must go through the bundled SDK
-   (`openai` / `@anthropic-ai/sdk`) authenticated via `ctx.modelRegistry.getApiKeyAndHeaders()` and
-   pointed at Bifrost. The interface exists in pi-ai's `.d.ts`; the reachability from inside an
-   extension is unverified.
-2. **`pi-telemetry-otel` import resolution.** Confirm whether the package resolves as a static
-   import (`import { withPiSpan } from "pi-telemetry-otel/helpers"`) under `jiti` from a `.ts` file
-   copied into the agent dir. If not, use its Symbol-registry hooks
-   (`Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1")` /
-   `…runtimeRegistry.v1"`), which need no static import and are the primary integration path either
-   way (see Tooling above).
-3. **Bifrost integration shape.** Confirm `registerProvider` (if the pi-ai path above is reachable)
-   accepts Bifrost's OpenAI-compatible base URL and `sk-bf-...` virtual key without modification, or
-   whether the native `/anthropic` path is preferable for the classifier's tool-call structured
-   output. Provision a virtual key via the `/bifrost-virtual-key` skill before testing either path.
-4. **Concrete model registry mapping.** The archetype → model priors table in `SPEC.md` intentionally
-   omits concrete model IDs; resolve each archetype's bootstrap choice against pi's actual
-   `ModelRegistry` contents at build time, not from any external document's example names.
+1. **Classifier entrypoint:** use `complete()` from `@earendil-works/pi-ai/compat` with
+   `ModelRegistry`-resolved auth. This is the same supported extension pattern used by pi's bundled
+   examples; no private `Models` handle or direct provider SDK is needed.
+2. **Telemetry resolution:** use the companion extension's Symbol registries only. This preserves
+   parented spans when installed and deterministic no-op behavior otherwise, without another module
+   root or runtime install step.
+3. **Provider endpoint:** production classification uses the endpoint already resolved on the chosen
+   pi model. A Bifrost-configured model therefore uses Bifrost; direct-provider configurations keep
+   working. The real-call eval runner requires explicit `BIFROST_*` configuration and never silently
+   changes endpoints.
+4. **Concrete registry mapping:** policy v1 uses exact IDs present in pi v0.80.7's live registry
+   (`gpt-5.6-{luna,terra,sol}`, `claude-{haiku-4-5,sonnet-5,opus-4-8,fable-5}`,
+   `gemini-3.5-flash`) with version-aware profile families and deterministic lower-tier fallback
+   resolution when a preferred exact ID is unavailable.
