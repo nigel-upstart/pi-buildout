@@ -5,7 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
-EXTENSIONS=(clear effort markdown-backlinks)
+EXTENSIONS=(clear effort markdown-backlinks router)
 PATCH_FILES=(
   dist/core/resource-loader.js
   dist/core/skill-management.js
@@ -78,12 +78,14 @@ for arg in "$@"; do
 done
 
 for extension in "${EXTENSIONS[@]}"; do
-  for file in index.ts helpers.ts; do
-    if [[ ! -f "$ROOT_DIR/extensions/$extension/$file" ]]; then
-      printf 'Missing packaged extension file: %s\n' "$ROOT_DIR/extensions/$extension/$file" >&2
-      exit 1
-    fi
-  done
+  if [[ ! -f "$ROOT_DIR/extensions/$extension/index.ts" ]]; then
+    printf 'Missing packaged extension entrypoint: %s\n' "$ROOT_DIR/extensions/$extension/index.ts" >&2
+    exit 1
+  fi
+  if [[ "$extension" != router && ! -f "$ROOT_DIR/extensions/$extension/helpers.ts" ]]; then
+    printf 'Missing packaged extension helper: %s\n' "$ROOT_DIR/extensions/$extension/helpers.ts" >&2
+    exit 1
+  fi
 done
 
 if (( APPLY_SKILLS_PATCH )); then
@@ -165,9 +167,14 @@ fi
 
 mkdir -p "$EXTENSION_DIR"
 for extension in "${EXTENSIONS[@]}"; do
-  mkdir -p "$EXTENSION_DIR/$extension"
-  cp "$ROOT_DIR/extensions/$extension/index.ts" "$EXTENSION_DIR/$extension/index.ts"
-  cp "$ROOT_DIR/extensions/$extension/helpers.ts" "$EXTENSION_DIR/$extension/helpers.ts"
+  extension_stage=$(mktemp -d "$EXTENSION_DIR/.${extension}.XXXXXX")
+  while IFS= read -r -d '' source_file; do
+    relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
+    mkdir -p "$extension_stage/$(dirname "$relative_file")"
+    cp "$source_file" "$extension_stage/$relative_file"
+  done < <(find "$ROOT_DIR/extensions/$extension" -type f -name '*.ts' ! -name '*.test.*' -print0)
+  rm -rf "$EXTENSION_DIR/$extension"
+  mv "$extension_stage" "$EXTENSION_DIR/$extension"
 done
 
 if [[ -n "$PATCH_STAGE_DIR" ]]; then
