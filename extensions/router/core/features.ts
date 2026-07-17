@@ -115,11 +115,7 @@ export type Horizon = (typeof HORIZONS)[number];
 export type Risk = (typeof RISKS)[number];
 export type ContinuityClass = (typeof CONTINUITY_CLASSES)[number];
 
-export interface ValidationResult<T> {
-	success: boolean;
-	value?: T;
-	errors: string[];
-}
+export type ValidationResult<T> = { success: true; value: T; errors: [] } | { success: false; errors: string[] };
 
 export function validateTaskFeatures(value: unknown): ValidationResult<TaskFeatures> {
 	if (Check(TaskFeaturesSchema, value)) return { success: true, value: value as TaskFeatures, errors: [] };
