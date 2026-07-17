@@ -9,6 +9,7 @@ import { validateFallbackTopology } from "./core/fallback.ts";
 import { validateTaskFeatures } from "./core/features.ts";
 import type { TaskFeatures } from "./core/features.ts";
 import type { LeaseState, TaskLease } from "./core/lease.ts";
+import { policyAbility } from "./core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import { canonicalVendor } from "./core/routing.ts";
@@ -201,6 +202,14 @@ export function snapshotForModel(
 }
 
 export function modelAbility(modelId: string, effort: EffortLevel): number {
+  // Effort changes ability differently per model (e.g. claude-sonnet-5 and
+  // gemini-3.5-flash gain a tier at "high" while gpt-5.6-terra does not), so the
+  // policy candidate table in core/policy.ts is authoritative whenever it knows
+  // the (model, effort) pair. The regex heuristic below is only a fallback for
+  // models or effort levels absent from that table and cannot express per-model
+  // effort scaling.
+  const known = policyAbility(modelId, effort);
+  if (known !== undefined) return known;
   let ability = 2;
   if (/luna|haiku|nano|mini/.test(modelId)) ability = 1;
   if (/terra|sonnet|gemini-3\.5-flash/.test(modelId)) ability = 2;

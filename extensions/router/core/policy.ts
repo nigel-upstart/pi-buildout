@@ -140,6 +140,31 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   },
 };
 
+const ALL_CANDIDATE_REFS: readonly CandidateRef[] = [
+  ...LUNA_LOW,
+  ...TERRA_MEDIUM,
+  ...TERRA_HIGH,
+  ...SOL_HIGH,
+  ...SOL_MAX,
+  ...GPT_55_MEDIUM,
+  ...GPT_54_MEDIUM,
+  ...HAIKU_LOW,
+  ...SONNET_MEDIUM,
+  ...SONNET_HIGH,
+  ...OPUS_HIGH,
+  ...FABLE_HIGH,
+  ...GEMINI_MEDIUM,
+  ...GEMINI_HIGH,
+];
+
+// Ability is a per-(model, effort) judgment calibrated per model family, not a uniform
+// effort bump: e.g. gpt-5.6-terra stays ability 2 at "high" while claude-sonnet-5 and
+// gemini-3.5-flash step up to 3, because effort scales quality differently per model.
+// This table is the single source of truth; heuristics elsewhere must defer to it.
+export function policyAbility(modelId: string, effort: EffortLevel): CandidateRef["ability"] | undefined {
+  return ALL_CANDIDATE_REFS.find((ref) => ref.modelId === modelId && ref.effort === effort)?.ability;
+}
+
 export function reviewerRefs(vendor: ModelVendor, minimumAbility: number): readonly CandidateRef[] {
   const tiers: Record<ModelVendor, readonly CandidateRef[][]> = {
     openai: [LUNA_LOW, TERRA_HIGH, SOL_HIGH, SOL_MAX],

@@ -6,11 +6,33 @@ import {
   cacheEstimate,
   estimateFinishedTokens,
   latestReportedContextTokens,
+  modelAbility,
   normalizeSessionEntries,
   promptFingerprint,
   readRepositoryMetadata,
   restoreLeaseState,
 } from "./pi-state.ts";
+
+describe("modelAbility", () => {
+  it("defers to the authoritative policy table for known (model, effort) pairs", () => {
+    // Per-model effort scaling: sonnet-5 and gemini-3.5-flash gain a tier at
+    // "high", while terra does not (see core/policy.ts).
+    assert.equal(modelAbility("claude-sonnet-5", "high"), 3);
+    assert.equal(modelAbility("gemini-3.5-flash", "high"), 3);
+    assert.equal(modelAbility("gpt-5.6-terra", "high"), 2);
+    assert.equal(modelAbility("claude-sonnet-5", "medium"), 2);
+    assert.equal(modelAbility("gemini-2.5-flash", "high"), 2);
+    assert.equal(modelAbility("bedrock/anthropic.claude-sonnet-5", "high"), 3);
+    assert.equal(modelAbility("gpt-5.6-sol", "max"), 4);
+  });
+
+  it("falls back to the heuristic for pairs the policy table does not know", () => {
+    assert.equal(modelAbility("claude-haiku-4-5", "medium"), 1);
+    assert.equal(modelAbility("some-unknown-mini", "low"), 1);
+    assert.equal(modelAbility("some-unknown-pro", "medium"), 4);
+    assert.equal(modelAbility("some-unknown-model", "max"), 3);
+  });
+});
 
 describe("normalizeSessionEntries", () => {
   it("extracts bounded semantic state and tool paths from pi entries", () => {
