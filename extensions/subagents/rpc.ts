@@ -9,6 +9,7 @@ const MAX_TRANSCRIPT_CHARS = 120_000;
 const MAX_STDERR_CHARS = 64_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const FORCE_KILL_DELAY_MS = 3_000;
+const TERMINAL_CLEANUP_TIMEOUT_MS = 10_000;
 
 function processListInvocation(): { command: string; args: string[]; timeout: number } {
   return process.platform === "win32"
@@ -253,6 +254,7 @@ export class ManagedSubagent {
   private stoppedIntentionally = false;
   private terminationStarted = false;
   private killTimer: NodeJS.Timeout | undefined;
+  private terminalCleanupTimer: NodeJS.Timeout | undefined;
   private stopTreeMonitor: (() => void) | undefined;
   private terminationPoll: NodeJS.Timeout | undefined;
   private terminationPids: number[] = [];
@@ -709,8 +711,10 @@ export class ManagedSubagent {
     const finish = () => {
       if (this.terminationPoll) clearInterval(this.terminationPoll);
       if (this.killTimer) clearTimeout(this.killTimer);
+      if (this.terminalCleanupTimer) clearTimeout(this.terminalCleanupTimer);
       this.terminationPoll = undefined;
       this.killTimer = undefined;
+      this.terminalCleanupTimer = undefined;
       this.resolveTermination?.();
       this.resolveTermination = undefined;
     };
@@ -721,7 +725,10 @@ export class ManagedSubagent {
     }, 50);
     this.killTimer = setTimeout(() => {
       this.signalProcessTree("SIGKILL", true);
-      setTimeout(finish, 100);
+      // Keep polling after escalation until every tracked process is gone and
+      // asynchronous Windows taskkill commands have settled. This final bound
+      // prevents shutdown from waiting forever on an unkillable process.
+      this.terminalCleanupTimer = setTimeout(finish, TERMINAL_CLEANUP_TIMEOUT_MS);
     }, FORCE_KILL_DELAY_MS);
   }
 
