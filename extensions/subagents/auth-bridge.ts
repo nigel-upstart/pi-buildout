@@ -10,8 +10,10 @@ const API_KEY_ENV = "PI_SIMPLE_SUBAGENT_API_KEY";
  * auth continues to work unchanged.
  */
 export default function subagentAuthBridge(pi: ExtensionAPI) {
-	const provider = process.env[PROVIDER_ENV]?.trim();
-	const apiKey = process.env[API_KEY_ENV];
-	if (!provider || !apiKey || /[\0\r\n]/.test(provider)) return;
-	pi.registerProvider(provider, { apiKey });
+  const provider = process.env[PROVIDER_ENV]?.trim();
+  const apiKey = process.env[API_KEY_ENV];
+  if (!provider || !apiKey || /[\0\r\n]/.test(provider)) return;
+  pi.registerProvider(provider, { apiKey });
+  Reflect.deleteProperty(process.env, PROVIDER_ENV);
+  Reflect.deleteProperty(process.env, API_KEY_ENV);
 }
