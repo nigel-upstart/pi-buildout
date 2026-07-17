@@ -2,14 +2,14 @@
 
 This repository contains the local pi customizations and supporting notes used on this machine.
 
-| Component | Purpose | Documentation |
-|---|---|---|
-| `extensions/clear` | `/clear`: replace the current session and disclose project instructions, skills, and tools | [`extensions/clear/README.md`](extensions/clear/README.md) |
-| `extensions/markdown-backlinks` | Track `@file.ext` pointers found in Markdown and suggest reading them | [`extensions/markdown-backlinks/README.md`](extensions/markdown-backlinks/README.md) |
-| `extensions/effort` | `/effort`: select and persist thinking effort | [`extensions/effort/README.md`](extensions/effort/README.md) |
-| `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior | [skill README](.agents/skills/installed-pi-patching/README.md) |
-| `docs/superpowers` | Design specifications and implementation plans | [`docs/superpowers/README.md`](docs/superpowers/README.md) |
-| `patches/pi-0.80.6` | Versioned runtime snapshot for the opt-in `/skills` behavior | [`patches/pi-0.80.6/README.md`](patches/pi-0.80.6/README.md) |
+| Component                              | Purpose                                                                                    | Documentation                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `extensions/clear`                     | `/clear`: replace the current session and disclose project instructions, skills, and tools | [`extensions/clear/README.md`](extensions/clear/README.md)                           |
+| `extensions/markdown-backlinks`        | Track `@file.ext` pointers found in Markdown and suggest reading them                      | [`extensions/markdown-backlinks/README.md`](extensions/markdown-backlinks/README.md) |
+| `extensions/effort`                    | `/effort`: select and persist thinking effort                                              | [`extensions/effort/README.md`](extensions/effort/README.md)                         |
+| `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior                                 | [skill README](.agents/skills/installed-pi-patching/README.md)                       |
+| `docs/superpowers`                     | Design specifications and implementation plans                                             | [`docs/superpowers/README.md`](docs/superpowers/README.md)                           |
+| `patches/pi-0.80.6`                    | Versioned runtime snapshot for the opt-in `/skills` behavior                               | [`patches/pi-0.80.6/README.md`](patches/pi-0.80.6/README.md)                         |
 
 ## Installation
 
@@ -25,14 +25,41 @@ Use `PI_AGENT_DIR` to select another pi agent directory:
 PI_AGENT_DIR=/tmp/pi-agent ./scripts/install-extensions.sh
 ```
 
-The installer copies the extension directories and reapplies the versioned `/skills` runtime patch. It does not modify pi settings. Use `--skip-skill-loading-patch` to install only the extensions.
+The installer copies the extension directories and reapplies the versioned `/skills` runtime patch. It does not modify
+pi settings. Use `--skip-skill-loading-patch` to install only the extensions.
+
+## Development and quality checks
+
+Use Node.js 22.19 or newer. Install [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which
+also installs the repository's Git hooks:
+
+```bash
+brew install shellcheck # macOS; use the equivalent package on other platforms
+npm install
+```
+
+Run the complete local quality gate with:
+
+```bash
+npm run check
+```
+
+The gate checks Prettier formatting (120-column width and LF line endings), strict type-aware ESLint rules, Markdown
+style, shell scripts, TypeScript types, tests, unused code and dependencies with Knip, and committed secrets. Run
+`npm run audit` separately to check the dependency tree for known high-severity vulnerabilities.
+
+The pre-commit hook auto-fixes and re-stages supported staged files with Prettier, ESLint, and Markdownlint. The
+pre-push hook is deliberately conservative: it runs the complete read-only `npm run check` gate and rejects the push
+instead of modifying files. Files in `patches/` are upstream runtime snapshots, so authored-code formatting and lint
+checks intentionally leave them unchanged.
 
 ## Verification
 
-Run all extension helper tests:
+Run only the extension helper tests with:
 
 ```bash
-for test in extensions/*/*.test.mjs; do node --test "$test"; done
+npm test
 ```
 
-Extensions are TypeScript modules loaded directly by pi's extension loader. Use `/reload` after reinstalling them in a running pi session.
+Extensions are TypeScript modules loaded directly by pi's extension loader. Use `/reload` after reinstalling them in a
+running pi session.

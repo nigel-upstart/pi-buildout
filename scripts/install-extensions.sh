@@ -9,11 +9,14 @@ APPLY_SKILLS_PATCH=1
 for arg in "$@"; do
   case "$arg" in
     --skip-skill-loading-patch) APPLY_SKILLS_PATCH=0 ;;
-    -h|--help)
+    -h | --help)
       printf 'Usage: %s [--skip-skill-loading-patch]\n' "$(basename "$0")"
       exit 0
       ;;
-    *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+    *)
+      printf 'Unknown option: %s\n' "$arg" >&2
+      exit 2
+      ;;
   esac
 done
 
@@ -24,13 +27,13 @@ for extension in clear effort markdown-backlinks; do
   cp "$ROOT_DIR/extensions/$extension/helpers.ts" "$EXTENSION_DIR/$extension/helpers.ts"
 done
 
-if (( APPLY_SKILLS_PATCH )); then
+if ((APPLY_SKILLS_PATCH)); then
   PI_PACKAGE_DIR=${PI_PACKAGE_DIR:-}
   if [[ -z "$PI_PACKAGE_DIR" ]]; then
     PI_BIN=$(command -v pi || true)
     if [[ -n "$PI_BIN" ]]; then
       PI_BIN=$(realpath "$PI_BIN")
-      PI_PACKAGE_DIR=$(cd "$(dirname "$PI_BIN")/../lib/node_modules/@earendil-works/pi-coding-agent" 2>/dev/null && pwd || true)
+      PI_PACKAGE_DIR=$(cd "$(dirname "$PI_BIN")/../lib/node_modules/@earendil-works/pi-coding-agent" 2> /dev/null && pwd || true)
     fi
   fi
   if [[ -z "$PI_PACKAGE_DIR" || ! -f "$PI_PACKAGE_DIR/package.json" ]]; then
