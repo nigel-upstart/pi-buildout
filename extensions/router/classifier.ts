@@ -52,6 +52,8 @@ export interface ClassificationResult {
 	attempts: ClassifierAttempt[];
 	primaryVendor?: ModelVendor;
 	secondaryVendor?: ModelVendor;
+	primaryFeatures?: TaskFeatures;
+	secondaryFeatures?: TaskFeatures;
 }
 
 const RISK_RANK = ["low", "medium", "high", "critical"] as const;
@@ -198,6 +200,7 @@ export async function classifyTask(input: {
 	let features = primaryFeatures;
 	let failedClosed = !primaryResult.features;
 	let secondaryVendor: ModelVendor | undefined;
+	let secondaryFeatures: TaskFeatures | undefined;
 	if (shouldEscalate) {
 		const secondaryResult = await runStage(
 			"secondary",
@@ -208,6 +211,7 @@ export async function classifyTask(input: {
 			input.signal,
 		);
 		secondaryVendor = secondaryResult.vendor;
+		secondaryFeatures = secondaryResult.features;
 		if (secondaryResult.vendor && primaryResult.vendor && secondaryResult.vendor === primaryResult.vendor) {
 			features = conservativeFeatures("Secondary classifier used the same vendor as primary");
 			failedClosed = true;
@@ -229,5 +233,7 @@ export async function classifyTask(input: {
 		attempts,
 		...(primaryResult.vendor ? { primaryVendor: primaryResult.vendor } : {}),
 		...(secondaryVendor ? { secondaryVendor } : {}),
+		...(primaryResult.features ? { primaryFeatures: primaryResult.features } : {}),
+		...(secondaryFeatures ? { secondaryFeatures } : {}),
 	};
 }

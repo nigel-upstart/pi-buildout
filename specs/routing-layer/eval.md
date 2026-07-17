@@ -1,7 +1,9 @@
 # Routing layer — evaluation harness
 
 Companion to [`SPEC.md`](SPEC.md) (the functional spec — see its own "Evaluation" section for the
-metrics this harness reports) and [`decisions.md`](decisions.md) (architecture). Not implemented yet.
+metrics this harness reports) and [`decisions.md`](decisions.md) (architecture). The deterministic
+corpus and explicit-Bifrost real-call harness are implemented under `extensions/router/eval/`; real
+calls skip only while `BIFROST_BASE_URL` or `BIFROST_VIRTUAL_KEY` is absent.
 
 ## Decision: TS-native harness, real provider calls via Bifrost — no mocks
 
@@ -67,7 +69,8 @@ the profile's own stated goals from `SPEC.md`'s model-specific-profile expectati
 
 ## Golden corpus
 
-`extensions/router/eval/corpus/*.json` — one fixture per file:
+`extensions/router/eval/corpus/routes.json` — one bounded fixture row per archetype in a single
+versioned corpus file:
 
 ```json
 {
@@ -94,11 +97,10 @@ reference" stance.
 
 ```
 extensions/router/eval/
-  corpus/*.json          # golden fixtures (see above)
-  run.mjs                # node:test entry point; drives real Bifrost calls
-  score.ts               # exact-match / per-axis accuracy scoring for classifier fixtures
-  judge.ts               # LLM-as-judge scoring for prompt-profile fixtures
-  report.mjs             # aggregates a run into the SPEC.md metrics list; prints/exports a summary
+  corpus/routes.json     # golden fixtures (see above)
+  golden.test.mjs        # offline archetype/route/profile regression entry point
+  real.test.mjs          # real Bifrost classifier and paired-treatment judge calls
+  score.ts               # per-axis accuracy and confidence-calibration scoring
 ```
 
 - Runs via `node --test extensions/router/eval/*.test.mjs`, alongside the router's own unit tests,
@@ -107,9 +109,9 @@ extensions/router/eval/
   Provision a key via the `/bifrost-virtual-key` skill for local/CI runs that do want real coverage.
 - Never mocks the provider. If Bifrost is unreachable or the key is invalid, the run fails loudly
   rather than silently falling back to a stub.
-- Reports p50/p75/p90-style aggregates per archetype, matching `SPEC.md`'s "compute distributions,
-  not averages" telemetry guidance, so a regression in one archetype doesn't hide in an overall
-  average.
+- Reports axis/archetype accuracy, confidence calibration, false/missed review rates, hard-policy
+  violations, provider disagreement, latency, cost, and per-fixture attempts. Runtime route telemetry
+  separately computes stratified p50/p75/p90 distributions.
 
 ## When this runs
 

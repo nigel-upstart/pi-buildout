@@ -1,9 +1,10 @@
 # Model-aware routing layer for pi — specification
 
-Status: **not implemented**. This document specifies the functionality to be added; it does not
-implement it. See [`decisions.md`](decisions.md) for the language/framework/tooling rationale and
-open items to confirm before implementation starts, and [`eval.md`](eval.md) for how classifier
-accuracy and prompt-profile quality will be evaluated against real provider calls.
+Status: **implemented (shadow-first rollout)**. The TypeScript extension is in
+[`extensions/router`](../../extensions/router), defaults to shadow mode, and has passed deterministic,
+installer, shadow, and active-canary checks. The explicit-Bifrost real-call suite is implemented but
+remains credential-gated. See [`decisions.md`](decisions.md), [`implementation-decisions.md`](implementation-decisions.md),
+and [`eval.md`](eval.md).
 
 ## Context
 
@@ -278,7 +279,7 @@ better when tested under another model family's prompt profile.
 - Replacing manual override — a user must still be able to force a model/effort directly (e.g. via
   `/effort`), bypassing the router.
 
-## Implementation sequence (for when this is built)
+## Implementation sequence (completed)
 
 1. Extend the feature schema with prompt-shape and context-shape fields.
 2. Build deterministic context-synopsis generation from pi's session/tool state.
@@ -291,7 +292,7 @@ better when tested under another model family's prompt profile.
    live routing.
 8. Only after the classifier and profile registry are stable, consider any future simulator.
 
-## Verification (once implemented)
+## Verification
 
 - Unit tests for the deterministic core against the invariants in this spec: lease semantics,
   boundary-only reevaluation, headroom feasibility, secondary-provider rule, planning-horizon

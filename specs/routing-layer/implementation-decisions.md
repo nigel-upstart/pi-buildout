@@ -5,8 +5,8 @@ removing a functional invariant from [`SPEC.md`](SPEC.md).
 
 ## S1 — TypeBox instead of Zod
 
-**Decision:** use TypeBox from pi's bundled `@earendil-works/pi-ai` package for the semantic feature
-schema and classifier tool schema.
+**Decision:** import TypeBox's canonical `typebox` / `typebox/value` entry points (the same package
+bundled with pi) for the semantic feature, planning, and classifier tool schemas.
 
 **Why it is simpler:** one schema is accepted natively as a tool definition, has a static TypeScript
 type, and can be validated by pi-ai's `validateToolArguments`. It removes extension-local dependency
@@ -68,6 +68,17 @@ returns classifier arguments.
 **Why it is not a nerf:** real production/eval calls still use provider APIs, while deterministic unit
 tests can exercise malformed output, reconciliation, and retries without credentials. The real-call
 eval suite itself never mocks providers.
+
+## S7 — One corpus file, many independently named fixtures
+
+**Decision:** keep the small golden corpus as named rows in one `routes.json` rather than one JSON
+file per row.
+
+**Why it is simpler:** one parse, one reviewable policy table, no fixture-discovery or cross-file
+schema drift.
+
+**Why it is not a nerf:** every archetype still has an independently named prompt, feature override,
+and expected route, and Node's test runner reports every row as a separate test.
 
 ## Rejected simplifications
 

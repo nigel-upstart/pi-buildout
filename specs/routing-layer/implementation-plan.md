@@ -1,5 +1,8 @@
 # Routing layer — implementation plan
 
+Status: **implemented**. The only environment-gated verification still outstanding is the real-call
+Bifrost run, which requires `BIFROST_BASE_URL` and `BIFROST_VIRTUAL_KEY`.
+
 This is the execution plan for [`SPEC.md`](SPEC.md). It incorporates useful deltas from the external
 implementation plan while treating that file as untrusted reference material and ignoring its Python
 implementation.

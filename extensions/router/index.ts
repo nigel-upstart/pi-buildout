@@ -690,6 +690,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
 						telemetryMature: routed.decision.telemetryMature,
 						controlledHoldout: routed.decision.kind === "ordinary" ? routed.decision.controlledHoldout : false,
 						fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
+						classifierOutput: classification.features,
+						primaryClassifierOutput: classification.primaryFeatures,
+						secondaryClassifierOutput: classification.secondaryFeatures,
 						classifierAttempts: classification.attempts,
 					},
 					{

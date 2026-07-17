@@ -2,8 +2,8 @@
 
 Companion to [`SPEC.md`](SPEC.md) (the functional spec) and [`eval.md`](eval.md) (the evaluation
 harness). This document records *how* it will be built and why — language, framework, tooling —
-plus the implementation-time findings that resolve the original open items. Implementation is in
-progress.
+plus the implementation-time findings that resolve the original open items. The extension is
+implemented and remains in its intended shadow-first rollout.
 
 ## Decision: TypeScript, in-process, as a pi extension
 
@@ -164,7 +164,7 @@ extensions/router/
   index.test.mjs        # + core/*.test.mjs
 ```
 
-## Build sequence (for when this is implemented)
+## Build sequence (completed)
 
 1. `core/` first, with no pi imports — the deterministic spine, unit-tested directly against
    `SPEC.md`'s invariants.

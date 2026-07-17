@@ -111,6 +111,14 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
 					.map((axis) => [axis, fixture.featureOverrides[axis]]),
 			);
 			const score = scoreFeatureAxes(classification.features, expectedAxes);
+			const expectedReview = fixture.featureOverrides.reviewIntent === true;
+			const actualReview = classification.features.reviewIntent;
+			const disagreement =
+				classification.primaryFeatures && classification.secondaryFeatures
+					? ["intent", "workflowType", "actionMode", "horizon", "risk", "reviewIntent"].some(
+							(axis) => classification.primaryFeatures[axis] !== classification.secondaryFeatures[axis],
+						)
+					: false;
 			results.push({
 				id: fixture.id,
 				accuracy: score.accuracy,
@@ -118,6 +126,11 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
 				correct: score.accuracy === 1,
 				archetype: classification.archetype.archetype,
 				expectedArchetype: fixture.expected.archetype,
+				expectedReview,
+				actualReview,
+				disagreement,
+				escalated: classification.escalated,
+				failedClosed: classification.failedClosed,
 				attempts: classification.attempts,
 			});
 		}
@@ -125,11 +138,43 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
 		const archetypeAccuracy =
 			results.filter((result) => result.archetype === result.expectedArchetype).length / results.length;
 		const calibration = calibrationError(results);
-		console.log(JSON.stringify({ axisAccuracy, archetypeAccuracy, calibration, results }, null, 2));
+		const falseReviewRate =
+			results.filter((result) => !result.expectedReview && result.actualReview).length /
+			Math.max(1, results.filter((result) => !result.expectedReview).length);
+		const missedReviewRate =
+			results.filter((result) => result.expectedReview && !result.actualReview).length /
+			Math.max(1, results.filter((result) => result.expectedReview).length);
+		const escalated = results.filter((result) => result.escalated);
+		const disagreementRate = escalated.filter((result) => result.disagreement).length / Math.max(1, escalated.length);
+		const attempts = results.flatMap((result) => result.attempts);
+		const latencyMs = attempts.reduce((total, attempt) => total + (attempt.latencyMs ?? 0), 0);
+		const cost = attempts.reduce((total, attempt) => total + (attempt.usage?.cost ?? 0), 0);
+		const hardPolicyViolations = results.filter((result) => result.expectedReview && !result.actualReview).length;
+		const failedClosedCount = results.filter((result) => result.failedClosed).length;
+		console.log(
+			JSON.stringify(
+				{
+					axisAccuracy,
+					archetypeAccuracy,
+					calibration,
+					falseReviewRate,
+					missedReviewRate,
+					disagreementRate,
+					hardPolicyViolations,
+					failedClosedCount,
+					classificationLatencyMs: latencyMs,
+					classificationCost: cost,
+					results,
+				},
+				null,
+				2,
+			),
+		);
 		assert.ok(axisAccuracy >= 0.8, `classifier axis accuracy ${axisAccuracy} is below 0.8`);
 		assert.ok(archetypeAccuracy >= 0.8, `archetype accuracy ${archetypeAccuracy} is below 0.8`);
 		const review = results.find((result) => result.id === "code-review-001");
 		if (review) assert.equal(review.archetype, "code_review", "explicit review intent was missed");
+		assert.equal(hardPolicyViolations, 0, "real classifier produced a hard-policy violation");
 	});
 
 	it("evaluates a model and its own prompt profile as one paired treatment", async () => {
