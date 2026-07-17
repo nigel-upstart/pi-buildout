@@ -63,7 +63,7 @@ equivalents:
 |---|---|
 | Schema/validation | **TypeBox**, re-exported from `@earendil-works/pi-ai`: `import { Type, type Static, type TSchema } from "@earendil-works/pi-ai"`. Not Zod — TypeBox is a first-class pi dependency and matches pi's own `ToolDefinition` model. |
 | Structured classifier output | forced **tool call** with TypeBox parameters, validated via pi-ai's `validateToolCall`/`validateToolArguments` (+ `parseJsonWithRepair` for recovery). There is no `response_format`-style enforcement path. |
-| One-shot LLM call | pi-ai's `Models.completeSimple()` / `.complete()` — **preferred if reachable from an extension**; see Open items. |
+| One-shot LLM call | pi-ai's public `complete()` compatibility export, with registry-resolved auth (verified live). |
 | Provider access | **Bifrost** (Upstart's sanctioned AI gateway) — see the Provider access section below. |
 | Token/context sizing | `ctx.getContextUsage()` + pi-ai's `estimateContextTokens`/`calculateCost` helpers. No tiktoken — pi has no real tokenizer, and estimation is the norm here. |
 | Eligibility/ranking inputs | `ctx.modelRegistry.getAvailable()`/`.find()`, `Model.{cost,contextWindow,maxTokens,reasoning}`, pi-ai's `calculateCost()`. |
