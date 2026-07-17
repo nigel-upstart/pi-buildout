@@ -165,6 +165,8 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         synopsis,
         primary: classifierTransport(model(primaryId, `bifrost-${primaryVendor}`), primaryVendor),
         secondary: classifierTransport(model(secondaryId, `bifrost-${secondaryVendor}`), secondaryVendor),
+        primaryVendor,
+        secondaryVendor,
       });
       const expectedAxes = Object.fromEntries(
         ["intent", "workflowType", "actionMode", "horizon", "risk", "reviewIntent"]

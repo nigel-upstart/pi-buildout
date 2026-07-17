@@ -146,6 +146,8 @@ export async function classifyTaskWithPi(input: {
     synopsis: input.synopsis,
     primary: transportFor(input.ctx, selected.primary),
     secondary: transportFor(input.ctx, selected.secondary),
+    ...(selected.primary ? { primaryVendor: selected.primary.vendor } : {}),
+    ...(selected.secondary ? { secondaryVendor: selected.secondary.vendor } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   });
 }

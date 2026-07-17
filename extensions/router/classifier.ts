@@ -203,6 +203,10 @@ export async function classifyTask(input: {
   synopsis: SessionSynopsis;
   primary: ClassifierTransport;
   secondary: ClassifierTransport;
+  // Selected vendors are retained even if a transport fails before it can return a result.
+  // They preserve the provider-diversity check for validated single-stage failover.
+  primaryVendor?: ModelVendor;
+  secondaryVendor?: ModelVendor;
   signal?: AbortSignal;
 }): Promise<ClassificationResult> {
   const attempts: ClassifierAttempt[] = [];
@@ -229,7 +233,9 @@ export async function classifyTask(input: {
     );
     secondaryVendor = secondaryResult.vendor;
     secondaryFeatures = secondaryResult.features;
-    if (secondaryResult.vendor && primaryResult.vendor && secondaryResult.vendor === primaryResult.vendor) {
+    const primaryVendor = input.primaryVendor ?? primaryResult.vendor;
+    const secondaryVendorForCheck = input.secondaryVendor ?? secondaryResult.vendor;
+    if (primaryVendor && secondaryVendorForCheck && primaryVendor === secondaryVendorForCheck) {
       features = conservativeFeatures("Secondary classifier used the same vendor as primary");
       failedClosed = true;
     } else if (secondaryResult.features && primaryResult.features) {

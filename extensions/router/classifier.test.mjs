@@ -134,6 +134,8 @@ describe("classifyTask", () => {
         throw new Error("primary transport unavailable");
       },
       secondary: transport(secondaryFeatures, "anthropic"),
+      primaryVendor: "openai",
+      secondaryVendor: "anthropic",
     });
     assert.equal(primaryCalls, 2);
     assert.equal(result.escalated, true);
@@ -142,6 +144,21 @@ describe("classifyTask", () => {
     assert.equal(result.features.risk, "low");
     assert.equal(result.features.horizon, "one_response");
     assert.equal(result.archetype.archetype, "deliberate_tool_workflow");
+  });
+
+  it("fails closed when a primary transport failure cannot be independently verified", async () => {
+    const result = await classifyTask({
+      prompt: "Create one worktree",
+      synopsis,
+      primary: async () => {
+        throw new Error("primary transport unavailable");
+      },
+      secondary: transport(features({ risk: "low", horizon: "one_response" }), "openai"),
+      primaryVendor: "openai",
+      secondaryVendor: "openai",
+    });
+    assert.equal(result.failedClosed, true);
+    assert.match(result.features.evidence[0], /same vendor/);
   });
 
   it("retries malformed output and fails closed when validation never succeeds", async () => {
