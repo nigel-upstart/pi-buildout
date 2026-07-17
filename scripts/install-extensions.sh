@@ -66,6 +66,29 @@ matches_checksum() {
   [[ -f "$2" && "$(sha256 "$2")" == "$1" ]]
 }
 
+resolve_pi_package_dir() {
+  local pi_bin resolved_bin candidate
+  pi_bin=$(command -v pi || true)
+  [[ -n "$pi_bin" ]] || return 1
+
+  # Homebrew/npm symlink layout: <prefix>/bin/pi -> ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+  candidate=$(cd "$(dirname "$pi_bin")/../lib/node_modules/@earendil-works/pi-coding-agent" 2>/dev/null && pwd || true)
+  if [[ -n "$candidate" && -f "$candidate/package.json" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  # Resolved symlink layout: .../@earendil-works/pi-coding-agent/dist/cli.js
+  resolved_bin=$(realpath "$pi_bin" 2>/dev/null || printf '%s\n' "$pi_bin")
+  candidate=$(cd "$(dirname "$resolved_bin")/.." 2>/dev/null && pwd || true)
+  if [[ -n "$candidate" && -f "$candidate/package.json" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
 for arg in "$@"; do
   case "$arg" in
     --skip-skill-loading-patch) APPLY_SKILLS_PATCH=0 ;;
@@ -89,11 +112,7 @@ done
 if (( APPLY_SKILLS_PATCH )); then
   PI_PACKAGE_DIR=${PI_PACKAGE_DIR:-}
   if [[ -z "$PI_PACKAGE_DIR" ]]; then
-    PI_BIN=$(command -v pi || true)
-    if [[ -n "$PI_BIN" ]]; then
-      PI_BIN=$(realpath "$PI_BIN")
-      PI_PACKAGE_DIR=$(cd "$(dirname "$PI_BIN")/../lib/node_modules/@earendil-works/pi-coding-agent" 2>/dev/null && pwd || true)
-    fi
+    PI_PACKAGE_DIR=$(resolve_pi_package_dir || true)
   fi
   if [[ -z "$PI_PACKAGE_DIR" || ! -f "$PI_PACKAGE_DIR/package.json" ]]; then
     printf 'Could not locate pi package; install extensions only or set PI_PACKAGE_DIR.\n' >&2
