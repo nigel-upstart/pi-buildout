@@ -132,9 +132,14 @@ const DEFAULT_COST_WEIGHTS: CostWeights = {
   retryCost: 10,
 };
 
+// Amazon Bedrock cross-region inference profiles prefix the underlying vendor path with a
+// region code ("us.", "eu.", "au.", "jp.", "global."). Strip it only when it is immediately
+// followed by a known vendor path segment so unrelated IDs are not misparsed.
+const BEDROCK_REGION_PREFIX = /^(?:us|eu|au|jp|apac|global)\.(?=anthropic\.|openai\.|amazon\.)/;
+
 export function canonicalVendor(provider: string, modelId: string): ModelVendor | undefined {
   const normalizedId = modelId.toLowerCase();
-  const bareId = normalizedId.split("/").at(-1) ?? normalizedId;
+  const bareId = (normalizedId.split("/").at(-1) ?? normalizedId).replace(BEDROCK_REGION_PREFIX, "");
   if (
     bareId.startsWith("gpt-") ||
     bareId.startsWith("openai.gpt-") ||

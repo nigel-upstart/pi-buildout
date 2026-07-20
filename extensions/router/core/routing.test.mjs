@@ -232,6 +232,19 @@ describe("routing helpers", () => {
     assert.equal(canonicalVendor("bifrost", "vertex/gemini-2.5-flash"), "google");
   });
 
+  it("normalizes Amazon Bedrock direct and cross-region model IDs to their actual vendor", () => {
+    assert.equal(canonicalVendor("amazon-bedrock", "openai.gpt-5.6-luna"), "openai");
+    assert.equal(canonicalVendor("amazon-bedrock", "openai.gpt-5.6-terra"), "openai");
+    assert.equal(canonicalVendor("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"), "anthropic");
+    assert.equal(canonicalVendor("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0"), "anthropic");
+    assert.equal(canonicalVendor("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), "anthropic");
+    assert.equal(canonicalVendor("amazon-bedrock", "au.anthropic.claude-sonnet-5"), "anthropic");
+    assert.equal(canonicalVendor("amazon-bedrock", "jp.anthropic.claude-sonnet-5"), "anthropic");
+    assert.equal(canonicalVendor("amazon-bedrock", "global.anthropic.claude-sonnet-5"), "anthropic");
+    // A region-like prefix that is not followed by a known vendor path must not be stripped.
+    assert.equal(canonicalVendor("amazon-bedrock", "us.gov-cloud-widget-1"), undefined);
+  });
+
   it("calculates robust cost-to-done and stable snapshots", () => {
     assert.equal(
       robustCostToDone(
