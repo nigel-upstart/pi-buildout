@@ -33,6 +33,11 @@ The historical feature examples used snake_case fields and included fields that 
 trusted harness state. The repository's concrete, camelCase `TaskFeatures` object is documented in `SPEC.md` and
 validated by `TaskFeaturesSchema`; it is intentionally not a byte-for-byte copy of that example.
 
+The repository's root [`ATTRIBUTION.md`](../../ATTRIBUTION.md) records the two external, runnable/integrable projects
+this implementation references directly: [Bifrost](https://github.com/maximhq/bifrost) (the real-provider evaluation
+transport) and [`pi-telemetry-otel`](https://www.npmjs.com/package/pi-telemetry-otel) (the optional OTel span
+integration contract). The public references below are background evidence only, not integrated projects.
+
 ## Public background references
 
 These links were retained from the design export so model/profile and cache claims have inspectable external context.
