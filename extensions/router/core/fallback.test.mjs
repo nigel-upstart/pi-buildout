@@ -33,19 +33,29 @@ function taskLease(archetype, selected, fallbacks) {
 }
 
 describe("ordinary fallback", () => {
-  it("allows exactly one sequential fallback and never a third", () => {
+  it("tries every authorized provider endpoint before restoring the previous selection", () => {
     const lease = taskLease(
       "median_repository_implementation",
-      choice("openai", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
-      [choice("anthropic", "claude-sonnet-5", "anthropic-claude-fast-agent-v1")],
+      choice("openai-codex", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
+      [
+        choice("openai", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
+        choice("anthropic", "claude-sonnet-5", "anthropic-claude-fast-agent-v1"),
+        choice("bifrost", "bedrock/anthropic.claude-sonnet-5", "anthropic-claude-fast-agent-v1"),
+      ],
     );
     assert.deepEqual(validateFallbackTopology(lease), []);
-    const fallback = resolveFallback(lease, "deterministic_verification", "2026-07-17T00:01:00.000Z");
-    assert.equal(fallback.action, "use_choice");
-    assert.equal(fallback.choice.modelId, "claude-sonnet-5");
-    const exhausted = resolveFallback(fallback.lease, "quality", "2026-07-17T00:02:00.000Z");
+    const openai = resolveFallback(lease, "availability", "2026-07-17T00:01:00.000Z");
+    assert.equal(openai.action, "use_choice");
+    assert.equal(openai.choice.provider, "openai");
+    const anthropic = resolveFallback(openai.lease, "availability", "2026-07-17T00:02:00.000Z");
+    assert.equal(anthropic.action, "use_choice");
+    assert.equal(anthropic.choice.provider, "anthropic");
+    const bifrost = resolveFallback(anthropic.lease, "availability", "2026-07-17T00:03:00.000Z");
+    assert.equal(bifrost.action, "use_choice");
+    assert.equal(bifrost.choice.provider, "bifrost");
+    const exhausted = resolveFallback(bifrost.lease, "availability", "2026-07-17T00:04:00.000Z");
     assert.equal(exhausted.action, "restore_previous");
-    assert.match(exhausted.reason, /no third choice/);
+    assert.match(exhausted.reason, /all authorized ordinary provider choices exhausted/);
   });
 });
 

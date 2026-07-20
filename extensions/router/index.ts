@@ -882,7 +882,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           fallbacks:
             routed.decision.kind === "review"
               ? [routed.decision.fallback, routed.decision.builderFallback]
-              : [routed.decision.fallback],
+              : routed.decision.fallbacks,
           modelSnapshotId: registrySnapshotId(routed.registry),
           policyVersion: routed.decision.policyVersion,
           lastPromptFingerprint: promptFingerprint(event.prompt),
@@ -955,7 +955,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
         );
         return;
       }
-      for (let guard = 0; guard < 3 && !leasedChoiceEligible(ctx, active, pending?.hasImages ?? false); guard++) {
+      while (!active.executionFailed && !leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) {
         const previousAttempt = active.attemptIndex;
         await transitionFallback(ctx, "availability", false);
         active = state.active;
@@ -1101,7 +1101,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("after_provider_response", (event) => {
-    if (event.status === 429 || event.status >= 500) lastProviderFailure = "availability";
+    // An invalid/expired token is endpoint availability failure just like a rate
+    // limit: move to the next authorized provider instead of failing the lease.
+    if (event.status === 401 || event.status === 403 || event.status === 429 || event.status >= 500) {
+      lastProviderFailure = "availability";
+    }
   });
 
   pi.on("agent_end", async (event, ctx) => {

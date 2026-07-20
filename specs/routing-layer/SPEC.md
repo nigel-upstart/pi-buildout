@@ -20,9 +20,11 @@ For each new task, decide:
 
 1. **Prompt archetype** — from the immediate user prompt plus a bounded, deterministically-built synopsis of the active
    session (not the raw session).
-2. **Model and effort** — ordinary routes get exactly one primary and one required fallback. Explicit review routes get
-   one candidate from each non-builder model vendor (OpenAI, Anthropic, or Google), followed by the existing builder
-   model as a fixed loss-of-independence fallback only if both independent attempts fail.
+2. **Model and effort** — ordinary routes get one primary and an ordered chain of every eligible, policy-authorized
+   provider endpoint. This permits recovery from a provider-specific rate limit or credential failure without silently
+   broadening to an unvalidated model. Explicit review routes get one candidate from each non-builder model vendor
+   (OpenAI, Anthropic, or Google), followed by the existing builder model as a fixed loss-of-independence fallback only
+   if both independent attempts fail.
 3. **Model-specific prompt profile** — a validated, versioned profile compiled into the final request without altering
    the user's intent.
 
@@ -78,8 +80,8 @@ user-turn task-boundary gate
 ```
 
 The classifier returns **semantic features only, never a model name**. A deterministic layer then: selects the
-archetype; filters eligible models; ranks the ordinary primary/fallback or the review sequence; enforces every ordinary
-fallback is OpenAI or Anthropic; selects a validated prompt profile; compiles the final request.
+archetype; filters eligible models; ranks the ordinary primary and ordered provider-endpoint fallback chain or the
+review sequence; selects a validated prompt profile; compiles the final request.
 
 The bounded context input is the checked-in [`SessionSynopsis`](../../extensions/router/core/synopsis.ts) contract:
 builder and tool metadata, token shape, repository state, observed artifacts, recent goals/outcomes, prior decisions,
@@ -158,12 +160,13 @@ Deterministic, not LLM-assisted:
   + retry cost × P(retry)
   ```
 
-**Sequential fallback:** ordinary routes stop after the primary and fallback. If both fail, retain (or restore) the
-pre-existing task selection; there is no ordinary third choice. Review routes try the two independent reviewers
-sequentially. If both fail, run the review with the existing builder model, record `review_fell_back_to_builder`, and
-preserve the parent task lease. These are sequential attempts, never a panel. Deterministic tests, type checks, linters,
-scanners, and policy gates outrank an LLM verdict and can authorize fallback or escalation; an LLM may only recommend
-one.
+**Sequential fallback:** ordinary routes try every eligible endpoint in the ordered, task-leased policy chain. This
+includes alternate providers for the same model, so a rate limit or invalid credential on one endpoint does not exhaust
+the task while another configured provider remains healthy. Only after that chain is exhausted does the router retain
+(or restore) the pre-existing task selection. Review routes try the two independent reviewers sequentially. If both
+fail, run the review with the existing builder model, record `review_fell_back_to_builder`, and preserve the parent task
+lease. These are sequential attempts, never a panel. Deterministic tests, type checks, linters, scanners, and policy
+gates outrank an LLM verdict and can authorize fallback or escalation; an LLM may only recommend one.
 
 ### Bootstrap archetype → model priors
 

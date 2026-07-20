@@ -12,7 +12,8 @@ The historical Python prototype is not an implementation dependency.
 The pre-implementation source review identified four material updates that were missing from the first local spec. They
 have now been adopted:
 
-1. Ordinary routes have exactly a primary and fallback; there is no availability-only third model.
+1. Ordinary routes have one primary and a task-leased chain of every eligible, policy-authorized provider endpoint, so
+   an endpoint-specific availability or credential failure can continue without broadening model policy.
 2. Review is sequential across both non-builder model vendors, with the existing builder as a fixed final fallback when
    independence cannot be obtained. This is not a parallel review panel.
 3. High-risk implementation requires review, deterministic verification outranks LLM judgment, and model IDs/profile

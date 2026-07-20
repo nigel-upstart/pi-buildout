@@ -30,7 +30,7 @@ reconstruct behavior from the historical export.
 - `/route reset` — clear the lease; the next user message starts a new task.
 - `/route accept|reject` — label the most recent attempt for telemetry maturity.
 - `/route fail availability|quality|deterministic_verification` — apply the authorized sequential fallback. Ordinary
-  routes never get a third choice.
+  routes continue through every eligible, policy-authorized provider endpoint before restoring the prior selection.
 
 Planning routes must call `submit_implementation_plan`; the tool validates the PR dependency DAG, acceptance criteria,
 rollout, and rollback. A normal response that omits the tool gets one same-lease corrective follow-up before the bounded

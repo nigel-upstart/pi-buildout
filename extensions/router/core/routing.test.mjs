@@ -81,8 +81,8 @@ describe("ordinary route selection", () => {
     const decision = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.primary.modelId, "gpt-5.6-terra");
-    assert.equal(decision.fallback.modelId, "claude-sonnet-5");
-    assert.ok(["openai", "anthropic"].includes(decision.fallback.vendor));
+    assert.equal(decision.fallbacks[0].modelId, "claude-sonnet-5");
+    assert.ok(["openai", "anthropic"].includes(decision.fallbacks[0].vendor));
     assert.notEqual(decision.primary.profileId, "");
   });
 
@@ -95,7 +95,7 @@ describe("ordinary route selection", () => {
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.primary.modelId, "gemini-2.5-flash");
     assert.equal(decision.primary.profileId, "google-gemini-2.5-iterative-v1");
-    assert.equal(decision.fallback.modelId, "gpt-5.6-terra");
+    assert.equal(decision.fallbacks[0].modelId, "gpt-5.6-terra");
   });
 
   it("uses the configured Bifrost Bedrock Sonnet endpoint when direct Anthropic is unavailable", () => {
@@ -105,17 +105,31 @@ describe("ordinary route selection", () => {
     ];
     const decision = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
-    assert.equal(decision.fallback.provider, "bifrost");
-    assert.equal(decision.fallback.modelId, "bedrock/anthropic.claude-sonnet-5");
-    assert.equal(decision.fallback.profileId, "anthropic-claude-fast-agent-v1");
+    assert.equal(decision.fallbacks[0].provider, "bifrost");
+    assert.equal(decision.fallbacks[0].modelId, "bedrock/anthropic.claude-sonnet-5");
+    assert.equal(decision.fallbacks[0].profileId, "anthropic-claude-fast-agent-v1");
   });
 
-  it("does not treat the Bedrock Sonnet endpoint as independent from direct Sonnet", () => {
+  it("keeps the Bedrock Sonnet endpoint as an availability fallback after direct Sonnet", () => {
     const models = [...registry(), model("bifrost", "bedrock/anthropic.claude-sonnet-5", "anthropic")];
     const decision = selectOrdinaryRoute("long_context_synthesis", models, REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.primary.modelId, "claude-sonnet-5");
-    assert.equal(decision.fallback.modelId, "gpt-5.6-sol");
+    assert.deepEqual(
+      decision.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
+      ["bifrost/bedrock/anthropic.claude-sonnet-5", "openai-codex/gpt-5.6-sol"],
+    );
+  });
+
+  it("keeps every eligible provider endpoint in the ordinary fallback chain", () => {
+    const models = [...registry(), model("openai", "gpt-5.6-terra", "openai")];
+    const decision = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
+    assert.equal(decision.primary.provider, "openai-codex");
+    assert.deepEqual(
+      decision.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
+      ["openai/gpt-5.6-terra", "anthropic/claude-sonnet-5"],
+    );
   });
 
   it("rejects candidates that exceed 70% context headroom", () => {

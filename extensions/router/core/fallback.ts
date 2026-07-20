@@ -17,8 +17,8 @@ export function validateFallbackTopology(lease: TaskLease): string[] {
       errors.push("review lease must have one independent fallback and fixed builder fallback");
     const vendors = new Set([lease.selected, ...lease.fallbacks].map((choice) => choice.vendor));
     if (vendors.size !== 3) errors.push("review attempts must cover both non-builder vendors and the builder vendor");
-  } else if (lease.fallbacks.length !== 1) {
-    errors.push("ordinary lease must have exactly one fallback");
+  } else if (lease.fallbacks.length === 0) {
+    errors.push("ordinary lease must have at least one fallback");
   }
   return errors;
 }
@@ -53,6 +53,6 @@ export function resolveFallback(lease: TaskLease, failure: FailureKind, now: str
     action: "restore_previous",
     ...(lease.previousSelection ? { choice: lease.previousSelection } : {}),
     lease,
-    reason: "ordinary primary and fallback exhausted; no third choice is authorized",
+    reason: "all authorized ordinary provider choices exhausted; restoring the previous selection",
   };
 }

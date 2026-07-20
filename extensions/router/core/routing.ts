@@ -98,7 +98,10 @@ type OrdinaryRouteDecision = {
   policyVersion: string;
   archetype: Archetype;
   primary: RouteChoice;
-  fallback: RouteChoice;
+  // Every eligible endpoint after the selected primary remains authorized for
+  // sequential availability recovery. This includes alternate providers for
+  // the same model, which is essential when one provider's credentials fail.
+  fallbacks: RouteChoice[];
   exclusions: CandidateExclusion[];
   telemetryMature: boolean;
   controlledHoldout: boolean;
@@ -234,21 +237,17 @@ function evaluateCandidate(
   };
 }
 
-function modelIdentity(choice: RouteChoice): string {
-  // This exact Bifrost Bedrock ID is an endpoint alternative for Sonnet 5, not an independent fallback model.
-  const modelId = choice.modelId.replace(/^bedrock\/anthropic\./, "");
-  return `${choice.vendor}/${modelId}`;
-}
-
 function deduplicateChoices(choices: readonly RouteChoice[], exclusions: CandidateExclusion[]): RouteChoice[] {
   const seen = new Set<string>();
   return choices.filter((choice) => {
-    const key = modelIdentity(choice);
+    // Deduplicate only an exact endpoint. Different providers for one model
+    // are deliberate availability fallbacks, not duplicate route choices.
+    const key = `${choice.provider}/${choice.modelId}`;
     if (seen.has(key)) {
       exclusions.push({
-        candidate: `${choice.provider}/${choice.modelId}`,
+        candidate: key,
         code: "duplicate_model",
-        detail: "same vendor/model is already represented through another endpoint",
+        detail: "the exact provider/model endpoint is listed more than once",
       });
       return false;
     }
@@ -326,17 +325,14 @@ export function selectOrdinaryRoute(
     .filter((choice): choice is RouteChoice => choice !== undefined);
   const deduplicated = deduplicateChoices(evaluated, exclusions);
   const ranked = telemetryOrder(deduplicated, archetype, policy.qualityFloor, samples, weights, explorationKey);
-  const primary = ranked.choices[0];
-  const fallback = ranked.choices.find((choice) =>
-    choice.vendor === "openai" || choice.vendor === "anthropic" ? choice.modelId !== primary?.modelId : false,
-  );
+  const [primary, ...fallbacks] = ranked.choices;
 
-  if (!primary || !fallback) {
+  if (!primary || fallbacks.length === 0) {
     return {
       kind: "unroutable",
       policyVersion: POLICY_VERSION,
       archetype,
-      reason: "two eligible ordinary choices, including an OpenAI/Anthropic fallback, were not available",
+      reason: "a primary and at least one eligible fallback endpoint were not available",
       exclusions,
     };
   }
@@ -345,7 +341,7 @@ export function selectOrdinaryRoute(
     policyVersion: POLICY_VERSION,
     archetype,
     primary,
-    fallback,
+    fallbacks,
     exclusions,
     telemetryMature: ranked.mature,
     controlledHoldout: ranked.controlledHoldout,

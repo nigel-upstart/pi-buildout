@@ -99,10 +99,15 @@ describe("routing golden corpus", () => {
             )
           : selectOrdinaryRoute(archetype, models, requirements);
       assert.notEqual(decision.kind, "unroutable", decision.reason);
+      const fallbacks = decision.kind === "review" ? [decision.fallback] : decision.fallbacks;
       if (fixture.expected.primaryModel) assert.equal(decision.primary.modelId, fixture.expected.primaryModel);
-      if (fixture.expected.fallbackModel) assert.equal(decision.fallback.modelId, fixture.expected.fallbackModel);
+      if (fixture.expected.fallbackModel) {
+        assert.ok(fallbacks.some((choice) => choice.modelId === fixture.expected.fallbackModel));
+      }
       if (fixture.expected.primaryVendor) assert.equal(decision.primary.vendor, fixture.expected.primaryVendor);
-      if (fixture.expected.fallbackVendor) assert.equal(decision.fallback.vendor, fixture.expected.fallbackVendor);
+      if (fixture.expected.fallbackVendor) {
+        assert.ok(fallbacks.some((choice) => choice.vendor === fixture.expected.fallbackVendor));
+      }
       if (fixture.expected.builderFallbackVendor) {
         assert.equal(decision.kind, "review");
         assert.equal(decision.builderFallback.vendor, fixture.expected.builderFallbackVendor);
@@ -112,7 +117,7 @@ describe("routing golden corpus", () => {
       }
       for (const choice of [
         decision.primary,
-        decision.fallback,
+        ...fallbacks,
         ...(decision.kind === "review" ? [decision.builderFallback] : []),
       ]) {
         assert.ok(findPromptProfile(choice.vendor, choice.modelId, archetype, choice.effort));
