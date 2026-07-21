@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -108,6 +108,62 @@ describe("routerExtension", () => {
       beforeStartPersist + 1,
       "session_start should persist the restored mode",
     );
+  });
+
+  it("reads startMode from config file when env var is not set", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-router-config-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousMode = process.env.PI_ROUTER_MODE;
+
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempDir;
+      delete process.env.PI_ROUTER_MODE;
+
+      // Write config file with startMode = active
+      await writeFile(join(tempDir, "router-config.json"), JSON.stringify({ startMode: "active" }));
+
+      const hooks = new Map();
+      const appended = [];
+      routerExtension({
+        on: (event, handler) => hooks.set(event, handler),
+        registerCommand: () => {},
+        registerTool: () => {},
+        appendEntry: (customType, data) => appended.push({ customType, data }),
+      });
+
+      // Simulate startup with no prior state — should load from config
+      await hooks.get("session_start")(
+        {
+          type: "session_start",
+          reason: "startup",
+        },
+        {
+          cwd: "/repo",
+          sessionManager: {
+            getSessionId: () => "startup-session",
+            getBranch: () => [],
+          },
+          modelRegistry: { getAvailable: () => [], getAll: () => [] },
+          model: undefined,
+          getContextUsage: () => ({ tokens: 0, contextWindow: 128000 }),
+          ui: {
+            setStatus: () => {},
+            notify: () => {},
+            theme: { fg: (_color, text) => text },
+          },
+        },
+      );
+
+      // Verify state was set to active from config
+      const entries = appended.filter((e) => e.customType === "model-router-state");
+      assert.ok(entries.length > 0, "should persist router state from config");
+      assert.equal(entries[entries.length - 1].data.mode, "active", "should use startMode from config file");
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
+      else process.env.PI_ROUTER_MODE = previousMode;
+    }
   });
 
   it("acknowledges input immediately and shows the routing spinner before repository I/O finishes", async () => {

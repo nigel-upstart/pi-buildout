@@ -42,6 +42,16 @@ is `shadow`. The routing enablement mode selected with `/route shadow|active|off
 mode is preserved, not the task lease, selected model, or effort. Other new sessions still use `PI_ROUTER_MODE` when
 they have no persisted router state.
 
+Alternatively, create `~/.pi/agent/router-config.json`:
+
+```json
+{
+  "startMode": "active"
+}
+```
+
+Precedence: `PI_ROUTER_MODE` environment variable > config file > built-in default (`shadow`).
+
 ## Data and telemetry
 
 The lease is persisted as pi custom session entries. Local audit events are appended to:

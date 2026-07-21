@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -86,10 +87,36 @@ export function deterministicCheckCommand(command: string): string | undefined {
   return normalized.slice(0, 500);
 }
 
+type RouterConfigFile = {
+  startMode?: string;
+}
+
+async function readRouterConfig(): Promise<RouterConfigFile | undefined> {
+  try {
+    const configPath = join(getAgentDir(), "router-config.json");
+    const content = await readFile(configPath, "utf8");
+    const parsed = JSON.parse(content) as RouterConfigFile;
+    return parsed;
+  } catch {
+    // Config file missing or invalid JSON is not an error; use defaults.
+    return undefined;
+  }
+}
+
 function defaultMode(): RouterMode {
   const configured = process.env.PI_ROUTER_MODE;
   // Routing remains observational unless explicitly enabled; malformed configuration must not activate it.
   return configured === "off" || configured === "active" || configured === "shadow" ? configured : "shadow";
+}
+
+async function defaultModeAsync(): Promise<RouterMode> {
+  const envMode = process.env.PI_ROUTER_MODE;
+  if (envMode === "off" || envMode === "active" || envMode === "shadow") {
+    return envMode;
+  }
+  const config = await readRouterConfig();
+  const configMode = config?.startMode;
+  return configMode === "off" || configMode === "active" || configMode === "shadow" ? configMode : "shadow";
 }
 
 function assistantMessage(message: AgentMessage): message is AssistantMessage {
@@ -164,6 +191,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
   // across /clear. The task lease must still be discarded at the new-session
   // boundary.
   let modeForNextSession: RouterMode | undefined;
+  let configLoadedFromFile = false;
   let pendingInput: PendingInput | undefined;
   let nextParentTaskId: string | undefined;
   let lastRoute: LastRoute = {};
@@ -695,12 +723,27 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     attemptDisposition = "unknown";
-    state = restoreLeaseState(ctx.sessionManager.getBranch(), defaultMode());
+    let fallbackMode = defaultMode();
+    let usedConfigFile = false;
+    // On first startup, check config file for startMode preference when env var is not set
+    if (event.reason === "startup" && !configLoadedFromFile && !process.env.PI_ROUTER_MODE) {
+      configLoadedFromFile = true;
+      const configMode = await defaultModeAsync();
+      if (configMode !== fallbackMode) {
+        fallbackMode = configMode;
+        usedConfigFile = true;
+      }
+    } else if (event.reason === "startup" && !configLoadedFromFile) {
+      configLoadedFromFile = true;
+    }
+    state = restoreLeaseState(ctx.sessionManager.getBranch(), fallbackMode);
     nextParentTaskId = event.reason === "fork" ? state.active?.taskId : undefined;
     if (event.reason !== "reload") state = setHardBoundary(state, event.reason === "fork" ? "subagent" : "new_session");
     if (event.reason === "new" && modeForNextSession !== undefined) {
       state = { ...state, mode: modeForNextSession };
       modeForNextSession = undefined;
+      persistState();
+    } else if (usedConfigFile) {
       persistState();
     }
     const repository = await readRepositoryMetadata(pi, ctx.cwd);
