@@ -57,6 +57,59 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_implementation_plan"), true);
   });
 
+  it("carries routing enablement mode through /clear (session_shutdown → session_start)", async () => {
+    const hooks = new Map();
+    const appended = [];
+    routerExtension({
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: () => {},
+      registerTool: () => {},
+      appendEntry: (customType, data) => appended.push({ customType, data }),
+    });
+
+    // Simulate session_shutdown when /clear creates a new session.
+    hooks.get("session_shutdown")({
+      type: "session_shutdown",
+      reason: "new",
+    });
+
+    // After shutdown, session_start is called for the replacement session.
+    // The new session has no prior entries (fresh branch).
+    const beforeStartPersist = appended.filter((e) => e.customType === "model-router-state").length;
+
+    await hooks.get("session_start")(
+      {
+        type: "session_start",
+        reason: "new",
+      },
+      {
+        cwd: "/repo",
+        sessionManager: {
+          getSessionId: () => "new-session",
+          getBranch: () => [
+            // New session has no prior router state; should restore from modeForNextSession.
+          ],
+        },
+        modelRegistry: { getAvailable: () => [], getAll: () => [] },
+        model: undefined,
+        getContextUsage: () => ({ tokens: 0, contextWindow: 128000 }),
+        ui: {
+          setStatus: () => {},
+          notify: () => {},
+          theme: { fg: (_color, text) => text },
+        },
+      },
+    );
+
+    // Verify that session_start appended a router state entry (the mode was persisted).
+    const persistedEntriesAfter = appended.filter((e) => e.customType === "model-router-state");
+    assert.equal(
+      persistedEntriesAfter.length,
+      beforeStartPersist + 1,
+      "session_start should persist the restored mode",
+    );
+  });
+
   it("acknowledges input immediately and shows the routing spinner before repository I/O finishes", async () => {
     const hooks = new Map();
     const workingMessages = [];
