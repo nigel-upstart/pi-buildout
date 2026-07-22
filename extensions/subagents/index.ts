@@ -281,7 +281,15 @@ async function selectModel(
     };
   }
 
-  const available = ctx.modelRegistry.getAvailable();
+  // Classification is optional. A newer pi runtime can expose a registry
+  // facade before its runtime is initialized; do not make delegation fail on
+  // this best-effort lookup.
+  let available: ReturnType<typeof ctx.modelRegistry.getAvailable>;
+  try {
+    available = ctx.modelRegistry.getAvailable();
+  } catch {
+    return parentFallback(pi, ctx);
+  }
   if (available.length === 0) return parentFallback(pi, ctx);
   const catalog = formatModelCatalog(available);
   const fixedChoice = [

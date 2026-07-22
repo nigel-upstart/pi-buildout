@@ -1,14 +1,19 @@
-// `npm audit` for this repository's `@earendil-works/pi-*` devDependencies can surface a small,
-// dated set of high/critical advisories that live entirely inside a nested `npm-shrinkwrap.json`
-// published by `@earendil-works/pi-coding-agent`. A shrinkwrap file is a deliberate npm install
-// boundary (see `npm help npm-shrinkwrap-json`): this project's `overrides` field cannot reach
-// inside it, and bumping the pinned pi package does not help either — the same vulnerable nested
-// versions are still present in the latest version published at the time each entry below was
-// recorded. Each entry is scoped to an exact advisory, package, and node path so an unrelated or
-// newly reachable instance of the same package/advisory still fails the gate.
+// `npm audit` for this repository's devDependencies can surface a small, dated set of
+// high/critical advisories that are not immediately fixable by this project.
 //
-// Review and prune this allowlist whenever `@earendil-works/pi-*` is upgraded: if `npm audit`
-// output for an entry disappears, remove the entry.
+// Most entries live entirely inside a nested `npm-shrinkwrap.json` published by
+// `@earendil-works/pi-coding-agent`. A shrinkwrap file is a deliberate npm install boundary (see
+// `npm help npm-shrinkwrap-json`): this project's `overrides` field cannot reach inside it, and
+// bumping the pinned pi package does not help either — the same vulnerable nested versions are still
+// present in the latest version published at the time each entry below was recorded.
+//
+// Some entries may be temporarily held by this repository's `min-release-age` npm policy after a
+// patched package is published but before npm is allowed to install it. Each entry is scoped to an
+// exact advisory, package, and node path so an unrelated or newly reachable instance of the same
+// package/advisory still fails the gate.
+//
+// Review and prune this allowlist whenever `@earendil-works/pi-*` is upgraded or an embargoed fix
+// ages past `min-release-age`: if `npm audit` output for an entry disappears, remove the entry.
 import { execFileSync } from "node:child_process";
 
 const ALLOWLIST = [
@@ -27,6 +32,14 @@ const ALLOWLIST = [
     recordedAt: "2026-07-20",
     reason:
       "Locked by @earendil-works/pi-coding-agent's published npm-shrinkwrap.json through at least 0.80.10; no override reaches inside a shrinkwrapped subtree.",
+  },
+  {
+    package: "fast-uri",
+    advisoryUrl: "https://github.com/advisories/GHSA-v2hh-gcrm-f6hx",
+    nodePathPrefix: "node_modules/fast-uri",
+    recordedAt: "2026-07-22",
+    reason:
+      "Patched fast-uri 3.1.4 exists, but this repository's min-release-age policy blocks installing it until the release ages past five days; root dev-tooling path only.",
   },
 ];
 
@@ -68,7 +81,7 @@ for (const entry of blocking) {
 
 for (const { match } of accepted) {
   console.log(
-    `known upstream-locked advisory accepted: ${match.package} (${match.advisoryUrl}), recorded ${match.recordedAt} — ${match.reason}`,
+    `known reviewed advisory accepted: ${match.package} (${match.advisoryUrl}), recorded ${match.recordedAt} — ${match.reason}`,
   );
 }
 
