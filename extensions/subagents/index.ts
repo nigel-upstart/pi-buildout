@@ -10,7 +10,6 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  resolveCliModel,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -23,8 +22,10 @@ import {
   clampThinkingLevel,
   excludeCurrentDelegationTurn,
   extractTextContent,
+  findRequestedModel,
   formatModelCatalog,
   parseClassifierDecision,
+  parseModelRequest,
   truncateMiddle,
 } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
@@ -227,19 +228,17 @@ function resolveRequestedModel(
   ctx: ExtensionContext,
   request: string,
 ): { model?: PiModel; effort?: ThinkingLevel; error?: string } {
-  const result = resolveCliModel({ cliModel: request, modelRegistry: ctx.modelRegistry });
-  if (result.error || !result.model) return { error: result.error ?? `Model '${request}' was not found.` };
-  const resolvedModel = result.model;
-  const isAvailable = ctx.modelRegistry
-    .getAvailable()
-    .some((model) => model.provider === resolvedModel.provider && model.id === resolvedModel.id);
-  if (!isAvailable) return { error: `Model '${request}' did not resolve to an available registry entry.` };
+  const available = ctx.modelRegistry.getAvailable();
+  const parsed = parseModelRequest(request);
+  const result = findRequestedModel(parsed.reference, available, ctx.model?.provider);
+  if (!result.model) return { error: result.error ?? `Model '${request}' was not found.` };
+  const resolvedModel = result.model as unknown as Model<Api>;
   if (!ctx.modelRegistry.hasConfiguredAuth(resolvedModel)) {
     return { error: `Model '${resolvedModel.provider}/${resolvedModel.id}' is not authenticated.` };
   }
   return {
     model: resolvedModel,
-    ...(result.thinkingLevel && THINKING_LEVELS.includes(result.thinkingLevel) ? { effort: result.thinkingLevel } : {}),
+    ...(parsed.effort ? { effort: parsed.effort } : {}),
   };
 }
 
