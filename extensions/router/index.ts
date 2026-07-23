@@ -87,6 +87,35 @@ export function deterministicCheckCommand(command: string): string | undefined {
   return normalized.slice(0, 500);
 }
 
+// A hung classifier/selection call must never block the agent turn indefinitely. Ten seconds is
+// generous for the cheap classifier models this extension targets; past that we abort the
+// in-flight request (via the shared AbortSignal, so the underlying network call is actually
+// cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
+// selected instead of routing on a call that never returned.
+export const CLASSIFICATION_TIMEOUT_MS = 10_000;
+
+async function classifyWithTimeout(
+  ctx: ExtensionContext,
+  prompt: string,
+  taskSynopsis: SessionSynopsis,
+): Promise<{ classification: ClassificationResult; timedOut: boolean }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, CLASSIFICATION_TIMEOUT_MS);
+  try {
+    const classification = await classifyTaskWithPi({
+      ctx,
+      prompt,
+      synopsis: taskSynopsis,
+      signal: controller.signal,
+    });
+    return { classification, timedOut: controller.signal.aborted };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 type RouterConfigFile = {
   startMode?: string;
 };
@@ -826,25 +855,47 @@ export default function routerExtension(pi: ExtensionAPI): void {
       let requiresNewLease = pending?.gate.action === "new_task";
 
       if (pending?.gate.action === "classify_continuity") {
-        classification = await withRouterSpan(
+        const continuityResult = await withRouterSpan(
           ctx.sessionManager.getSessionId(),
           "router.classify_continuity",
           { "router.mode": state.mode },
-          () => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
+          () => classifyWithTimeout(ctx, event.prompt, currentSynopsis),
         );
-        const continuity = resolveContinuity(pending.gate.lease, classification.features, pending.cache);
-        requiresNewLease = continuity.action === "new_task";
-        lastRoute.boundaryReason = continuity.reason;
-        if (!requiresNewLease) active = pending.gate.lease;
+        classification = continuityResult.classification;
+        if (continuityResult.timedOut) {
+          ctx.ui.notify(
+            `Router continuity classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current task and model selection`,
+            "warning",
+          );
+          requiresNewLease = false;
+          active = pending.gate.lease;
+          lastRoute.boundaryReason = "classification timed out; retained current lease";
+        } else {
+          const continuity = resolveContinuity(pending.gate.lease, classification.features, pending.cache);
+          requiresNewLease = continuity.action === "new_task";
+          lastRoute.boundaryReason = continuity.reason;
+          if (!requiresNewLease) active = pending.gate.lease;
+        }
       }
 
-      if (requiresNewLease) {
-        classification ??= await withRouterSpan(
+      let classificationTimedOut = false;
+      if (requiresNewLease && !classification) {
+        const freshResult = await withRouterSpan(
           ctx.sessionManager.getSessionId(),
           "router.classify",
           { "router.mode": state.mode },
-          () => classifyTaskWithPi({ ctx, prompt: event.prompt, synopsis: currentSynopsis }),
+          () => classifyWithTimeout(ctx, event.prompt, currentSynopsis),
         );
+        classification = freshResult.classification;
+        classificationTimedOut = freshResult.timedOut;
+      }
+
+      if (requiresNewLease && classificationTimedOut) {
+        ctx.ui.notify(
+          `Router classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current model selection`,
+          "warning",
+        );
+      } else if (requiresNewLease && classification) {
         const routedClassification = classification;
         for (const attempt of routedClassification.attempts) {
           await record(
@@ -886,7 +937,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
             return result;
           },
         );
-        lastRoute = { ...lastRoute, classification, decision: routed.decision };
+        lastRoute = { ...lastRoute, classification: routedClassification, decision: routed.decision };
         if (routed.decision.kind === "unroutable") {
           await record(
             ctx,
@@ -932,7 +983,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           startedAt: now,
           updatedAt: now,
           archetype: routed.decision.archetype,
-          features: classification.features,
+          features: routedClassification.features,
           selected: routed.decision.primary,
           ...(priorSelection ? { previousSelection: priorSelection } : {}),
           fallbacks:
@@ -942,7 +993,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           modelSnapshotId: registrySnapshotId(routed.registry),
           policyVersion: routed.decision.policyVersion,
           lastPromptFingerprint: promptFingerprint(event.prompt),
-          reviewRequired: classification.archetype.requiresIndependentReview,
+          reviewRequired: routedClassification.archetype.requiresIndependentReview,
           reviewCompleted: false,
           repositoryLanguageBucket: languageBucket,
           contextSizeBucket: contextBucket,
@@ -963,19 +1014,19 @@ export default function routerExtension(pi: ExtensionAPI): void {
           "route_decision",
           {
             kind: routed.decision.kind,
-            confidence: classification.features.confidence,
-            risk: classification.features.risk,
-            failedClosed: classification.failedClosed,
+            confidence: routedClassification.features.confidence,
+            risk: routedClassification.features.risk,
+            failedClosed: routedClassification.failedClosed,
             reviewRequired: lease.reviewRequired === true,
             exclusions: routed.decision.exclusions,
             selection: routed.decision.primary,
             telemetryMature: routed.decision.telemetryMature,
             controlledHoldout: routed.decision.kind === "ordinary" ? routed.decision.controlledHoldout : false,
             fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
-            classifierOutput: classification.features,
-            primaryClassifierOutput: classification.primaryFeatures,
-            secondaryClassifierOutput: classification.secondaryFeatures,
-            classifierAttempts: classification.attempts,
+            classifierOutput: routedClassification.features,
+            primaryClassifierOutput: routedClassification.primaryFeatures,
+            secondaryClassifierOutput: routedClassification.secondaryFeatures,
+            classifierAttempts: routedClassification.attempts,
           },
           {
             taskId: lease.taskId,
