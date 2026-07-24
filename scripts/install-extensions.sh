@@ -5,7 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
-EXTENSIONS=(clear effort markdown-backlinks subagents)
+EXTENSIONS=(clear effort markdown-backlinks router subagents)
 PATCH_FILES=(
   dist/core/resource-loader.js
   dist/core/skill-management.js
@@ -95,12 +95,14 @@ for arg in "$@"; do
 done
 
 for extension in "${EXTENSIONS[@]}"; do
-  for file in index.ts helpers.ts; do
-    if [[ ! -f "$ROOT_DIR/extensions/$extension/$file" ]]; then
-      printf 'Missing packaged extension file: %s\n' "$ROOT_DIR/extensions/$extension/$file" >&2
-      exit 1
-    fi
-  done
+  if [[ ! -f "$ROOT_DIR/extensions/$extension/index.ts" ]]; then
+    printf 'Missing packaged extension entrypoint: %s\n' "$ROOT_DIR/extensions/$extension/index.ts" >&2
+    exit 1
+  fi
+  if [[ "$extension" != router && ! -f "$ROOT_DIR/extensions/$extension/helpers.ts" ]]; then
+    printf 'Missing packaged extension helper: %s\n' "$ROOT_DIR/extensions/$extension/helpers.ts" >&2
+    exit 1
+  fi
 done
 
 if ((APPLY_SKILLS_PATCH)); then
@@ -186,8 +188,27 @@ fi
 
 mkdir -p "$EXTENSION_DIR"
 for extension in "${EXTENSIONS[@]}"; do
-  mkdir -p "$EXTENSION_DIR/$extension"
-  find "$ROOT_DIR/extensions/$extension" -maxdepth 1 -type f -name '*.ts' ! -name '*.test.ts' -exec cp {} "$EXTENSION_DIR/$extension/" \;
+  extension_stage=$(mktemp -d "$EXTENSION_DIR/.${extension}.XXXXXX")
+  while IFS= read -r -d '' source_file; do
+    relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
+    mkdir -p "$extension_stage/$(dirname "$relative_file")"
+    cp "$source_file" "$extension_stage/$relative_file"
+  done < <(find "$ROOT_DIR/extensions/$extension" -type f -name '*.ts' ! -name '*.test.*' -print0)
+  extension_target="$EXTENSION_DIR/$extension"
+  extension_backup="$EXTENSION_DIR/.${extension}.backup.$$"
+  rm -rf "$extension_backup"
+  if [[ -e "$extension_target" ]]; then
+    mv "$extension_target" "$extension_backup"
+  fi
+  if mv "$extension_stage" "$extension_target"; then
+    rm -rf "$extension_backup"
+  else
+    rm -rf "$extension_target"
+    if [[ -e "$extension_backup" ]]; then
+      mv "$extension_backup" "$extension_target"
+    fi
+    exit 1
+  fi
 done
 
 if [[ -n "$PATCH_STAGE_DIR" ]]; then
