@@ -86,6 +86,20 @@ describe("ordinary route selection", () => {
     assert.notEqual(decision.primary.profileId, "");
   });
 
+  it("keeps stacked PR execution on frontier models at tuned high effort", () => {
+    const decision = selectOrdinaryRoute("stacked_pr_implementation", registry(), REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
+    assert.equal(decision.primary.modelId, "gpt-5.6-terra");
+    assert.equal(decision.primary.effort, "high");
+    assert.ok(decision.fallbacks.some((choice) => choice.modelId === "claude-opus-4-8"));
+    assert.ok(decision.fallbacks.every((choice) => choice.effort === "high"));
+    assert.ok(
+      [decision.primary, ...decision.fallbacks].every((choice) =>
+        /^(?:gpt-5\.6-(?:terra|sol)|claude-opus-4-8)$/.test(choice.modelId),
+      ),
+    );
+  });
+
   it("uses the exact generation-specific Google fallback when 3.5 is unavailable", () => {
     const models = [
       ...registry().filter((candidate) => candidate.modelId !== "gemini-3.5-flash"),

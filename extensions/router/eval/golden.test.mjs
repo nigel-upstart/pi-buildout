@@ -101,8 +101,16 @@ describe("routing golden corpus", () => {
       assert.notEqual(decision.kind, "unroutable", decision.reason);
       const fallbacks = decision.kind === "review" ? [decision.fallback] : decision.fallbacks;
       if (fixture.expected.primaryModel) assert.equal(decision.primary.modelId, fixture.expected.primaryModel);
+      if (fixture.expected.primaryEffort) assert.equal(decision.primary.effort, fixture.expected.primaryEffort);
       if (fixture.expected.fallbackModel) {
         assert.ok(fallbacks.some((choice) => choice.modelId === fixture.expected.fallbackModel));
+      }
+      if (fixture.expected.fallbackEffort) {
+        assert.ok(fallbacks.some((choice) => choice.effort === fixture.expected.fallbackEffort));
+      }
+      if (fixture.expected.allowedModels) {
+        const allowed = new Set(fixture.expected.allowedModels);
+        assert.ok([decision.primary, ...fallbacks].every((choice) => allowed.has(choice.modelId)));
       }
       if (fixture.expected.primaryVendor) assert.equal(decision.primary.vendor, fixture.expected.primaryVendor);
       if (fixture.expected.fallbackVendor) {

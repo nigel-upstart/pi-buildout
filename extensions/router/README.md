@@ -76,6 +76,9 @@ explicitly skips real-provider calls so local credentials do not make quality ch
 - New sessions, post-compaction turns, upstream-ref changes, and forks are hard boundaries.
 - Explicit model or effort changes bypass automatic routing until the next task boundary.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
+- Executing work across a dependent pull-request stack is distinct from planning one. The stack route is restricted to
+  exact frontier-generation IDs (`gpt-5.6-terra/high`, `claude-opus-4-8/high`, then `gpt-5.6-sol/high` availability
+  fallbacks), so routing cannot silently hand stack mutation to older GPT generations or the broader Sonnet tier.
 - A validated provider-diverse classifier result may serve as failover, but complete classification failure retains the
   current selection instead of manufacturing evidence for a premium route.
 - The request remains a native user message and is never paraphrased into system policy.

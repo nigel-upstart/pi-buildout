@@ -5,6 +5,7 @@ export const ARCHETYPES = [
   "exact_extraction",
   "deliberate_tool_workflow",
   "median_repository_implementation",
+  "stacked_pr_implementation",
   "terminal_heavy_implementation",
   "algorithmic_iterative_coding",
   "code_review",
@@ -35,6 +36,12 @@ export function deriveArchetype(features: TaskFeatures): ArchetypeDecision {
   } else if (features.reviewIntent) {
     archetype = "code_review";
     reasons.push("inferred review intent");
+  } else if (
+    features.workflowType === "coding_implementation" &&
+    (features.horizon === "two_to_ten_prs" || features.horizon === "eleven_to_hundred_prs")
+  ) {
+    archetype = "stacked_pr_implementation";
+    reasons.push(`coding implementation spans a ${features.horizon} stack`);
   } else if (
     features.workflowType === "implementation_planning" ||
     features.intent === "plan" ||

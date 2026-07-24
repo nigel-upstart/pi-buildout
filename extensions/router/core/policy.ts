@@ -2,7 +2,7 @@ import type { Archetype } from "./archetype.ts";
 import { MODEL_VENDORS } from "./profiles.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
-export const POLICY_VERSION = "router-policy-v3";
+export const POLICY_VERSION = "router-policy-v4";
 
 export type CandidateRef = {
   provider: string;
@@ -96,6 +96,12 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     primary: TERRA_MEDIUM,
     fallback: SONNET_HIGH,
     qualityFloor: 0.9,
+  },
+  stacked_pr_implementation: {
+    archetype: "stacked_pr_implementation",
+    primary: TERRA_HIGH,
+    fallback: [...OPUS_HIGH, ...SOL_HIGH],
+    qualityFloor: 0.92,
   },
   terminal_heavy_implementation: {
     archetype: "terminal_heavy_implementation",

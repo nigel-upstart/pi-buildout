@@ -179,6 +179,7 @@ per route:
 | Exact extraction, rigid schema              | precise model, low/medium effort                         | fast fallback                                                                       |
 | Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                    | same-family fallback, medium                                                        |
 | Median repository implementation (1 PR)     | strong coding model, medium effort                       | different-provider high-effort fallback                                             |
+| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort             | top different-provider agent, high; current-generation same-vendor fallback         |
 | Terminal-heavy implementation               | strong coding model, medium/high effort                  | different-provider high-effort fallback                                             |
 | Algorithmic/rapid iterative coding          | fast iterative model, medium effort                      | strong coding model, medium                                                         |
 | Code review                                 | closest non-builder-vendor reviewer ≥ builder ability    | candidate from the other non-builder vendor; fixed builder fallback after both fail |
@@ -191,10 +192,16 @@ The PR-count bands in the table above (`1 PR`, `2–10 PRs`, `11–100 PRs`) are
 [`core/features.ts`](../../extensions/router/core/features.ts) — a coarse classification taxonomy, not tunable
 thresholds — and archetype selection reads them in [`core/archetype.ts`](../../extensions/router/core/archetype.ts).
 Concrete model IDs, effort labels, and quality floors are a **configuration/registry concern**, resolved against pi's
-actual `ModelRegistry` at build time — not hardcoded into this spec. Planning and implementation are separate attempts
-with separate leases, success criteria, and telemetry: a multi-PR planning route emits a validated program (PR
-boundaries, dependency DAG, migration/rollout order, acceptance checks, risks, rollback points, and unknowns), then each
-approved PR is routed as its own implementation task.
+actual `ModelRegistry` at build time — not hardcoded into this spec.
+
+Planning and implementation remain separate attempts with separate leases, success criteria, and telemetry. A multi-PR
+planning route emits a validated program (PR boundaries, dependency DAG, migration/rollout order, acceptance checks,
+risks, rollback points, and unknowns). An ordinary approved PR is then its own implementation task. The exception is an
+immediate request to execute across an already coupled PR stack: branch ancestry, restacking, and cross-layer
+verification are shared mutable state, so splitting the request into independent leases loses the invariant the model
+must preserve. That request receives the stack implementation archetype. Its bootstrap policy is a strict
+current-generation allowlist at high (not maximum) effort; it excludes older generations even when those models remain
+eligible for ordinary deliberate workflows.
 
 ## Deterministic prompt compiler
 

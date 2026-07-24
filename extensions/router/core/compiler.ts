@@ -50,6 +50,8 @@ const ARCHETYPE_OUTPUT_CONTRACTS: Partial<Record<Archetype, string>> = {
   deliberate_tool_workflow:
     "Return the requested ordered procedure with human checkpoints explicit; if executing it, include a completion receipt.",
   median_repository_implementation: "Return the completed change or patch followed by concise verification evidence.",
+  stacked_pr_implementation:
+    "Return the completed stacked changes with branch/PR dependencies, commits, and per-layer verification made explicit.",
   terminal_heavy_implementation: "Return the diagnosis, minimal safe commands or change, and the verification result.",
   algorithmic_iterative_coding: "Return the final artifact and focused checks that validate its edge cases.",
   code_review: "Return only actionable findings with severity and evidence anchors, or explicitly report no findings.",

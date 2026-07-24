@@ -58,6 +58,7 @@ describe("classifier request", () => {
     const request = buildClassifierRequest("primary", "Implement it", synopsis);
     assert.equal(request.toolName, "report_task_features");
     assert.match(request.systemPrompt, /Never return or recommend a model/);
+    assert.match(request.systemPrompt, /pull-request stack is coding_implementation/);
     assert.match(request.userPrompt, /<untrusted_session_synopsis>/);
     assert.match(request.userPrompt, /<immediate_user_request>\nImplement it/);
     const injected = buildClassifierRequest(
@@ -86,6 +87,16 @@ describe("classifyTask", () => {
     assert.equal(result.failedClosed, false);
     assert.equal(secondaryCalls, 0);
     assert.equal(result.archetype.archetype, "median_repository_implementation");
+  });
+
+  it("distinguishes executing a pull-request stack from planning one", async () => {
+    const result = await classifyTask({
+      prompt: "Implement these dependent changes as a three-PR stack",
+      synopsis,
+      primary: transport(features({ horizon: "two_to_ten_prs" }), "openai"),
+      secondary: transport(features(), "anthropic"),
+    });
+    assert.equal(result.archetype.archetype, "stacked_pr_implementation");
   });
 
   it("escalates high risk to a different vendor and reconciles conservatively", async () => {

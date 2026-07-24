@@ -129,6 +129,31 @@
     }
   },
   {
+    "id": "stacked-pr-implementation-001",
+    "prompt": "Implement these three dependent changes as a pull-request stack, keeping each layer in its own branch and restacking before verification.",
+    "featureOverrides": {
+      "intent": "implement",
+      "workflowType": "coding_implementation",
+      "actionMode": "reversible_mutation",
+      "horizon": "two_to_ten_prs",
+      "toolDependence": "repository_agent",
+      "contextShape": "multi_file_repository",
+      "expectedFilesRead": 20,
+      "expectedFilesChanged": 9,
+      "expectedAgentTurns": 15,
+      "verificationStrength": "integration_tests",
+      "decompositionRecommended": true
+    },
+    "expected": {
+      "archetype": "stacked_pr_implementation",
+      "primaryModel": "gpt-5.6-terra",
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-4-8",
+      "fallbackEffort": "high",
+      "allowedModels": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "claude-opus-4-8"]
+    }
+  },
+  {
     "id": "implementation-plan-001",
     "prompt": "Create a six-PR migration plan with dependencies and rollback points.",
     "featureOverrides": {
