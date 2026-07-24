@@ -3,10 +3,16 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { cycleApplyMode, DESCRIPTIONS, THINKING_LEVELS, updateDefaultThinkingLevelJson } from "./helpers.ts";
+import {
+  cycleApplyMode,
+  DESCRIPTIONS,
+  parseThinkingLevelArgument,
+  THINKING_LEVELS,
+  updateDefaultThinkingLevelJson,
+} from "./helpers.ts";
 import type { ApplyMode, ThinkingLevel } from "./helpers.ts";
 
-export { cycleApplyMode, updateDefaultThinkingLevelJson } from "./helpers.ts";
+export { cycleApplyMode, parseThinkingLevelArgument, updateDefaultThinkingLevelJson } from "./helpers.ts";
 
 function applyModeLabel(mode: ApplyMode): string {
   return mode === "default" ? "Default + current session" : "Current session only";
@@ -35,6 +41,19 @@ export default function effortExtension(pi: ExtensionAPI) {
       if (ctx.mode !== "tui") {
         ctx.ui.notify("/effort requires TUI mode", "error");
         return;
+      }
+
+      const argument = parseThinkingLevelArgument(_args);
+      if (argument.kind === "level") {
+        pi.setThinkingLevel(argument.level);
+        ctx.ui.notify(`Thinking effort set to ${argument.level} for current session`, "info");
+        return;
+      }
+      if (argument.kind === "unknown") {
+        ctx.ui.notify(
+          `Unknown thinking effort "${argument.value}". Available levels: ${THINKING_LEVELS.join(", ")}`,
+          "warning",
+        );
       }
 
       const reportedLevel = pi.getThinkingLevel();
