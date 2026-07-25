@@ -7,7 +7,8 @@
 // These are pre-telemetry ordering priors measured on the DeepSWE `mini-swe-agent` harness.
 // `passRate` is a deterministic verifier outcome and is never the router's acceptance signal.
 
-export type EvidenceLanguageBucket = "go" | "python" | "typescript";
+/** Language buckets that carry DeepSWE rollout rows. Ruby and Kotlin are routable but unmeasured. */
+type EvidenceLanguageBucket = "go" | "python" | "typescript";
 
 export type EvidenceLanguagePrior = {
   passRate: number;
@@ -41,6 +42,24 @@ export type EvidencePriorRow = {
 };
 
 export const EVIDENCE_CAPTURE = "2026-07-25";
+
+/**
+ * Step-frugality rows from the SWE-bench Multilingual capture. The construct is a single-attempt
+ * resolve rate with median API calls across eight language splits, which is NOT comparable to the
+ * DeepSWE rollout outcomes above. These rows therefore never enter pass-rate scoring; they price the
+ * step term on surfaces where steps rather than tokens are the constraint, and they authorize the
+ * scoped frugal candidate. Only models this source retains under the generation-currency rule appear.
+ */
+export type FrugalityRow = {
+  modelId: string;
+  effort: string;
+  medianApiCalls: number;
+  resolveRate: number;
+};
+
+export const FRUGALITY_ROWS: readonly FrugalityRow[] = [
+  { modelId: "claude-opus-4-6", effort: "high", medianApiCalls: 23.6, resolveRate: 0.708 },
+];
 
 export const EVIDENCE_PRIOR_ROWS: readonly EvidencePriorRow[] = [
   {

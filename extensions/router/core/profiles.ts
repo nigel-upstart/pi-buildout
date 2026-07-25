@@ -45,6 +45,9 @@ function endpointIds(directId: string, bedrockPath: string, extra: readonly stri
 const OPUS_5_IDS = endpointIds("claude-opus-5", "anthropic.claude-opus-5");
 const FABLE_5_IDS = endpointIds("claude-fable-5", "anthropic.claude-fable-5");
 const SONNET_5_IDS = endpointIds("claude-sonnet-5", "anthropic.claude-sonnet-5", ["bedrock/anthropic.claude-sonnet-5"]);
+const OPUS_46_IDS = endpointIds("claude-opus-4-6", "anthropic.claude-opus-4-6-v1", ["claude-opus-4.6"]);
+const GPT_OSS_IDS = ["gpt-oss-120b", "openai.gpt-oss-120b", "openai.gpt-oss-120b-1:0"] as const;
+
 const HAIKU_IDS = ["claude-haiku-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4.5"] as const;
 
 const SHARED_CONSTRAINTS = [
@@ -69,6 +72,42 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     ],
     outputContract:
       "Return the requested result exactly; add verification evidence only when the requested format permits it.",
+    criticalConstraints: SHARED_CONSTRAINTS,
+    includeExamples: false,
+  },
+  {
+    // Bounded, non-agentic work only. This model is the corpus's cost floor with no agentic rollout
+    // evidence, a 128K window, a 16.4K output cap, and no image input, so its profile stays narrow.
+    id: "openai-gpt-oss-bounded-v1",
+    version: 1,
+    vendor: "openai",
+    modelIds: GPT_OSS_IDS,
+    archetypes: ["fast_classification", "exact_extraction"],
+    efforts: ["low", "medium", "high"],
+    executionSurface: "pi-coding-agent",
+    guidelines: [
+      "Answer the bounded question or produce the requested structure directly, with no exploratory tool work.",
+      "When a schema is supplied, emit exactly that schema and nothing else.",
+    ],
+    outputContract: "Return only the requested classification or structured record.",
+    criticalConstraints: SHARED_CONSTRAINTS,
+    includeExamples: false,
+  },
+  {
+    // Scoped frugal profile. Retained for measured step frugality rather than capability, so it is
+    // limited to the archetypes where fewer steps is the point.
+    id: "anthropic-claude-opus-4-6-frugal-v1",
+    version: 1,
+    vendor: "anthropic",
+    modelIds: OPUS_46_IDS,
+    archetypes: ["median_repository_implementation", "long_context_synthesis"],
+    efforts: ["medium", "high"],
+    executionSurface: "pi-coding-agent",
+    guidelines: [
+      "Work in as few tool calls as the task allows: batch related reads, and avoid re-reading evidence already gathered.",
+      "Inspect the relevant evidence before changing files, then verify the change without repeating the full survey.",
+    ],
+    outputContract: "Complete the requested change and return a compact verification receipt.",
     criticalConstraints: SHARED_CONSTRAINTS,
     includeExamples: false,
   },

@@ -2785,5 +2785,24 @@
         "estimateConfidence": 79.0
       }
     }
-  ]
+  ],
+  "frugality": {
+    "source": "swebench_multilingual",
+    "construct": "single-attempt mini-swe-agent resolve rate and median API calls over 300 tasks in 8 language splits",
+    "note": "Not comparable to DeepSWE passed or CursorBench score_pct. Used only for the step-frugality term and for scoped authorization. Only models this source retains under the generation-currency rule appear here; no prior-generation submission is used as a stand-in for a current model.",
+    "rows": [
+      {
+        "modelId": "claude-opus-4-6",
+        "effort": "high",
+        "medianApiCalls": 23.6,
+        "resolveRate": 0.708,
+        "perLanguageMedianApiCalls": {
+          "go": 22.0,
+          "python": null,
+          "typescript": 22.0,
+          "ruby": 19.5
+        }
+      }
+    ]
+  }
 }

@@ -1,4 +1,4 @@
-import { EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
+import { EVIDENCE_PRIOR_ROWS, FRUGALITY_ROWS } from "./evidence-data.ts";
 import type { EvidenceLanguagePrior, EvidencePriorRow } from "./evidence-data.ts";
 
 export type { EvidencePriorRow } from "./evidence-data.ts";
@@ -144,6 +144,12 @@ export function abilityFromConsensus(consensusBest: number): AbilityTier {
 const CONSENSUS_ONLY_ABILITY: Readonly<Record<string, AbilityTier>> = {
   // Claude Haiku 4.5 consensus performance_best 36.5 (single source, non-agentic scope).
   "claude-haiku-4-5": 1,
+  // Claude Opus 4.6 consensus performance_best 57.7. Retained as the scoped frugal candidate rather
+  // than as a general tier; it is two bands below claude-opus-5 at high effort.
+  "claude-opus-4-6": 2,
+  // gpt-oss-120b consensus performance_best 36.5 with the corpus's top cost-efficiency percentile.
+  // Reachable only on Amazon Bedrock, and it has no agentic rollout evidence at all.
+  "gpt-oss-120b": 1,
 };
 
 export function evidenceAbility(modelId: string, effort: EffortLevel): AbilityTier | undefined {
@@ -199,8 +205,11 @@ export const EFFORT_POLICIES: readonly EffortPolicy[] = [
     modelId: "gpt-5.6-luna",
     saturationEffort: "max",
     saturationReason: "cliffed curve: pass 1.5 low, 11.3 medium, 44.2 high, 56.9 xhigh, 67.2 max",
-    agenticMinimumEffort: "max",
-    agenticMinimumReason: "low and medium break previously passing tests at 27.7% and 23.5%",
+    // The regression cliff is below high, not below max: breakage falls from 23.5% at medium to 9.1%
+    // at high, which is comparable to gpt-5.6-terra at high (9.3%) and is permitted on the same basis.
+    agenticMinimumEffort: "high",
+    agenticMinimumReason:
+      "low and medium break previously passing tests at 27.7% and 23.5%; high measures 9.1% and is permitted",
   },
   {
     modelId: "claude-fable-5",
@@ -299,6 +308,10 @@ export function authorizeEffort(modelId: string, effort: EffortLevel, context: E
   return { authorized: true };
 }
 
+export function frugalityPrior(modelId: string, effort: EffortLevel): number | undefined {
+  return FRUGALITY_ROWS.find((row) => row.modelId === modelId && row.effort === effort)?.medianApiCalls;
+}
+
 export type EvidenceCostWeights = {
   developerWaitValuePerMs: number;
   humanInterventionCost: number;
@@ -307,6 +320,13 @@ export type EvidenceCostWeights = {
   regressionBreakCost: number;
   /** Priced only for unattended work, where a non-deterministic pass is not usable. */
   nondeterminismCost: number;
+  /**
+   * Priced per agent step, and only on quota-constrained surfaces. On billed-token routes step count
+   * is already inside cost per pass, so pricing it again would double count. On a flat-rate
+   * subscription surface tokens are not the cost at all — premium requests are — so step frugality is
+   * the only signal available there.
+   */
+  stepCostOnQuotaSurface: number;
 };
 
 export type EvidenceScoreContext = {
@@ -315,6 +335,11 @@ export type EvidenceScoreContext = {
   unattended: boolean;
   /** Multiplies the wall-time term for foreground developer loops. */
   waitMultiplier: number;
+  /**
+   * True when the eligible route for this task bills per request or seat rather than per token, so
+   * expected token cost carries no signal and step count is the binding constraint.
+   */
+  quotaConstrained: boolean;
   /**
    * High ambiguity or high complexity work. Selects the hard-task prior, which is where the
    * measured vendor differences are largest: on hard Go tasks claude-opus-5 at high effort solves
@@ -332,6 +357,7 @@ export type EvidenceScore = {
     retryCost: number;
     regressionBreakCost: number;
     nondeterminismCost: number;
+    stepCost: number;
   };
   passRateUsed: number;
   /** The language whose measured pass rate was applied, absent when substitution was not authorized. */
@@ -373,9 +399,18 @@ export function scoreEvidencePrior(
     retryCost: weights.retryCost * row.repeatFlakyRate,
     regressionBreakCost: context.mutatesRepository ? weights.regressionBreakCost * regressionBreakRate : 0,
     nondeterminismCost: context.unattended ? weights.nondeterminismCost * (1 - row.repeatAllPassRate) : 0,
+    stepCost: context.quotaConstrained
+      ? weights.stepCostOnQuotaSurface * (frugalityPrior(row.modelId, row.effort as EffortLevel) ?? row.medianSteps)
+      : 0,
   };
+  const score = Object.values(components).reduce((total, value) => total + value, 0);
+  // A non-finite score would sort arbitrarily and silently mis-route, so refuse it. This catches a
+  // missing or non-numeric weight at the first call rather than at ranking time.
+  if (!Number.isFinite(score)) {
+    throw new Error(`evidence score for ${row.modelId}@${row.effort} is not finite; check the cost weights`);
+  }
   return {
-    score: Object.values(components).reduce((total, value) => total + value, 0),
+    score,
     components,
     passRateUsed: passRate,
     languageUsed: substitutePassRate ? context.language : undefined,

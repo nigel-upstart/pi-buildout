@@ -55,6 +55,7 @@ type ExclusionCode =
   | "effort_unsupported"
   | "effort_unauthorized"
   | "thrash_guard"
+  | "scope_unmet"
   | "profile_missing"
   | "duplicate_model"
   | "fallback_vendor";
@@ -87,6 +88,8 @@ export type RouteChoice = {
   endpointBlendedCost?: number;
   /** Authorized as a retry only; never placed in the primary slot. */
   escalationOnly?: boolean;
+  /** Authorized only where step count rather than token cost is the binding constraint. */
+  scopedFrugal?: boolean;
   score?: number;
   scoreComponents?: RouteScoreComponents;
   evidenceScore?: number;
@@ -172,6 +175,9 @@ const DEFAULT_EVIDENCE_WEIGHTS: EvidenceCostWeights = {
   ...DEFAULT_COST_WEIGHTS,
   regressionBreakCost: 40,
   nondeterminismCost: 15,
+  // Sized so a 25-step difference is worth about a dollar of expected completion cost, which is the
+  // scale at which premium-request quota differences start to matter.
+  stepCostOnQuotaSurface: 0.04,
 };
 
 /** Foreground developer loops price wall time far higher than background work. */
@@ -202,12 +208,18 @@ export type RoutingContext = {
   unattended: boolean;
   /** Foreground developer loop, where wall time dominates. */
   foreground: boolean;
+  /**
+   * Set when every eligible endpoint for the task bills per request or seat rather than per token.
+   * Token cost then carries no signal, so step frugality is priced instead.
+   */
+  quotaConstrained: boolean;
 };
 
 const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
   hardTask: false,
   unattended: false,
   foreground: false,
+  quotaConstrained: false,
 };
 
 /**
@@ -218,6 +230,7 @@ const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
 export function deriveRoutingContext(
   features: Pick<TaskFeatures, "ambiguity" | "interactivity">,
   languageBuckets: readonly string[],
+  registry: readonly RegistryModelSnapshot[] = [],
 ): RoutingContext {
   const language = resolveEvidenceLanguage(languageBuckets);
   return {
@@ -228,8 +241,21 @@ export function deriveRoutingContext(
     // Autonomous work cannot rely on a human noticing a non-deterministic pass.
     unattended: features.interactivity === "autonomous",
     foreground: features.interactivity === "developer_loop",
+    quotaConstrained: isQuotaConstrained(registry),
   };
 }
+
+/**
+ * True when every available endpoint bills per request or seat rather than per token. Detected from
+ * the registry rather than configured, because it is a property of which providers are actually
+ * reachable: a Copilot-only environment has no token-cost signal to rank with.
+ */
+function isQuotaConstrained(registry: readonly RegistryModelSnapshot[]): boolean {
+  const available = registry.filter((model) => model.available);
+  return available.length > 0 && available.every((model) => FLAT_RATE_PROVIDERS.has(model.provider));
+}
+
+const FLAT_RATE_PROVIDERS = new Set(["github-copilot"]);
 
 function evidenceScoreContext(archetype: Archetype, context: RoutingContext): EvidenceScoreContext {
   return {
@@ -238,6 +264,7 @@ function evidenceScoreContext(archetype: Archetype, context: RoutingContext): Ev
     unattended: context.unattended,
     waitMultiplier: context.foreground ? FOREGROUND_WAIT_MULTIPLIER : 1,
     hardTask: context.hardTask,
+    quotaConstrained: context.quotaConstrained,
   };
 }
 
@@ -304,6 +331,17 @@ function evaluateCandidate(
     return undefined;
   }
   const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
+  // A scoped frugal candidate exists for surfaces where token cost carries no signal or where the
+  // window is tight. Outside those conditions it is strictly worse than the current generation, so it
+  // is excluded rather than left to rank late.
+  if (ref.scopedFrugal === true && !context.quotaConstrained && !frugalityWarranted(ref, registry, requirements)) {
+    exclusions.push({
+      candidate: key,
+      code: "scope_unmet",
+      detail: "frugal-scoped candidate requires a quota-billed surface or constrained context headroom",
+    });
+    return undefined;
+  }
   const authorization = authorizeEffort(ref.logicalModelId, ref.effort, {
     allowSuperSaturation: policy.allowSuperSaturation,
     mutatesRepository: policy.mutatesRepository,
@@ -385,8 +423,23 @@ function evaluateCandidate(
     endpointTier: ref.endpointTier,
     ...(ref.flatRate ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
     ...(ref.escalationOnly ? { escalationOnly: true } : {}),
+    ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
     rankReason: "bootstrap",
   };
+}
+
+/**
+ * Context headroom is "constrained" when the task estimate already consumes most of what the endpoint
+ * can offer. A frugal model earns its place there because fewer steps means a lower peak context.
+ */
+function frugalityWarranted(
+  ref: CandidateRef,
+  registry: readonly RegistryModelSnapshot[],
+  requirements: RouteRequirements,
+): boolean {
+  const model = findSnapshot(ref, registry);
+  if (!model) return false;
+  return requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.5);
 }
 
 function deduplicateChoices(choices: readonly RouteChoice[], exclusions: CandidateExclusion[]): RouteChoice[] {
@@ -509,6 +562,12 @@ function orderGroups(
     });
     const ordered = controlledHoldout ? scored : scored.sort((left, right) => left.score - right.score);
     return { choices: ordered.flatMap((entry) => entry.endpoints), mature: true, controlledHoldout };
+  }
+
+  // Archetypes the corpus does not measure keep their declared order: an agentic pass rate is not a
+  // proxy for single-shot classification or schema extraction quality.
+  if (!BOOTSTRAP_ROUTE_POLICIES[archetype].evidenceRanked) {
+    return { mature: false, controlledHoldout: false, choices: groups.flatMap((group) => group.endpoints) };
   }
 
   // Pre-telemetry ordering uses the measured evidence priors rather than policy list order, so a

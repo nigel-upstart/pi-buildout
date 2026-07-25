@@ -314,10 +314,15 @@ describe("ordinary route selection", () => {
     assert.equal(decision.primary.modelId, "gpt-5.6-sol");
     assert.equal(decision.primary.rankReason, "evidence_prior");
 
-    const matureSamples = [
-      ...samples,
-      { ...samples[0], provider: "anthropic", modelId: "claude-opus-5", p75ModelAndToolCost: 1 },
-    ];
+    // Maturity requires a comparable sample for every eligible group, so derive them from the
+    // evidence-ordered decision rather than hand-listing candidates.
+    const matureSamples = [decision.primary, ...decision.fallbacks].map((choice) => ({
+      ...samples[0],
+      provider: choice.provider,
+      modelId: choice.modelId,
+      // Make claude-opus-5 the cheapest so telemetry demonstrably reorders away from the prior order.
+      p75ModelAndToolCost: choice.logicalModelId === "claude-opus-5" ? 1 : 100,
+    }));
     const mature = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS, matureSamples);
     assert.equal(mature.kind, "ordinary");
     assert.equal(mature.telemetryMature, true);
@@ -544,5 +549,99 @@ describe("weakly evidenced language tendencies", () => {
     assert.equal(kotlin.kind, "ordinary");
     assert.equal(kotlin.primary.modelId, unmeasured.primary.modelId);
     assert.equal(kotlin.primary.effort, unmeasured.primary.effort);
+  });
+});
+
+describe("balanced tier and scoped frugal candidate", () => {
+  function withExtras() {
+    return [
+      ...registry(),
+      model("amazon-bedrock", "openai.gpt-oss-120b", "openai", 128_000),
+      model("anthropic", "claude-opus-4-6", "anthropic"),
+      model("github-copilot", "claude-opus-4.6", "anthropic"),
+    ];
+  }
+
+  it("keeps non-agentic archetypes on their declared order despite agentic priors", () => {
+    // The corpus does not measure classification or extraction, so a multi-step repository pass rate
+    // must not reorder these pools.
+    const classification = selectOrdinaryRoute("fast_classification", withExtras(), REQUIREMENTS);
+    assert.equal(classification.kind, "ordinary");
+    assert.equal(classification.primary.modelId, "gpt-5.6-luna");
+    assert.equal(classification.primary.effort, "low");
+    assert.equal(classification.primary.rankReason, "bootstrap");
+
+    const extraction = selectOrdinaryRoute("exact_extraction", withExtras(), REQUIREMENTS);
+    assert.equal(extraction.primary.modelId, "gpt-5.6-terra");
+    assert.equal(extraction.primary.effort, "medium");
+    assert.equal(extraction.primary.rankReason, "bootstrap");
+  });
+
+  it("authorizes gpt-oss-120b for bounded work only, and only on its Bedrock route", () => {
+    const extraction = selectOrdinaryRoute("exact_extraction", withExtras(), REQUIREMENTS);
+    const oss = [extraction.primary, ...extraction.fallbacks].find(
+      (choice) => choice.logicalModelId === "gpt-oss-120b",
+    );
+    assert.ok(oss, "gpt-oss-120b must be an authorized extraction fallback");
+    assert.equal(oss.provider, "amazon-bedrock");
+    // An open-weight model has no first-party hosted route, so it has no manufacturer tier.
+    assert.equal(oss.endpointTier, "resale");
+
+    // It is not authorized for repository-mutating work at all.
+    const mutating = selectOrdinaryRoute("median_repository_implementation", withExtras(), REQUIREMENTS);
+    assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "gpt-oss-120b"));
+  });
+
+  it("admits the balanced mid tier as fallbacks without letting it take a mutating primary", () => {
+    const median = selectOrdinaryRoute("median_repository_implementation", withExtras(), REQUIREMENTS);
+    const chain = [median.primary, ...median.fallbacks].map((choice) => `${choice.logicalModelId}@${choice.effort}`);
+    assert.ok(chain.includes("gpt-5.6-terra@high"), "terra@high should be an authorized mid fallback");
+    assert.equal(median.primary.logicalModelId, "gpt-5.6-sol");
+
+    const algorithmic = selectOrdinaryRoute("algorithmic_iterative_coding", withExtras(), REQUIREMENTS);
+    const algoChain = [algorithmic.primary, ...algorithmic.fallbacks].map(
+      (choice) => `${choice.logicalModelId}@${choice.effort}`,
+    );
+    assert.ok(algoChain.includes("gpt-5.6-luna@high"), "luna@high should be authorized above its regression cliff");
+    assert.ok(
+      algoChain.every((entry) => !entry.startsWith("gpt-5.6-luna@low") && !entry.startsWith("gpt-5.6-luna@medium")),
+      "luna below high stays barred from mutating work",
+    );
+  });
+
+  it("excludes the frugal scoped candidate unless steps are the binding constraint", () => {
+    const roomy = selectOrdinaryRoute("median_repository_implementation", withExtras(), REQUIREMENTS);
+    assert.ok(
+      [roomy.primary, ...roomy.fallbacks].every((choice) => choice.logicalModelId !== "claude-opus-4-6"),
+      "a roomy, token-billed route has no reason to use the frugal candidate",
+    );
+    assert.ok(roomy.exclusions.some((exclusion) => exclusion.code === "scope_unmet"));
+
+    // Constrained headroom: the estimate consumes more than half the window.
+    const tight = selectOrdinaryRoute("median_repository_implementation", withExtras(), {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 600_000,
+    });
+    assert.equal(tight.kind, "ordinary");
+    assert.ok(
+      [tight.primary, ...tight.fallbacks].some((choice) => choice.logicalModelId === "claude-opus-4-6"),
+      "constrained headroom authorizes the frugal candidate",
+    );
+  });
+
+  it("prices steps instead of tokens when every eligible endpoint is flat rate", () => {
+    const copilotOnly = [
+      model("github-copilot", "claude-opus-4.6", "anthropic"),
+      model("github-copilot", "claude-haiku-4.5", "anthropic"),
+      model("github-copilot", "gpt-5.5", "openai"),
+    ];
+    const context = deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["go"], copilotOnly);
+    assert.equal(context.quotaConstrained, true);
+    // A mixed registry is not quota constrained, because a token-billed route remains available.
+    assert.equal(
+      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["go"], withExtras())
+        .quotaConstrained,
+      false,
+    );
   });
 });

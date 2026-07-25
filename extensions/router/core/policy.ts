@@ -34,6 +34,11 @@ export type CandidateRef = {
    * to make it any archetype's default.
    */
   escalationOnly?: boolean;
+  /**
+   * Scoped frugal candidate: authorized only where step count rather than token cost is the binding
+   * constraint, namely a quota-billed surface or tight context headroom.
+   */
+  scopedFrugal?: boolean;
   allowAlias: boolean;
   restricted: boolean;
 };
@@ -105,6 +110,28 @@ const MODEL_ENDPOINTS: readonly ModelEndpointPolicy[] = [
     backups: [{ provider: "amazon-bedrock", modelId: "openai.gpt-5.6-sol", tier: "resale" }],
   },
   { modelId: "gpt-5.6-terra", vendor: "openai", backups: [] },
+  {
+    // Open-weight OpenAI model reachable only through Amazon Bedrock, so its "manufacturer" tier is
+    // empty and the Bedrock route is all there is. 128K window and no image input.
+    modelId: "gpt-oss-120b",
+    vendor: "openai",
+    backups: [
+      { provider: "amazon-bedrock", modelId: "openai.gpt-oss-120b", tier: "resale" },
+      { provider: "amazon-bedrock", modelId: "openai.gpt-oss-120b-1:0", tier: "resale" },
+    ],
+  },
+  {
+    // Scoped frugal candidate. Retained for its measured step frugality (23.6 median API calls
+    // against 38-68 for the other retained submissions in that source), which matters on
+    // quota-billed surfaces and under tight context headroom, not for general capability.
+    modelId: "claude-opus-4-6",
+    vendor: "anthropic",
+    backups: [
+      { provider: "amazon-bedrock", modelId: "global.anthropic.claude-opus-4-6-v1", tier: "resale" },
+      { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-6-v1", tier: "resale" },
+      { provider: "github-copilot", modelId: "claude-opus-4.6", tier: "resale", flatRate: true },
+    ],
+  },
   { modelId: "gpt-5.6-luna", vendor: "openai", backups: [] },
   {
     modelId: "gpt-5.5",
@@ -113,6 +140,9 @@ const MODEL_ENDPOINTS: readonly ModelEndpointPolicy[] = [
   },
   { modelId: "gemini-3.6-flash", vendor: "google", backups: [] },
 ];
+
+/** Models with no first-party hosted endpoint. Their vendor does not operate a route for them. */
+const MODELS_WITHOUT_MANUFACTURER_ROUTE = new Set(["gpt-oss-120b"]);
 
 function endpointPolicy(modelId: string): ModelEndpointPolicy {
   const policy = MODEL_ENDPOINTS.find((entry) => entry.modelId === modelId);
@@ -154,12 +184,16 @@ function candidates(modelId: string, effort: EffortLevel): CandidateRef[] {
     allowAlias: false,
     restricted: false,
   } as const;
-  const manufacturer: CandidateRef[] = MANUFACTURER_PROVIDERS[policy.vendor].map((provider) => ({
-    ...base,
-    provider,
-    endpointTier: "manufacturer",
-    flatRate: false,
-  }));
+  // Open-weight models have no first-party hosted route, so they legitimately have no manufacturer
+  // tier; their resale endpoints are the only ones that exist.
+  const manufacturer: CandidateRef[] = MODELS_WITHOUT_MANUFACTURER_ROUTE.has(modelId)
+    ? []
+    : MANUFACTURER_PROVIDERS[policy.vendor].map((provider) => ({
+        ...base,
+        provider,
+        endpointTier: "manufacturer",
+        flatRate: false,
+      }));
   const backups: CandidateRef[] = [...policy.backups]
     .sort((left, right) => ENDPOINT_TIERS.indexOf(left.tier) - ENDPOINT_TIERS.indexOf(right.tier))
     .map((backup) => ({
@@ -189,9 +223,13 @@ function legacyOpenaiCandidates(modelId: string, effort: EffortLevel): Candidate
 }
 
 const LUNA_LOW = candidates("gpt-5.6-luna", "low");
+const LUNA_HIGH = candidates("gpt-5.6-luna", "high");
 const LUNA_MAX = candidates("gpt-5.6-luna", "max");
 const TERRA_MEDIUM = candidates("gpt-5.6-terra", "medium");
+const TERRA_HIGH = candidates("gpt-5.6-terra", "high");
 const TERRA_MAX = candidates("gpt-5.6-terra", "max");
+const GPT_OSS_HIGH = candidates("gpt-oss-120b", "high");
+const SOL_LOW = candidates("gpt-5.6-sol", "low");
 const SOL_MEDIUM = candidates("gpt-5.6-sol", "medium");
 const SOL_HIGH = candidates("gpt-5.6-sol", "high");
 const SOL_MAX = candidates("gpt-5.6-sol", "max");
@@ -204,6 +242,7 @@ const OPUS_HIGH = candidates("claude-opus-5", "high");
 const OPUS_XHIGH = candidates("claude-opus-5", "xhigh");
 const OPUS_MAX = candidates("claude-opus-5", "max");
 const FABLE_XHIGH = candidates("claude-fable-5", "xhigh");
+const OPUS_46_HIGH = candidates("claude-opus-4-6", "high").map((ref) => ({ ...ref, scopedFrugal: true }));
 const GEMINI_HIGH = candidates("gemini-3.6-flash", "high");
 
 export type BootstrapRoutePolicy = {
@@ -225,6 +264,13 @@ export type BootstrapRoutePolicy = {
   /** Whether routes for this archetype are expected to mutate a repository. */
   mutatesRepository: boolean;
   /**
+   * Whether the measured agentic priors may reorder this archetype's pool. False for archetypes whose
+   * task type the corpus does not measure: a multi-step repository pass rate says nothing about
+   * single-shot classification or schema extraction, so those keep their declared order and use the
+   * pool only for availability.
+   */
+  evidenceRanked: boolean;
+  /**
    * Deliberate human prior that outranks the evidence cost objective for this archetype's first
    * attempt. Used only where the cost of a bad result is not paid inside the task: a defective plan
    * or a wrong high-risk verdict propagates into many downstream pull requests, so these archetypes
@@ -238,38 +284,42 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   fast_classification: {
     archetype: "fast_classification",
     primary: LUNA_LOW,
-    fallback: HAIKU_LOW,
+    fallback: [...HAIKU_LOW, ...TERRA_MEDIUM, ...GPT_OSS_HIGH],
     qualityFloor: 0.96,
     deterministicPassFloor: 0.96,
     allowSuperSaturation: false,
     mutatesRepository: false,
+    evidenceRanked: false,
   },
   exact_extraction: {
     archetype: "exact_extraction",
     primary: TERRA_MEDIUM,
-    fallback: HAIKU_LOW,
+    fallback: [...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH],
     qualityFloor: 0.98,
     deterministicPassFloor: 0.98,
     allowSuperSaturation: false,
     mutatesRepository: false,
+    evidenceRanked: false,
   },
   deliberate_tool_workflow: {
     archetype: "deliberate_tool_workflow",
     primary: SOL_MEDIUM,
-    fallback: [...SOL_HIGH, ...GPT_54_MEDIUM],
+    fallback: [...SOL_HIGH, ...SOL_LOW, ...GPT_54_MEDIUM],
     qualityFloor: 0.8,
     deterministicPassFloor: 0.61,
     allowSuperSaturation: false,
     mutatesRepository: false,
+    evidenceRanked: true,
   },
   median_repository_implementation: {
     archetype: "median_repository_implementation",
     primary: OPUS_MEDIUM,
-    fallback: [...SOL_HIGH, ...OPUS_HIGH],
+    fallback: [...SOL_HIGH, ...OPUS_HIGH, ...TERRA_HIGH, ...OPUS_46_HIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.68,
     allowSuperSaturation: false,
     mutatesRepository: true,
+    evidenceRanked: true,
   },
   stacked_pr_implementation: {
     archetype: "stacked_pr_implementation",
@@ -279,24 +329,27 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     deterministicPassFloor: 0.72,
     allowSuperSaturation: false,
     mutatesRepository: true,
+    evidenceRanked: true,
   },
   terminal_heavy_implementation: {
     archetype: "terminal_heavy_implementation",
     primary: SOL_HIGH,
-    fallback: [...OPUS_HIGH, ...TERRA_MAX],
+    fallback: [...OPUS_HIGH, ...TERRA_MAX, ...TERRA_HIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.69,
     allowSuperSaturation: false,
     mutatesRepository: true,
+    evidenceRanked: true,
   },
   algorithmic_iterative_coding: {
     archetype: "algorithmic_iterative_coding",
     primary: SOL_MEDIUM,
-    fallback: [...OPUS_MEDIUM, ...GEMINI_HIGH],
+    fallback: [...OPUS_MEDIUM, ...GEMINI_HIGH, ...TERRA_HIGH, ...LUNA_HIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.61,
     allowSuperSaturation: false,
     mutatesRepository: true,
+    evidenceRanked: true,
   },
   code_review: {
     archetype: "code_review",
@@ -306,6 +359,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     deterministicPassFloor: 0.72,
     allowSuperSaturation: false,
     mutatesRepository: false,
+    evidenceRanked: true,
   },
   implementation_planning: {
     archetype: "implementation_planning",
@@ -315,6 +369,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     deterministicPassFloor: 0.72,
     allowSuperSaturation: false,
     mutatesRepository: false,
+    evidenceRanked: true,
     pinnedPrimary: {
       logicalModelId: "claude-opus-5",
       effort: "high",
@@ -330,6 +385,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     deterministicPassFloor: 0.72,
     allowSuperSaturation: true,
     mutatesRepository: false,
+    evidenceRanked: true,
     pinnedPrimary: {
       logicalModelId: "claude-opus-5",
       effort: "xhigh",
@@ -340,11 +396,12 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   long_context_synthesis: {
     archetype: "long_context_synthesis",
     primary: OPUS_MEDIUM,
-    fallback: [...SOL_HIGH, ...GPT_55_XHIGH],
+    fallback: [...SOL_HIGH, ...GPT_55_XHIGH, ...OPUS_46_HIGH],
     qualityFloor: 0.72,
     deterministicPassFloor: 0.68,
     allowSuperSaturation: false,
     mutatesRepository: false,
+    evidenceRanked: true,
   },
   highest_risk_advisory: {
     archetype: "highest_risk_advisory",
@@ -354,6 +411,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     deterministicPassFloor: 0.73,
     allowSuperSaturation: true,
     mutatesRepository: false,
+    evidenceRanked: true,
     pinnedPrimary: {
       logicalModelId: "claude-opus-5",
       effort: "max",
