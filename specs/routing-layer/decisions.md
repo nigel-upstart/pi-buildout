@@ -253,5 +253,15 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     overflow and cost per pass. Google therefore contributes a single reviewer rung, and a builder above that band
     produces a recorded ceiling mismatch rather than a silent downgrade.
 
+11. **Language affinity is scoped to what each source can support.** A declarative per-language table records, for every
+    recognized language, whether its measured pass rate may enter scoring, an optional weak vendor tendency, a
+    confidence level, and the numbers behind the decision. Go and Python substitute their measured pass rates;
+    TypeScript does not, because its vendor gap is 1.4 points and single-source, so `gpt-5.6-sol` keeps TypeScript work
+    on the uncontested latency and cost basis. Ruby contributes a near-tie preference only, bounded to a 5% cost band,
+    because its single current-generation source has four single-file tasks measuring a Minitest pass ratio rather than
+    a verifier outcome. Kotlin contributes nothing: its Java proxy was withdrawn once the generation-currency rule
+    removed the GPT-5.2-era rows the apparent gap depended on. Ruby's real consequence is a mandatory `rubocop -a` gate,
+    since the correctness leader is also the style laggard (12-17 offenses against 6-10 for the GPT-5.6 family).
+
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
 telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work.

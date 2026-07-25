@@ -124,6 +124,22 @@ Upstream sources that corpus aggregates, all consumed as published measurements 
 - **CloudZero observed spend** — <https://app.cloudzero.com>; 30-day AWS Marketplace Claude window ending 2026-07-24.
   Internal billing observations. Used only to distinguish observed route rates from published list prices.
 
+Two sources were added to that corpus on 2026-07-25 and inform the per-language routing policy without contributing
+numeric priors:
+
+- **SWE-bench Multilingual leaderboard** — <https://www.swebench.com/multilingual-leaderboard.html>; captured
+  2026-07-25; 300 tasks across 8 language labels, single-attempt `mini-swe-agent`. License not declared on the
+  leaderboard page; the SWE-bench project is MIT-licensed and the dataset is published as
+  `SWE-bench/SWE-bench_Multilingual`. Used only for language difficulty ordering, which is what survives the corpus's
+  generation-currency rule. Its per-vendor per-language comparisons were **deliberately not adopted**: all three OpenAI
+  submissions are GPT-5.2-era and excluded, so those comparisons were cross-generation rather than cross-vendor.
+- **OskarsEzerins `llm-benchmarks`** — <https://github.com/OskarsEzerins/llm-benchmarks>; revision `c5ad31674aeb`;
+  captured 2026-07-25; declared license MIT (© Oskars Ezerins). The only retained source that evaluates
+  current-generation router candidates on Ruby. Used as a weak near-tie preference and as the basis for requiring a
+  RuboCop gate on Ruby routes. Its four-task Minitest pass ratios were **deliberately not adopted** as pass-rate priors,
+  because they measure a different construct than the rollout verifier outcomes and have very low statistical power. No
+  upstream code was copied.
+
 Intentionally not adopted: no raw benchmark score is copied into runtime policy, no arithmetic is performed across
 incompatible benchmarks, no Artificial Analysis GitHub Copilot price is treated as a real cost, and no
 unsupported-vendor model (Kimi, Grok, GLM, Muse) is made a routing candidate. Benchmark pass rates are treated strictly

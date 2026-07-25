@@ -36,7 +36,13 @@ Upstream corpus: `~/outputs/llm-effectiveness`. The derivation for `deepswe` and
    Copilot cost, and Copilot endpoints are excluded from cost tiebreaks.
 6. **Vendors outside the router's supported set inform context only.** Kimi K3, Grok 4.5, GLM 5.2, and Muse Spark are
    not candidates; Grok additionally carries Cursor's training-contamination disclosure.
-7. **Low-sample buckets must not be weighted equally.** `web_ui_proxy` is 14 tasks and is a labelled proxy, not React or
+7. **A corpus-wide generation-currency rule governs admission.** A source is retained only if it contains at least one
+   Anthropic Claude >= 4.5 or OpenAI GPT >= 5.4 row, and within an admitted source only Claude >= 4.5, GPT >= 5.4,
+   Gemini >= 3.0, and `gpt-oss` rows are retained. This rule removed all three OpenAI submissions from SWE-bench
+   Multilingual, which in turn withdrew three claims that had looked like cross-vendor findings but were really
+   cross-generation ones. A cross-source check is only a check when both sources carry both vendors at a comparable
+   generation.
+8. **Low-sample buckets must not be weighted equally.** `web_ui_proxy` is 14 tasks and is a labelled proxy, not React or
    Next.js evidence. Rust and JavaScript (5 tasks each) are excluded from this file's language buckets entirely.
 
 ## Coverage against the Upstart stack
@@ -57,6 +63,23 @@ TanStack Query, Drizzle, Kysely, valibot, arktype, ts-pattern, happy-dom, vitest
 csstree, KaTeX). **No Next.js application, App Router, RSC, SSR, or Vercel deployment task exists in the corpus.** The
 TypeScript numbers are therefore strong evidence for typed TypeScript library and API-surface work and only proxy
 evidence for React component and Next.js application work.
+
+### Per-language policy
+
+| language   | pass-rate substitution | vendor tendency | confidence | basis                                                                                            |
+| ---------- | ---------------------- | --------------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| Go         | yes                    | Anthropic       | measured   | 6.6 point vendor gap at high effort, 40 point hard-task gap, and the hardest language of eight   |
+| Python     | yes                    | none            | measured   | vendor-neutral on pass rate; carries the corpus's highest regression breakage at an 11.8% median |
+| TypeScript | **no**                 | none            | measured   | 1.4 point single-source gap; Sol leads on the uncontested latency and cost basis instead         |
+| Ruby       | **no**                 | Anthropic       | low power  | four single-file tasks measuring a Minitest pass ratio; 74-77% floor versus 57.1% for Sol        |
+| Kotlin     | no                     | **none**        | none       | no retained evidence; the Java proxy was withdrawn as a cross-generation comparison              |
+
+A vendor tendency may only break a near-tie inside a 5% cost band. It can never move a candidate past a materially
+better score, and it never claims a language-specific pass rate.
+
+Ruby's practical consequence is a gate rather than a model swap: Anthropic averages 12-17 RuboCop offenses against 6-10
+for the GPT-5.6 family, so Ruby routes to Opus 5 with `rubocop -a` as a mandatory deterministic gate, exactly as
+Terraform work gets `terraform validate` and protobuf work gets `buf breaking`.
 
 Unmeasured areas get **no language affinity modifier**. They are routed by task shape — output rigidity, blast radius,
 verification strength, regression sensitivity — and their real authority is the deterministic gate
