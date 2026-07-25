@@ -1,3 +1,4 @@
 node_modules/
 coverage/
 patches/
+.serena/project.yml
