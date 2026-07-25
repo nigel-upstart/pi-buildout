@@ -3,10 +3,16 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { cycleApplyMode, DESCRIPTIONS, getThinkingLevelsForModel, updateDefaultThinkingLevelJson } from "./helpers.ts";
+import {
+  cycleApplyMode,
+  DESCRIPTIONS,
+  getThinkingLevelsForModel,
+  parseThinkingLevelArgument,
+  updateDefaultThinkingLevelJson,
+} from "./helpers.ts";
 import type { ApplyMode, ThinkingLevel } from "./helpers.ts";
 
-export { cycleApplyMode, updateDefaultThinkingLevelJson } from "./helpers.ts";
+export { cycleApplyMode, parseThinkingLevelArgument, updateDefaultThinkingLevelJson } from "./helpers.ts";
 
 function applyModeLabel(mode: ApplyMode): string {
   return mode === "default" ? "Default + current session" : "Current session only";
@@ -38,6 +44,24 @@ export default function effortExtension(pi: ExtensionAPI) {
       }
 
       const thinkingLevels = getThinkingLevelsForModel(VERSION, ctx.model);
+
+      const argument = parseThinkingLevelArgument(_args);
+      if (argument.kind === "level") {
+        if (!thinkingLevels.includes(argument.level)) {
+          ctx.ui.notify(`Thinking effort ${argument.level} is not supported by ${getModelLabel(ctx)}`, "error");
+          return;
+        }
+        pi.setThinkingLevel(argument.level);
+        ctx.ui.notify(`Thinking effort set to ${argument.level} for current session`, "info");
+        return;
+      }
+      if (argument.kind === "unknown") {
+        ctx.ui.notify(
+          `Unknown thinking effort "${argument.value}". Available levels: ${thinkingLevels.join(", ")}`,
+          "warning",
+        );
+      }
+
       const reportedLevel = pi.getThinkingLevel();
       const currentLevel = thinkingLevels.includes(reportedLevel) ? reportedLevel : undefined;
       let selectedIndex = currentLevel ? thinkingLevels.indexOf(currentLevel) : 0;

@@ -56,6 +56,16 @@ export const DESCRIPTIONS: Record<ThinkingLevel, string> = {
   max: "Maximum available reasoning",
 };
 
+export type ThinkingLevelArgument =
+  { kind: "missing" } | { kind: "level"; level: ThinkingLevel } | { kind: "unknown"; value: string };
+
+export function parseThinkingLevelArgument(argument: string): ThinkingLevelArgument {
+  if (argument.length === 0) return { kind: "missing" };
+
+  const level = THINKING_LEVELS.find((candidate) => candidate === argument);
+  return level ? { kind: "level", level } : { kind: "unknown", value: argument };
+}
+
 export function cycleApplyMode(mode: ApplyMode): ApplyMode {
   return mode === "default" ? "session" : "default";
 }

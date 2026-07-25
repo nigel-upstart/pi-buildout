@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import effortExtension from "./index.ts";
 import {
   cycleApplyMode,
   getThinkingLevelsForModel,
+  parseThinkingLevelArgument,
   supportsVerifiedThinkingLevels,
   updateDefaultThinkingLevelJson,
 } from "./helpers.ts";
+
+// helpers.ts keeps its level list internal, so restate it here as the expected
+// public contract of the /effort argument parser.
+const ALL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 describe("supportsVerifiedThinkingLevels", () => {
   it("gates provider-verified metadata at pi 0.82.0", () => {
@@ -60,6 +66,97 @@ describe("getThinkingLevelsForModel", () => {
       "medium",
       "high",
     ]);
+  });
+});
+
+describe("parseThinkingLevelArgument", () => {
+  it("recognizes each supported level only when it exactly matches", () => {
+    for (const level of ALL_THINKING_LEVELS) {
+      assert.deepEqual(parseThinkingLevelArgument(level), { kind: "level", level });
+    }
+  });
+
+  it("treats an empty argument as missing", () => {
+    assert.deepEqual(parseThinkingLevelArgument(""), { kind: "missing" });
+  });
+
+  it("rejects unknown, partial, case-variant, and whitespace-padded arguments", () => {
+    for (const argument of ["med", "MEDIUM", " medium", "medium ", "high extra"]) {
+      assert.deepEqual(parseThinkingLevelArgument(argument), { kind: "unknown", value: argument });
+    }
+  });
+});
+
+function createCommandHarness() {
+  /** @type {any} */
+  let command;
+  /** @type {string[]} */
+  const levels = [];
+  /** @type {{message: string, level: string}[]} */
+  const notifications = [];
+  let customCalls = 0;
+
+  effortExtension(
+    /** @type {any} */ ({
+      registerCommand(/** @type {string} */ _name, /** @type {any} */ options) {
+        command = options;
+      },
+      getThinkingLevel() {
+        return "low";
+      },
+      setThinkingLevel(/** @type {string} */ level) {
+        levels.push(level);
+      },
+    }),
+  );
+
+  const ctx = {
+    mode: "tui",
+    ui: {
+      notify(/** @type {string} */ message, /** @type {string} */ level) {
+        notifications.push({ message, level });
+      },
+      async custom() {
+        customCalls += 1;
+        return null;
+      },
+    },
+  };
+
+  return { command, ctx, customCalls: () => customCalls, levels, notifications };
+}
+
+describe("effort command arguments", () => {
+  it("applies an exact level without opening the dialog", async () => {
+    const harness = createCommandHarness();
+
+    await harness.command.handler("medium", harness.ctx);
+
+    assert.deepEqual(harness.levels, ["medium"]);
+    assert.equal(harness.customCalls(), 0);
+    assert.deepEqual(harness.notifications, [
+      { message: "Thinking effort set to medium for current session", level: "info" },
+    ]);
+  });
+
+  it("warns about an unknown argument before opening the dialog", async () => {
+    const harness = createCommandHarness();
+
+    await harness.command.handler("med", harness.ctx);
+
+    assert.equal(harness.customCalls(), 1);
+    assert.equal(harness.levels.length, 0);
+    assert.equal(harness.notifications[0]?.level, "warning");
+    assert.match(harness.notifications[0]?.message ?? "", /Unknown thinking effort "med"/);
+  });
+
+  it("opens the dialog without warning when the argument is missing", async () => {
+    const harness = createCommandHarness();
+
+    await harness.command.handler("", harness.ctx);
+
+    assert.equal(harness.customCalls(), 1);
+    assert.deepEqual(harness.notifications, []);
   });
 });
 
