@@ -118,3 +118,49 @@ test("child context is bounded to a conservative fraction of its model window", 
     "",
   );
 });
+
+test("auth bridge forwards api key and headers, and rejects header injection", async () => {
+  const { default: subagentAuthBridge } = await import("./auth-bridge.ts");
+  /** @param {Record<string, string>} env */
+  const run = (env) => {
+    /** @type {[string, unknown][]} */
+    const registered = [];
+    Object.assign(process.env, env);
+    const pi = /** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ (
+      /** @type {unknown} */ ({
+        /** @param {string} name @param {unknown} config */
+        registerProvider: (name, config) => {
+          registered.push([name, config]);
+        },
+      })
+    );
+    subagentAuthBridge(pi);
+    for (const key of Object.keys(env)) delete process.env[key];
+    return registered;
+  };
+
+  assert.deepEqual(
+    run({
+      PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai",
+      PI_SIMPLE_SUBAGENT_API_KEY: "secret",
+      PI_SIMPLE_SUBAGENT_AUTH_HEADERS: JSON.stringify({ Authorization: "Bearer secret" }),
+    }),
+    [["corporate-ai", { apiKey: "secret", headers: { Authorization: "Bearer secret" } }]],
+  );
+  assert.deepEqual(
+    run({
+      PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai",
+      PI_SIMPLE_SUBAGENT_AUTH_HEADERS: JSON.stringify({ "X-Key": "abc" }),
+    }),
+    [["corporate-ai", { headers: { "X-Key": "abc" } }]],
+  );
+  assert.deepEqual(
+    run({
+      PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai",
+      PI_SIMPLE_SUBAGENT_AUTH_HEADERS: JSON.stringify({ "X-Key": "abc\r\nX-Injected: 1" }),
+    }),
+    [],
+  );
+  assert.deepEqual(run({ PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai" }), []);
+  assert.equal(process.env.PI_SIMPLE_SUBAGENT_API_KEY, undefined);
+});

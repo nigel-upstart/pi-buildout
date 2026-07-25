@@ -76,6 +76,16 @@ Ideas and API patterns used:
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
   resource inheritance.
+- Thinking-effort clamp policy: `clampThinkingLevel` in
+  [`extensions/subagents/helpers.ts`](extensions/subagents/helpers.ts) is a conceptual adaptation of Pi's
+  `clampThinkingLevel` (`@earendil-works/pi-ai` `dist/models.js`, as bundled with `pi-coding-agent` `0.80.6`, MIT),
+  which searches upward from the requested level before falling back downward. The behavior was re-derived as original
+  code over this extension's own `ThinkingLevel` list; no Pi source was copied.
+- Effort-support metadata: `supportedThinkingLevels` in the same file reads Pi's generated `thinkingLevelMap` metadata,
+  and adds one deliberate deviation from it — OpenAI's direct GPT-5.6 endpoint rejects `minimal` and `max` even though
+  the `0.80.6` metadata leaves `minimal` implicit and maps `max`, so those levels are excluded for that provider/model.
+  Pi's own registry-wide model resolution, provider fallbacks, and CLI thinking-level plumbing are intentionally not
+  reproduced; this helper only bounds routing choices for delegated children.
 - Pi's bundled subagent and custom-compaction examples as reference implementations for process invocation, output
   bounds, and compaction setup.
 

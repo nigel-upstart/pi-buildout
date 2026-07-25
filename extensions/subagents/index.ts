@@ -41,6 +41,7 @@ const MAX_DEPTH = 3;
 const DEPTH_ENV = "PI_SIMPLE_SUBAGENT_DEPTH";
 const AUTH_PROVIDER_ENV = "PI_SIMPLE_SUBAGENT_AUTH_PROVIDER";
 const AUTH_KEY_ENV = "PI_SIMPLE_SUBAGENT_API_KEY";
+const AUTH_HEADERS_ENV = "PI_SIMPLE_SUBAGENT_AUTH_HEADERS";
 const SELF_EXTENSION_PATH = fileURLToPath(import.meta.url);
 const AUTH_BRIDGE_PATH = join(dirname(SELF_EXTENSION_PATH), "auth-bridge.ts");
 
@@ -334,7 +335,7 @@ ${catalog}`;
       model,
       effort: clampThinkingLevel(effort, model),
       source: "fallback",
-      rationale: `Classifier unavailable; inherited parent settings (${error instanceof Error ? error.message : String(error)}).`,
+      rationale: `Classifier unavailable; used the ${requestedModel ? "requested" : "parent"} model and the ${requestedEffort ? "requested" : "parent"} effort (${error instanceof Error ? error.message : String(error)}).`,
     };
   }
 }
@@ -349,20 +350,29 @@ function resolvePiInvocation(args: string[]): { command: string; args: string[] 
   return { command: "pi", args };
 }
 
-function childEnvironment(depth: number, provider: string, apiKey?: string): NodeJS.ProcessEnv {
+function childEnvironment(
+  depth: number,
+  provider: string,
+  auth: { apiKey?: string; headers?: Record<string, string> },
+): NodeJS.ProcessEnv {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
         !key.startsWith("PI_SUBAGENT_") &&
         !key.startsWith("PI_INTERCOM_") &&
         key !== AUTH_PROVIDER_ENV &&
-        key !== AUTH_KEY_ENV,
+        key !== AUTH_KEY_ENV &&
+        key !== AUTH_HEADERS_ENV,
     ),
   );
   env[DEPTH_ENV] = String(depth);
-  if (apiKey) {
+  // Bridge the API key together with the resolved request headers: registering a
+  // provider replaces its whole stored request config, so an API key alone would
+  // drop configured (or `authHeader`-derived) headers in the child.
+  if (auth.apiKey || auth.headers) {
     env[AUTH_PROVIDER_ENV] = provider;
-    env[AUTH_KEY_ENV] = apiKey;
+    if (auth.apiKey) env[AUTH_KEY_ENV] = auth.apiKey;
+    if (auth.headers) env[AUTH_HEADERS_ENV] = JSON.stringify(auth.headers);
   }
   return env;
 }
@@ -530,7 +540,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             cwd: ctx.cwd,
             command: invocation.command,
             args: invocation.args,
-            env: childEnvironment(depth + 1, selection.model.provider, childAuth.apiKey),
+            env: childEnvironment(depth + 1, selection.model.provider, {
+              ...(childAuth.apiKey ? { apiKey: childAuth.apiKey } : {}),
+              ...(childAuth.headers ? { headers: childAuth.headers } : {}),
+            }),
             ownsProcessGroup: depth === 0,
             classification: selection.source,
             ...(selection.rationale ? { classificationRationale: selection.rationale } : {}),
