@@ -243,11 +243,20 @@ function resolveRequestedModel(
   };
 }
 
-function parentFallback(pi: ExtensionAPI, ctx: ExtensionContext): Selection {
-  if (!ctx.model) throw new Error("Cannot create a subagent because the parent has no selected model.");
+function parentFallback(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  explicitRequestedModel?: PiModel,
+  explicitRequestedEffort?: ThinkingLevel,
+): Selection {
+  const fallbackModel = explicitRequestedModel ?? ctx.model;
+  if (!fallbackModel) throw new Error("Cannot create a subagent because the parent has no selected model.");
+
+  const fallbackEffort = explicitRequestedEffort ?? clampThinkingLevel(parentThinking(pi), fallbackModel);
+
   return {
-    model: ctx.model,
-    effort: clampThinkingLevel(parentThinking(pi), ctx.model),
+    model: fallbackModel,
+    effort: fallbackEffort,
     source: "fallback",
   };
 }
@@ -281,8 +290,16 @@ async function selectModel(
     };
   }
 
-  const available = ctx.modelRegistry.getAvailable();
-  if (available.length === 0) return parentFallback(pi, ctx);
+  // Classification is optional. A newer pi runtime can expose a registry
+  // facade before its runtime is initialized; do not make delegation fail on
+  // this best-effort lookup.
+  let available: ReturnType<typeof ctx.modelRegistry.getAvailable>;
+  try {
+    available = ctx.modelRegistry.getAvailable();
+  } catch {
+    return parentFallback(pi, ctx, requestedModel, requestedEffort);
+  }
+  if (available.length === 0) return parentFallback(pi, ctx, requestedModel, requestedEffort);
   const catalog = formatModelCatalog(available);
   const fixedChoice = [
     requestedModel ? `model=${requestedModel.provider}/${requestedModel.id}` : undefined,
@@ -320,12 +337,10 @@ ${catalog}`;
     };
   } catch (error) {
     if (signal?.aborted) throw error;
-    const fallback = parentFallback(pi, ctx);
-    const model = requestedModel ?? fallback.model;
-    const effort = requestedEffort ?? fallback.effort;
+    const fallback = parentFallback(pi, ctx, requestedModel, requestedEffort);
     return {
-      model,
-      effort: clampThinkingLevel(effort, model),
+      model: fallback.model,
+      effort: fallback.effort,
       source: "fallback",
       rationale: `Classifier unavailable; inherited parent settings (${error instanceof Error ? error.message : String(error)}).`,
     };
