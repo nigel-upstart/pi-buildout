@@ -77,8 +77,11 @@ explicitly skips real-provider calls so local credentials do not make quality ch
 - Explicit model or effort changes bypass automatic routing until the next task boundary.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
 - Executing work across a dependent pull-request stack is distinct from planning one. The stack route is restricted to
-  exact frontier-generation IDs (`gpt-5.6-terra/high`, `claude-opus-4-8/high`, then `gpt-5.6-sol/high` availability
-  fallbacks), so routing cannot silently hand stack mutation to older GPT generations or the broader Sonnet tier.
+  exact current-generation IDs (`gpt-5.6-sol/high` and `claude-opus-5/high`, plus their same-model availability
+  backups), so routing cannot silently hand stack mutation to older generations or the broader Sonnet tier.
+- Effort is capped at each model family's measured saturation tier, low-effort tiers with high measured regression
+  breakage are barred from repository-mutating routes, and candidates whose measured p90 peak context exceeds the window
+  headroom are excluded before scoring.
 - A validated provider-diverse classifier result may serve as failover, but complete classification failure retains the
   current selection instead of manufacturing evidence for a premium route.
 - The request remains a native user message and is never paraphrased into system policy.

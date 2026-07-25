@@ -145,13 +145,19 @@ Deterministic, not LLM-assisted:
   builder's effective ability. If a vendor has no model at that level, select its strongest eligible model and record
   the ceiling mismatch.
 - Every ordinary second-ranked candidate must be OpenAI or Anthropic.
+- The model manufacturer's own route is the primary instance for a model. Every other configured route for the same
+  model is an ordered availability backup that precedes any different-model fallback, so an endpoint failure retries the
+  same model before routing changes models. Route price only orders endpoints within one preference tier, and flat-rate
+  subscription endpoints are excluded from that comparison.
 - Candidate IDs are exact and version-aware. Unknown IDs and silently moving aliases are ineligible unless a policy
   entry explicitly permits that alias; preview/restricted/safeguarded models require explicit registry flags and
   configured fallbacks.
 - Until local telemetry is mature — at least the minimum comparable-sample count enforced per candidate in
-  [`core/routing.ts`](../../extensions/router/core/routing.ts), each sample passing the route's quality floor — preserve
-  the bootstrap ordering below. That sample floor exists so a former second choice is promoted only on evidence, not on
-  a handful of noisy runs. After maturity, rank by a robust cost-to-done score:
+  [`core/routing.ts`](../../extensions/router/core/routing.ts), each sample passing the route's quality floor — rank the
+  authorized pool by the same robust cost-to-done shape seeded from the checked-in measured priors in
+  [`model-evidence-2026-07-25.md`](model-evidence-2026-07-25.md), rather than by policy list order. That sample floor
+  exists so a former second choice is promoted only on evidence, not on a handful of noisy runs. After maturity, rank by
+  the observed robust cost-to-done score:
 
   ```text
   p75 model/tool cost
@@ -173,20 +179,31 @@ gates outrank an LLM verdict and can authorize fallback or escalation; an LLM ma
 These are starting priors to encode in the eligible-candidate registry, expected to be superseded by measured telemetry
 per route:
 
-| Archetype                                   | First choice                                             | Required secondary                                                                  |
-| ------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Fast classification/routing                 | fast/low-effort model                                    | different-provider fast model                                                       |
-| Exact extraction, rigid schema              | precise model, low/medium effort                         | fast fallback                                                                       |
-| Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                    | same-family fallback, medium                                                        |
-| Median repository implementation (1 PR)     | strong coding model, medium effort                       | different-provider high-effort fallback                                             |
-| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort             | top different-provider agent, high; current-generation same-vendor fallback         |
-| Terminal-heavy implementation               | strong coding model, medium/high effort                  | different-provider high-effort fallback                                             |
-| Algorithmic/rapid iterative coding          | fast iterative model, medium effort                      | strong coding model, medium                                                         |
-| Code review                                 | closest non-builder-vendor reviewer ≥ builder ability    | candidate from the other non-builder vendor; fixed builder fallback after both fail |
-| Ordinary implementation planning (2–10 PRs) | top planning model, high/xhigh                           | different-provider planning model, high                                             |
-| Large program planning (11–100 PRs)         | top long-run planning model, high/xhigh                  | different-provider planning model, high/max                                         |
-| Long-context synthesis                      | long-context model, medium, or top reasoning model, high | different-provider fallback                                                         |
-| Highest-risk ambiguous advisory work        | top reasoning model, high/max                            | different-provider top reasoning model                                              |
+| Archetype                                   | First choice                                                            | Required secondary                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Fast classification/routing                 | fast/low-effort model                                                   | different-provider fast model                                                       |
+| Exact extraction, rigid schema              | precise model, low/medium effort                                        | fast fallback                                                                       |
+| Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                                   | same-family fallback, medium                                                        |
+| Median repository implementation (1 PR)     | lowest measured completion cost at a saturated effort tier              | different-vendor fallback at high effort                                            |
+| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort                            | top different-provider agent, high; current-generation same-vendor fallback         |
+| Terminal-heavy implementation               | step-efficient coding model, high effort                                | different-provider high-effort fallback                                             |
+| Algorithmic/rapid iterative coding          | fast iterative model, medium effort                                     | strong coding model, medium                                                         |
+| Code review                                 | closest non-builder-vendor reviewer ≥ builder ability                   | candidate from the other non-builder vendor; fixed builder fallback after both fail |
+| Ordinary implementation planning (2–10 PRs) | pinned top planning model, high                                         | different-provider planning model, high                                             |
+| Large program planning (11–100 PRs)         | pinned top long-run planning model, xhigh                               | different-provider planning model, high/max                                         |
+| Long-context synthesis                      | context-efficient model whose measured peak stays under half the window | different-provider fallback                                                         |
+| Highest-risk ambiguous advisory work        | pinned top reasoning model, max                                         | different-provider top reasoning model                                              |
+
+Three archetypes carry a **pinned** first choice. Planning, program planning, and highest-risk advisory work order by
+capability rather than by expected completion cost, because a defective plan or a wrong high-risk verdict is paid by the
+downstream pull requests it authorizes rather than inside the task. A pin only reorders an already-authorized pool, is
+ignored when the pinned choice is ineligible, and leaves fallbacks evidence-ranked. Every other archetype is ordered
+purely by measured cost-to-done.
+
+Effort is constrained per model family, not uniformly: measured saturation tiers cap ordinary archetypes, non-monotonic
+and thrashing tiers are excluded outright, repository-mutating archetypes enforce a per-family minimum effort, and a
+per-language ceiling can lower the cap further. Ambiguous, complex work additionally authorizes a hard-task escalation
+candidate as a retry, never as a first attempt.
 
 The PR-count bands in the table above (`1 PR`, `2–10 PRs`, `11–100 PRs`) are the `HORIZONS` enum in
 [`core/features.ts`](../../extensions/router/core/features.ts) — a coarse classification taxonomy, not tunable

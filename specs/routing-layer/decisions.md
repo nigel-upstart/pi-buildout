@@ -193,3 +193,65 @@ semantic summary only if it outperforms the deterministic round-robin baseline.
    profile families and deterministic lower-tier fallback resolution when a preferred exact ID is unavailable. Bifrost
    evaluation found its advertised Vertex 3.5 route unavailable in-region, so policy also lists exact
    `google-vertex/gemini-2.5-flash` behind 3.5 with a separate generation-specific profile.
+
+## Evidence-driven policy revision, 2026-07-25 (`router-policy-v5`)
+
+These decisions replace the hand-set priors of `router-policy-v4`. Each cites
+[`model-evidence-2026-07-25.md`](model-evidence-2026-07-25.md), which carries the provenance and construct limits of
+every number below. Benchmark pass rates are pre-telemetry ordering priors and never the router's acceptance signal.
+
+1. **Manufacturer-first endpoints with same-model backups.** The model manufacturer's own route is the primary instance
+   for a model; every other configured route for that model is an ordered availability backup placed ahead of any
+   different-model fallback. Route price only orders endpoints inside one preference tier, and flat-rate GitHub Copilot
+   endpoints are excluded from that comparison because their modeled token price is a capability proxy. Consequence:
+   Claude Opus 5 has no Copilot route, so its Anthropic direct route is mandatory with Bedrock Global and regional
+   profiles as backups.
+
+2. **All Opus references move to Claude Opus 5; Opus 4.8 is retired.** Opus 5 beats Opus 4.8 at every tier (72.3% versus
+   56.0% deterministic pass) at comparable cost per solved task ($8.42 versus $22.47), and Opus 5 at low effort
+   outscores Opus 4.8 at max on CursorBench. Keeping a superseded generation as a lower tier would only add a
+   worse-on-every-axis candidate.
+
+3. **Ability is derived, not declared.** Bands come from the cross-source consensus percentile (>= 90 -> 4, >= 75 ->
+   3, >= 45 -> 2, else 1). This moves Claude Sonnet 5 at high effort into the lowest band and removes it from the
+   reviewer ladder, and it removes the name-based heuristic's treatment of "pro" and "max" as capability signals.
+
+4. **Effort is a per-family, sometimes per-language, curve.** Opus 5 and Sol saturate at high; Terra needs max to be
+   top-tier; Luna is cliffed and is agentic-viable only at max; Fable at max is excluded as measurably worse than Fable
+   at xhigh; Sonnet 5 at xhigh and max are excluded for step and context thrash. Opus 5 additionally carries a
+   TypeScript ceiling at high, because its measured TypeScript pass rate falls above that tier.
+
+5. **Cost enters only as expected completion cost.** Pre-telemetry ordering seeds the existing robust cost-to-done shape
+   from measured priors, with attempt cost equal to `costPerPassUsd * passRate` (exactly the mean cost of one attempt)
+   so failure is priced once by the intervention and retry terms. This is what keeps `gpt-5.6-terra` at low effort
+   ($1.78 per pass, 24.1% pass) and `gpt-5.6-luna` at medium effort behind stronger configurations.
+
+6. **Planning, program planning, and highest-risk advisory pin Opus 5.** These archetypes order by capability rather
+   than expected completion cost, because their failure cost is paid by downstream pull requests rather than inside the
+   task. The pin only reorders an authorized pool and is ignored when the pinned choice is ineligible. Every other
+   archetype is ordered purely by measured cost-to-done, which on routine mixed-language work favors `gpt-5.6-sol` at
+   high effort and on Go favors `claude-opus-5`.
+
+7. **Language affinity is applied only where it is measured.** Go, Python, and TypeScript have DeepSWE coverage; the
+   affinity is applied only when the repository resolves to exactly one of them. Kotlin, Ruby, HCL/Terraform,
+   Kubernetes/Helm/Argo, protobuf, and Kafka have no coverage, so they receive no affinity and are routed by task shape
+   with deterministic gates as the real authority. The TypeScript rows are library and browser-runtime evidence; no
+   Next.js application or Vercel deployment task exists in the corpus, and the React-adjacent bucket is a labelled
+   14-task proxy.
+
+8. **Hard-task escalation changes the model prior instead of raising effort.** `gpt-5.6-luna` at max leads the corpus on
+   hard tasks (47.1% overall, 44.4% TypeScript) but has 52.7% same-task flakiness, so ambiguous work authorizes it as a
+   retry candidate and it is explicitly demoted out of the primary slot.
+
+9. **Quality floors are calibrated to achievable behavior.** The best measured deterministic pass rate is 72.8%, and a
+   route cannot be accepted more often than it completes correctly, so implementation-class acceptance floors sit below
+   that ceiling and telemetry can actually mature. Non-agentic floors are unchanged because the agentic corpus does not
+   measure classification or extraction.
+
+10. **Google narrows to one current-generation candidate.** `google-vertex/gemini-3.6-flash` at high effort replaces the
+    3.5 and 2.5 entries, and `gemini-3.5-flash` and `gemini-3.1-pro-preview` are disqualified for measured context
+    overflow and cost per pass. Google therefore contributes a single reviewer rung, and a builder above that band
+    produces a recorded ceiling mismatch rather than a silent downgrade.
+
+Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
+telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work.
