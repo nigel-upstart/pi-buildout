@@ -41,6 +41,38 @@ const ALLOWLIST = [
     reason:
       "Patched fast-uri 3.1.4 exists, but this repository's min-release-age policy blocks installing it until the release ages past five days; root dev-tooling path only.",
   },
+  {
+    package: "brace-expansion",
+    advisoryUrl: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
+    nodePaths: [
+      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
+      "node_modules/brace-expansion",
+      "node_modules/minimatch/node_modules/brace-expansion",
+    ],
+    recordedAt: "2026-07-25",
+    reason:
+      "The root dev-tooling tree and Pi's shrinkwrapped subtree resolve only versions covered by this advisory. Patched brace-expansion 5.0.8 was published 2026-07-23 and is temporarily blocked by min-release-age.",
+  },
+  {
+    package: "brace-expansion",
+    advisoryUrl: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+    nodePaths: [
+      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
+      "node_modules/brace-expansion",
+      "node_modules/minimatch/node_modules/brace-expansion",
+    ],
+    recordedAt: "2026-07-25",
+    reason:
+      "The root dev-tooling tree and Pi's shrinkwrapped subtree resolve only versions covered by this advisory. Patched brace-expansion 5.0.8 was published 2026-07-23 and is temporarily blocked by min-release-age.",
+  },
+  {
+    package: "js-yaml",
+    advisoryUrl: "https://github.com/advisories/GHSA-pm4m-ph32-ghv5",
+    nodePaths: ["node_modules/js-yaml"],
+    recordedAt: "2026-07-25",
+    reason:
+      "Patched js-yaml 5.2.2 was published 2026-07-23 and is temporarily blocked by min-release-age; the only non-shrinkwrapped instance is root dev-tooling.",
+  },
 ];
 
 function runAudit() {
@@ -63,21 +95,46 @@ const blocking = vulnerabilities.filter((entry) => entry.severity === "high" || 
 
 const advisoryUrls = (entry) => (entry.via ?? []).filter((via) => typeof via === "object").map((via) => via.url);
 
-const unexplained = [];
-const accepted = [];
+const sameNodePaths = (left, right) =>
+  left.length === right.length && left.every((node, index) => node === right[index]);
+
+const directMatches = new Map();
 for (const entry of blocking) {
   const urls = advisoryUrls(entry);
-  const nodes = Array.isArray(entry.nodes) ? entry.nodes : [];
+  if (urls.length === 0) continue;
+
+  const nodes = Array.isArray(entry.nodes) ? [...entry.nodes].sort() : [];
   const match = ALLOWLIST.find(
     (allowed) =>
       allowed.package === entry.name &&
       urls.includes(allowed.advisoryUrl) &&
       nodes.length > 0 &&
-      nodes.every((node) => node.startsWith(allowed.nodePathPrefix)),
+      (allowed.nodePaths
+        ? sameNodePaths(nodes, [...allowed.nodePaths].sort())
+        : nodes.every((node) => node.startsWith(allowed.nodePathPrefix))),
   );
-  if (match) accepted.push({ entry, match });
-  else unexplained.push(entry);
+  if (match) directMatches.set(entry.name, match);
 }
+
+const acceptedNames = new Set(directMatches.keys());
+let changed = true;
+while (changed) {
+  changed = false;
+  for (const entry of blocking) {
+    if (acceptedNames.has(entry.name) || advisoryUrls(entry).length > 0) continue;
+    const sources = (entry.via ?? []).filter((via) => typeof via === "string");
+    if (sources.length > 0 && sources.every((source) => acceptedNames.has(source))) {
+      acceptedNames.add(entry.name);
+      changed = true;
+    }
+  }
+}
+
+const accepted = blocking
+  .filter((entry) => acceptedNames.has(entry.name))
+  .map((entry) => ({ entry, match: directMatches.get(entry.name) }))
+  .filter(({ match }) => match);
+const unexplained = blocking.filter((entry) => !acceptedNames.has(entry.name));
 
 for (const { match } of accepted) {
   console.log(
