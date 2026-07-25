@@ -148,6 +148,18 @@ Deterministic, not LLM-assisted:
   the candidate pools rather than an enforced filter: ordering is driven by measured cost-to-done, so the router does
   not reject an all-one-vendor chain when that is what eligibility leaves. Google contributes a single eligible
   configuration, so vendor diversity in practice means OpenAI and Anthropic.
+- **The candidate pool is derived from the operator's model scope, not declared in this repository.** Policy names a
+  logical model and an effort; the concrete endpoints come from the live registry filtered to the `enabledModels`
+  patterns that drive pi's model selector. Enabling or disabling a model in settings therefore changes what the router
+  can pick without a code change, and a policy entry cannot name an endpoint the machine does not have. Every observed
+  spelling of a model — Bedrock region profiles, vendor paths, version suffixes, date stamps, gateway paths, and the
+  dotted Claude spelling resale catalogs use — reduces to one logical identity, so all endpoints for a model group
+  together.
+- **Observed endpoint health gates eligibility.** A model can be scoped in, present, and still fail on a given machine.
+  Only recurring failures disqualify an endpoint: a 4xx or otherwise-unusable response will recur until configuration
+  changes, while a 5xx or timeout remains usable because removing an endpoint during a provider outage shrinks the
+  fallback chain exactly when it is needed. An endpoint that was never probed is usable, because absence of evidence is
+  not evidence of failure.
 - The model manufacturer's own route is the primary instance for a model. Every other configured route for the same
   model is an ordered availability backup that precedes any different-model fallback, so an endpoint failure retries the
   same model before routing changes models. Route price only orders endpoints within one preference tier, and flat-rate

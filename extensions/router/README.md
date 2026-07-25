@@ -70,6 +70,25 @@ Run `npm run test:eval:real`. The harness prefers already-exported `BIFROST_BASE
 fills missing values from the repository-local, gitignored `.env`. Start from `.env.example`; ordinary `npm test`
 explicitly skips real-provider calls so local credentials do not make quality checks costly or non-deterministic.
 
+## Model scope and endpoint health
+
+The router chooses only from models the operator has scoped in through `enabledModels`, the same set pi's model selector
+offers. Policy declares a logical model and an effort; concrete endpoints are resolved from the live registry, so all
+spellings of one model (Bedrock region profiles, resale catalog IDs, gateway paths) group together and an availability
+failure retries the same model before the router changes models.
+
+Set `PI_ROUTER_MODEL_SCOPE` to a comma-separated pattern list to pin the scope for a run.
+
+Probe which scoped endpoints actually work on this machine, then let routing exclude the broken ones:
+
+```sh
+node scripts/probe-scoped-models.mjs           # writes ~/.pi/agent/router-endpoint-health.json
+node scripts/probe-scoped-models.mjs --dry-run # list the scope without calling anything
+```
+
+Recurring failures (4xx and unusable responses) are excluded until re-probed. Transient failures (5xx, timeouts) and
+unprobed endpoints stay eligible. Override the record location with `PI_ROUTER_ENDPOINT_HEALTH_PATH`.
+
 ## Safety behavior
 
 - Only user input can trigger classification or a new lease.

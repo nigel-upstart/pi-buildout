@@ -303,5 +303,27 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     can always review its own output, and every archetype must retain a candidate above the lowest band so
     high-consequence work stays routable.
 
+18. **The candidate pool is derived from the operator's model scope.** The hand-maintained provider table was verified
+    against a configured machine and was wrong in both directions: it named Bedrock profiles for Opus 5, `gpt-5.5` on
+    the OpenAI route, and `gemini-3.6-flash`, none of which were scoped in, and it missed the routes that were. Policy
+    now declares a logical model plus an effort, and endpoints resolve from the live registry filtered to
+    `enabledModels`. Endpoint order is derived from provider tier, ID specificity, and route price rather than declared.
+    A model with no scoped endpoint is reported as `not_in_scope`, which is a different fact from an endpoint being
+    unavailable.
+
+19. **Observed endpoint health gates eligibility.** `scripts/probe-scoped-models.mjs` probes every scoped endpoint with
+    a minimal real request; on the reference machine 32 of 34 worked, with two Llama 4 Bedrock profiles returning 400.
+    Only recurring failures disqualify an endpoint, because a 4xx recurs until configuration changes while a 5xx or
+    timeout is transient and removing the endpoint would shrink the fallback chain when it is most needed. Unprobed
+    endpoints stay eligible so the router does not depend on a probe having been run.
+
+20. **The Google rung is a preference chain so independent review always has a second vendor.** Review requires two
+    non-builder vendors, and on a machine without `gemini-3.6-flash` the single declared Google candidate resolved to
+    nothing, which would have made every review unroutable. The chain falls back to `gemini-2.5-pro` then
+    `gemini-2.5-flash`: lowest-band reviewers, accepted because an independent second opinion from a weaker model beats
+    no independent review, and review is read-only work where a weak reviewer cannot break anything. `gemini-3.5-flash`
+    is excluded from the chain despite being scoped on the reference machine, because it is disqualified for a measured
+    3.8% context-overflow rate.
+
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
 telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work.
