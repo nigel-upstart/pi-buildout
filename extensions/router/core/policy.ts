@@ -261,7 +261,11 @@ export type BootstrapRoutePolicy = {
   deterministicPassFloor: number;
   /** Archetypes authorized to exceed a model's measured effort saturation tier. */
   allowSuperSaturation: boolean;
-  /** Whether routes for this archetype are expected to mutate a repository. */
+  /**
+   * Whether this archetype always changes repository state. Used only as a floor under the
+   * task-derived consequence tier, so a classifier that under-reads a task cannot downgrade an
+   * inherently state-changing archetype to read-only.
+   */
   mutatesRepository: boolean;
   /**
    * Whether the measured agentic priors may reorder this archetype's pool. False for archetypes whose
@@ -284,7 +288,9 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   fast_classification: {
     archetype: "fast_classification",
     primary: LUNA_LOW,
-    fallback: [...HAIKU_LOW, ...TERRA_MEDIUM, ...GPT_OSS_HIGH],
+    // The cheap band-1 tiers serve ordinary classification. The two band-2+ entries exist so a
+    // classification task carrying critical risk or an irreversible action mode is still routable.
+    fallback: [...HAIKU_LOW, ...TERRA_MEDIUM, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
     qualityFloor: 0.96,
     deterministicPassFloor: 0.96,
     allowSuperSaturation: false,
@@ -294,7 +300,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   exact_extraction: {
     archetype: "exact_extraction",
     primary: TERRA_MEDIUM,
-    fallback: [...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH],
+    fallback: [...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
     qualityFloor: 0.98,
     deterministicPassFloor: 0.98,
     allowSuperSaturation: false,

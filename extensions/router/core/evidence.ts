@@ -25,6 +25,12 @@ export type LanguageEvidencePolicy = {
    */
   vendorTendency?: ModelVendor;
   confidence: "measured" | "low_power" | "none";
+  /**
+   * How close two candidates must be, as a fraction of the better score, before `vendorTendency` may
+   * reorder them. Sized per language from the strength of that language's evidence rather than as a
+   * global knob, because a single global value lands on a knife edge for some languages.
+   */
+  nearTieFraction?: number;
   reason: string;
 };
 
@@ -61,6 +67,11 @@ export const LANGUAGE_EVIDENCE: readonly LanguageEvidencePolicy[] = [
     passRateSubstitution: false,
     vendorTendency: "anthropic",
     confidence: "low_power",
+    // Widened from the 0.05 default because the Ruby signal is a floor gap rather than a mean gap:
+    // 74-77% worst-task against 57.1%, which is a 24 point spread on the metric that decides whether a
+    // single task fails outright. The measured mean-score gap between the leading candidates on routine
+    // work is 4.7-5.5% depending on verification strength, so a 0.05 band would fire inconsistently.
+    nearTieFraction: 0.08,
     reason:
       "only four current-generation single-file repair tasks exist (llm-benchmarks program_fixer): claude-opus-5 leads at 79.1-80.9% with a 74-77% worst-task floor against gpt-5.6-sol at 74.2% with a 57.1% floor. That is a Minitest pass ratio rather than a verifier resolve rate, so it may not substitute for a pass rate and is used only as a near-tie preference",
   },
@@ -265,24 +276,67 @@ export function disqualificationReason(modelId: string): string | undefined {
 
 export type EffortAuthorization = { authorized: true } | { authorized: false; reason: string };
 
+/**
+ * What a bad result costs, which is the axis that should gate minimum capability. It is derived from
+ * the task's own action mode and risk rather than from its archetype label, because the archetype says
+ * what kind of work it is and not how much damage a wrong answer does. A read-only classification and
+ * an irreversible release step can share an archetype.
+ */
+const CONSEQUENCE_TIERS = ["read_only", "reversible", "irreversible"] as const;
+export type ConsequenceTier = (typeof CONSEQUENCE_TIERS)[number];
+
+export function consequenceRank(tier: ConsequenceTier): number {
+  return CONSEQUENCE_TIERS.indexOf(tier);
+}
+
 export type EffortContext = {
   /** Archetypes allowed to exceed a model's saturation tier (escalation and highest-risk work). */
   allowSuperSaturation: boolean;
-  mutatesRepository: boolean;
+  consequence: ConsequenceTier;
   language?: RoutableLanguage | undefined;
+};
+
+/**
+ * Minimum ability band per consequence tier. Read-only work has no floor: nothing a weak model
+ * produces can break anything, so the cheapest adequate configuration is the correct one. Irreversible
+ * work bars the lowest band outright, because there effort tuning cannot compensate for capability.
+ */
+const CONSEQUENCE_ABILITY_FLOOR: Readonly<Record<ConsequenceTier, AbilityTier>> = {
+  read_only: 1,
+  reversible: 1,
+  irreversible: 2,
 };
 
 export function authorizeEffort(modelId: string, effort: EffortLevel, context: EffortContext): EffortAuthorization {
   const disqualified = disqualificationReason(modelId);
   if (disqualified) return { authorized: false, reason: `model disqualified by evidence: ${disqualified}` };
   const policy = findEffortPolicy(modelId);
-  if (!policy) return { authorized: true };
+  if (!policy) {
+    const bandless = evidenceAbility(modelId, effort);
+    const floor = CONSEQUENCE_ABILITY_FLOOR[context.consequence];
+    if (bandless !== undefined && bandless < floor) {
+      return {
+        authorized: false,
+        reason: `ability band ${String(bandless)} is below the ${context.consequence} floor of ${String(floor)}`,
+      };
+    }
+    return { authorized: true };
+  }
 
   if (policy.excludedEfforts?.includes(effort)) {
     return { authorized: false, reason: `${effort} excluded: ${policy.excludedReason ?? "measured regression"}` };
   }
+  const ability = evidenceAbility(modelId, effort);
+  const abilityFloor = CONSEQUENCE_ABILITY_FLOOR[context.consequence];
+  if (ability !== undefined && ability < abilityFloor) {
+    return {
+      authorized: false,
+      reason: `ability band ${String(ability)} is below the ${context.consequence} floor of ${String(abilityFloor)}`,
+    };
+  }
+  // The regression minimum applies to anything that changes state, not only to repository writes.
   if (
-    context.mutatesRepository &&
+    consequenceRank(context.consequence) >= consequenceRank("reversible") &&
     policy.agenticMinimumEffort &&
     effortRank(effort) < effortRank(policy.agenticMinimumEffort)
   ) {
@@ -331,7 +385,13 @@ export type EvidenceCostWeights = {
 
 export type EvidenceScoreContext = {
   language?: RoutableLanguage | undefined;
-  mutatesRepository: boolean;
+  consequence: ConsequenceTier;
+  /**
+   * Multiplier on the regression-breakage term. Regression breakage is literally "previously passing
+   * tests now fail", so a task that runs those tests catches it before a human sees it, while a task
+   * with no verification ships it.
+   */
+  verificationDiscount: number;
   unattended: boolean;
   /** Multiplies the wall-time term for foreground developer loops. */
   waitMultiplier: number;
@@ -397,7 +457,10 @@ export function scoreEvidencePrior(
     developerWaitCost: weights.developerWaitValuePerMs * context.waitMultiplier * row.p90WallTimeSeconds * 1000,
     humanInterventionCost: weights.humanInterventionCost * (1 - passRate),
     retryCost: weights.retryCost * row.repeatFlakyRate,
-    regressionBreakCost: context.mutatesRepository ? weights.regressionBreakCost * regressionBreakRate : 0,
+    regressionBreakCost:
+      consequenceRank(context.consequence) >= consequenceRank("reversible")
+        ? weights.regressionBreakCost * regressionBreakRate * context.verificationDiscount
+        : 0,
     nondeterminismCost: context.unattended ? weights.nondeterminismCost * (1 - row.repeatAllPassRate) : 0,
     stepCost: context.quotaConstrained
       ? weights.stepCostOnQuotaSurface * (frugalityPrior(row.modelId, row.effort as EffortLevel) ?? row.medianSteps)

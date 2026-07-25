@@ -111,7 +111,7 @@
     },
     "expected": {
       "archetype": "algorithmic_iterative_coding",
-      "primaryModel": "claude-opus-5",
+      "primaryModel": "gpt-5.6-sol",
       "primaryEffort": "medium",
       "fallbackModel": "gemini-3.6-flash"
     }
@@ -260,7 +260,7 @@
     "expected": {
       "archetype": "deliberate_tool_workflow",
       "primaryModel": "gpt-5.6-sol",
-      "primaryEffort": "high",
+      "primaryEffort": "medium",
       "fallbackModel": "gpt-5.4"
     }
   },
@@ -308,7 +308,7 @@
     "expected": {
       "archetype": "deliberate_tool_workflow",
       "primaryModel": "gpt-5.6-sol",
-      "primaryEffort": "high",
+      "primaryEffort": "medium",
       "fallbackModel": "gpt-5.4"
     }
   },

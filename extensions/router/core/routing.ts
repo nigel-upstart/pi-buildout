@@ -1,12 +1,13 @@
 import type { Archetype } from "./archetype.ts";
 import {
   authorizeEffort,
+  consequenceRank,
   findEvidencePrior,
   languageEvidence,
   resolveEvidenceLanguage,
   scoreEvidencePrior,
 } from "./evidence.ts";
-import type { EvidenceCostWeights, EvidenceScoreContext, RoutableLanguage } from "./evidence.ts";
+import type { ConsequenceTier, EvidenceCostWeights, EvidenceScoreContext, RoutableLanguage } from "./evidence.ts";
 import type { TaskFeatures } from "./features.ts";
 import {
   BOOTSTRAP_ROUTE_POLICIES,
@@ -184,11 +185,11 @@ const DEFAULT_EVIDENCE_WEIGHTS: EvidenceCostWeights = {
 const FOREGROUND_WAIT_MULTIPLIER = 8;
 
 /**
- * How close two candidates' costs must be before a weakly evidenced language tendency may reorder
- * them. Bounded deliberately: a low-power directional prior should settle a coin flip, never override
- * a measured cost difference.
+ * Default closeness required before a weakly evidenced language tendency may reorder two candidates.
+ * Bounded deliberately: a low-power directional prior should settle a near-tie, never override a
+ * measured cost difference. A language may widen this from its own evidence.
  */
-const NEAR_TIE_FRACTION = 0.05;
+const DEFAULT_NEAR_TIE_FRACTION = 0.05;
 
 /** Output-weighted blend used only to order endpoints that resolve to the same model and effort. */
 function blendedEndpointCost(model: RegistryModelSnapshot): number {
@@ -213,6 +214,20 @@ export type RoutingContext = {
    * Token cost then carries no signal, so step frugality is priced instead.
    */
   quotaConstrained: boolean;
+  /** What a wrong result costs, derived from the task's action mode and risk. */
+  consequence: ConsequenceTier;
+  /** Multiplier on the regression term, lowered when the task runs the tests that would catch it. */
+  verificationDiscount: number;
+};
+
+/** Review produces findings rather than state changes, so it is evaluated as read-only work. */
+const REVIEW_CONTEXT: RoutingContext = {
+  hardTask: false,
+  unattended: false,
+  foreground: false,
+  quotaConstrained: false,
+  consequence: "read_only",
+  verificationDiscount: 1,
 };
 
 const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
@@ -220,7 +235,19 @@ const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
   unattended: false,
   foreground: false,
   quotaConstrained: false,
+  // Conservative default: assume a wrong answer changes reversible state and that nothing verifies it.
+  consequence: "reversible",
+  verificationDiscount: 1,
 };
+
+/**
+ * An archetype that always changes repository state cannot be softened to read-only by a classifier
+ * that under-reads the task, so the effective consequence is the stronger of the two signals.
+ */
+function effectiveConsequence(archetype: Archetype, context: RoutingContext): ConsequenceTier {
+  const floor: ConsequenceTier = BOOTSTRAP_ROUTE_POLICIES[archetype].mutatesRepository ? "reversible" : "read_only";
+  return consequenceRank(context.consequence) >= consequenceRank(floor) ? context.consequence : floor;
+}
 
 /**
  * Derives the scoring context from trusted harness state and classifier features. It changes how
@@ -228,7 +255,7 @@ const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
  * route price.
  */
 export function deriveRoutingContext(
-  features: Pick<TaskFeatures, "ambiguity" | "interactivity">,
+  features: Pick<TaskFeatures, "ambiguity" | "interactivity" | "actionMode" | "risk" | "verificationStrength">,
   languageBuckets: readonly string[],
   registry: readonly RegistryModelSnapshot[] = [],
 ): RoutingContext {
@@ -242,7 +269,40 @@ export function deriveRoutingContext(
     unattended: features.interactivity === "autonomous",
     foreground: features.interactivity === "developer_loop",
     quotaConstrained: isQuotaConstrained(registry),
+    consequence: consequenceOf(features),
+    verificationDiscount: verificationDiscountOf(features),
   };
+}
+
+/**
+ * Consequence is about what a wrong result costs, so it reads the action mode first and lets critical
+ * risk escalate. `information_only` and `local_read` genuinely cannot break anything, which is what
+ * makes the cheapest adequate configuration correct for classification and extraction work.
+ */
+function consequenceOf(features: Pick<TaskFeatures, "actionMode" | "risk">): ConsequenceTier {
+  if (features.actionMode === "external_side_effect" || features.actionMode === "destructive") return "irreversible";
+  if (features.risk === "critical") return "irreversible";
+  if (features.actionMode === "reversible_mutation") return "reversible";
+  return "read_only";
+}
+
+/**
+ * Measured regression breakage is exactly "previously passing tests now fail". A task that runs those
+ * tests catches it inside the loop; a task with no verification ships it. The discount is deliberately
+ * partial, because a test suite is not a complete guard against silent behavior change.
+ */
+function verificationDiscountOf(features: Pick<TaskFeatures, "verificationStrength">): number {
+  switch (features.verificationStrength) {
+    case "security_and_policy":
+    case "integration_tests":
+      return 0.25;
+    case "unit_tests":
+      return 0.5;
+    case "self_check":
+      return 0.85;
+    default:
+      return 1;
+  }
 }
 
 /**
@@ -260,7 +320,8 @@ const FLAT_RATE_PROVIDERS = new Set(["github-copilot"]);
 function evidenceScoreContext(archetype: Archetype, context: RoutingContext): EvidenceScoreContext {
   return {
     language: context.language,
-    mutatesRepository: BOOTSTRAP_ROUTE_POLICIES[archetype].mutatesRepository,
+    consequence: effectiveConsequence(archetype, context),
+    verificationDiscount: context.verificationDiscount,
     unattended: context.unattended,
     waitMultiplier: context.foreground ? FOREGROUND_WAIT_MULTIPLIER : 1,
     hardTask: context.hardTask,
@@ -344,7 +405,7 @@ function evaluateCandidate(
   }
   const authorization = authorizeEffort(ref.logicalModelId, ref.effort, {
     allowSuperSaturation: policy.allowSuperSaturation,
-    mutatesRepository: policy.mutatesRepository,
+    consequence: effectiveConsequence(archetype, context),
     language: context.language,
   });
   if (!authorization.authorized) {
@@ -585,10 +646,11 @@ function orderGroups(
   // A weakly evidenced language tendency may break a near-tie but can never move a candidate past a
   // materially better score. Ruby is the motivating case: its only current-generation source has four
   // tasks and measures a different construct, which justifies a preference and not a weight.
-  const tendency = languageEvidence(context.language)?.vendorTendency;
+  const languagePolicy = languageEvidence(context.language);
+  const tendency = languagePolicy?.vendorTendency;
   const leader = ranked[0]?.evidence?.score;
   if (tendency !== undefined && leader !== undefined && leader > 0) {
-    const limit = leader * (1 + NEAR_TIE_FRACTION);
+    const limit = leader * (1 + (languagePolicy?.nearTieFraction ?? DEFAULT_NEAR_TIE_FRACTION));
     const preferred = ranked.findIndex(
       (entry) => (entry.evidence?.score ?? Infinity) <= limit && entry.group.endpoints[0]?.vendor === tendency,
     );
@@ -709,6 +771,7 @@ function builderChoice(
     "code_review",
     requirements,
     exclusions,
+    REVIEW_CONTEXT,
   );
   return eligible ? { ...eligible, rankReason: "fixed_builder_fallback" } : undefined;
 }
@@ -728,7 +791,7 @@ export function selectReviewRoute(
   for (const vendor of vendors) {
     const refsForVendor = reviewerRefs(vendor, builderAbility);
     const eligible = refsForVendor
-      .map((ref) => evaluateCandidate(ref, registry, "code_review", requirements, exclusions))
+      .map((ref) => evaluateCandidate(ref, registry, "code_review", requirements, exclusions, REVIEW_CONTEXT))
       .find((choice): choice is RouteChoice => choice !== undefined);
     if (eligible) {
       if (eligible.ability < builderAbility) ceilingMismatchVendors.push(vendor);

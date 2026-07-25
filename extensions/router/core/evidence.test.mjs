@@ -32,7 +32,8 @@ const WEIGHTS = {
 
 const ORDINARY = {
   language: undefined,
-  mutatesRepository: false,
+  consequence: "read_only",
+  verificationDiscount: 1,
   unattended: false,
   waitMultiplier: 1,
   hardTask: false,
@@ -185,7 +186,7 @@ describe("per-language evidence policy", () => {
 });
 
 describe("effort authorization", () => {
-  const base = { allowSuperSaturation: false, mutatesRepository: true, language: undefined };
+  const base = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
 
   it("caps ordinary archetypes at the measured saturation tier", () => {
     assert.equal(authorizeEffort("claude-opus-5", "high", base).authorized, true);
@@ -234,7 +235,7 @@ describe("effort authorization", () => {
       assert.equal(mutating.authorized, false, `${modelId}@${effort} must not mutate a repository`);
       assert.match(mutating.reason, /agentic minimum/);
       assert.equal(
-        authorizeEffort(modelId, effort, { ...base, mutatesRepository: false }).authorized,
+        authorizeEffort(modelId, effort, { ...base, consequence: "read_only" }).authorized,
         true,
         `${modelId}@${effort} remains usable for non-mutating work`,
       );
@@ -305,10 +306,10 @@ describe("prior-seeded cost to done", () => {
 
   it("still applies a measured regression rate for a language whose pass rate is not substituted", () => {
     const row = findEvidencePrior("gpt-5.6-sol", "high");
-    const corpus = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, mutatesRepository: true });
+    const corpus = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, consequence: "reversible" });
     const typescript = scoreEvidencePrior(row, WEIGHTS, {
       ...ORDINARY,
-      mutatesRepository: true,
+      consequence: "reversible",
       language: "typescript",
     });
     // TypeScript breakage is measurably lower than the corpus median and is not disputed.
@@ -357,7 +358,7 @@ describe("prior-seeded cost to done", () => {
   it("prices regression breakage only for repository-mutating work", () => {
     const row = findEvidencePrior("gpt-5.6-terra", "high");
     const readOnly = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
-    const mutating = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, mutatesRepository: true });
+    const mutating = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, consequence: "reversible" });
     assert.equal(readOnly.components.regressionBreakCost, 0);
     assert.ok(mutating.components.regressionBreakCost > 0);
     assert.ok(mutating.score > readOnly.score);
@@ -436,7 +437,7 @@ describe("step frugality and quota-constrained pricing", () => {
   });
 
   it("permits gpt-5.6-luna at high effort on mutating work after the cliff correction", () => {
-    const mutating = { allowSuperSaturation: false, mutatesRepository: true, language: undefined };
+    const mutating = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
     assert.equal(authorizeEffort("gpt-5.6-luna", "high", mutating).authorized, true);
     assert.equal(authorizeEffort("gpt-5.6-luna", "medium", mutating).authorized, false);
     assert.equal(authorizeEffort("gpt-5.6-luna", "low", mutating).authorized, false);

@@ -5,7 +5,7 @@ import { deriveArchetype } from "../core/archetype.ts";
 import { conservativeFeatures, validateTaskFeatures } from "../core/features.ts";
 import { BOOTSTRAP_ROUTE_POLICIES, reviewerRefs } from "../core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "../core/profiles.ts";
-import { selectOrdinaryRoute, selectReviewRoute } from "../core/routing.ts";
+import { deriveRoutingContext, selectOrdinaryRoute, selectReviewRoute } from "../core/routing.ts";
 import { scoreFeatureAxes } from "./score.ts";
 
 const fixtures = JSON.parse(await readFile(new URL("./corpus/routes.json", import.meta.url), "utf8"));
@@ -101,7 +101,17 @@ describe("routing golden corpus", () => {
               "medium",
               2,
             )
-          : selectOrdinaryRoute(archetype, models, requirements);
+          : selectOrdinaryRoute(
+              archetype,
+              models,
+              requirements,
+              [],
+              undefined,
+              undefined,
+              // Consequence, verification strength, and interactivity come from the fixture's own
+              // features, so the corpus exercises the real derivation rather than a default.
+              deriveRoutingContext(features, []),
+            );
       assert.notEqual(decision.kind, "unroutable", decision.reason);
       const fallbacks = decision.kind === "review" ? [decision.fallback] : decision.fallbacks;
       if (fixture.expected.primaryModel) assert.equal(decision.primary.modelId, fixture.expected.primaryModel);

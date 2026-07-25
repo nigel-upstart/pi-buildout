@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { deriveArchetype } from "./archetype.ts";
+import { BOOTSTRAP_ROUTE_POLICIES } from "./policy.ts";
 import { conservativeFeatures } from "./features.ts";
 import {
   canonicalVendor,
@@ -44,9 +45,17 @@ function registry() {
   ];
 }
 
-const GO = { hardTask: false, unattended: false, foreground: false, language: "go" };
-const TYPESCRIPT = { ...GO, language: "typescript" };
-const HARD_GO = { ...GO, hardTask: true };
+// Contexts are built through deriveRoutingContext so the fixtures cannot drift from the real derivation.
+const FEATURES = {
+  ambiguity: "low",
+  interactivity: "single_response",
+  actionMode: "reversible_mutation",
+  risk: "medium",
+  verificationStrength: "unit_tests",
+};
+const GO = deriveRoutingContext(FEATURES, ["go"]);
+const TYPESCRIPT = deriveRoutingContext(FEATURES, ["typescript"]);
+const HARD_GO = deriveRoutingContext({ ...FEATURES, ambiguity: "high" }, ["go"]);
 
 const REQUIREMENTS = { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true };
 
@@ -242,7 +251,7 @@ describe("ordinary route selection", () => {
     assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
   });
 
-  it("excludes low-effort tiers from repository-mutating archetypes but keeps them for read-only ones", () => {
+  it("gates low-effort tiers on task consequence rather than on the archetype label", () => {
     const mutating = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
     assert.equal(mutating.kind, "ordinary");
     assert.ok(
@@ -250,10 +259,38 @@ describe("ordinary route selection", () => {
         (choice) => !(choice.modelId === "gpt-5.6-terra" && (choice.effort === "low" || choice.effort === "medium")),
       ),
     );
-    const readOnly = selectOrdinaryRoute("exact_extraction", registry(), REQUIREMENTS);
+
+    // An extraction task that cannot change anything keeps the cheap precise tier.
+    const readOnly = selectOrdinaryRoute(
+      "exact_extraction",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+    );
     assert.equal(readOnly.kind, "ordinary");
     assert.equal(readOnly.primary.modelId, "gpt-5.6-terra");
     assert.equal(readOnly.primary.effort, "medium");
+
+    // The same archetype carrying an irreversible action mode drops the low band entirely.
+    const irreversible = selectOrdinaryRoute(
+      "exact_extraction",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "external_side_effect" }, []),
+    );
+    assert.equal(irreversible.kind, "ordinary");
+    assert.notEqual(irreversible.primary.modelId, "gpt-5.6-terra");
+    assert.ok(
+      irreversible.exclusions.some(
+        (exclusion) => exclusion.code === "effort_unauthorized" && /irreversible floor/.test(exclusion.detail),
+      ),
+    );
   });
 
   it("rejects candidates that exceed 70% context headroom", () => {
@@ -467,7 +504,7 @@ describe("routing context derivation", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ambiguity: "low", interactivity: "developer_loop" }, ["typescript"]),
+      deriveRoutingContext({ ...FEATURES, interactivity: "developer_loop" }, ["typescript"]),
     );
     assert.equal(foreground.kind, "ordinary");
     assert.equal(foreground.primary.modelId, "gpt-5.6-sol");
@@ -482,7 +519,7 @@ describe("routing context derivation", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ambiguity: "high", interactivity: "single_response" }, []),
+      deriveRoutingContext({ ...FEATURES, ambiguity: "high" }, []),
     );
     assert.equal(hard.kind, "ordinary");
     assert.notEqual(hard.primary.modelId, "gpt-5.6-luna");
@@ -509,7 +546,7 @@ describe("weakly evidenced language tendencies", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["ruby"]),
+      deriveRoutingContext(FEATURES, ["ruby"]),
     );
     assert.equal(ruby.kind, "ordinary");
     // gpt-5.6-sol@high and claude-opus-5@medium sit within the near-tie band on corpus-wide priors,
@@ -528,7 +565,7 @@ describe("weakly evidenced language tendencies", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["ruby"]),
+      deriveRoutingContext(FEATURES, ["ruby"]),
     );
     assert.equal(ruby.kind, "ordinary");
     // The pin already selects Opus 5 here, so assert the weaker Anthropic tier did not jump the queue.
@@ -543,7 +580,7 @@ describe("weakly evidenced language tendencies", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["kotlin"]),
+      deriveRoutingContext(FEATURES, ["kotlin"]),
     );
     const unmeasured = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
     assert.equal(kotlin.kind, "ordinary");
@@ -565,20 +602,45 @@ describe("balanced tier and scoped frugal candidate", () => {
   it("keeps non-agentic archetypes on their declared order despite agentic priors", () => {
     // The corpus does not measure classification or extraction, so a multi-step repository pass rate
     // must not reorder these pools.
-    const classification = selectOrdinaryRoute("fast_classification", withExtras(), REQUIREMENTS);
+    const readOnlyContext = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
+    const classification = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      readOnlyContext,
+    );
     assert.equal(classification.kind, "ordinary");
     assert.equal(classification.primary.modelId, "gpt-5.6-luna");
     assert.equal(classification.primary.effort, "low");
     assert.equal(classification.primary.rankReason, "bootstrap");
 
-    const extraction = selectOrdinaryRoute("exact_extraction", withExtras(), REQUIREMENTS);
+    const extraction = selectOrdinaryRoute(
+      "exact_extraction",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      readOnlyContext,
+    );
     assert.equal(extraction.primary.modelId, "gpt-5.6-terra");
     assert.equal(extraction.primary.effort, "medium");
     assert.equal(extraction.primary.rankReason, "bootstrap");
   });
 
   it("authorizes gpt-oss-120b for bounded work only, and only on its Bedrock route", () => {
-    const extraction = selectOrdinaryRoute("exact_extraction", withExtras(), REQUIREMENTS);
+    const extraction = selectOrdinaryRoute(
+      "exact_extraction",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+    );
     const oss = [extraction.primary, ...extraction.fallbacks].find(
       (choice) => choice.logicalModelId === "gpt-oss-120b",
     );
@@ -638,10 +700,73 @@ describe("balanced tier and scoped frugal candidate", () => {
     const context = deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["go"], copilotOnly);
     assert.equal(context.quotaConstrained, true);
     // A mixed registry is not quota constrained, because a token-billed route remains available.
-    assert.equal(
-      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["go"], withExtras())
-        .quotaConstrained,
-      false,
-    );
+    assert.equal(deriveRoutingContext(FEATURES, ["go"], withExtras()).quotaConstrained, false);
+  });
+});
+
+describe("consequence gating invariants", () => {
+  const IRREVERSIBLE = { ...FEATURES, actionMode: "external_side_effect" };
+
+  it("keeps every archetype routable for irreversible work", () => {
+    // Regression guard: both non-agentic pools were once entirely ability band 1, which made an
+    // irreversible task in those archetypes unroutable rather than merely expensive.
+    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+      if (archetype === "code_review") continue;
+      const decision = selectOrdinaryRoute(
+        archetype,
+        registry(),
+        REQUIREMENTS,
+        [],
+        undefined,
+        undefined,
+        deriveRoutingContext(IRREVERSIBLE, []),
+      );
+      assert.equal(decision.kind, "ordinary", `${archetype} became unroutable for irreversible work`);
+    }
+  });
+
+  it("bars the lowest ability band from irreversible work in every archetype", () => {
+    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+      if (archetype === "code_review") continue;
+      const decision = selectOrdinaryRoute(
+        archetype,
+        registry(),
+        REQUIREMENTS,
+        [],
+        undefined,
+        undefined,
+        deriveRoutingContext(IRREVERSIBLE, []),
+      );
+      for (const choice of [decision.primary, ...decision.fallbacks]) {
+        assert.ok(choice.ability >= 2, `${archetype} allowed ability ${String(choice.ability)} on irreversible work`);
+      }
+    }
+  });
+
+  it("escalates critical risk to the irreversible tier even for a read-only action mode", () => {
+    const context = deriveRoutingContext({ ...FEATURES, actionMode: "local_read", risk: "critical" }, []);
+    assert.equal(context.consequence, "irreversible");
+    const benign = deriveRoutingContext({ ...FEATURES, actionMode: "local_read", risk: "medium" }, []);
+    assert.equal(benign.consequence, "read_only");
+  });
+
+  it("discounts the regression term when the task runs the tests that would catch it", () => {
+    const none = deriveRoutingContext({ ...FEATURES, verificationStrength: "none" }, []);
+    const unit = deriveRoutingContext({ ...FEATURES, verificationStrength: "unit_tests" }, []);
+    const integration = deriveRoutingContext({ ...FEATURES, verificationStrength: "integration_tests" }, []);
+    assert.equal(none.verificationDiscount, 1);
+    assert.ok(unit.verificationDiscount < none.verificationDiscount);
+    assert.ok(integration.verificationDiscount < unit.verificationDiscount);
+  });
+
+  it("still reviews with the builder as final fallback even when the builder is a low tier", () => {
+    // Review is a read-only judgment, so a builder whose effort is barred from state-changing work
+    // must still be able to review its own output.
+    const models = registry();
+    const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
+    const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
+    assert.equal(decision.kind, "review");
+    assert.equal(decision.builderFallback.modelId, "gpt-5.6-terra");
+    assert.equal(decision.builderFallback.effort, "medium");
   });
 });
