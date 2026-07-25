@@ -144,7 +144,10 @@ Deterministic, not LLM-assisted:
   candidate from each of the two vendors other than the builder's vendor and prefer the closest reviewer at or above the
   builder's effective ability. If a vendor has no model at that level, select its strongest eligible model and record
   the ceiling mismatch.
-- Every ordinary second-ranked candidate must be OpenAI or Anthropic.
+- Ordinary routes should keep a different-vendor candidate in the chain wherever one is eligible. This is a property of
+  the candidate pools rather than an enforced filter: ordering is driven by measured cost-to-done, so the router does
+  not reject an all-one-vendor chain when that is what eligibility leaves. Google contributes a single eligible
+  configuration, so vendor diversity in practice means OpenAI and Anthropic.
 - The model manufacturer's own route is the primary instance for a model. Every other configured route for the same
   model is an ordered availability backup that precedes any different-model fallback, so an endpoint failure retries the
   same model before routing changes models. Route price only orders endpoints within one preference tier, and flat-rate
@@ -158,6 +161,9 @@ Deterministic, not LLM-assisted:
   [`model-evidence-2026-07-25.md`](model-evidence-2026-07-25.md), rather than by policy list order. That sample floor
   exists so a former second choice is promoted only on evidence, not on a handful of noisy runs. After maturity, rank by
   the observed robust cost-to-done score:
+
+  The evidence-seeded form mirrors this shape without being term-for-term identical: its cost term is a mean per attempt
+  rather than a p75, and its wall-time term is p90 rather than p75, which deliberately penalizes slow tails.
 
   ```text
   p75 model/tool cost

@@ -11,7 +11,6 @@ import {
   EFFORT_POLICIES,
   evidenceAbility,
   findEvidencePrior,
-  frugalityPrior,
   HARD_TASK_ESCALATION,
   resolveEvidenceLanguage,
   scoreEvidencePrior,
@@ -27,7 +26,6 @@ const WEIGHTS = {
   retryCost: 10,
   regressionBreakCost: 40,
   nondeterminismCost: 15,
-  stepCostOnQuotaSurface: 0.04,
 };
 
 const ORDINARY = {
@@ -37,7 +35,6 @@ const ORDINARY = {
   unattended: false,
   waitMultiplier: 1,
   hardTask: false,
-  quotaConstrained: false,
 };
 
 function score(modelId, effort, context = ORDINARY) {
@@ -400,42 +397,7 @@ describe("hard-task escalation prior", () => {
   });
 });
 
-describe("step frugality and quota-constrained pricing", () => {
-  it("prices steps only on a quota-constrained surface", () => {
-    const row = findEvidencePrior("claude-opus-5", "medium");
-    const billed = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
-    const quota = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, quotaConstrained: true });
-    assert.equal(billed.components.stepCost, 0, "token-billed routes already price steps inside cost per pass");
-    assert.ok(quota.components.stepCost > 0);
-  });
-
-  it("refuses a non-finite score instead of ranking arbitrarily", () => {
-    const row = findEvidencePrior("claude-opus-5", "medium");
-    const incomplete = { ...WEIGHTS };
-    delete incomplete.stepCostOnQuotaSurface;
-    assert.throws(() => scoreEvidencePrior(row, incomplete, { ...ORDINARY, quotaConstrained: true }), /is not finite/);
-  });
-
-  it("uses the measured API-call frugality prior where the corpus provides one", () => {
-    assert.equal(frugalityPrior("claude-opus-4-6", "high"), 23.6);
-    assert.equal(frugalityPrior("claude-opus-5", "high"), undefined);
-  });
-
-  it("prefers the frugal model on a quota surface and the current generation on a billed one", () => {
-    const frugal = { modelId: "claude-opus-4-6", effort: "high" };
-    // claude-opus-4-6 has no rollout row, so it cannot be scored; the comparison that matters is that
-    // the step term moves a scored candidate's cost when quota is the constraint.
-    assert.equal(findEvidencePrior(frugal.modelId, frugal.effort), undefined);
-    const sol = findEvidencePrior("gpt-5.6-sol", "high");
-    const opus = findEvidencePrior("claude-opus-5", "medium");
-    const quota = { ...ORDINARY, quotaConstrained: true };
-    // Sol at high uses 32 median steps against Opus 5 at medium's 43, so a quota surface favors Sol.
-    assert.ok(
-      scoreEvidencePrior(sol, WEIGHTS, quota).components.stepCost <
-        scoreEvidencePrior(opus, WEIGHTS, quota).components.stepCost,
-    );
-  });
-
+describe("effort authorization corrections", () => {
   it("permits gpt-5.6-luna at high effort on mutating work after the cliff correction", () => {
     const mutating = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
     assert.equal(authorizeEffort("gpt-5.6-luna", "high", mutating).authorized, true);
@@ -447,5 +409,15 @@ describe("step frugality and quota-constrained pricing", () => {
     // Two bands below claude-opus-5 at high effort, which is why it is scoped rather than general.
     assert.equal(evidenceAbility("claude-opus-4-6", "high"), 2);
     assert.equal(evidenceAbility("gpt-oss-120b", "high"), 1);
+  });
+
+  it("refuses a non-finite score instead of ranking arbitrarily", () => {
+    const row = findEvidencePrior("claude-opus-5", "medium");
+    const incomplete = { ...WEIGHTS };
+    delete incomplete.regressionBreakCost;
+    assert.throws(
+      () => scoreEvidencePrior(row, incomplete, { ...ORDINARY, consequence: "reversible" }),
+      /is not finite/,
+    );
   });
 });

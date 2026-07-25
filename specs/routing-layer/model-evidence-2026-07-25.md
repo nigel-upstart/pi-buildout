@@ -175,11 +175,16 @@ Gemini 3 Flash in the same capture). Frugality becomes an independent advantage 
    consumes most of the window.
 3. **Foreground latency.** Fewer round trips shortens a developer loop, which the wall-time term already prices.
 
-The policy therefore keeps Opus 4.6 as a **scoped** candidate rather than a general tier: it is authorized only on a
-quota-billed surface or when the estimate exceeds half the window, and it is excluded with a `scope_unmet` reason
-otherwise. Its consensus band is 2, two below Claude Opus 5 at high effort, which is why it is not a capability option.
-The step term is likewise priced only on quota-constrained surfaces, because pricing it on a billed route would double
-count what cost per pass already contains.
+The policy therefore keeps Opus 4.6 as a **scoped** candidate rather than a general tier: it is authorized only when the
+task estimate already exceeds half the endpoint's window, and it is excluded with a `scope_unmet` reason otherwise. Its
+consensus band is 2, two below Claude Opus 5 at high effort, which is why it is not a capability option.
+
+A quota-surface step term was implemented and then removed during review. Two facts defeated it: `claude-opus-4-6` has
+no rollout row, so the term could never resolve the API-call figures it was meant to price, and its activation condition
+(every available endpoint billing per seat) leaves almost every archetype unroutable anyway, because at most one Copilot
+endpoint is eligible per archetype. Reviving it requires making the frugal candidate scoreable and reformulating the
+condition per endpoint rather than per registry. Until then the frugality rows are provenance for the scoped candidate
+and nothing more.
 
 ### Rank on completion cost, never on token price
 
@@ -200,8 +205,8 @@ flakiness). `partialCreditOnFailure` separates configurations that leave usable 
 `claude-opus-5@high` 83.0%) from ones that fail hard (`claude-fable-5@max` 64.9%, `claude-sonnet-5@max` 70.0%).
 Unattended work weights determinism; attended work can accept good partial progress.
 
-`gpt-5.6-luna@max` is the single best hard-task solver in the corpus (47.1% on `upstart_core`, 44.4% on TypeScript) and
-is far too flaky to be a default, so it is authorized only as a hard-task escalation candidate.
+`gpt-5.6-luna@max` is the single best hard-task solver in the corpus (44.6% corpus-wide, 47.1% on `upstart_core`, 44.4%
+on TypeScript) and is far too flaky to be a default, so it is authorized only as a hard-task escalation candidate.
 
 ## How to refresh this file
 

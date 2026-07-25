@@ -57,9 +57,9 @@ type ExclusionCode =
   | "effort_unauthorized"
   | "thrash_guard"
   | "scope_unmet"
+  | "escalation_without_primary"
   | "profile_missing"
-  | "duplicate_model"
-  | "fallback_vendor";
+  | "duplicate_model";
 
 type CandidateExclusion = {
   candidate: string;
@@ -176,9 +176,6 @@ const DEFAULT_EVIDENCE_WEIGHTS: EvidenceCostWeights = {
   ...DEFAULT_COST_WEIGHTS,
   regressionBreakCost: 40,
   nondeterminismCost: 15,
-  // Sized so a 25-step difference is worth about a dollar of expected completion cost, which is the
-  // scale at which premium-request quota differences start to matter.
-  stepCostOnQuotaSurface: 0.04,
 };
 
 /** Foreground developer loops price wall time far higher than background work. */
@@ -209,11 +206,6 @@ export type RoutingContext = {
   unattended: boolean;
   /** Foreground developer loop, where wall time dominates. */
   foreground: boolean;
-  /**
-   * Set when every eligible endpoint for the task bills per request or seat rather than per token.
-   * Token cost then carries no signal, so step frugality is priced instead.
-   */
-  quotaConstrained: boolean;
   /** What a wrong result costs, derived from the task's action mode and risk. */
   consequence: ConsequenceTier;
   /** Multiplier on the regression term, lowered when the task runs the tests that would catch it. */
@@ -225,7 +217,6 @@ const REVIEW_CONTEXT: RoutingContext = {
   hardTask: false,
   unattended: false,
   foreground: false,
-  quotaConstrained: false,
   consequence: "read_only",
   verificationDiscount: 1,
 };
@@ -234,7 +225,6 @@ const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
   hardTask: false,
   unattended: false,
   foreground: false,
-  quotaConstrained: false,
   // Conservative default: assume a wrong answer changes reversible state and that nothing verifies it.
   consequence: "reversible",
   verificationDiscount: 1,
@@ -257,7 +247,6 @@ function effectiveConsequence(archetype: Archetype, context: RoutingContext): Co
 export function deriveRoutingContext(
   features: Pick<TaskFeatures, "ambiguity" | "interactivity" | "actionMode" | "risk" | "verificationStrength">,
   languageBuckets: readonly string[],
-  registry: readonly RegistryModelSnapshot[] = [],
 ): RoutingContext {
   const language = resolveEvidenceLanguage(languageBuckets);
   return {
@@ -268,7 +257,6 @@ export function deriveRoutingContext(
     // Autonomous work cannot rely on a human noticing a non-deterministic pass.
     unattended: features.interactivity === "autonomous",
     foreground: features.interactivity === "developer_loop",
-    quotaConstrained: isQuotaConstrained(registry),
     consequence: consequenceOf(features),
     verificationDiscount: verificationDiscountOf(features),
   };
@@ -305,18 +293,6 @@ function verificationDiscountOf(features: Pick<TaskFeatures, "verificationStreng
   }
 }
 
-/**
- * True when every available endpoint bills per request or seat rather than per token. Detected from
- * the registry rather than configured, because it is a property of which providers are actually
- * reachable: a Copilot-only environment has no token-cost signal to rank with.
- */
-function isQuotaConstrained(registry: readonly RegistryModelSnapshot[]): boolean {
-  const available = registry.filter((model) => model.available);
-  return available.length > 0 && available.every((model) => FLAT_RATE_PROVIDERS.has(model.provider));
-}
-
-const FLAT_RATE_PROVIDERS = new Set(["github-copilot"]);
-
 function evidenceScoreContext(archetype: Archetype, context: RoutingContext): EvidenceScoreContext {
   return {
     language: context.language,
@@ -325,7 +301,6 @@ function evidenceScoreContext(archetype: Archetype, context: RoutingContext): Ev
     unattended: context.unattended,
     waitMultiplier: context.foreground ? FOREGROUND_WAIT_MULTIPLIER : 1,
     hardTask: context.hardTask,
-    quotaConstrained: context.quotaConstrained,
   };
 }
 
@@ -395,7 +370,7 @@ function evaluateCandidate(
   // A scoped frugal candidate exists for surfaces where token cost carries no signal or where the
   // window is tight. Outside those conditions it is strictly worse than the current generation, so it
   // is excluded rather than left to rank late.
-  if (ref.scopedFrugal === true && !context.quotaConstrained && !frugalityWarranted(ref, registry, requirements)) {
+  if (ref.scopedFrugal === true && !frugalityWarranted(ref, registry, requirements)) {
     exclusions.push({
       candidate: key,
       code: "scope_unmet",
@@ -501,6 +476,33 @@ function frugalityWarranted(
   const model = findSnapshot(ref, registry);
   if (!model) return false;
   return requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.5);
+}
+
+/**
+ * An escalation-only candidate may outrank the leaders on the hard-task prior, but its measured
+ * flakiness makes it unfit for a first attempt. This runs on the final ordered chain rather than
+ * inside one ranking branch, so no archetype and no ranking path can bypass it.
+ *
+ * It fails closed: when no ordinary candidate survives eligibility, the escalation candidates are
+ * dropped entirely rather than promoted, which leaves the route unroutable and preserves the existing
+ * model selection. An escalation prior is authorization to retry differently, never a licence to make
+ * the least reliable configuration the first attempt.
+ */
+function demoteEscalationOnly(choices: readonly RouteChoice[], exclusions: CandidateExclusion[]): RouteChoice[] {
+  const ordinary = choices.filter((choice) => choice.escalationOnly !== true);
+  const escalation = choices.filter((choice) => choice.escalationOnly === true);
+  if (escalation.length === 0) return [...ordinary];
+  if (ordinary.length === 0) {
+    for (const choice of escalation) {
+      exclusions.push({
+        candidate: `${choice.provider}/${choice.modelId}@${choice.effort}`,
+        code: "escalation_without_primary",
+        detail: "escalation-only candidates cannot serve as a first attempt and no ordinary candidate was eligible",
+      });
+    }
+    return [];
+  }
+  return [...ordinary, ...escalation];
 }
 
 function deduplicateChoices(choices: readonly RouteChoice[], exclusions: CandidateExclusion[]): RouteChoice[] {
@@ -668,13 +670,6 @@ function orderGroups(
       )
     : -1;
   if (pinIndex > 0) ordered.unshift(...ordered.splice(pinIndex, 1));
-  // An escalation-only candidate may outrank the leaders on the hard-task prior, but its measured
-  // flakiness makes it unsuitable for a first attempt, so it is demoted behind the best ordinary
-  // candidate while staying authorized as a retry.
-  if (ordered[0]?.group.endpoints[0]?.escalationOnly === true) {
-    const ordinaryIndex = ordered.findIndex((entry) => entry.group.endpoints[0]?.escalationOnly !== true);
-    if (ordinaryIndex > 0) ordered.unshift(...ordered.splice(ordinaryIndex, 1));
-  }
   return {
     mature: false,
     controlledHoldout: false,
@@ -721,7 +716,7 @@ export function selectOrdinaryRoute(
     explorationKey,
     context,
   );
-  const [primary, ...fallbacks] = ranked.choices;
+  const [primary, ...fallbacks] = demoteEscalationOnly(ranked.choices, exclusions);
 
   if (!primary || fallbacks.length === 0) {
     return {

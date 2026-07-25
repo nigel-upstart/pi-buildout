@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import { createTaskLease } from "./core/lease.ts";
 import { selectReviewRoute } from "./core/routing.ts";
@@ -128,27 +129,31 @@ describe("lease restoration and context estimates", () => {
       selected: {
         provider: "openai-codex",
         modelId: "gpt-5.6-sol",
+        logicalModelId: "gpt-5.6-sol",
         vendor: "openai",
         effort: "max",
         ability: 4,
         profileId: "openai-gpt-5.6-agent-v1",
         contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
       fallbacks: [
         {
           provider: "anthropic",
           modelId: "claude-opus-5",
+          logicalModelId: "claude-opus-5",
           vendor: "anthropic",
           effort: "high",
           ability: 3,
           profileId: "anthropic-claude-planning-v1",
           contextWindow: 1_000_000,
+          endpointTier: "manufacturer",
           rankReason: "bootstrap",
         },
       ],
       modelSnapshotId: "snapshot",
-      policyVersion: "policy",
+      policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
     });
     active.planValidationRepairAttempted = true;

@@ -10,7 +10,8 @@ import { validateTaskFeatures } from "./core/features.ts";
 import type { TaskFeatures } from "./core/features.ts";
 import type { LeaseState, TaskLease } from "./core/lease.ts";
 import { evidenceAbility } from "./core/evidence.ts";
-import { policyAbility } from "./core/policy.ts";
+import { ENDPOINT_TIERS, POLICY_VERSION, policyAbility } from "./core/policy.ts";
+import type { EndpointTier } from "./core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import { canonicalVendor } from "./core/routing.ts";
@@ -110,7 +111,9 @@ function isRouteChoice(value: unknown, archetype: Archetype): boolean {
     !EFFORT_LEVELS.includes(choice.effort as EffortLevel) ||
     typeof choice.profileId !== "string" ||
     typeof choice.contextWindow !== "number" ||
-    typeof choice.ability !== "number"
+    typeof choice.ability !== "number" ||
+    typeof choice.logicalModelId !== "string" ||
+    !ENDPOINT_TIERS.includes(choice.endpointTier as EndpointTier)
   ) {
     return false;
   }
@@ -141,7 +144,10 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     typeof lease.promptProfileId !== "string" ||
     object(lease.selected)?.profileId !== lease.promptProfileId ||
     typeof lease.modelSnapshotId !== "string" ||
-    typeof lease.policyVersion !== "string" ||
+    // A lease written by an earlier policy version predates fields that RouteChoice now declares
+    // non-optional, so restoring it would produce a value whose type is a lie. Reject it and let the
+    // next user turn create a fresh lease rather than degrading silently.
+    lease.policyVersion !== POLICY_VERSION ||
     typeof lease.lastPromptFingerprint !== "string" ||
     typeof lease.manualOverride !== "boolean" ||
     (lease.planValidationRepairAttempted !== undefined && typeof lease.planValidationRepairAttempted !== "boolean")

@@ -690,18 +690,6 @@ describe("balanced tier and scoped frugal candidate", () => {
       "constrained headroom authorizes the frugal candidate",
     );
   });
-
-  it("prices steps instead of tokens when every eligible endpoint is flat rate", () => {
-    const copilotOnly = [
-      model("github-copilot", "claude-opus-4.6", "anthropic"),
-      model("github-copilot", "claude-haiku-4.5", "anthropic"),
-      model("github-copilot", "gpt-5.5", "openai"),
-    ];
-    const context = deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["go"], copilotOnly);
-    assert.equal(context.quotaConstrained, true);
-    // A mixed registry is not quota constrained, because a token-billed route remains available.
-    assert.equal(deriveRoutingContext(FEATURES, ["go"], withExtras()).quotaConstrained, false);
-  });
 });
 
 describe("consequence gating invariants", () => {
@@ -768,5 +756,85 @@ describe("consequence gating invariants", () => {
     assert.equal(decision.kind, "review");
     assert.equal(decision.builderFallback.modelId, "gpt-5.6-terra");
     assert.equal(decision.builderFallback.effort, "medium");
+  });
+});
+
+describe("escalation-only candidates can never be a first attempt", () => {
+  const HARD = {
+    ambiguity: "high",
+    interactivity: "single_response",
+    actionMode: "reversible_mutation",
+    risk: "medium",
+    verificationStrength: "none",
+  };
+
+  it("never takes the primary slot in any archetype, even when it is the only eligible model", () => {
+    // Degenerate registry: the escalation candidate is the only model, at its only authorized effort.
+    // Previously the demotion lived inside one ranking branch and used `findIndex(...) > 0`, so it
+    // failed open here and handed every archetype its least reliable configuration as a first attempt.
+    const only = [model("openai-codex", "gpt-5.6-luna", "openai"), model("openai", "gpt-5.6-luna", "openai")].map(
+      (candidate) => ({ ...candidate, supportedEfforts: ["max"] }),
+    );
+    const context = deriveRoutingContext(HARD, []);
+    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+      if (archetype === "code_review") continue;
+      const decision = selectOrdinaryRoute(archetype, only, REQUIREMENTS, [], undefined, undefined, context);
+      if (decision.kind === "ordinary") {
+        assert.notEqual(
+          decision.primary.escalationOnly,
+          true,
+          `${archetype} promoted an escalation-only candidate to primary`,
+        );
+      } else {
+        // Failing closed is the correct outcome: the previous selection is preserved.
+        assert.equal(decision.kind, "unroutable");
+        assert.ok(decision.exclusions.some((exclusion) => exclusion.code === "escalation_without_primary"));
+      }
+    }
+  });
+
+  it("applies the rule to archetypes that are not evidence ranked", () => {
+    // fast_classification and exact_extraction return early from ranking, so the invariant has to be
+    // enforced outside that branch.
+    for (const archetype of ["fast_classification", "exact_extraction"]) {
+      const decision = selectOrdinaryRoute(
+        archetype,
+        registry(),
+        REQUIREMENTS,
+        [],
+        undefined,
+        undefined,
+        deriveRoutingContext({ ...HARD, actionMode: "information_only" }, []),
+      );
+      assert.equal(decision.kind, "ordinary");
+      assert.notEqual(decision.primary.escalationOnly, true);
+      // luna at low effort is the legitimate declared classification primary; only luna at max is the
+      // escalation candidate, so the check is on the flag and the effort, not on the model name.
+      assert.notEqual(decision.primary.effort, "max");
+      assert.ok(
+        [decision.primary, ...decision.fallbacks].every(
+          (choice) => choice.escalationOnly !== true || choice !== decision.primary,
+        ),
+      );
+    }
+  });
+
+  it("keeps it available as a retry when an ordinary candidate exists", () => {
+    const decision = selectOrdinaryRoute(
+      "median_repository_implementation",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext(HARD, []),
+    );
+    assert.equal(decision.kind, "ordinary");
+    const escalation = decision.fallbacks.find((choice) => choice.escalationOnly === true);
+    assert.ok(escalation, "the escalation candidate must remain an authorized retry");
+    assert.equal(escalation.modelId, "gpt-5.6-luna");
+    assert.equal(escalation.effort, "max");
+    // It is last in the chain, after every ordinary candidate.
+    assert.equal(decision.fallbacks.at(-1).escalationOnly, true);
   });
 });

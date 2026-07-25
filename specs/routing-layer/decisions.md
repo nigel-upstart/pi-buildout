@@ -240,8 +240,8 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
    14-task proxy.
 
 8. **Hard-task escalation changes the model prior instead of raising effort.** `gpt-5.6-luna` at max leads the corpus on
-   hard tasks (47.1% overall, 44.4% TypeScript) but has 52.7% same-task flakiness, so ambiguous work authorizes it as a
-   retry candidate and it is explicitly demoted out of the primary slot.
+   hard tasks (44.6% corpus-wide, 47.1% on the Go/Python/TypeScript subset, 44.4% TypeScript) but has 52.7% same-task
+   flakiness, so ambiguous work authorizes it as a retry candidate and it is explicitly demoted out of the primary slot.
 
 9. **Quality floors are calibrated to achievable behavior.** The best measured deterministic pass rate is 72.8%, and a
    route cannot be accepted more often than it completes correctly, so implementation-class acceptance floors sit below

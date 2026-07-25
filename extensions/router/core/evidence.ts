@@ -1,4 +1,4 @@
-import { EVIDENCE_PRIOR_ROWS, FRUGALITY_ROWS } from "./evidence-data.ts";
+import { EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
 import type { EvidenceLanguagePrior, EvidencePriorRow } from "./evidence-data.ts";
 
 export type { EvidencePriorRow } from "./evidence-data.ts";
@@ -362,10 +362,6 @@ export function authorizeEffort(modelId: string, effort: EffortLevel, context: E
   return { authorized: true };
 }
 
-export function frugalityPrior(modelId: string, effort: EffortLevel): number | undefined {
-  return FRUGALITY_ROWS.find((row) => row.modelId === modelId && row.effort === effort)?.medianApiCalls;
-}
-
 export type EvidenceCostWeights = {
   developerWaitValuePerMs: number;
   humanInterventionCost: number;
@@ -374,13 +370,6 @@ export type EvidenceCostWeights = {
   regressionBreakCost: number;
   /** Priced only for unattended work, where a non-deterministic pass is not usable. */
   nondeterminismCost: number;
-  /**
-   * Priced per agent step, and only on quota-constrained surfaces. On billed-token routes step count
-   * is already inside cost per pass, so pricing it again would double count. On a flat-rate
-   * subscription surface tokens are not the cost at all — premium requests are — so step frugality is
-   * the only signal available there.
-   */
-  stepCostOnQuotaSurface: number;
 };
 
 export type EvidenceScoreContext = {
@@ -395,11 +384,6 @@ export type EvidenceScoreContext = {
   unattended: boolean;
   /** Multiplies the wall-time term for foreground developer loops. */
   waitMultiplier: number;
-  /**
-   * True when the eligible route for this task bills per request or seat rather than per token, so
-   * expected token cost carries no signal and step count is the binding constraint.
-   */
-  quotaConstrained: boolean;
   /**
    * High ambiguity or high complexity work. Selects the hard-task prior, which is where the
    * measured vendor differences are largest: on hard Go tasks claude-opus-5 at high effort solves
@@ -417,7 +401,6 @@ export type EvidenceScore = {
     retryCost: number;
     regressionBreakCost: number;
     nondeterminismCost: number;
-    stepCost: number;
   };
   passRateUsed: number;
   /** The language whose measured pass rate was applied, absent when substitution was not authorized. */
@@ -428,9 +411,13 @@ export type EvidenceScore = {
  * Pre-telemetry ranking. This is the same robust cost-to-done shape the telemetry path uses,
  * seeded from measured priors instead of observed samples.
  *
- * `costPerPassUsd * passRate` is exactly the mean cost per attempt for that configuration, so the
- * token term prices one attempt and the intervention/retry terms price failure. Cost therefore
- * enters selection only through expected completion cost, never as a per-token preference.
+ * `costPerPassUsd * passRate` is the mean cost per dispatched attempt, counting upstream failures
+ * that recorded no cost as zero. It therefore differs from the corpus's own `mean_cost_usd` column by
+ * up to 6.1% on the claude-fable-5 rows, which carry a 3.5-4.9% upstream routing-error rate; every
+ * other row matches within 0.5%. Amortizing cost-less failures across attempts is the behavior a
+ * router wants, and the direction is slightly in Fable's favor. The token term prices one attempt and
+ * the intervention and retry terms price failure, so cost enters selection only through expected
+ * completion cost, never as a per-token preference.
  */
 export function scoreEvidencePrior(
   row: EvidencePriorRow,
@@ -450,6 +437,12 @@ export function scoreEvidencePrior(
       ? languagePrior.passRate
       : row.passRate;
   const regressionBreakRate = languagePrior?.regressionBreakRate ?? row.regressionBreakRate;
+  // The three failure terms deliberately overlap on the same events rather than partitioning them:
+  // intervention prices "a human had to step in", retry prices "the same task passes inconsistently",
+  // and nondeterminism prices "an unattended run cannot trust a single pass". A flaky task on
+  // unattended work is charged both retry and nondeterminism, which is intended. Note also that the
+  // two repeat-derived rates use the repeated-task denominator (113 tasks) rather than the trial
+  // denominator behind passRate (449-452 trials), so they are a different population.
   const components = {
     // costPerPassUsd * corpus passRate is exactly the mean cost of one attempt; the hard-task
     // pass rate changes the failure price, not what an attempt costs to run.
@@ -462,9 +455,6 @@ export function scoreEvidencePrior(
         ? weights.regressionBreakCost * regressionBreakRate * context.verificationDiscount
         : 0,
     nondeterminismCost: context.unattended ? weights.nondeterminismCost * (1 - row.repeatAllPassRate) : 0,
-    stepCost: context.quotaConstrained
-      ? weights.stepCostOnQuotaSurface * (frugalityPrior(row.modelId, row.effort as EffortLevel) ?? row.medianSteps)
-      : 0,
   };
   const score = Object.values(components).reduce((total, value) => total + value, 0);
   // A non-finite score would sort arbitrarily and silently mis-route, so refuse it. This catches a
@@ -483,11 +473,12 @@ export function scoreEvidencePrior(
 /**
  * Hard-task escalation candidate. After a failed attempt on an ambiguous or complex task, the
  * measured evidence favors changing the model prior over raising effort on a saturated incumbent:
- * gpt-5.6-luna at max solves 47.1% of hard tasks corpus-wide and 44.4% on TypeScript, the best in
- * the corpus, while being far too flaky (52.7%) to be any archetype's default.
+ * gpt-5.6-luna at max solves 44.6% of hard tasks corpus-wide, 47.1% on the Go/Python/TypeScript
+ * subset, and 44.4% on TypeScript alone, the best in the corpus on each, while being far too flaky
+ * (52.7%) to be any archetype's default. Scoring uses the corpus-wide figure.
  */
 export const HARD_TASK_ESCALATION = {
   modelId: "gpt-5.6-luna",
   effort: "max",
-  reason: "best measured hard-task solver (47.1% corpus-wide, 44.4% TypeScript) despite 52.7% same-task flakiness",
+  reason: "best measured hard-task solver (44.6% corpus-wide, 44.4% TypeScript) despite 52.7% same-task flakiness",
 } as const satisfies { modelId: string; effort: EffortLevel; reason: string };

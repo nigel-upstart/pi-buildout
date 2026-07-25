@@ -422,7 +422,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
       logicalModelId: "claude-opus-5",
       effort: "max",
       reason:
-        "highest-risk work is quality-first: Opus 5 at max leads determinism (54.9% all-repeat pass) and regression safety (5.7%), and the cost of a wrong verdict is not paid inside the task",
+        "highest-risk work is quality-first: Opus 5 at max leads determinism (54.9% all-repeat pass) and regression safety (5.2% corpus-wide), and the cost of a wrong verdict is not paid inside the task",
     },
   },
 };

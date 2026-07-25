@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import routerExtension, { automaticRoutingBlockReason, deterministicCheckCommand } from "./index.ts";
 
@@ -280,7 +281,7 @@ describe("routerExtension", () => {
       attemptIndex: 0,
       promptProfileId: primaryChoice.profileId,
       modelSnapshotId: "snapshot",
-      policyVersion: "router-policy-v3",
+      policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
       manualOverride: false,
       reviewRequired: false,
@@ -402,31 +403,37 @@ describe("routerExtension", () => {
       {
         provider: "openai-codex",
         modelId: "gpt-5.6-terra",
+        logicalModelId: "gpt-5.6-terra",
         vendor: "openai",
         effort: "high",
         ability: 2,
         profileId: "openai-gpt-5.6-agent-v1",
         contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
       {
         provider: "openai",
         modelId: "gpt-5.6-terra",
+        logicalModelId: "gpt-5.6-terra",
         vendor: "openai",
         effort: "high",
         ability: 2,
         profileId: "openai-gpt-5.6-agent-v1",
         contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
       {
         provider: "anthropic",
         modelId: "claude-sonnet-5",
+        logicalModelId: "claude-sonnet-5",
         vendor: "anthropic",
         effort: "high",
         ability: 3,
         profileId: "anthropic-claude-fast-agent-v1",
         contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
     ];
@@ -442,7 +449,7 @@ describe("routerExtension", () => {
       attemptIndex: 0,
       promptProfileId: choices[0].profileId,
       modelSnapshotId: "snapshot",
-      policyVersion: "router-policy-v3",
+      policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
       manualOverride: false,
     };
@@ -566,11 +573,13 @@ describe("routerExtension", () => {
       selected: {
         provider: "openai-codex",
         modelId: "gpt-5.6-sol",
+        logicalModelId: "gpt-5.6-sol",
         vendor: "openai",
         effort: "high",
         ability: 4,
         profileId: "openai-gpt-5.6-agent-v1",
         contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
       fallbacks: [
@@ -590,7 +599,7 @@ describe("routerExtension", () => {
       attemptIndex: 0,
       promptProfileId: "openai-gpt-5.6-agent-v1",
       modelSnapshotId: "snapshot",
-      policyVersion: "router-policy-v1",
+      policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
       manualOverride: false,
       reviewRequired: true,
