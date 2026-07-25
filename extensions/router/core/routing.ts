@@ -191,7 +191,7 @@ export type RoutingContext = {
   foreground: boolean;
 };
 
-export const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
+const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
   hardTask: false,
   unattended: false,
   foreground: false,
