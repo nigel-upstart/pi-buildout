@@ -1,6 +1,7 @@
 import type { Archetype } from "./archetype.ts";
-import { authorizeEffort, findEvidencePrior, scoreEvidencePrior } from "./evidence.ts";
+import { authorizeEffort, findEvidencePrior, resolveEvidenceLanguage, scoreEvidencePrior } from "./evidence.ts";
 import type { EvidenceCostWeights, EvidenceLanguageBucket, EvidenceScoreContext } from "./evidence.ts";
+import type { TaskFeatures } from "./features.ts";
 import {
   BOOTSTRAP_ROUTE_POLICIES,
   ENDPOINT_TIERS,
@@ -195,6 +196,27 @@ export const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
   unattended: false,
   foreground: false,
 };
+
+/**
+ * Derives the scoring context from trusted harness state and classifier features. It changes how
+ * authorized candidates are ordered; it never adds or removes a candidate, and it never consults
+ * route price.
+ */
+export function deriveRoutingContext(
+  features: Pick<TaskFeatures, "ambiguity" | "interactivity">,
+  languageBuckets: readonly string[],
+): RoutingContext {
+  const language = resolveEvidenceLanguage(languageBuckets);
+  return {
+    ...DEFAULT_ROUTING_CONTEXT,
+    ...(language ? { language } : {}),
+    // High ambiguity is the classifier's own signal that the task resembles the corpus's hard tail.
+    hardTask: features.ambiguity === "high",
+    // Autonomous work cannot rely on a human noticing a non-deterministic pass.
+    unattended: features.interactivity === "autonomous",
+    foreground: features.interactivity === "developer_loop",
+  };
+}
 
 function evidenceScoreContext(archetype: Archetype, context: RoutingContext): EvidenceScoreContext {
   return {

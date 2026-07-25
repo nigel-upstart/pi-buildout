@@ -7,7 +7,6 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
-import { resolveEvidenceLanguage } from "./core/evidence.ts";
 import { resolveFallback } from "./core/fallback.ts";
 import type { FailureKind } from "./core/fallback.ts";
 import {
@@ -24,8 +23,8 @@ import { ProgramPlanSchema, validateProgramPlan } from "./core/planning.ts";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
-import { DEFAULT_ROUTING_CONTEXT, registrySnapshotId, selectOrdinaryRoute, selectReviewRoute } from "./core/routing.ts";
-import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample, RoutingContext } from "./core/routing.ts";
+import { deriveRoutingContext, registrySnapshotId, selectOrdinaryRoute, selectReviewRoute } from "./core/routing.ts";
+import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
 import type { RepositoryMetadata, SessionSynopsis } from "./core/synopsis.ts";
 import { classifyTaskWithPi } from "./pi-classifier.ts";
@@ -155,24 +154,6 @@ function assistantMessage(message: AgentMessage): message is AssistantMessage {
 
 function currentTokens(ctx: ExtensionContext): number {
   return Math.max(ctx.getContextUsage()?.tokens ?? 0, latestReportedContextTokens(ctx.sessionManager.getBranch()));
-}
-
-/**
- * Scoring context derived from trusted harness state and classifier features. It changes how
- * authorized candidates are ordered; it never adds or removes a candidate, and it never consults
- * route price.
- */
-function routingContext(features: TaskLease["features"], languageBuckets: readonly string[]): RoutingContext {
-  const language = resolveEvidenceLanguage(languageBuckets);
-  return {
-    ...DEFAULT_ROUTING_CONTEXT,
-    ...(language ? { language } : {}),
-    // High ambiguity is the classifier's own signal that the task resembles the corpus's hard tail.
-    hardTask: features.ambiguity === "high",
-    // Autonomous work cannot rely on a human noticing a non-deterministic pass.
-    unattended: features.interactivity === "autonomous",
-    foreground: features.interactivity === "developer_loop",
-  };
 }
 
 function contextSizeBucket(ctx: ExtensionContext, features: TaskLease["features"]): string {
@@ -425,7 +406,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
         routeSamples,
         undefined,
         explorationKey,
-        routingContext(classification.features, languageBuckets),
+        deriveRoutingContext(classification.features, languageBuckets),
       ),
     };
   }

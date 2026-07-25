@@ -4,6 +4,7 @@ import { deriveArchetype } from "./archetype.ts";
 import { conservativeFeatures } from "./features.ts";
 import {
   canonicalVendor,
+  deriveRoutingContext,
   isControlledHoldout,
   registrySnapshotId,
   robustCostToDone,
@@ -426,5 +427,68 @@ describe("routing helpers", () => {
     const snapshot = registrySnapshotId(registry());
     assert.equal(snapshot, registrySnapshotId([...registry()].reverse()));
     assert.match(snapshot, /^registry-v1:10:[0-9a-f]{16}$/);
+  });
+});
+
+describe("routing context derivation", () => {
+  const features = { ambiguity: "low", interactivity: "single_response" };
+
+  it("applies a language affinity only for a single measured language", () => {
+    assert.equal(deriveRoutingContext(features, ["go", "shell"]).language, "go");
+    assert.equal(deriveRoutingContext(features, ["typescript", "javascript"]).language, "typescript");
+    // Kotlin, Ruby, HCL, Helm, protobuf and Kafka work is unmeasured, so no affinity is applied.
+    assert.equal(deriveRoutingContext(features, ["kotlin", "ruby"]).language, undefined);
+    assert.equal(deriveRoutingContext(features, ["go", "python"]).language, undefined);
+  });
+
+  it("maps classifier features onto the scoring axes", () => {
+    assert.equal(deriveRoutingContext({ ...features, ambiguity: "high" }, []).hardTask, true);
+    assert.equal(deriveRoutingContext({ ...features, interactivity: "autonomous" }, []).unattended, true);
+    assert.equal(deriveRoutingContext({ ...features, interactivity: "developer_loop" }, []).foreground, true);
+    const conservative = deriveRoutingContext(features, []);
+    assert.deepEqual(
+      { hardTask: conservative.hardTask, unattended: conservative.unattended, foreground: conservative.foreground },
+      { hardTask: false, unattended: false, foreground: false },
+    );
+  });
+
+  it("keeps a foreground developer loop on the latency-competitive candidate", () => {
+    const foreground = selectOrdinaryRoute(
+      "median_repository_implementation",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ambiguity: "low", interactivity: "developer_loop" }, ["typescript"]),
+    );
+    assert.equal(foreground.kind, "ordinary");
+    assert.equal(foreground.primary.modelId, "gpt-5.6-sol");
+    assert.equal(foreground.primary.effort, "high");
+  });
+
+  it("authorizes the hard-task escalation candidate as a retry but never as the primary", () => {
+    const hard = selectOrdinaryRoute(
+      "median_repository_implementation",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ambiguity: "high", interactivity: "single_response" }, []),
+    );
+    assert.equal(hard.kind, "ordinary");
+    assert.notEqual(hard.primary.modelId, "gpt-5.6-luna");
+    assert.equal(hard.primary.escalationOnly, undefined);
+    const escalation = hard.fallbacks.find((choice) => choice.modelId === "gpt-5.6-luna");
+    assert.ok(escalation, "hard tasks must authorize the escalation candidate as a retry");
+    assert.equal(escalation.effort, "max");
+    assert.equal(escalation.escalationOnly, true);
+
+    const routine = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
+    assert.ok(
+      [routine.primary, ...routine.fallbacks].every((choice) => choice.modelId !== "gpt-5.6-luna"),
+      "routine tasks must not authorize the escalation candidate at all",
+    );
   });
 });
