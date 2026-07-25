@@ -444,8 +444,9 @@ export function scoreEvidencePrior(
   // two repeat-derived rates use the repeated-task denominator (113 tasks) rather than the trial
   // denominator behind passRate (449-452 trials), so they are a different population.
   const components = {
-    // costPerPassUsd * corpus passRate is exactly the mean cost of one attempt; the hard-task
-    // pass rate changes the failure price, not what an attempt costs to run.
+    // costPerPassUsd * corpus passRate is the mean cost of one dispatched attempt (see the note above
+    // on cost-less upstream failures); the hard-task pass rate changes the failure price, not what an
+    // attempt costs to run.
     attemptCost: row.costPerPassUsd * row.passRate,
     developerWaitCost: weights.developerWaitValuePerMs * context.waitMultiplier * row.p90WallTimeSeconds * 1000,
     humanInterventionCost: weights.humanInterventionCost * (1 - passRate),

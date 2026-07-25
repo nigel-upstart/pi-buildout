@@ -267,6 +267,9 @@ export function deriveRoutingContext(
  * risk escalate. `information_only` and `local_read` genuinely cannot break anything, which is what
  * makes the cheapest adequate configuration correct for classification and extraction work.
  */
+// Only `critical` risk escalates. `high` risk is deliberately left to the action mode, because a
+// high-risk read or a high-risk reversible edit is still recoverable, and the archetypes where high
+// risk matters most already require an independent review under the risk policy in archetype.ts.
 function consequenceOf(features: Pick<TaskFeatures, "actionMode" | "risk">): ConsequenceTier {
   if (features.actionMode === "external_side_effect" || features.actionMode === "destructive") return "irreversible";
   if (features.risk === "critical") return "irreversible";
@@ -367,14 +370,14 @@ function evaluateCandidate(
     return undefined;
   }
   const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
-  // A scoped frugal candidate exists for surfaces where token cost carries no signal or where the
-  // window is tight. Outside those conditions it is strictly worse than the current generation, so it
-  // is excluded rather than left to rank late.
+  // A scoped frugal candidate exists for tasks whose context headroom is already tight, where fewer
+  // steps means a lower peak context. Outside that condition it is strictly worse than the current
+  // generation, so it is excluded rather than left to rank late.
   if (ref.scopedFrugal === true && !frugalityWarranted(ref, registry, requirements)) {
     exclusions.push({
       candidate: key,
       code: "scope_unmet",
-      detail: "frugal-scoped candidate requires a quota-billed surface or constrained context headroom",
+      detail: "frugal-scoped candidate requires constrained context headroom",
     });
     return undefined;
   }

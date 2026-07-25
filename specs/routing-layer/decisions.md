@@ -222,9 +222,12 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
    TypeScript ceiling at high, because its measured TypeScript pass rate falls above that tier.
 
 5. **Cost enters only as expected completion cost.** Pre-telemetry ordering seeds the existing robust cost-to-done shape
-   from measured priors, with attempt cost equal to `costPerPassUsd * passRate` (exactly the mean cost of one attempt)
-   so failure is priced once by the intervention and retry terms. This is what keeps `gpt-5.6-terra` at low effort
-   ($1.78 per pass, 24.1% pass) and `gpt-5.6-luna` at medium effort behind stronger configurations.
+   from measured priors, with attempt cost equal to `costPerPassUsd * passRate`, the mean cost of one dispatched
+   attempt, so failure is priced once by the intervention and retry terms. That product counts upstream failures which
+   recorded no cost as zero, so it diverges from the corpus's own `mean_cost_usd` column by up to 6.1% on the
+   `claude-fable-5` rows, which carry a 3.5-4.9% routing-error rate, and by under 0.5% on every other row. This is what
+   keeps `gpt-5.6-terra` at low effort ($1.78 per pass, 24.1% pass) and `gpt-5.6-luna` at medium effort behind stronger
+   configurations.
 
 6. **Planning, program planning, and highest-risk advisory pin Opus 5.** These archetypes order by capability rather
    than expected completion cost, because their failure cost is paid by downstream pull requests rather than inside the
@@ -280,9 +283,11 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     Bedrock, making it the first candidate with no manufacturer tier, which endpoint expansion now models explicitly.
 
 15. **Claude Opus 4.6 is retained as a scoped frugal candidate.** Cost per pass already internalizes token efficiency on
-    billed routes, so frugality justifies a route only where steps rather than tokens bind: a quota-billed surface, or
-    an estimate consuming over half the window. Outside those conditions it is excluded rather than left to rank late,
-    and the step term is priced only on quota-constrained surfaces to avoid double counting.
+    billed routes, so frugality justifies a route only where steps rather than tokens bind. In the implemented policy
+    that means one condition: an estimate consuming over half the endpoint's window. Outside it the candidate is
+    excluded with a `scope_unmet` reason rather than left to rank late. A quota-surface step term was implemented and
+    then removed during review, because `claude-opus-4-6` has no rollout row for the term to resolve and its activation
+    condition left almost every archetype unroutable; the frugality rows remain as provenance only.
 
 16. **Archetypes the corpus does not measure keep their declared order.** Widening the pools exposed that agentic priors
     were reordering `fast_classification` and `exact_extraction`. A multi-step repository pass rate is not a proxy for

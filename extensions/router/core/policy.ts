@@ -36,7 +36,8 @@ export type CandidateRef = {
   escalationOnly?: boolean;
   /**
    * Scoped frugal candidate: authorized only where step count rather than token cost is the binding
-   * constraint, namely a quota-billed surface or tight context headroom.
+   * constraint, which in the implemented policy means tight context headroom, since fewer steps yields
+   * a lower peak context.
    */
   scopedFrugal?: boolean;
   allowAlias: boolean;
@@ -122,8 +123,9 @@ const MODEL_ENDPOINTS: readonly ModelEndpointPolicy[] = [
   },
   {
     // Scoped frugal candidate. Retained for its measured step frugality (23.6 median API calls
-    // against 38-68 for the other retained submissions in that source), which matters on
-    // quota-billed surfaces and under tight context headroom, not for general capability.
+    // against 38-68 for the other retained submissions in that source), which matters under tight
+    // context headroom, not for general capability. Copilot and Bedrock routes are kept because they
+    // are where this model remains reachable.
     modelId: "claude-opus-4-6",
     vendor: "anthropic",
     backups: [

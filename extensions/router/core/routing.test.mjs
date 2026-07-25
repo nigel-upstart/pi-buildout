@@ -742,9 +742,18 @@ describe("consequence gating invariants", () => {
     const none = deriveRoutingContext({ ...FEATURES, verificationStrength: "none" }, []);
     const unit = deriveRoutingContext({ ...FEATURES, verificationStrength: "unit_tests" }, []);
     const integration = deriveRoutingContext({ ...FEATURES, verificationStrength: "integration_tests" }, []);
+    // Pin the actual values rather than only their ordering, so a silent reweighting fails the test.
     assert.equal(none.verificationDiscount, 1);
-    assert.ok(unit.verificationDiscount < none.verificationDiscount);
-    assert.ok(integration.verificationDiscount < unit.verificationDiscount);
+    assert.equal(
+      deriveRoutingContext({ ...FEATURES, verificationStrength: "self_check" }, []).verificationDiscount,
+      0.85,
+    );
+    assert.equal(unit.verificationDiscount, 0.5);
+    assert.equal(integration.verificationDiscount, 0.25);
+    assert.equal(
+      deriveRoutingContext({ ...FEATURES, verificationStrength: "security_and_policy" }, []).verificationDiscount,
+      0.25,
+    );
   });
 
   it("still reviews with the builder as final fallback even when the builder is a low tier", () => {
