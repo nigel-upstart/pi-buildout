@@ -288,5 +288,15 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     were reordering `fast_classification` and `exact_extraction`. A multi-step repository pass rate is not a proxy for
     single-shot classification or schema extraction, so those archetypes use their pool for availability only.
 
+17. **Minimum capability is gated on consequence, not on the archetype label.** The original bar used a static
+    per-archetype `mutatesRepository` flag, which inverted in practice: `deliberate_tool_workflow` was marked
+    non-mutating, so a task whose own action mode is `external_side_effect` had no capability bar while a reversible,
+    test-covered edit got the strict one. The tier is now derived from `actionMode` and `risk`, with the archetype flag
+    as a floor, and `irreversible` work additionally bars the lowest ability band. Regression cost is discounted by
+    `verificationStrength` (0.85 self-check, 0.5 unit tests, 0.25 integration or policy), partially rather than fully,
+    because a suite is not a complete guard against silent behavior change. Review is evaluated read-only so a builder
+    can always review its own output, and every archetype must retain a candidate above the lowest band so
+    high-consequence work stays routable.
+
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
 telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work.

@@ -200,6 +200,17 @@ downstream pull requests it authorizes rather than inside the task. A pin only r
 ignored when the pinned choice is ineligible, and leaves fallbacks evidence-ranked. Every other archetype is ordered
 purely by measured cost-to-done.
 
+Minimum capability is gated on what a wrong result costs, derived from the task's own `actionMode`, `risk`, and
+`verificationStrength` rather than from its archetype label. `information_only` and `local_read` work has no capability
+floor, because nothing a weak configuration produces can break anything; `reversible_mutation` applies the per-family
+regression minimum; and `external_side_effect`, `destructive`, or `critical` risk additionally bars the lowest ability
+band, because there effort tuning cannot substitute for capability. An archetype that always changes repository state
+acts as a floor under that derivation so a mis-read task cannot be downgraded to read-only. Regression cost is
+discounted by verification strength, since measured breakage is precisely "previously passing tests now fail" and a task
+that runs those tests catches it in the loop. Review is evaluated as read-only work, so a builder is never barred from
+reviewing its own output. Every archetype must keep at least one candidate above the lowest ability band so
+high-consequence work stays routable.
+
 Effort is constrained per model family, not uniformly: measured saturation tiers cap ordinary archetypes, non-monotonic
 and thrashing tiers are excluded outright, repository-mutating archetypes enforce a per-family minimum effort, and a
 per-language ceiling can lower the cap further. Ambiguous, complex work additionally authorizes a hard-task escalation
