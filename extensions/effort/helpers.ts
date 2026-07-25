@@ -6,7 +6,7 @@ export type ModelThinkingCapabilities = {
   thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
 };
 
-export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 const VERIFIED_THINKING_LEVELS_VERSION = { major: 0, minor: 82, patch: 0 } as const;
 
