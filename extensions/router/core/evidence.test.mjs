@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import {
   abilityFromConsensus,
+  LANGUAGE_EVIDENCE,
+  languageEvidence,
   authorizeEffort,
   disqualificationReason,
   EFFORT_POLICIES,
@@ -131,16 +133,51 @@ describe("ability bands", () => {
 });
 
 describe("language resolution", () => {
-  it("resolves exactly one measured language", () => {
+  it("resolves exactly one recognized language", () => {
     assert.equal(resolveEvidenceLanguage(["go", "shell"]), "go");
     assert.equal(resolveEvidenceLanguage(["typescript"]), "typescript");
-    assert.equal(resolveEvidenceLanguage(["python", "shell", "kotlin"]), "python");
+    assert.equal(resolveEvidenceLanguage(["ruby", "shell"]), "ruby");
+    assert.equal(resolveEvidenceLanguage(["kotlin"]), "kotlin");
   });
 
-  it("refuses an affinity for mixed or unmeasured stacks", () => {
+  it("refuses a language for mixed stacks and for languages no source recognizes", () => {
     assert.equal(resolveEvidenceLanguage(["go", "typescript"]), undefined);
     assert.equal(resolveEvidenceLanguage(["kotlin", "ruby"]), undefined);
+    assert.equal(resolveEvidenceLanguage(["python", "shell", "kotlin"]), undefined);
+    // Terraform, Helm/Argo, protobuf and Kafka work has no retained evidence at all.
+    assert.equal(resolveEvidenceLanguage(["hcl", "yaml"]), undefined);
     assert.equal(resolveEvidenceLanguage([]), undefined);
+  });
+});
+
+describe("per-language evidence policy", () => {
+  it("authorizes pass-rate substitution only where the measured vendor gap supports it", () => {
+    assert.equal(languageEvidence("go").passRateSubstitution, true);
+    assert.equal(languageEvidence("python").passRateSubstitution, true);
+    // A 1.4 point single-source gap is held at low confidence.
+    assert.equal(languageEvidence("typescript").passRateSubstitution, false);
+    // Four tasks measuring a Minitest pass ratio cannot substitute for a verifier pass rate.
+    assert.equal(languageEvidence("ruby").passRateSubstitution, false);
+    assert.equal(languageEvidence("kotlin").passRateSubstitution, false);
+  });
+
+  it("keeps Kotlin free of any vendor tendency after the Java proxy was withdrawn", () => {
+    assert.equal(languageEvidence("kotlin").vendorTendency, undefined);
+    assert.equal(languageEvidence("kotlin").confidence, "none");
+  });
+
+  it("records a weak Anthropic tendency for Ruby and a measured one for Go", () => {
+    assert.equal(languageEvidence("ruby").vendorTendency, "anthropic");
+    assert.equal(languageEvidence("ruby").confidence, "low_power");
+    assert.equal(languageEvidence("go").vendorTendency, "anthropic");
+    assert.equal(languageEvidence("go").confidence, "measured");
+  });
+
+  it("states a reason for every language entry", () => {
+    for (const entry of LANGUAGE_EVIDENCE) {
+      assert.ok(entry.reason.length > 40, `${entry.language} needs a substantive reason`);
+      if (entry.confidence === "none") assert.equal(entry.vendorTendency, undefined);
+    }
   });
 });
 
@@ -248,6 +285,41 @@ describe("prior-seeded cost to done", () => {
       score("gpt-5.6-sol", "high", typescript) < score("claude-opus-5", "high", typescript),
       "routine TypeScript favors gpt-5.6-sol at high effort",
     );
+  });
+
+  it("does not substitute an unauthorized language pass rate", () => {
+    const row = findEvidencePrior("claude-opus-5", "high");
+    const corpus = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
+    const typescript = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language: "typescript" });
+    const go = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language: "go" });
+    // TypeScript keeps the corpus-wide intervention term because its quality claim is single-source.
+    assert.equal(typescript.components.humanInterventionCost, corpus.components.humanInterventionCost);
+    assert.equal(typescript.languageUsed, undefined);
+    // Go substitutes, and its higher measured pass rate lowers the intervention term.
+    assert.ok(go.components.humanInterventionCost < corpus.components.humanInterventionCost);
+    assert.equal(go.languageUsed, "go");
+  });
+
+  it("still applies a measured regression rate for a language whose pass rate is not substituted", () => {
+    const row = findEvidencePrior("gpt-5.6-sol", "high");
+    const corpus = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, mutatesRepository: true });
+    const typescript = scoreEvidencePrior(row, WEIGHTS, {
+      ...ORDINARY,
+      mutatesRepository: true,
+      language: "typescript",
+    });
+    // TypeScript breakage is measurably lower than the corpus median and is not disputed.
+    assert.ok(typescript.components.regressionBreakCost < corpus.components.regressionBreakCost);
+  });
+
+  it("leaves Ruby and Kotlin scoring on the corpus-wide priors", () => {
+    const row = findEvidencePrior("claude-opus-5", "medium");
+    const corpus = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
+    for (const language of ["ruby", "kotlin"]) {
+      const scoped = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language });
+      assert.equal(scoped.score, corpus.score, `${language} must not change the score`);
+      assert.equal(scoped.languageUsed, undefined);
+    }
   });
 
   it("reproduces the measured Anthropic advantage on the hard tail", () => {

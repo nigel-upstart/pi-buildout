@@ -1,6 +1,12 @@
 import type { Archetype } from "./archetype.ts";
-import { authorizeEffort, findEvidencePrior, resolveEvidenceLanguage, scoreEvidencePrior } from "./evidence.ts";
-import type { EvidenceCostWeights, EvidenceLanguageBucket, EvidenceScoreContext } from "./evidence.ts";
+import {
+  authorizeEffort,
+  findEvidencePrior,
+  languageEvidence,
+  resolveEvidenceLanguage,
+  scoreEvidencePrior,
+} from "./evidence.ts";
+import type { EvidenceCostWeights, EvidenceScoreContext, RoutableLanguage } from "./evidence.ts";
 import type { TaskFeatures } from "./features.ts";
 import {
   BOOTSTRAP_ROUTE_POLICIES,
@@ -84,7 +90,7 @@ export type RouteChoice = {
   score?: number;
   scoreComponents?: RouteScoreComponents;
   evidenceScore?: number;
-  evidenceLanguage?: EvidenceLanguageBucket;
+  evidenceLanguage?: RoutableLanguage;
   rankReason:
     "bootstrap" | "evidence_prior" | "telemetry" | "controlled_holdout" | "review_ability" | "fixed_builder_fallback";
 };
@@ -171,6 +177,13 @@ const DEFAULT_EVIDENCE_WEIGHTS: EvidenceCostWeights = {
 /** Foreground developer loops price wall time far higher than background work. */
 const FOREGROUND_WAIT_MULTIPLIER = 8;
 
+/**
+ * How close two candidates' costs must be before a weakly evidenced language tendency may reorder
+ * them. Bounded deliberately: a low-power directional prior should settle a coin flip, never override
+ * a measured cost difference.
+ */
+const NEAR_TIE_FRACTION = 0.05;
+
 /** Output-weighted blend used only to order endpoints that resolve to the same model and effort. */
 function blendedEndpointCost(model: RegistryModelSnapshot): number {
   return 0.25 * model.costPerMillion.input + 0.75 * model.costPerMillion.output;
@@ -182,7 +195,7 @@ function blendedEndpointCost(model: RegistryModelSnapshot): number {
  */
 export type RoutingContext = {
   /** Present only when the repository resolves to exactly one measured language. */
-  language?: EvidenceLanguageBucket | undefined;
+  language?: RoutableLanguage | undefined;
   /** High ambiguity or high complexity work; selects the measured hard-task priors. */
   hardTask: boolean;
   /** Autonomous work where a non-deterministic pass is not usable. */
@@ -510,6 +523,18 @@ function orderGroups(
   const ranked = scored
     .filter((entry) => entry.evidence !== undefined)
     .sort((left, right) => (left.evidence?.score ?? 0) - (right.evidence?.score ?? 0));
+  // A weakly evidenced language tendency may break a near-tie but can never move a candidate past a
+  // materially better score. Ruby is the motivating case: its only current-generation source has four
+  // tasks and measures a different construct, which justifies a preference and not a weight.
+  const tendency = languageEvidence(context.language)?.vendorTendency;
+  const leader = ranked[0]?.evidence?.score;
+  if (tendency !== undefined && leader !== undefined && leader > 0) {
+    const limit = leader * (1 + NEAR_TIE_FRACTION);
+    const preferred = ranked.findIndex(
+      (entry) => (entry.evidence?.score ?? Infinity) <= limit && entry.group.endpoints[0]?.vendor === tendency,
+    );
+    if (preferred > 0) ranked.unshift(...ranked.splice(preferred, 1));
+  }
   // Candidates without evidence keep their declared policy order behind every scored candidate.
   const unscored = scored.filter((entry) => entry.evidence === undefined);
   const ordered = [...ranked, ...unscored];

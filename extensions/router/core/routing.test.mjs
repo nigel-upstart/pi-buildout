@@ -119,7 +119,9 @@ describe("ordinary route selection", () => {
     );
     assert.equal(typescript.kind, "ordinary");
     assert.equal(typescript.primary.modelId, "gpt-5.6-sol");
-    assert.equal(typescript.primary.evidenceLanguage, "typescript");
+    // TypeScript wins on the uncontested latency and cost basis; its single-source quality gap is not
+    // substituted into the score, so no language is recorded on the choice.
+    assert.equal(typescript.primary.evidenceLanguage, undefined);
   });
 
   it("escalates the hard Go tail to Opus 5 at high effort", () => {
@@ -490,5 +492,57 @@ describe("routing context derivation", () => {
       [routine.primary, ...routine.fallbacks].every((choice) => choice.modelId !== "gpt-5.6-luna"),
       "routine tasks must not authorize the escalation candidate at all",
     );
+  });
+});
+
+describe("weakly evidenced language tendencies", () => {
+  it("breaks a Ruby near-tie toward Anthropic without overriding a materially better score", () => {
+    const ruby = selectOrdinaryRoute(
+      "median_repository_implementation",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["ruby"]),
+    );
+    assert.equal(ruby.kind, "ordinary");
+    // gpt-5.6-sol@high and claude-opus-5@medium sit within the near-tie band on corpus-wide priors,
+    // so Ruby's low-power Anthropic tendency settles it.
+    assert.equal(ruby.primary.modelId, "claude-opus-5");
+    assert.equal(ruby.primary.effort, "medium");
+    // The tendency reorders only; it does not claim a Ruby-specific pass rate.
+    assert.equal(ruby.primary.evidenceLanguage, undefined);
+  });
+
+  it("does not let a tendency promote a candidate outside the near-tie band", () => {
+    const ruby = selectOrdinaryRoute(
+      "highest_risk_advisory",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["ruby"]),
+    );
+    assert.equal(ruby.kind, "ordinary");
+    // The pin already selects Opus 5 here, so assert the weaker Anthropic tier did not jump the queue.
+    assert.equal(ruby.primary.effort, "max");
+  });
+
+  it("leaves Kotlin work on the corpus-wide ordering", () => {
+    const kotlin = selectOrdinaryRoute(
+      "median_repository_implementation",
+      registry(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ambiguity: "low", interactivity: "single_response" }, ["kotlin"]),
+    );
+    const unmeasured = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
+    assert.equal(kotlin.kind, "ordinary");
+    assert.equal(kotlin.primary.modelId, unmeasured.primary.modelId);
+    assert.equal(kotlin.primary.effort, unmeasured.primary.effort);
   });
 });

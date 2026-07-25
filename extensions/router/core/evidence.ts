@@ -1,12 +1,81 @@
 import { EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
-import type { EvidenceLanguageBucket, EvidenceLanguagePrior, EvidencePriorRow } from "./evidence-data.ts";
+import type { EvidenceLanguagePrior, EvidencePriorRow } from "./evidence-data.ts";
 
-export type { EvidenceLanguageBucket, EvidencePriorRow } from "./evidence-data.ts";
-import type { EffortLevel } from "./profiles.ts";
+export type { EvidencePriorRow } from "./evidence-data.ts";
+import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
 export type AbilityTier = 1 | 2 | 3 | 4;
 
-const EVIDENCE_LANGUAGE_BUCKETS = ["go", "python", "typescript"] as const;
+const EVIDENCE_LANGUAGE_BUCKETS = ["go", "python", "typescript", "ruby", "kotlin"] as const;
+
+/** Language bucket that the router recognizes, whether or not the corpus measures it. */
+export type RoutableLanguage = (typeof EVIDENCE_LANGUAGE_BUCKETS)[number];
+
+export type LanguageEvidencePolicy = {
+  language: RoutableLanguage;
+  /**
+   * Whether the language's own measured pass rate may replace the corpus-wide pass rate in scoring.
+   * Authorized only where the within-language vendor gap is large enough to survive the source's
+   * power, and where no cross-source disagreement is outstanding.
+   */
+  passRateSubstitution: boolean;
+  /**
+   * Weak directional prior used only to break a near-tie between otherwise equivalent candidates.
+   * It cannot move a candidate past a materially better score.
+   */
+  vendorTendency?: ModelVendor;
+  confidence: "measured" | "low_power" | "none";
+  reason: string;
+};
+
+/**
+ * Per-language evidence policy. Each entry records why the language is or is not allowed to change
+ * scoring, so a weakly evidenced affinity cannot quietly acquire the weight of a measured one. See
+ * specs/routing-layer/model-evidence-2026-07-25.md for the underlying tables and their sources.
+ */
+export const LANGUAGE_EVIDENCE: readonly LanguageEvidencePolicy[] = [
+  {
+    language: "go",
+    passRateSubstitution: true,
+    vendorTendency: "anthropic",
+    confidence: "measured",
+    reason:
+      "34 DeepSWE tasks with a 6.6 point vendor gap at high effort (claude-opus-5 81.6 versus gpt-5.6-sol 75.0) and a 40 point hard-task gap (71.9 versus 31.2); SWE-bench Multilingual independently ranks Go the hardest of eight languages at 54.8% mean resolve",
+  },
+  {
+    language: "python",
+    passRateSubstitution: true,
+    confidence: "measured",
+    reason:
+      "34 DeepSWE tasks; vendor-neutral on pass rate (gpt-5.6-sol xhigh 75.0 versus claude-opus-5 max 74.3) but carries the corpus's highest regression breakage at a 11.8% median, which is the axis that matters here",
+  },
+  {
+    language: "typescript",
+    passRateSubstitution: false,
+    confidence: "measured",
+    reason:
+      "35 DeepSWE tasks, but the vendor gap is only 1.4 points (gpt-5.6-sol high 65.7 versus claude-opus-5 high 64.3) and is single-source, so the quality claim is held at low confidence pending local telemetry; gpt-5.6-sol still leads TypeScript work on the uncontested latency and cost basis (551 s versus 1170 s median)",
+  },
+  {
+    language: "ruby",
+    passRateSubstitution: false,
+    vendorTendency: "anthropic",
+    confidence: "low_power",
+    reason:
+      "only four current-generation single-file repair tasks exist (llm-benchmarks program_fixer): claude-opus-5 leads at 79.1-80.9% with a 74-77% worst-task floor against gpt-5.6-sol at 74.2% with a 57.1% floor. That is a Minitest pass ratio rather than a verifier resolve rate, so it may not substitute for a pass rate and is used only as a near-tie preference",
+  },
+  {
+    language: "kotlin",
+    passRateSubstitution: false,
+    confidence: "none",
+    reason:
+      "no Kotlin evidence in any retained source. The SWE-bench Multilingual Java proxy was withdrawn because its apparent vendor gap rested on GPT-5.2-era rows that the generation-currency rule excludes, making it a cross-generation comparison rather than a cross-vendor one",
+  },
+];
+
+export function languageEvidence(language: RoutableLanguage | undefined): LanguageEvidencePolicy | undefined {
+  return language ? LANGUAGE_EVIDENCE.find((entry) => entry.language === language) : undefined;
+}
 
 const EFFORT_RANK: Record<EffortLevel, number> = {
   off: 0,
@@ -27,21 +96,31 @@ export function findEvidencePrior(modelId: string, effort: EffortLevel): Evidenc
 }
 
 /**
- * Only a repository whose tracked files resolve to exactly one measured language gets a
- * language-conditional prior. Mixed repositories and unmeasured stacks (Kotlin, Ruby, HCL,
- * Helm/Argo, protobuf, Kafka) intentionally fall back to the corpus-wide prior, because the
- * evidence pack has no rows for them and guessing an affinity would be unfounded.
+ * Only a repository whose tracked files resolve to exactly one recognized language gets a
+ * language-conditional prior. Mixed repositories and languages absent from the table (HCL, Helm and
+ * Argo manifests, protobuf, Kafka topologies) intentionally fall back to the corpus-wide prior,
+ * because no retained source measures them and guessing an affinity would be unfounded. A recognized
+ * language still gets nothing unless its LANGUAGE_EVIDENCE entry authorizes it.
  */
-export function resolveEvidenceLanguage(languageBuckets: readonly string[]): EvidenceLanguageBucket | undefined {
-  const measured = EVIDENCE_LANGUAGE_BUCKETS.filter((bucket) => languageBuckets.includes(bucket));
-  return measured.length === 1 ? measured[0] : undefined;
+export function resolveEvidenceLanguage(languageBuckets: readonly string[]): RoutableLanguage | undefined {
+  const recognized = EVIDENCE_LANGUAGE_BUCKETS.filter((bucket) => languageBuckets.includes(bucket));
+  return recognized.length === 1 ? recognized[0] : undefined;
 }
 
 function evidenceLanguagePrior(
   row: EvidencePriorRow,
-  language: EvidenceLanguageBucket | undefined,
+  language: RoutableLanguage | undefined,
 ): EvidenceLanguagePrior | undefined {
-  return language ? row.byLanguage[language] : undefined;
+  // Only the DeepSWE-measured buckets carry per-language rollout rows. Ruby and Kotlin are recognized
+  // for routing purposes but have no comparable data, so they never produce a language prior.
+  switch (language) {
+    case "go":
+    case "python":
+    case "typescript":
+      return row.byLanguage[language];
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -88,7 +167,7 @@ export type EffortPolicy = {
   agenticMinimumEffort?: EffortLevel;
   agenticMinimumReason?: string;
   /** Hard per-language ceilings that override `saturationEffort`, including for escalation archetypes. */
-  languageCeilings?: Readonly<Partial<Record<EvidenceLanguageBucket, EffortLevel>>>;
+  languageCeilings?: Readonly<Partial<Record<RoutableLanguage, EffortLevel>>>;
   languageCeilingReason?: string;
 };
 
@@ -181,7 +260,7 @@ export type EffortContext = {
   /** Archetypes allowed to exceed a model's saturation tier (escalation and highest-risk work). */
   allowSuperSaturation: boolean;
   mutatesRepository: boolean;
-  language?: EvidenceLanguageBucket | undefined;
+  language?: RoutableLanguage | undefined;
 };
 
 export function authorizeEffort(modelId: string, effort: EffortLevel, context: EffortContext): EffortAuthorization {
@@ -231,7 +310,7 @@ export type EvidenceCostWeights = {
 };
 
 export type EvidenceScoreContext = {
-  language?: EvidenceLanguageBucket | undefined;
+  language?: RoutableLanguage | undefined;
   mutatesRepository: boolean;
   unattended: boolean;
   /** Multiplies the wall-time term for foreground developer loops. */
@@ -255,7 +334,8 @@ export type EvidenceScore = {
     nondeterminismCost: number;
   };
   passRateUsed: number;
-  languageUsed: EvidenceLanguageBucket | undefined;
+  /** The language whose measured pass rate was applied, absent when substitution was not authorized. */
+  languageUsed: RoutableLanguage | undefined;
 };
 
 /**
@@ -272,9 +352,17 @@ export function scoreEvidencePrior(
   context: EvidenceScoreContext,
 ): EvidenceScore {
   const languagePrior = evidenceLanguagePrior(row, context.language);
+  // Pass-rate substitution is the strongest lever a language can pull, so it is gated on the
+  // language's declared evidence policy. Regression breakage is substituted whenever a row exists:
+  // it is a measurement of the same construct on the same rollouts, and no source disputes it.
+  const substitutePassRate = languagePrior !== undefined && languageEvidence(context.language)?.passRateSubstitution;
   const passRate = context.hardTask
-    ? (languagePrior?.hardTaskPassRate ?? row.hardTaskPassRate)
-    : (languagePrior?.passRate ?? row.passRate);
+    ? substitutePassRate
+      ? languagePrior.hardTaskPassRate
+      : row.hardTaskPassRate
+    : substitutePassRate
+      ? languagePrior.passRate
+      : row.passRate;
   const regressionBreakRate = languagePrior?.regressionBreakRate ?? row.regressionBreakRate;
   const components = {
     // costPerPassUsd * corpus passRate is exactly the mean cost of one attempt; the hard-task
@@ -290,7 +378,7 @@ export function scoreEvidencePrior(
     score: Object.values(components).reduce((total, value) => total + value, 0),
     components,
     passRateUsed: passRate,
-    languageUsed: languagePrior ? context.language : undefined,
+    languageUsed: substitutePassRate ? context.language : undefined,
   };
 }
 
