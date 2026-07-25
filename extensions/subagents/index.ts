@@ -252,7 +252,7 @@ function parentFallback(
   const fallbackModel = explicitRequestedModel ?? ctx.model;
   if (!fallbackModel) throw new Error("Cannot create a subagent because the parent has no selected model.");
 
-  const fallbackEffort = clampThinkingLevel(explicitRequestedEffort ?? parentThinking(pi), fallbackModel);
+  const fallbackEffort = explicitRequestedEffort ?? clampThinkingLevel(parentThinking(pi), fallbackModel);
 
   return {
     model: fallbackModel,
@@ -335,11 +335,6 @@ ${catalog}`;
       source: "classified",
       ...(decision.rationale ? { rationale: decision.rationale } : {}),
     };
-    // This catch deliberately also covers resolving the classifier's chosen
-    // model: that resolution reads the registry again, which can throw on an
-    // uninitialized facade, and a hallucinated model name is a classifier
-    // failure. The caller's own explicit model resolves earlier and still
-    // propagates. Do not narrow this to the completion call.
   } catch (error) {
     if (signal?.aborted) throw error;
     const fallback = parentFallback(pi, ctx, requestedModel, requestedEffort);
@@ -347,7 +342,7 @@ ${catalog}`;
       model: fallback.model,
       effort: fallback.effort,
       source: "fallback",
-      rationale: `Classification failed; used the ${requestedModel ? "requested" : "parent"} model and the ${requestedEffort ? "requested" : "parent"} effort (${error instanceof Error ? error.message : String(error)}).`,
+      rationale: `Classifier unavailable; inherited parent settings (${error instanceof Error ? error.message : String(error)}).`,
     };
   }
 }
