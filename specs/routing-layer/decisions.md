@@ -263,5 +263,30 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     removed the GPT-5.2-era rows the apparent gap depended on. Ruby's real consequence is a mandatory `rubocop -a` gate,
     since the correctness leader is also the style laggard (12-17 offenses against 6-10 for the GPT-5.6 family).
 
+12. **The balanced mid tier is admitted as fallbacks, not primaries.** `gpt-5.6-terra` at high, `gpt-5.6-luna` at high,
+    `gpt-5.6-sol` at low, `gpt-5.6-sol` at medium, and `gpt-5.6-terra` at medium are the efficient mid-range
+    configurations, and they enter the pools for the archetypes where their measured cost and latency can win. They are
+    not pinned anywhere; the cost objective decides whether they beat a stronger tier on a given task.
+
+13. **`gpt-5.6-luna`'s agentic minimum drops from max to high.** The original bar was set from the low and medium
+    breakage rates (27.7% and 23.5%) without checking where the cliff actually is. At high effort breakage is 9.1%,
+    comparable to `gpt-5.6-terra` at high (9.3%), which the policy already permits. Barring high effort was therefore
+    unjustified.
+
+14. **`gpt-oss-120b` is the cost floor for bounded work only.** It holds the corpus's top cost-efficiency percentile but
+    has no agentic rollout evidence, a 128K window, a 16.4K output cap, and no image input, so it is authorized for
+    classification and extraction and nothing else. Only the 120b variant is included; 20b measures lower with no
+    cost-efficiency row, and the `safeguard` variants report no reasoning support. It is reachable only through Amazon
+    Bedrock, making it the first candidate with no manufacturer tier, which endpoint expansion now models explicitly.
+
+15. **Claude Opus 4.6 is retained as a scoped frugal candidate.** Cost per pass already internalizes token efficiency on
+    billed routes, so frugality justifies a route only where steps rather than tokens bind: a quota-billed surface, or
+    an estimate consuming over half the window. Outside those conditions it is excluded rather than left to rank late,
+    and the step term is priced only on quota-constrained surfaces to avoid double counting.
+
+16. **Archetypes the corpus does not measure keep their declared order.** Widening the pools exposed that agentic priors
+    were reordering `fast_classification` and `exact_extraction`. A multi-step repository pass rate is not a proxy for
+    single-shot classification or schema extraction, so those archetypes use their pool for availability only.
+
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
 telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work.

@@ -160,6 +160,27 @@ A large window is not context efficiency. Max-effort OpenAI configurations regul
 260–290K, Terra 262–309K, Luna 295–352K p90), so the headroom check consumes `p90PeakContextTokens` rather than the task
 estimate alone.
 
+### Step frugality is only an independent argument where tokens are not the cost
+
+Claude Opus 4.6 is measurably frugal: 23.6 median API calls against 38.2 for Claude 4.5 Sonnet, 49.8 for Gemini 3 Flash,
+and 67.6 for Claude 4.5 Haiku in the SWE-bench Multilingual capture, at 70.8% mean resolve across eight language splits.
+
+That frugality does **not** by itself justify routing to it, because cost per pass already internalizes token efficiency
+on any billed route — and on that basis Opus 4.6 is not competitive ($0.970 per resolved instance against $0.492 for
+Gemini 3 Flash in the same capture). Frugality becomes an independent advantage in exactly three situations:
+
+1. **Quota-billed surfaces.** GitHub Copilot bills per premium request and seat, not per token, so expected token cost
+   carries no signal at all and step count is the only thing left to rank with.
+2. **Tight context headroom.** Fewer steps means a lower peak context, which matters when the task estimate already
+   consumes most of the window.
+3. **Foreground latency.** Fewer round trips shortens a developer loop, which the wall-time term already prices.
+
+The policy therefore keeps Opus 4.6 as a **scoped** candidate rather than a general tier: it is authorized only on a
+quota-billed surface or when the estimate exceeds half the window, and it is excluded with a `scope_unmet` reason
+otherwise. Its consensus band is 2, two below Claude Opus 5 at high effort, which is why it is not a capability option.
+The step term is likewise priced only on quota-constrained surfaces, because pricing it on a billed route would double
+count what cost per pass already contains.
+
 ### Rank on completion cost, never on token price
 
 `gpt-5.6-terra@low` is the cheapest per pass in the corpus ($1.78) at 24.1% pass, and `gpt-5.6-luna@low` costs $0.07 per
