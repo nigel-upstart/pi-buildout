@@ -34,6 +34,19 @@ const ALL_ARCHETYPES: readonly Archetype[] = [
   "highest_risk_advisory",
 ];
 
+/**
+ * Profile eligibility matches an exact registry model ID, so every authorized endpoint for a model
+ * must be listed. Resale routes expose the same model under provider-specific IDs.
+ */
+function endpointIds(directId: string, bedrockPath: string, extra: readonly string[] = []): readonly string[] {
+  return [directId, `global.${bedrockPath}`, `us.${bedrockPath}`, ...extra];
+}
+
+const OPUS_5_IDS = endpointIds("claude-opus-5", "anthropic.claude-opus-5");
+const FABLE_5_IDS = endpointIds("claude-fable-5", "anthropic.claude-fable-5");
+const SONNET_5_IDS = endpointIds("claude-sonnet-5", "anthropic.claude-sonnet-5", ["bedrock/anthropic.claude-sonnet-5"]);
+const HAIKU_IDS = ["claude-haiku-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4.5"] as const;
+
 const SHARED_CONSTRAINTS = [
   "Preserve the user's stated scope and constraints.",
   "Do not claim completion without checking the available evidence.",
@@ -45,7 +58,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "openai-gpt-5.6-agent-v1",
     version: 1,
     vendor: "openai",
-    modelIds: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"],
+    modelIds: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "openai.gpt-5.6-sol"],
     archetypes: ALL_ARCHETYPES,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
@@ -79,7 +92,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-fast-agent-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: ["claude-haiku-4-5", "claude-sonnet-5", "bedrock/anthropic.claude-sonnet-5"],
+    modelIds: [...HAIKU_IDS, ...SONNET_5_IDS],
     archetypes: ALL_ARCHETYPES.filter((archetype) => archetype !== "large_program_planning"),
     efforts: ["low", "medium", "high", "xhigh"],
     executionSurface: "pi-coding-agent",
@@ -94,10 +107,35 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     includeExamples: false,
   },
   {
+    id: "anthropic-claude-opus-5-agent-v1",
+    version: 1,
+    vendor: "anthropic",
+    modelIds: OPUS_5_IDS,
+    archetypes: ALL_ARCHETYPES.filter(
+      (archetype) =>
+        archetype !== "stacked_pr_implementation" &&
+        archetype !== "implementation_planning" &&
+        archetype !== "large_program_planning" &&
+        archetype !== "highest_risk_advisory" &&
+        archetype !== "code_review",
+    ),
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    executionSurface: "pi-coding-agent",
+    guidelines: [
+      "Inspect the relevant repository evidence before changing files, then keep a clear action and verification loop.",
+      "Preserve behavior that existing tests already cover; when a change is contract-shaped, state what stayed compatible.",
+      "Continue through implementation and verification unless a genuine permission or requirement gap blocks progress.",
+    ],
+    outputContract:
+      "Complete the requested change and return a concise verification receipt when the requested format permits one.",
+    criticalConstraints: SHARED_CONSTRAINTS,
+    includeExamples: false,
+  },
+  {
     id: "anthropic-claude-stacked-pr-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: ["claude-opus-4-8"],
+    modelIds: OPUS_5_IDS,
     archetypes: ["stacked_pr_implementation"],
     efforts: ["high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
@@ -114,9 +152,9 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-planning-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: ["claude-opus-4-8", "claude-fable-5"],
+    modelIds: [...OPUS_5_IDS, ...FABLE_5_IDS],
     archetypes: ["implementation_planning", "large_program_planning", "highest_risk_advisory", "code_review"],
-    efforts: ["high", "xhigh", "max"],
+    efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
     guidelines: [
       "Build the dependency structure from repository evidence before presenting conclusions.",
@@ -153,10 +191,10 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     includeExamples: true,
   },
   {
-    id: "google-gemini-3.5-iterative-v1",
+    id: "google-gemini-3.6-iterative-v1",
     version: 1,
     vendor: "google",
-    modelIds: ["gemini-3.5-flash"],
+    modelIds: ["gemini-3.6-flash"],
     archetypes: [
       "algorithmic_iterative_coding",
       "median_repository_implementation",

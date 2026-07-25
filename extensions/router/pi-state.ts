@@ -9,6 +9,7 @@ import { validateFallbackTopology } from "./core/fallback.ts";
 import { validateTaskFeatures } from "./core/features.ts";
 import type { TaskFeatures } from "./core/features.ts";
 import type { LeaseState, TaskLease } from "./core/lease.ts";
+import { evidenceAbility } from "./core/evidence.ts";
 import { policyAbility } from "./core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
@@ -203,19 +204,20 @@ export function snapshotForModel(
 }
 
 export function modelAbility(modelId: string, effort: EffortLevel): number {
-  // Effort changes ability differently per model (e.g. claude-sonnet-5 and
-  // gemini-3.5-flash gain a tier at "high" while gpt-5.6-terra does not), so the
-  // policy candidate table in core/policy.ts is authoritative whenever it knows
-  // the (model, effort) pair. The regex heuristic below is only a fallback for
-  // models or effort levels absent from that table and cannot express per-model
-  // effort scaling.
-  const known = policyAbility(modelId, effort);
+  // Effort changes ability differently per model, so the policy candidate table in core/policy.ts is
+  // authoritative whenever it knows the (model, effort) pair, and the evidence bands in
+  // core/evidence.ts answer for measured models outside the current candidate set. The regex
+  // heuristic below is only a last resort for models with no measurement at all.
+  const known = policyAbility(modelId, effort) ?? evidenceAbility(modelId, effort);
   if (known !== undefined) return known;
+  // Deliberately pessimistic and name-based only where a family name is a reliable capacity signal.
+  // "pro" and "max" are not: gemini-3.1-pro-preview measured in the lowest band, and "max" appears
+  // in effort labels rather than model capability.
   let ability = 2;
-  if (/luna|haiku|nano|mini/.test(modelId)) ability = 1;
-  if (/terra|sonnet|gemini-3\.5-flash/.test(modelId)) ability = 2;
+  if (/luna|haiku|nano|mini|flash|lite/.test(modelId)) ability = 1;
+  if (/terra|sonnet/.test(modelId)) ability = 1;
   if (/sol|opus/.test(modelId)) ability = 3;
-  if (/fable|pro|max/.test(modelId)) ability = 4;
+  if (modelId.includes("fable")) ability = 4;
   if ((effort === "xhigh" || effort === "max") && ability < 4) ability++;
   return ability;
 }

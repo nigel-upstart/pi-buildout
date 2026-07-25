@@ -246,23 +246,27 @@ describe("routerExtension", () => {
     const now = new Date().toISOString();
     const primaryChoice = {
       provider: "anthropic",
-      modelId: "claude-opus-4-8",
+      modelId: "claude-opus-5",
+      logicalModelId: "claude-opus-5",
       vendor: "anthropic",
       effort: "high",
-      ability: 3,
+      ability: 4,
       profileId: "anthropic-claude-planning-v1",
       contextWindow: 1_000_000,
-      rankReason: "bootstrap",
+      endpointTier: "manufacturer",
+      rankReason: "evidence_prior",
     };
     const fallbackChoice = {
       provider: "openai-codex",
       modelId: "gpt-5.6-sol",
+      logicalModelId: "gpt-5.6-sol",
       vendor: "openai",
       effort: "high",
       ability: 3,
       profileId: "openai-gpt-5.6-agent-v1",
       contextWindow: 1_000_000,
-      rankReason: "bootstrap",
+      endpointTier: "manufacturer",
+      rankReason: "evidence_prior",
     };
     const lease = {
       version: 1,
@@ -572,13 +576,15 @@ describe("routerExtension", () => {
       fallbacks: [
         {
           provider: "anthropic",
-          modelId: "claude-opus-4-8",
+          modelId: "claude-opus-5",
+          logicalModelId: "claude-opus-5",
           vendor: "anthropic",
           effort: "high",
-          ability: 3,
+          ability: 4,
           profileId: "anthropic-claude-planning-v1",
           contextWindow: 1_000_000,
-          rankReason: "bootstrap",
+          endpointTier: "manufacturer",
+          rankReason: "evidence_prior",
         },
       ],
       attemptIndex: 0,
@@ -604,8 +610,8 @@ describe("routerExtension", () => {
     });
     const models = [
       makeModel("openai-codex", "gpt-5.6-sol", "openai-responses"),
-      makeModel("anthropic", "claude-fable-5", "anthropic-messages"),
-      makeModel("google", "gemini-3.5-flash", "google-generative-ai"),
+      makeModel("anthropic", "claude-opus-5", "anthropic-messages"),
+      makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
     ];
     const branch = [
       {
@@ -691,7 +697,8 @@ describe("routerExtension", () => {
       assert.equal(restored.taskId, parent.taskId);
       assert.equal(restored.reviewCompleted, true);
       assert.equal(restored.selected.modelId, "gpt-5.6-sol");
-      assert.equal(selectedModels[0].id, "claude-fable-5");
+      // The reviewer is the Anthropic rung at or above the builder's evidence band.
+      assert.equal(selectedModels[0].id, "claude-opus-5");
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;

@@ -27,8 +27,8 @@ const synopsis = {
 function profile(vendor) {
   const values = {
     openai: ["gpt-5.6-terra", "median_repository_implementation", "medium"],
-    anthropic: ["claude-opus-4-8", "implementation_planning", "high"],
-    google: ["gemini-3.5-flash", "algorithmic_iterative_coding", "medium"],
+    anthropic: ["claude-opus-5", "implementation_planning", "high"],
+    google: ["gemini-3.6-flash", "algorithmic_iterative_coding", "medium"],
   };
   const selected = values[vendor];
   const result = findPromptProfile(vendor, ...selected);

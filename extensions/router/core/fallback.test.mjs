@@ -62,7 +62,7 @@ describe("ordinary fallback", () => {
 describe("review fallback", () => {
   it("uses two independent vendors, then the fixed builder, then skips", () => {
     const lease = taskLease("code_review", choice("anthropic", "claude-sonnet-5", "anthropic-claude-fast-agent-v1"), [
-      choice("google", "gemini-3.5-flash", "google-gemini-3.5-iterative-v1"),
+      choice("google-vertex", "gemini-3.6-flash", "google-gemini-3.6-iterative-v1"),
       choice("openai", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
     ]);
     assert.deepEqual(validateFallbackTopology(lease), []);

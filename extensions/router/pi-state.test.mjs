@@ -15,29 +15,31 @@ import {
 } from "./pi-state.ts";
 
 describe("modelAbility", () => {
-  it("defers to the authoritative policy table for known (model, effort) pairs", () => {
-    // Per-model effort scaling: sonnet-5 and gemini-3.5-flash gain a tier at
-    // "high", while terra does not (see core/policy.ts).
-    assert.equal(modelAbility("claude-sonnet-5", "high"), 3);
-    assert.equal(modelAbility("gemini-3.5-flash", "high"), 3);
-    assert.equal(modelAbility("gpt-5.6-terra", "high"), 2);
-    assert.equal(modelAbility("claude-sonnet-5", "medium"), 2);
-    assert.equal(modelAbility("gemini-2.5-flash", "high"), 2);
-    assert.equal(modelAbility("bedrock/anthropic.claude-sonnet-5", "high"), 3);
+  it("defers to the authoritative policy and evidence tables for known (model, effort) pairs", () => {
+    // Bands come from measured cross-source consensus, not from model names: Opus 5 reaches the top
+    // band at high effort while Sonnet 5 and Terra sit in the lowest band there.
+    assert.equal(modelAbility("claude-opus-5", "high"), 4);
+    assert.equal(modelAbility("claude-opus-5", "medium"), 3);
+    assert.equal(modelAbility("claude-opus-5", "low"), 2);
     assert.equal(modelAbility("gpt-5.6-sol", "max"), 4);
+    assert.equal(modelAbility("gpt-5.6-sol", "high"), 3);
+    assert.equal(modelAbility("claude-sonnet-5", "high"), 1);
+    assert.equal(modelAbility("gpt-5.6-terra", "high"), 1);
+    // A resale endpoint resolves to the same band as the model it serves.
+    assert.equal(modelAbility("global.anthropic.claude-opus-5", "high"), 4);
   });
 
-  it("falls back to the heuristic for pairs the policy table does not know", () => {
-    assert.equal(modelAbility("claude-haiku-4-5", "medium"), 1);
+  it("falls back to a pessimistic heuristic only for unmeasured models", () => {
     assert.equal(modelAbility("some-unknown-mini", "low"), 1);
-    assert.equal(modelAbility("some-unknown-pro", "medium"), 4);
+    assert.equal(modelAbility("some-unknown-flash", "high"), 1);
+    // "pro" and "max" in a model name are not capability signals and must not grant a tier.
+    assert.equal(modelAbility("some-unknown-pro", "medium"), 2);
     assert.equal(modelAbility("some-unknown-model", "max"), 3);
   });
 
-  it("selects ability-3 reviewers end to end for a sonnet-5 high builder", () => {
-    // Regression for the original skew: the heuristic rated claude-sonnet-5@high
-    // as ability 2, which routed review to gpt-5.6-terra@high and
-    // gemini-3.5-flash@medium instead of the ability-3 tiers.
+  it("selects reviewers at or above the builder band end to end", () => {
+    // Regression for reviewer skew: reviewers must be chosen from the evidence-derived ladder rather
+    // than from a name heuristic, and no ladder rung may sit below the builder's measured band.
     const registryModel = (provider, modelId, vendor) => ({
       provider,
       modelId,
@@ -55,26 +57,26 @@ describe("modelAbility", () => {
     const registry = [
       registryModel("openai-codex", "gpt-5.6-terra", "openai"),
       registryModel("openai-codex", "gpt-5.6-sol", "openai"),
-      registryModel("anthropic", "claude-sonnet-5", "anthropic"),
-      registryModel("github-copilot", "gemini-3.5-flash", "google"),
+      registryModel("anthropic", "claude-opus-5", "anthropic"),
+      registryModel("google-vertex", "gemini-3.6-flash", "google"),
     ];
-    const builder = registry.find((candidate) => candidate.modelId === "claude-sonnet-5");
+    const builder = registry.find((candidate) => candidate.modelId === "gpt-5.6-sol");
     const decision = selectReviewRoute(
       registry,
       { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true },
       builder,
       "high",
-      modelAbility("claude-sonnet-5", "high"),
+      modelAbility("gpt-5.6-sol", "high"),
     );
     assert.equal(decision.kind, "review");
     const reviewers = new Map([decision.primary, decision.fallback].map((choice) => [choice.vendor, choice]));
-    assert.equal(reviewers.get("openai").modelId, "gpt-5.6-sol");
-    assert.equal(reviewers.get("google").modelId, "gemini-3.5-flash");
-    for (const choice of reviewers.values()) {
-      assert.equal(choice.effort, "high");
-      assert.equal(choice.ability, 3);
-    }
-    assert.deepEqual(decision.ceilingMismatchVendors, []);
+    // An ability-3 builder draws the Anthropic rung at or above its band and Google's only rung,
+    // which sits below it and is therefore recorded as a ceiling mismatch instead of passing silently.
+    assert.equal(reviewers.get("anthropic").modelId, "claude-opus-5");
+    assert.equal(reviewers.get("anthropic").ability, 3);
+    assert.equal(reviewers.get("google").modelId, "gemini-3.6-flash");
+    assert.deepEqual(decision.ceilingMismatchVendors, ["google"]);
+    assert.equal(decision.builderFallback.vendor, "openai");
   });
 });
 
@@ -136,7 +138,7 @@ describe("lease restoration and context estimates", () => {
       fallbacks: [
         {
           provider: "anthropic",
-          modelId: "claude-opus-4-8",
+          modelId: "claude-opus-5",
           vendor: "anthropic",
           effort: "high",
           ability: 3,

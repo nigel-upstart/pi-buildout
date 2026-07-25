@@ -1,6 +1,14 @@
 import type { Archetype } from "./archetype.ts";
-import { BOOTSTRAP_ROUTE_POLICIES, POLICY_VERSION, reviewerRefs } from "./policy.ts";
-import type { CandidateRef } from "./policy.ts";
+import { authorizeEffort, findEvidencePrior, scoreEvidencePrior } from "./evidence.ts";
+import type { EvidenceCostWeights, EvidenceLanguageBucket, EvidenceScoreContext } from "./evidence.ts";
+import {
+  BOOTSTRAP_ROUTE_POLICIES,
+  ENDPOINT_TIERS,
+  HARD_TASK_ESCALATION_REFS,
+  POLICY_VERSION,
+  reviewerRefs,
+} from "./policy.ts";
+import type { CandidateRef, EndpointTier } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
@@ -34,9 +42,12 @@ type ExclusionCode =
   | "not_in_registry"
   | "unavailable"
   | "context_headroom"
+  | "context_headroom_prior"
   | "image_unsupported"
   | "tools_unsupported"
   | "effort_unsupported"
+  | "effort_unauthorized"
+  | "thrash_guard"
   | "profile_missing"
   | "duplicate_model"
   | "fallback_vendor";
@@ -57,14 +68,24 @@ type RouteScoreComponents = {
 export type RouteChoice = {
   provider: string;
   modelId: string;
+  /** Manufacturer model ID shared by every endpoint serving this model. */
+  logicalModelId: string;
   vendor: ModelVendor;
   effort: EffortLevel;
   ability: number;
   profileId: string;
   contextWindow: number;
+  endpointTier: EndpointTier;
+  /** Blended per-million route price, absent for flat-rate subscription endpoints. */
+  endpointBlendedCost?: number;
+  /** Authorized as a retry only; never placed in the primary slot. */
+  escalationOnly?: boolean;
   score?: number;
   scoreComponents?: RouteScoreComponents;
-  rankReason: "bootstrap" | "telemetry" | "controlled_holdout" | "review_ability" | "fixed_builder_fallback";
+  evidenceScore?: number;
+  evidenceLanguage?: EvidenceLanguageBucket;
+  rankReason:
+    "bootstrap" | "evidence_prior" | "telemetry" | "controlled_holdout" | "review_ability" | "fixed_builder_fallback";
 };
 
 export type RouteSample = {
@@ -135,6 +156,56 @@ const DEFAULT_COST_WEIGHTS: CostWeights = {
   retryCost: 10,
 };
 
+/**
+ * Evidence-prior weights extend the telemetry weights with two axes the priors can price and
+ * observed samples cannot yet: measured regression breakage on repository-mutating work, and
+ * measured nondeterminism on unattended work.
+ */
+const DEFAULT_EVIDENCE_WEIGHTS: EvidenceCostWeights = {
+  ...DEFAULT_COST_WEIGHTS,
+  regressionBreakCost: 40,
+  nondeterminismCost: 15,
+};
+
+/** Foreground developer loops price wall time far higher than background work. */
+const FOREGROUND_WAIT_MULTIPLIER = 8;
+
+/** Output-weighted blend used only to order endpoints that resolve to the same model and effort. */
+function blendedEndpointCost(model: RegistryModelSnapshot): number {
+  return 0.25 * model.costPerMillion.input + 0.75 * model.costPerMillion.output;
+}
+
+/**
+ * Task shape that modifies scoring without changing which models are policy-authorized. Derived
+ * from trusted harness state and classifier features by the extension, never from route cost.
+ */
+export type RoutingContext = {
+  /** Present only when the repository resolves to exactly one measured language. */
+  language?: EvidenceLanguageBucket | undefined;
+  /** High ambiguity or high complexity work; selects the measured hard-task priors. */
+  hardTask: boolean;
+  /** Autonomous work where a non-deterministic pass is not usable. */
+  unattended: boolean;
+  /** Foreground developer loop, where wall time dominates. */
+  foreground: boolean;
+};
+
+export const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
+  hardTask: false,
+  unattended: false,
+  foreground: false,
+};
+
+function evidenceScoreContext(archetype: Archetype, context: RoutingContext): EvidenceScoreContext {
+  return {
+    language: context.language,
+    mutatesRepository: BOOTSTRAP_ROUTE_POLICIES[archetype].mutatesRepository,
+    unattended: context.unattended,
+    waitMultiplier: context.foreground ? FOREGROUND_WAIT_MULTIPLIER : 1,
+    hardTask: context.hardTask,
+  };
+}
+
 // Amazon Bedrock cross-region inference profiles prefix the underlying vendor path with a
 // region code ("us.", "eu.", "au.", "jp.", "global."). Strip it only when it is immediately
 // followed by a known vendor path segment so unrelated IDs are not misparsed.
@@ -185,6 +256,7 @@ function evaluateCandidate(
   archetype: Archetype,
   requirements: RouteRequirements,
   exclusions: CandidateExclusion[],
+  context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
 ): RouteChoice | undefined {
   const key = `${ref.provider}/${ref.modelId}`;
   const model = findSnapshot(ref, registry);
@@ -196,13 +268,54 @@ function evaluateCandidate(
     exclusions.push({ candidate: key, code: "unavailable", detail: "endpoint auth/availability is not configured" });
     return undefined;
   }
-  if (requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.7)) {
+  const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
+  const authorization = authorizeEffort(ref.logicalModelId, ref.effort, {
+    allowSuperSaturation: policy.allowSuperSaturation,
+    mutatesRepository: policy.mutatesRepository,
+    language: context.language,
+  });
+  if (!authorization.authorized) {
+    exclusions.push({ candidate: key, code: "effort_unauthorized", detail: authorization.reason });
+    return undefined;
+  }
+  const headroom = Math.floor(model.contextWindow * 0.7);
+  if (requirements.estimatedFinishedTokens > headroom) {
     exclusions.push({
       candidate: key,
       code: "context_headroom",
       detail: `${String(requirements.estimatedFinishedTokens)} estimated tokens exceed 70% of ${String(model.contextWindow)}`,
     });
     return undefined;
+  }
+  const prior = findEvidencePrior(ref.logicalModelId, ref.effort);
+  if (prior) {
+    // The task estimate and the configuration's measured p90 peak context are alternative lower
+    // bounds on what this run needs, so the window must accommodate the larger of the two rather
+    // than their sum. This is what excludes max-effort OpenAI configurations on 272K windows.
+    if (prior.p90PeakContextTokens > headroom) {
+      exclusions.push({
+        candidate: key,
+        code: "context_headroom_prior",
+        detail: `measured p90 peak context ${String(prior.p90PeakContextTokens)} exceeds 70% of ${String(model.contextWindow)}`,
+      });
+      return undefined;
+    }
+    if (prior.contextOverflowRate > 0.02) {
+      exclusions.push({
+        candidate: key,
+        code: "thrash_guard",
+        detail: `measured context-overflow rate ${prior.contextOverflowRate.toFixed(3)} exceeds 0.02`,
+      });
+      return undefined;
+    }
+    if (archetype === "long_context_synthesis" && prior.p90PeakContextTokens > Math.floor(model.contextWindow * 0.5)) {
+      exclusions.push({
+        candidate: key,
+        code: "thrash_guard",
+        detail: `long-context routes require p90 peak context under half the window; measured ${String(prior.p90PeakContextTokens)}`,
+      });
+      return undefined;
+    }
   }
   if (requirements.requiresImages && !model.inputTypes.includes("image")) {
     exclusions.push({ candidate: key, code: "image_unsupported", detail: "route includes image input" });
@@ -231,8 +344,12 @@ function evaluateCandidate(
     vendor: model.vendor,
     effort: ref.effort,
     ability: ref.ability,
+    logicalModelId: ref.logicalModelId,
     profileId: profile.id,
     contextWindow: model.contextWindow,
+    endpointTier: ref.endpointTier,
+    ...(ref.flatRate ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
+    ...(ref.escalationOnly ? { escalationOnly: true } : {}),
     rankReason: "bootstrap",
   };
 }
@@ -240,14 +357,15 @@ function evaluateCandidate(
 function deduplicateChoices(choices: readonly RouteChoice[], exclusions: CandidateExclusion[]): RouteChoice[] {
   const seen = new Set<string>();
   return choices.filter((choice) => {
-    // Deduplicate only an exact endpoint. Different providers for one model
-    // are deliberate availability fallbacks, not duplicate route choices.
-    const key = `${choice.provider}/${choice.modelId}`;
+    // Deduplicate only an exact endpoint at an exact effort. Different providers for one model are
+    // deliberate availability fallbacks, and the same endpoint at a different effort is a distinct
+    // route choice that archetypes such as highest_risk_advisory rely on.
+    const key = `${choice.provider}/${choice.modelId}@${choice.effort}`;
     if (seen.has(key)) {
       exclusions.push({
         candidate: key,
         code: "duplicate_model",
-        detail: "the exact provider/model endpoint is listed more than once",
+        detail: "the exact provider/model endpoint and effort is listed more than once",
       });
       return false;
     }
@@ -265,48 +383,145 @@ export function isControlledHoldout(key: string, oneIn = 20): boolean {
   return (hash >>> 0) % Math.max(1, oneIn) === 0;
 }
 
-function telemetryOrder(
-  choices: RouteChoice[],
+/**
+ * One logical (model, effort) choice and every eligible endpoint that serves it. Endpoints stay
+ * grouped so an availability failure retries the same model before the router changes models.
+ */
+type CandidateGroup = {
+  key: string;
+  logicalModelId: string;
+  effort: EffortLevel;
+  endpoints: RouteChoice[];
+};
+
+/**
+ * Endpoint order within one model: manufacturer route first, then gateway, then resale. Route price
+ * only breaks ties inside a tier, and flat-rate subscription endpoints sort last in their tier
+ * because their modeled token price is a capability proxy rather than a cost.
+ */
+function orderEndpoints(endpoints: readonly RouteChoice[]): RouteChoice[] {
+  return [...endpoints].sort((left, right) => {
+    const tier = ENDPOINT_TIERS.indexOf(left.endpointTier) - ENDPOINT_TIERS.indexOf(right.endpointTier);
+    if (tier !== 0) return tier;
+    const leftFlat = left.endpointBlendedCost === undefined;
+    const rightFlat = right.endpointBlendedCost === undefined;
+    if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
+    return (left.endpointBlendedCost ?? 0) - (right.endpointBlendedCost ?? 0);
+  });
+}
+
+function groupCandidates(choices: readonly RouteChoice[]): CandidateGroup[] {
+  const groups = new Map<string, CandidateGroup>();
+  for (const choice of choices) {
+    const key = `${choice.logicalModelId}@${choice.effort}`;
+    const group = groups.get(key);
+    if (group) group.endpoints.push(choice);
+    else groups.set(key, { key, logicalModelId: choice.logicalModelId, effort: choice.effort, endpoints: [choice] });
+  }
+  return [...groups.values()].map((group) => ({ ...group, endpoints: orderEndpoints(group.endpoints) }));
+}
+
+function sampleFor(
+  choice: RouteChoice,
+  archetype: Archetype,
+  samples: readonly RouteSample[],
+): RouteSample | undefined {
+  return samples.find(
+    (sample) =>
+      sample.provider === choice.provider && sample.modelId === choice.modelId && sample.archetype === archetype,
+  );
+}
+
+function orderGroups(
+  groups: CandidateGroup[],
   archetype: Archetype,
   qualityFloor: number,
   samples: readonly RouteSample[],
-  weights?: CostWeights,
-  explorationKey?: string,
+  weights: CostWeights | undefined,
+  explorationKey: string | undefined,
+  context: RoutingContext,
 ): { choices: RouteChoice[]; mature: boolean; controlledHoldout: boolean } {
-  const comparable = choices.map((choice) =>
-    samples.find(
-      (sample) =>
-        sample.provider === choice.provider && sample.modelId === choice.modelId && sample.archetype === archetype,
-    ),
-  );
+  const primaries = groups.map((group) => group.endpoints[0]);
+  const comparable = primaries.map((choice) => (choice ? sampleFor(choice, archetype, samples) : undefined));
   const mature =
-    choices.length > 0 &&
+    groups.length > 0 &&
     comparable.every((sample) => sample && sample.comparableSamples >= 30 && sample.acceptedRate >= qualityFloor);
-  if (!mature) return { choices, mature: false, controlledHoldout: false };
+  const controlledHoldout = explorationKey ? isControlledHoldout(explorationKey) : false;
 
-  const appliedWeights = weights ?? DEFAULT_COST_WEIGHTS;
-  const scored = choices.map((choice, index) => {
-    const sample = comparable[index];
-    if (!sample) throw new Error("mature route is missing its comparable telemetry sample");
-    return {
-      ...choice,
-      score: robustCostToDone(sample, appliedWeights),
-      scoreComponents: {
+  if (mature) {
+    const appliedWeights = weights ?? DEFAULT_COST_WEIGHTS;
+    const matureRankReason: RouteChoice["rankReason"] = controlledHoldout ? "controlled_holdout" : "telemetry";
+    const scored = groups.map((group, index) => {
+      const sample = comparable[index];
+      if (!sample) throw new Error("mature route is missing its comparable telemetry sample");
+      const score = robustCostToDone(sample, appliedWeights);
+      const scoreComponents = {
         p75ModelAndToolCost: sample.p75ModelAndToolCost,
         developerWaitCost: appliedWeights.developerWaitValuePerMs * sample.p75WallTimeMs,
         humanInterventionCost: appliedWeights.humanInterventionCost * sample.probabilityHumanIntervention,
         retryCost: appliedWeights.retryCost * sample.probabilityRetry,
-      },
-      rankReason: "telemetry" as const,
-    };
+      };
+      return {
+        group,
+        score,
+        endpoints: group.endpoints.map((choice) => ({
+          ...choice,
+          score,
+          scoreComponents,
+          rankReason: matureRankReason,
+        })),
+      };
+    });
+    const ordered = controlledHoldout ? scored : scored.sort((left, right) => left.score - right.score);
+    return { choices: ordered.flatMap((entry) => entry.endpoints), mature: true, controlledHoldout };
+  }
+
+  // Pre-telemetry ordering uses the measured evidence priors rather than policy list order, so a
+  // cheap-but-weak configuration cannot win on token price and a strong configuration does not need
+  // to be hand-placed first.
+  const scoreContext = evidenceScoreContext(archetype, context);
+  const scored = groups.map((group) => {
+    const prior = findEvidencePrior(group.logicalModelId, group.effort);
+    const evidence = prior ? scoreEvidencePrior(prior, DEFAULT_EVIDENCE_WEIGHTS, scoreContext) : undefined;
+    return { group, evidence };
   });
-  const controlledHoldout = explorationKey ? isControlledHoldout(explorationKey) : false;
+  const ranked = scored
+    .filter((entry) => entry.evidence !== undefined)
+    .sort((left, right) => (left.evidence?.score ?? 0) - (right.evidence?.score ?? 0));
+  // Candidates without evidence keep their declared policy order behind every scored candidate.
+  const unscored = scored.filter((entry) => entry.evidence === undefined);
+  const ordered = [...ranked, ...unscored];
+  // A pinned primary is a deliberate capability-first prior for archetypes whose failure cost is
+  // paid downstream rather than inside the task. It only reorders; it never adds a candidate.
+  const pin = BOOTSTRAP_ROUTE_POLICIES[archetype].pinnedPrimary;
+  const pinIndex = pin
+    ? ordered.findIndex(
+        (entry) => entry.group.logicalModelId === pin.logicalModelId && entry.group.effort === pin.effort,
+      )
+    : -1;
+  if (pinIndex > 0) ordered.unshift(...ordered.splice(pinIndex, 1));
+  // An escalation-only candidate may outrank the leaders on the hard-task prior, but its measured
+  // flakiness makes it unsuitable for a first attempt, so it is demoted behind the best ordinary
+  // candidate while staying authorized as a retry.
+  if (ordered[0]?.group.endpoints[0]?.escalationOnly === true) {
+    const ordinaryIndex = ordered.findIndex((entry) => entry.group.endpoints[0]?.escalationOnly !== true);
+    if (ordinaryIndex > 0) ordered.unshift(...ordered.splice(ordinaryIndex, 1));
+  }
   return {
-    mature: true,
-    controlledHoldout,
-    choices: controlledHoldout
-      ? scored.map((choice) => ({ ...choice, rankReason: "controlled_holdout" as const }))
-      : scored.sort((left, right) => left.score - right.score),
+    mature: false,
+    controlledHoldout: false,
+    choices: ordered.flatMap((entry) =>
+      entry.group.endpoints.map((choice) => ({
+        ...choice,
+        ...(entry.evidence
+          ? {
+              evidenceScore: entry.evidence.score,
+              ...(entry.evidence.languageUsed ? { evidenceLanguage: entry.evidence.languageUsed } : {}),
+              rankReason: "evidence_prior" as const,
+            }
+          : {}),
+      })),
+    ),
   };
 }
 
@@ -317,14 +532,27 @@ export function selectOrdinaryRoute(
   samples: readonly RouteSample[] = [],
   weights?: CostWeights,
   explorationKey?: string,
+  context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
 ): RouteDecision {
   const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
   const exclusions: CandidateExclusion[] = [];
-  const evaluated = [...policy.primary, ...policy.fallback]
-    .map((candidate) => evaluateCandidate(candidate, registry, archetype, requirements, exclusions))
+  // Hard, ambiguous work additionally authorizes the escalation prior as a retry candidate.
+  const pool = context.hardTask
+    ? [...policy.primary, ...policy.fallback, ...HARD_TASK_ESCALATION_REFS]
+    : [...policy.primary, ...policy.fallback];
+  const evaluated = pool
+    .map((candidate) => evaluateCandidate(candidate, registry, archetype, requirements, exclusions, context))
     .filter((choice): choice is RouteChoice => choice !== undefined);
   const deduplicated = deduplicateChoices(evaluated, exclusions);
-  const ranked = telemetryOrder(deduplicated, archetype, policy.qualityFloor, samples, weights, explorationKey);
+  const ranked = orderGroups(
+    groupCandidates(deduplicated),
+    archetype,
+    policy.qualityFloor,
+    samples,
+    weights,
+    explorationKey,
+    context,
+  );
   const [primary, ...fallbacks] = ranked.choices;
 
   if (!primary || fallbacks.length === 0) {
@@ -361,9 +589,13 @@ function builderChoice(
     {
       provider: builder.provider,
       modelId: builder.modelId,
+      // A builder chosen by the user is its own logical model; it carries no resale chain.
+      logicalModelId: builder.modelId,
       vendor: builder.vendor,
       effort: builderEffort,
       ability,
+      endpointTier: "manufacturer",
+      flatRate: false,
       allowAlias: false,
       restricted: false,
     },

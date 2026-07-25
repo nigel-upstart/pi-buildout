@@ -1,11 +1,12 @@
 import { EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
 import type { EvidenceLanguageBucket, EvidenceLanguagePrior, EvidencePriorRow } from "./evidence-data.ts";
-import { EFFORT_LEVELS } from "./profiles.ts";
+
+export type { EvidenceLanguageBucket, EvidencePriorRow } from "./evidence-data.ts";
 import type { EffortLevel } from "./profiles.ts";
 
 export type AbilityTier = 1 | 2 | 3 | 4;
 
-export const EVIDENCE_LANGUAGE_BUCKETS = ["go", "python", "typescript"] as const;
+const EVIDENCE_LANGUAGE_BUCKETS = ["go", "python", "typescript"] as const;
 
 const EFFORT_RANK: Record<EffortLevel, number> = {
   off: 0,
@@ -17,7 +18,7 @@ const EFFORT_RANK: Record<EffortLevel, number> = {
   max: 6,
 };
 
-export function effortRank(effort: EffortLevel): number {
+function effortRank(effort: EffortLevel): number {
   return EFFORT_RANK[effort];
 }
 
@@ -36,7 +37,7 @@ export function resolveEvidenceLanguage(languageBuckets: readonly string[]): Evi
   return measured.length === 1 ? measured[0] : undefined;
 }
 
-export function evidenceLanguagePrior(
+function evidenceLanguagePrior(
   row: EvidencePriorRow,
   language: EvidenceLanguageBucket | undefined,
 ): EvidenceLanguagePrior | undefined {
@@ -147,7 +148,7 @@ export const EFFORT_POLICIES: readonly EffortPolicy[] = [
   },
 ];
 
-export function findEffortPolicy(modelId: string): EffortPolicy | undefined {
+function findEffortPolicy(modelId: string): EffortPolicy | undefined {
   return EFFORT_POLICIES.find((policy) => policy.modelId === modelId);
 }
 
@@ -155,7 +156,7 @@ export function findEffortPolicy(modelId: string): EffortPolicy | undefined {
  * Candidates the evidence pack disqualifies outright. These are excluded before scoring so a
  * measured failure mode cannot be reintroduced by a favorable cost term.
  */
-export const DISQUALIFIED_MODELS: readonly { modelId: string; reason: string }[] = [
+const DISQUALIFIED_MODELS: readonly { modelId: string; reason: string }[] = [
   {
     modelId: "gemini-3.1-pro-preview",
     reason: "pass 11.7%, $80.70 per pass, 22.8% regression breakage, 4.4% context overflow",
@@ -304,7 +305,3 @@ export const HARD_TASK_ESCALATION = {
   effort: "max",
   reason: "best measured hard-task solver (47.1% corpus-wide, 44.4% TypeScript) despite 52.7% same-task flakiness",
 } as const satisfies { modelId: string; effort: EffortLevel; reason: string };
-
-export function evidenceEffortLevels(modelId: string): readonly EffortLevel[] {
-  return EFFORT_LEVELS.filter((effort) => findEvidencePrior(modelId, effort) !== undefined);
-}
