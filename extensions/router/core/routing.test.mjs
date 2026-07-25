@@ -847,3 +847,96 @@ describe("escalation-only candidates can never be a first attempt", () => {
     assert.equal(decision.fallbacks.at(-1).escalationOnly, true);
   });
 });
+
+describe("scope and health drive the candidate pool", () => {
+  function endpoint(provider, modelId, vendor, extra = {}) {
+    return { ...model(provider, modelId, vendor), ...extra };
+  }
+
+  it("resolves a logical model to whichever endpoints are actually present", () => {
+    // Only Bedrock region profiles are scoped in for Opus 5 here; the Anthropic route is absent.
+    const bedrockOnly = [
+      endpoint("amazon-bedrock", "us.anthropic.claude-opus-5", "anthropic"),
+      endpoint("amazon-bedrock", "global.anthropic.claude-opus-5", "anthropic"),
+      endpoint("openai-codex", "gpt-5.6-sol", "openai"),
+    ];
+    const decision = selectOrdinaryRoute("implementation_planning", bedrockOnly, REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
+    assert.equal(decision.primary.logicalModelId, "claude-opus-5");
+    assert.equal(decision.primary.provider, "amazon-bedrock");
+    // The bare-ish global profile is preferred over the regional one.
+    assert.equal(decision.primary.modelId, "global.anthropic.claude-opus-5");
+    assert.equal(decision.fallbacks[0].modelId, "us.anthropic.claude-opus-5");
+  });
+
+  it("still prefers the manufacturer route when both exist", () => {
+    const both = [
+      endpoint("amazon-bedrock", "global.anthropic.claude-opus-5", "anthropic"),
+      endpoint("anthropic", "claude-opus-5", "anthropic"),
+      endpoint("openai-codex", "gpt-5.6-sol", "openai"),
+    ];
+    const decision = selectOrdinaryRoute("implementation_planning", both, REQUIREMENTS);
+    assert.equal(decision.primary.provider, "anthropic");
+    assert.equal(decision.primary.endpointTier, "manufacturer");
+    assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
+  });
+
+  it("reports a model that is not in scope rather than pretending it was unavailable", () => {
+    const withoutOpus = [endpoint("openai-codex", "gpt-5.6-sol", "openai")];
+    const decision = selectOrdinaryRoute("median_repository_implementation", withoutOpus, REQUIREMENTS);
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) => exclusion.code === "not_in_scope" && exclusion.candidate.startsWith("claude-opus-5@"),
+      ),
+    );
+  });
+
+  it("excludes an endpoint a probe found broken, and keeps a transient failure usable", () => {
+    const registryWithHealth = [
+      endpoint("anthropic", "claude-opus-5", "anthropic", {
+        health: { provider: "anthropic", modelId: "claude-opus-5", status: "client_error", httpStatus: 400 },
+      }),
+      endpoint("amazon-bedrock", "global.anthropic.claude-opus-5", "anthropic", {
+        health: { provider: "amazon-bedrock", modelId: "global.anthropic.claude-opus-5", status: "server_error" },
+      }),
+      endpoint("openai-codex", "gpt-5.6-sol", "openai"),
+    ];
+    const decision = selectOrdinaryRoute("implementation_planning", registryWithHealth, REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
+    // The 400 endpoint is dropped; the 5xx endpoint remains because a provider outage is transient.
+    assert.equal(decision.primary.provider, "amazon-bedrock");
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) => exclusion.code === "endpoint_unhealthy" && exclusion.candidate === "anthropic/claude-opus-5",
+      ),
+    );
+  });
+
+  it("supplies a Google reviewer from whichever Gemini generation is scoped in", () => {
+    // On a machine without gemini-3.6-flash, the chain degrades rather than leaving Google absent, so
+    // independent review keeps two non-builder vendors.
+    const olderGemini = [
+      endpoint("openai-codex", "gpt-5.6-sol", "openai"),
+      endpoint("anthropic", "claude-opus-5", "anthropic"),
+      endpoint("google-vertex", "gemini-2.5-pro", "google"),
+    ];
+    const builder = olderGemini.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    const decision = selectReviewRoute(olderGemini, REQUIREMENTS, builder, "high", 3);
+    assert.equal(decision.kind, "review");
+    const vendors = new Set([decision.primary.vendor, decision.fallback.vendor]);
+    assert.deepEqual(vendors, new Set(["anthropic", "google"]));
+    assert.equal(decision.builderFallback.vendor, "openai");
+  });
+
+  it("refuses to route a disqualified Gemini generation even when it is the only one scoped", () => {
+    const disqualifiedOnly = [
+      endpoint("openai-codex", "gpt-5.6-sol", "openai"),
+      endpoint("anthropic", "claude-opus-5", "anthropic"),
+      endpoint("github-copilot", "gemini-3.5-flash", "google"),
+    ];
+    const builder = disqualifiedOnly.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    const decision = selectReviewRoute(disqualifiedOnly, REQUIREMENTS, builder, "high", 3);
+    // Two independent vendors are required, and a measured-overflow model is not an acceptable one.
+    assert.equal(decision.kind, "unroutable");
+  });
+});

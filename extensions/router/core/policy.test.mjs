@@ -15,7 +15,7 @@ describe("policy ability table invariants", () => {
   it("never maps one (modelId, effort) pair to conflicting abilities", () => {
     const seen = new Map();
     for (const ref of reachableRefs()) {
-      const key = `${ref.modelId}@${ref.effort}`;
+      const key = `${ref.logicalModelId}@${ref.effort}`;
       const known = seen.get(key);
       assert.ok(
         known === undefined || known === ref.ability,

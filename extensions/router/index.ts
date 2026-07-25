@@ -30,6 +30,8 @@ import type { RepositoryMetadata, SessionSynopsis } from "./core/synopsis.ts";
 import { classifyTaskWithPi } from "./pi-classifier.ts";
 import {
   buildRegistrySnapshot,
+  EMPTY_SCOPE,
+  readRouterScope,
   cacheEstimate,
   latestReportedContextTokens,
   modelAbility,
@@ -40,6 +42,7 @@ import {
   routeRequirements,
   snapshotForModel,
 } from "./pi-state.ts";
+import type { RouterScope } from "./pi-state.ts";
 import { aggregateRouteSamples, JsonlTelemetryStore, withRouterSpan } from "./telemetry.ts";
 import type { AttemptOutcome, RouterTelemetryEvent } from "./telemetry.ts";
 
@@ -214,6 +217,12 @@ function telemetryOutcomes(events: readonly RouterTelemetryEvent[]): AttemptOutc
 }
 
 export default function routerExtension(pi: ExtensionAPI): void {
+  /**
+   * The operator's model scope and last probe results, read once per session. Routing derives its
+   * candidate endpoints from this rather than from a table in the repository, so enabling or disabling
+   * a model in settings changes what the router can pick without a code change.
+   */
+  let scope: RouterScope = EMPTY_SCOPE;
   const telemetry = new JsonlTelemetryStore(
     process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
   );
@@ -296,7 +305,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
   function synopsis(ctx: ExtensionContext, repository: RepositoryMetadata): SessionSynopsis {
     const usage = ctx.getContextUsage();
     // The registry, not the endpoint name, identifies gateway-backed models' canonical vendor.
-    const vendor = ctx.model ? snapshotForModel(ctx.model, buildRegistrySnapshot(ctx))?.vendor : undefined;
+    const vendor = ctx.model ? snapshotForModel(ctx.model, buildRegistrySnapshot(ctx, scope))?.vendor : undefined;
     return buildSessionSynopsis({
       sessionId: ctx.sessionManager.getSessionId(),
       cwd: ctx.cwd,
@@ -327,7 +336,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     contextBucket: string,
     explorationKey: string,
   ): Promise<{ decision: RouteDecision; registry: RegistryModelSnapshot[] }> {
-    const registry = buildRegistrySnapshot(ctx);
+    const registry = buildRegistrySnapshot(ctx, scope);
     const blockReason = automaticRoutingBlockReason(classification);
     if (blockReason) {
       return {
@@ -412,7 +421,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
   }
 
   function leasedChoiceEligible(ctx: ExtensionContext, lease: TaskLease, hasImages: boolean): boolean {
-    const registry = buildRegistrySnapshot(ctx);
+    const registry = buildRegistrySnapshot(ctx, scope);
     const model = registry.find(
       (candidate) => candidate.provider === lease.selected.provider && candidate.modelId === lease.selected.modelId,
     );
@@ -603,7 +612,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     ) {
       return;
     }
-    const registry = buildRegistrySnapshot(ctx);
+    const registry = buildRegistrySnapshot(ctx, scope);
     const builder = registry.find(
       (candidate) => candidate.provider === parent.selected.provider && candidate.modelId === parent.selected.modelId,
     );
@@ -763,6 +772,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     attemptDisposition = "unknown";
+    // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
+    scope = await readRouterScope(ctx.cwd);
     let fallbackMode = defaultMode();
     let usedConfigFile = false;
     // On first startup, check config file for startMode preference when env var is not set
@@ -819,7 +830,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     });
     const hasImages = Boolean(event.images?.length);
     if (hasImages && state.active) {
-      const selected = buildRegistrySnapshot(ctx).find(
+      const selected = buildRegistrySnapshot(ctx, scope).find(
         (candidate) =>
           candidate.provider === state.active?.selected.provider && candidate.modelId === state.active.selected.modelId,
       );

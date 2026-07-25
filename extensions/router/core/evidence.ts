@@ -158,6 +158,10 @@ const CONSENSUS_ONLY_ABILITY: Readonly<Record<string, AbilityTier>> = {
   // Claude Opus 4.6 consensus performance_best 57.7. Retained as the scoped frugal candidate rather
   // than as a general tier; it is two bands below claude-opus-5 at high effort.
   "claude-opus-4-6": 2,
+  // Gemini 2.5 Pro consensus performance_best 42.3, and Gemini 2.5 Flash 25.0. Both are lowest-band
+  // and exist only to guarantee Google can supply the independent reviewer that review requires.
+  "gemini-2.5-pro": 1,
+  "gemini-2.5-flash": 1,
   // gpt-oss-120b consensus performance_best 36.5 with the corpus's top cost-efficiency percentile.
   // Reachable only on Amazon Bedrock, and it has no agentic rollout evidence at all.
   "gpt-oss-120b": 1,

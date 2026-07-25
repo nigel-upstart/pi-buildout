@@ -209,7 +209,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "google-gemini-2.5-iterative-v1",
     version: 1,
     vendor: "google",
-    modelIds: ["gemini-2.5-flash"],
+    modelIds: ["gemini-2.5-flash", "gemini-2.5-pro"],
     archetypes: [
       "algorithmic_iterative_coding",
       "median_repository_implementation",

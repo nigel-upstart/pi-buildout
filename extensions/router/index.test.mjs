@@ -3,6 +3,11 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+
+// The router derives candidates from the operator's model scope, so tests pin it explicitly rather
+// than reading whatever the developer happens to have enabled.
+process.env.PI_ROUTER_MODEL_SCOPE = "*";
+process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH = "/nonexistent-router-health.json";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import routerExtension, { automaticRoutingBlockReason, deterministicCheckCommand } from "./index.ts";

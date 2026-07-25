@@ -2,6 +2,7 @@ import type { Archetype } from "./archetype.ts";
 import { evidenceAbility } from "./evidence.ts";
 import type { AbilityTier } from "./evidence.ts";
 import { MODEL_VENDORS } from "./profiles.ts";
+import { canonicalModelId } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
 export const POLICY_VERSION = "router-policy-v5";
@@ -15,19 +16,16 @@ export const ENDPOINT_TIERS = ["manufacturer", "gateway", "resale"] as const;
 export type EndpointTier = (typeof ENDPOINT_TIERS)[number];
 
 export type CandidateRef = {
-  provider: string;
-  modelId: string;
   /**
-   * The manufacturer's model ID, shared by every endpoint that serves the same model. Evidence
-   * priors, effort policies, and ability bands are keyed by this, never by a resale endpoint ID.
+   * The manufacturer's model ID. Concrete endpoints are resolved from the live scoped registry at
+   * decision time, so policy never names a provider: a hand-maintained provider table drifts from the
+   * machine it runs on, naming endpoints the operator never scoped in and missing ones they did.
+   * Evidence priors, effort policies, ability bands, and prompt profiles are all keyed by this.
    */
   logicalModelId: string;
   vendor: ModelVendor;
   effort: EffortLevel;
   ability: AbilityTier;
-  endpointTier: EndpointTier;
-  /** Flat-rate subscription endpoints are excluded from cost tiebreaks and sorted last in their tier. */
-  flatRate: boolean;
   /**
    * Authorized only as a retry after a failed attempt, never as a first attempt. Used for the
    * hard-task escalation prior, whose measured hard-task lead comes with same-task flakiness too high
@@ -44,113 +42,26 @@ export type CandidateRef = {
   restricted: boolean;
 };
 
-/** Direct-from-manufacturer providers, in the order pi should prefer them. */
-const MANUFACTURER_PROVIDERS: Readonly<Record<ModelVendor, readonly string[]>> = {
-  openai: ["openai-codex", "openai"],
-  anthropic: ["anthropic"],
-  google: ["google-vertex", "google"],
-};
-
-type BackupEndpoint = {
-  provider: string;
-  /** Provider-specific model ID; resale routes rarely reuse the manufacturer's ID verbatim. */
-  modelId: string;
-  tier: EndpointTier;
-  flatRate?: boolean;
-};
-
-type ModelEndpointPolicy = {
-  modelId: string;
-  vendor: ModelVendor;
-  backups: readonly BackupEndpoint[];
-};
-
 /**
- * Same-model backup routes. Bedrock entries use exact cross-region inference-profile IDs; Global
- * profiles precede regional ones because the cost report favors them for residual AWS traffic.
- * GitHub Copilot appears only where Copilot actually exposes the model — it has no Opus 4.8 or
- * Opus 5 route, so the Anthropic direct route is mandatory for those.
+ * Vendor for each logical model the policy can name. Explicit rather than inferred from the ID, so a
+ * new candidate must declare which vendor ladder and prompt-profile family it belongs to.
  */
-const MODEL_ENDPOINTS: readonly ModelEndpointPolicy[] = [
-  {
-    modelId: "claude-opus-5",
-    vendor: "anthropic",
-    backups: [
-      { provider: "amazon-bedrock", modelId: "global.anthropic.claude-opus-5", tier: "resale" },
-      { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-5", tier: "resale" },
-    ],
-  },
-  {
-    modelId: "claude-fable-5",
-    vendor: "anthropic",
-    backups: [
-      { provider: "amazon-bedrock", modelId: "global.anthropic.claude-fable-5", tier: "resale" },
-      { provider: "amazon-bedrock", modelId: "us.anthropic.claude-fable-5", tier: "resale" },
-    ],
-  },
-  {
-    modelId: "claude-sonnet-5",
-    vendor: "anthropic",
-    backups: [
-      { provider: "bifrost", modelId: "bedrock/anthropic.claude-sonnet-5", tier: "gateway" },
-      { provider: "amazon-bedrock", modelId: "global.anthropic.claude-sonnet-5", tier: "resale" },
-      { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-5", tier: "resale" },
-    ],
-  },
-  {
-    modelId: "claude-haiku-4-5",
-    vendor: "anthropic",
-    backups: [
-      { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0", tier: "resale" },
-      { provider: "github-copilot", modelId: "claude-haiku-4.5", tier: "resale", flatRate: true },
-    ],
-  },
-  {
-    modelId: "gpt-5.6-sol",
-    vendor: "openai",
-    backups: [{ provider: "amazon-bedrock", modelId: "openai.gpt-5.6-sol", tier: "resale" }],
-  },
-  { modelId: "gpt-5.6-terra", vendor: "openai", backups: [] },
-  {
-    // Open-weight OpenAI model reachable only through Amazon Bedrock, so its "manufacturer" tier is
-    // empty and the Bedrock route is all there is. 128K window and no image input.
-    modelId: "gpt-oss-120b",
-    vendor: "openai",
-    backups: [
-      { provider: "amazon-bedrock", modelId: "openai.gpt-oss-120b", tier: "resale" },
-      { provider: "amazon-bedrock", modelId: "openai.gpt-oss-120b-1:0", tier: "resale" },
-    ],
-  },
-  {
-    // Scoped frugal candidate. Retained for its measured step frugality (23.6 median API calls
-    // against 38-68 for the other retained submissions in that source), which matters under tight
-    // context headroom, not for general capability. Copilot and Bedrock routes are kept because they
-    // are where this model remains reachable.
-    modelId: "claude-opus-4-6",
-    vendor: "anthropic",
-    backups: [
-      { provider: "amazon-bedrock", modelId: "global.anthropic.claude-opus-4-6-v1", tier: "resale" },
-      { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-6-v1", tier: "resale" },
-      { provider: "github-copilot", modelId: "claude-opus-4.6", tier: "resale", flatRate: true },
-    ],
-  },
-  { modelId: "gpt-5.6-luna", vendor: "openai", backups: [] },
-  {
-    modelId: "gpt-5.5",
-    vendor: "openai",
-    backups: [{ provider: "github-copilot", modelId: "gpt-5.5", tier: "resale", flatRate: true }],
-  },
-  { modelId: "gemini-3.6-flash", vendor: "google", backups: [] },
-];
-
-/** Models with no first-party hosted endpoint. Their vendor does not operate a route for them. */
-const MODELS_WITHOUT_MANUFACTURER_ROUTE = new Set(["gpt-oss-120b"]);
-
-function endpointPolicy(modelId: string): ModelEndpointPolicy {
-  const policy = MODEL_ENDPOINTS.find((entry) => entry.modelId === modelId);
-  if (!policy) throw new Error(`no endpoint policy is declared for ${modelId}`);
-  return policy;
-}
+const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
+  "gpt-5.6-luna": "openai",
+  "gpt-5.6-terra": "openai",
+  "gpt-5.6-sol": "openai",
+  "gpt-5.5": "openai",
+  "gpt-5.4": "openai",
+  "gpt-oss-120b": "openai",
+  "claude-opus-5": "anthropic",
+  "claude-opus-4-6": "anthropic",
+  "claude-fable-5": "anthropic",
+  "claude-sonnet-5": "anthropic",
+  "claude-haiku-4-5": "anthropic",
+  "gemini-3.6-flash": "google",
+  "gemini-2.5-pro": "google",
+  "gemini-2.5-flash": "google",
+};
 
 /**
  * Explicit ability declarations for candidates the evidence pack does not cover. Every entry must
@@ -169,59 +80,20 @@ function abilityFor(modelId: string, effort: EffortLevel): AbilityTier {
   throw new Error(`no evidence band or declared ability exists for ${modelId}@${effort}`);
 }
 
-/**
- * Expands one (model, effort) choice into its ordered endpoint chain: the manufacturer route first,
- * then gateway routes, then resale routes. Routing keeps this grouping so an availability failure
- * retries the same model before changing models.
- */
-function candidates(modelId: string, effort: EffortLevel): CandidateRef[] {
-  const policy = endpointPolicy(modelId);
-  const ability = abilityFor(modelId, effort);
-  const base = {
-    modelId,
-    logicalModelId: modelId,
-    vendor: policy.vendor,
-    effort,
-    ability,
-    allowAlias: false,
-    restricted: false,
-  } as const;
-  // Open-weight models have no first-party hosted route, so they legitimately have no manufacturer
-  // tier; their resale endpoints are the only ones that exist.
-  const manufacturer: CandidateRef[] = MODELS_WITHOUT_MANUFACTURER_ROUTE.has(modelId)
-    ? []
-    : MANUFACTURER_PROVIDERS[policy.vendor].map((provider) => ({
-        ...base,
-        provider,
-        endpointTier: "manufacturer",
-        flatRate: false,
-      }));
-  const backups: CandidateRef[] = [...policy.backups]
-    .sort((left, right) => ENDPOINT_TIERS.indexOf(left.tier) - ENDPOINT_TIERS.indexOf(right.tier))
-    .map((backup) => ({
-      ...base,
-      provider: backup.provider,
-      modelId: backup.modelId,
-      endpointTier: backup.tier,
-      flatRate: backup.flatRate === true,
-    }));
-  return [...manufacturer, ...backups];
-}
-
-/** gpt-5.4 has no endpoint policy entry, so its legacy fallback refs are built directly. */
-function legacyOpenaiCandidates(modelId: string, effort: EffortLevel): CandidateRef[] {
-  return ["openai-codex", "openai"].map((provider) => ({
-    provider,
-    modelId,
-    logicalModelId: modelId,
-    vendor: "openai" as const,
-    effort,
-    ability: abilityFor(modelId, effort),
-    endpointTier: "manufacturer" as const,
-    flatRate: false,
-    allowAlias: false,
-    restricted: false,
-  }));
+/** Declares one logical (model, effort) candidate. Endpoint expansion happens in core/routing.ts. */
+function candidates(logicalModelId: string, effort: EffortLevel): CandidateRef[] {
+  const vendor = MODEL_VENDOR[logicalModelId];
+  if (!vendor) throw new Error(`no vendor is declared for ${logicalModelId}`);
+  return [
+    {
+      logicalModelId,
+      vendor,
+      effort,
+      ability: abilityFor(logicalModelId, effort),
+      allowAlias: false,
+      restricted: false,
+    },
+  ];
 }
 
 const LUNA_LOW = candidates("gpt-5.6-luna", "low");
@@ -236,7 +108,7 @@ const SOL_MEDIUM = candidates("gpt-5.6-sol", "medium");
 const SOL_HIGH = candidates("gpt-5.6-sol", "high");
 const SOL_MAX = candidates("gpt-5.6-sol", "max");
 const GPT_55_XHIGH = candidates("gpt-5.5", "xhigh");
-const GPT_54_MEDIUM = legacyOpenaiCandidates("gpt-5.4", "medium");
+const GPT_54_MEDIUM = candidates("gpt-5.4", "medium");
 const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
 const OPUS_LOW = candidates("claude-opus-5", "low");
 const OPUS_MEDIUM = candidates("claude-opus-5", "medium");
@@ -245,7 +117,22 @@ const OPUS_XHIGH = candidates("claude-opus-5", "xhigh");
 const OPUS_MAX = candidates("claude-opus-5", "max");
 const FABLE_XHIGH = candidates("claude-fable-5", "xhigh");
 const OPUS_46_HIGH = candidates("claude-opus-4-6", "high").map((ref) => ({ ...ref, scopedFrugal: true }));
-const GEMINI_HIGH = candidates("gemini-3.6-flash", "high");
+/**
+ * Preference order for the Google rung. Independent review requires two non-builder vendors, so the
+ * chain exists to guarantee Google can always supply one: whichever entry is scoped in and healthy on
+ * a given machine becomes the rung, and the ladder degrades in capability rather than disappearing.
+ *
+ * gemini-3.6-flash leads because it is the only Gemini configuration the evidence pack does not
+ * disqualify. gemini-3.5-flash is deliberately absent: it is disqualified for a measured 3.8%
+ * context-overflow rate. The 2.5 entries are lowest-band reviewers, kept because an independent
+ * second opinion from a weaker model is worth more than no independent review at all, and review is
+ * read-only work where a weak reviewer cannot break anything.
+ */
+const GEMINI_HIGH = [
+  ...candidates("gemini-3.6-flash", "high"),
+  ...candidates("gemini-2.5-pro", "high"),
+  ...candidates("gemini-2.5-flash", "high"),
+];
 
 export type BootstrapRoutePolicy = {
   archetype: Archetype;
@@ -475,8 +362,9 @@ const ALL_CANDIDATE_REFS: readonly CandidateRef[] = [
  * truth; heuristics elsewhere must defer to it.
  */
 export function policyAbility(modelId: string, effort: EffortLevel): AbilityTier | undefined {
+  const canonical = canonicalModelId(modelId);
   return ALL_CANDIDATE_REFS.find(
-    (ref) => (ref.modelId === modelId || ref.logicalModelId === modelId) && ref.effort === effort,
+    (ref) => (ref.logicalModelId === modelId || ref.logicalModelId === canonical) && ref.effort === effort,
   )?.ability;
 }
 

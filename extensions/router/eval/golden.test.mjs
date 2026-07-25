@@ -46,14 +46,17 @@ function registry() {
   for (const vendor of ["openai", "anthropic", "google"]) {
     for (const ability of [1, 2, 3, 4]) refs.push(...reviewerRefs(vendor, ability));
   }
+  // Policy names logical models, so the corpus synthesizes one manufacturer endpoint per model. This
+  // is what a machine with everything scoped in looks like.
+  const providerFor = { openai: "openai-codex", anthropic: "anthropic", google: "google-vertex" };
   const unique = new Map();
   for (const ref of refs) {
-    const key = `${ref.provider}/${ref.modelId}`;
+    const key = `${providerFor[ref.vendor]}/${ref.logicalModelId}`;
     if (unique.has(key)) continue;
     unique.set(key, {
-      provider: ref.provider,
-      modelId: ref.modelId,
-      name: ref.modelId,
+      provider: providerFor[ref.vendor],
+      modelId: ref.logicalModelId,
+      name: ref.logicalModelId,
       vendor: ref.vendor,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,

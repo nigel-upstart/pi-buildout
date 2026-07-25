@@ -9,6 +9,8 @@ import {
 } from "./evidence.ts";
 import type { ConsequenceTier, EvidenceCostWeights, EvidenceScoreContext, RoutableLanguage } from "./evidence.ts";
 import type { TaskFeatures } from "./features.ts";
+import { healthVerdict } from "./health.ts";
+import type { EndpointHealth } from "./health.ts";
 import {
   BOOTSTRAP_ROUTE_POLICIES,
   ENDPOINT_TIERS,
@@ -18,6 +20,7 @@ import {
 } from "./policy.ts";
 import type { CandidateRef, EndpointTier } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
+import { canonicalModelId, endpointSpecificity, endpointTierFor, isFlatRateProvider } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
 export type RegistryModelSnapshot = {
@@ -38,6 +41,8 @@ export type RegistryModelSnapshot = {
     cacheRead: number;
     cacheWrite: number;
   };
+  /** Last observed outcome for this endpoint, from the probe record. Absent means never probed. */
+  health?: EndpointHealth;
 };
 
 export type RouteRequirements = {
@@ -48,6 +53,8 @@ export type RouteRequirements = {
 
 type ExclusionCode =
   | "not_in_registry"
+  | "not_in_scope"
+  | "endpoint_unhealthy"
   | "unavailable"
   | "context_headroom"
   | "context_headroom_prior"
@@ -344,36 +351,56 @@ function modelKey(model: Pick<RegistryModelSnapshot, "provider" | "modelId">): s
   return `${model.provider}/${model.modelId}`;
 }
 
-function findSnapshot(
-  ref: CandidateRef,
-  registry: readonly RegistryModelSnapshot[],
-): RegistryModelSnapshot | undefined {
-  return registry.find((model) => model.provider === ref.provider && model.modelId === ref.modelId);
+/**
+ * Every endpoint in the live registry that serves this logical model, ordered by preference: the
+ * manufacturer's own route first, then a gateway, then resale; within a tier the plainest spelling of
+ * the ID, then the cheaper route, with flat-rate subscription endpoints last because their modeled
+ * token price is a capability proxy rather than a cost.
+ *
+ * The registry passed here is already scoped to the operator's `enabledModels`, so an endpoint absent
+ * from this list is one they did not scope in, one their auth does not cover, or one a probe found
+ * broken.
+ */
+function resolveEndpoints(ref: CandidateRef, registry: readonly RegistryModelSnapshot[]): RegistryModelSnapshot[] {
+  return registry
+    .filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId)
+    .sort((left, right) => {
+      const tier =
+        ENDPOINT_TIERS.indexOf(endpointTierFor(left.provider)) -
+        ENDPOINT_TIERS.indexOf(endpointTierFor(right.provider));
+      if (tier !== 0) return tier;
+      const specificity = endpointSpecificity(left.modelId) - endpointSpecificity(right.modelId);
+      if (specificity !== 0) return specificity;
+      const leftFlat = isFlatRateProvider(left.provider);
+      const rightFlat = isFlatRateProvider(right.provider);
+      if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
+      return blendedEndpointCost(left) - blendedEndpointCost(right);
+    });
 }
 
-function evaluateCandidate(
+function evaluateEndpoint(
   ref: CandidateRef,
-  registry: readonly RegistryModelSnapshot[],
+  model: RegistryModelSnapshot,
   archetype: Archetype,
   requirements: RouteRequirements,
   exclusions: CandidateExclusion[],
   context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
 ): RouteChoice | undefined {
-  const key = `${ref.provider}/${ref.modelId}`;
-  const model = findSnapshot(ref, registry);
-  if (!model) {
-    exclusions.push({ candidate: key, code: "not_in_registry", detail: "exact provider/model ID is absent" });
-    return undefined;
-  }
+  const key = `${model.provider}/${model.modelId}`;
   if (!model.available) {
     exclusions.push({ candidate: key, code: "unavailable", detail: "endpoint auth/availability is not configured" });
+    return undefined;
+  }
+  const health = healthVerdict(model.health);
+  if (!health.usable) {
+    exclusions.push({ candidate: key, code: "endpoint_unhealthy", detail: health.reason });
     return undefined;
   }
   const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
   // A scoped frugal candidate exists for tasks whose context headroom is already tight, where fewer
   // steps means a lower peak context. Outside that condition it is strictly worse than the current
   // generation, so it is excluded rather than left to rank late.
-  if (ref.scopedFrugal === true && !frugalityWarranted(ref, registry, requirements)) {
+  if (ref.scopedFrugal === true && !frugalityWarranted(model, requirements)) {
     exclusions.push({
       candidate: key,
       code: "scope_unmet",
@@ -459,8 +486,8 @@ function evaluateCandidate(
     logicalModelId: ref.logicalModelId,
     profileId: profile.id,
     contextWindow: model.contextWindow,
-    endpointTier: ref.endpointTier,
-    ...(ref.flatRate ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
+    endpointTier: endpointTierFor(model.provider),
+    ...(isFlatRateProvider(model.provider) ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
     ...(ref.escalationOnly ? { escalationOnly: true } : {}),
     ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
     rankReason: "bootstrap",
@@ -471,14 +498,34 @@ function evaluateCandidate(
  * Context headroom is "constrained" when the task estimate already consumes most of what the endpoint
  * can offer. A frugal model earns its place there because fewer steps means a lower peak context.
  */
-function frugalityWarranted(
+function frugalityWarranted(model: RegistryModelSnapshot, requirements: RouteRequirements): boolean {
+  return requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.5);
+}
+
+/**
+ * Evaluates a logical candidate across every endpoint that serves it, keeping the eligible ones in
+ * preference order so an endpoint failure retries the same model before routing changes models.
+ */
+function evaluateCandidate(
   ref: CandidateRef,
   registry: readonly RegistryModelSnapshot[],
+  archetype: Archetype,
   requirements: RouteRequirements,
-): boolean {
-  const model = findSnapshot(ref, registry);
-  if (!model) return false;
-  return requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.5);
+  exclusions: CandidateExclusion[],
+  context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
+): RouteChoice[] {
+  const endpoints = resolveEndpoints(ref, registry);
+  if (endpoints.length === 0) {
+    exclusions.push({
+      candidate: `${ref.logicalModelId}@${ref.effort}`,
+      code: "not_in_scope",
+      detail: "no scoped registry endpoint serves this model",
+    });
+    return [];
+  }
+  return endpoints
+    .map((model) => evaluateEndpoint(ref, model, archetype, requirements, exclusions, context))
+    .filter((choice): choice is RouteChoice => choice !== undefined);
 }
 
 /**
@@ -706,9 +753,9 @@ export function selectOrdinaryRoute(
   const pool = context.hardTask
     ? [...policy.primary, ...policy.fallback, ...HARD_TASK_ESCALATION_REFS]
     : [...policy.primary, ...policy.fallback];
-  const evaluated = pool
-    .map((candidate) => evaluateCandidate(candidate, registry, archetype, requirements, exclusions, context))
-    .filter((choice): choice is RouteChoice => choice !== undefined);
+  const evaluated = pool.flatMap((candidate) =>
+    evaluateCandidate(candidate, registry, archetype, requirements, exclusions, context),
+  );
   const deduplicated = deduplicateChoices(evaluated, exclusions);
   const ranked = orderGroups(
     groupCandidates(deduplicated),
@@ -746,26 +793,22 @@ function builderChoice(
   builder: RegistryModelSnapshot,
   builderEffort: EffortLevel,
   builderAbility: number,
-  registry: readonly RegistryModelSnapshot[],
   requirements: RouteRequirements,
   exclusions: CandidateExclusion[],
 ): RouteChoice | undefined {
   const ability = Math.max(1, Math.min(4, Math.round(builderAbility))) as CandidateRef["ability"];
-  const eligible = evaluateCandidate(
+  const eligible = evaluateEndpoint(
     {
-      provider: builder.provider,
-      modelId: builder.modelId,
-      // A builder chosen by the user is its own logical model; it carries no resale chain.
-      logicalModelId: builder.modelId,
+      // A builder chosen by the user is evaluated as itself, on its own endpoint, not expanded across
+      // a resale chain: the point of the builder fallback is to reuse exactly what the user has.
+      logicalModelId: canonicalModelId(builder.modelId),
       vendor: builder.vendor,
       effort: builderEffort,
       ability,
-      endpointTier: "manufacturer",
-      flatRate: false,
       allowAlias: false,
       restricted: false,
     },
-    registry,
+    builder,
     "code_review",
     requirements,
     exclusions,
@@ -789,8 +832,8 @@ export function selectReviewRoute(
   for (const vendor of vendors) {
     const refsForVendor = reviewerRefs(vendor, builderAbility);
     const eligible = refsForVendor
-      .map((ref) => evaluateCandidate(ref, registry, "code_review", requirements, exclusions, REVIEW_CONTEXT))
-      .find((choice): choice is RouteChoice => choice !== undefined);
+      .flatMap((ref) => evaluateCandidate(ref, registry, "code_review", requirements, exclusions, REVIEW_CONTEXT))
+      .at(0);
     if (eligible) {
       if (eligible.ability < builderAbility) ceilingMismatchVendors.push(vendor);
       choices.push({ ...eligible, rankReason: "review_ability" });
@@ -802,7 +845,7 @@ export function selectReviewRoute(
     const rightDistance = Math.abs(right.ability - builderAbility);
     return leftDistance - rightDistance;
   });
-  const fixedBuilder = builderChoice(builder, builderEffort, builderAbility, registry, requirements, exclusions);
+  const fixedBuilder = builderChoice(builder, builderEffort, builderAbility, requirements, exclusions);
   const primary = choices[0];
   const fallback = choices[1];
   if (choices.length !== 2 || !primary || !fallback || !fixedBuilder) {
