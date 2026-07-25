@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { cycleApplyMode, DESCRIPTIONS, THINKING_LEVELS, updateDefaultThinkingLevelJson } from "./helpers.ts";
+import { cycleApplyMode, DESCRIPTIONS, getThinkingLevelsForModel, updateDefaultThinkingLevelJson } from "./helpers.ts";
 import type { ApplyMode, ThinkingLevel } from "./helpers.ts";
 
 export { cycleApplyMode, updateDefaultThinkingLevelJson } from "./helpers.ts";
@@ -37,9 +37,10 @@ export default function effortExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const thinkingLevels = getThinkingLevelsForModel(VERSION, ctx.model);
       const reportedLevel = pi.getThinkingLevel();
-      const currentLevel = THINKING_LEVELS.includes(reportedLevel) ? reportedLevel : undefined;
-      let selectedIndex = currentLevel ? THINKING_LEVELS.indexOf(currentLevel) : 0;
+      const currentLevel = thinkingLevels.includes(reportedLevel) ? reportedLevel : undefined;
+      let selectedIndex = currentLevel ? thinkingLevels.indexOf(currentLevel) : 0;
       let applyMode: ApplyMode = "default";
 
       const selected = await ctx.ui.custom<{ level: ThinkingLevel; applyMode: ApplyMode } | null>(
@@ -55,7 +56,7 @@ export default function effortExtension(pi: ExtensionAPI) {
               );
               container.addChild(new Text("", 0, 0));
 
-              for (const [index, level] of THINKING_LEVELS.entries()) {
+              for (const [index, level] of thinkingLevels.entries()) {
                 const isSelected = index === selectedIndex;
                 const isCurrent = level === currentLevel;
                 const prefix = isSelected ? "> " : "  ";
@@ -83,7 +84,7 @@ export default function effortExtension(pi: ExtensionAPI) {
                 return;
               }
               if (matchesKey(data, Key.down)) {
-                selectedIndex = Math.min(THINKING_LEVELS.length - 1, selectedIndex + 1);
+                selectedIndex = Math.min(thinkingLevels.length - 1, selectedIndex + 1);
                 tui.requestRender();
                 return;
               }
@@ -93,8 +94,8 @@ export default function effortExtension(pi: ExtensionAPI) {
                 return;
               }
               if (matchesKey(data, Key.enter)) {
-                const level = THINKING_LEVELS[selectedIndex];
-                if (level) done({ level, applyMode });
+                const level = thinkingLevels[selectedIndex];
+                if (level && thinkingLevels.includes(level)) done({ level, applyMode });
                 return;
               }
               if (matchesKey(data, Key.escape)) {
@@ -107,6 +108,11 @@ export default function effortExtension(pi: ExtensionAPI) {
       );
 
       if (!selected) return;
+
+      if (!thinkingLevels.includes(selected.level)) {
+        ctx.ui.notify(`Thinking effort ${selected.level} is not supported by ${getModelLabel(ctx)}`, "error");
+        return;
+      }
 
       pi.setThinkingLevel(selected.level);
 
