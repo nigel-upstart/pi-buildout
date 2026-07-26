@@ -240,12 +240,28 @@ describe("effort authorization", () => {
   });
 
   it("disqualifies models the evidence rules out entirely", () => {
-    for (const modelId of ["gemini-3.1-pro-preview", "gemini-3.5-flash", "claude-opus-4-8"]) {
+    for (const modelId of [
+      "gemini-3.1-pro-preview",
+      "gemini-3.5-flash",
+      // Retired on generation currency: every measured tier is beaten by a cheaper gpt-5.6 tier, so a
+      // per-token price argument cannot bring them back.
+      "gpt-5.5",
+      "gpt-5.4",
+    ]) {
       assert.ok(disqualificationReason(modelId), `${modelId} must carry a disqualification reason`);
       const result = authorizeEffort(modelId, "high", { ...base, allowSuperSaturation: true });
       assert.equal(result.authorized, false);
       assert.match(result.reason, /disqualified by evidence/);
     }
+  });
+
+  it("disqualifies only measured failure modes, not superseded generations", () => {
+    // Being beaten by a newer model is an ordering fact that ranking expresses. Disqualifying on that
+    // basis would make a machine whose catalog tops out at 4.8 unroutable rather than degraded.
+    assert.equal(disqualificationReason("claude-opus-4-8"), undefined);
+    assert.equal(authorizeEffort("claude-opus-4-8", "high", base).authorized, true);
+    // Its flat, expensive upper curve is still refused for ordinary work.
+    assert.equal(authorizeEffort("claude-opus-4-8", "max", base).authorized, false);
   });
 
   it("declares a reason for every effort policy rule", () => {

@@ -325,5 +325,62 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     is excluded from the chain despite being scoped on the reference machine, because it is disqualified for a measured
     3.8% context-overflow rate.
 
+21. **The previous-generation OpenAI core models are retired, and current-generation tiers take their slots.** Review
+    asked why `gpt-5.4@medium` and `gpt-5.5@xhigh` were carried at all. They do not survive the question. `gpt-5.4` has
+    no rollout row at `medium`, and the one tier the corpus does measure (`xhigh`) passes 51.8% with 12.4% regression
+    breakage for $10.91 per pass — worse on every axis than `gpt-5.6-terra@high` (53.8%, 9.3%, $2.11). `gpt-5.5@xhigh`
+    held the long-context slot on genuinely good context behavior (0% overflow, p90 peak 219,152, 83.1% partial credit),
+    but `gpt-5.6-terra@max` matches that shape and beats it everywhere that matters: 69.6% pass against 67.0%,
+    $7.10 per
+    pass against $10.78, 928s median against 1,588s, consensus 84.7 against 68.8. Since the per-token price
+    of the core tiers is comparable, a lower pass rate is simply more expensive once retries are counted, so both models
+    are now disqualified as generation-superseded, on the same basis as `claude-opus-4-8`. Their replacements are
+    `gpt-5.6-terra@high` in the deliberate ladder, `gpt-5.6-terra@max` in the long-context ladder, and
+    `claude-opus-5@medium` as the deliberate ladder's non-OpenAI tail, which also ends that ladder being single-vendor.
+
+22. **Hand-declared ability bands are gone.** `gpt-5.4@medium` was the only entry in the policy-local ability table, and
+    it was a number no source backed. With it removed, every candidate must carry an evidence-derived band, from either
+    a rollout row for that exact (model, effort) pair or the consensus-only table.
+
+23. **A cheap small model is admitted as an explicitly unmeasured peer, not as a measured rung.** The bounded
+    classification bucket already runs on `claude-haiku-4-5`, which itself has only a consensus figure and no agentic
+    rollout row, so cheap unmeasured capability is not new there. `gpt-5.4-mini` is admitted beside it because per-token
+    price is real and the live registry prices it at decision time — but the pack contains no row for any mini or nano
+    model, so how it compares to Haiku is genuinely unresolved and is recorded as such rather than assumed favorable.
+    The guardrails are structural instead of statistical: band 1 only, `fast_classification` and `exact_extraction`
+    only, never a primary, ordered behind the rung it peers with, and refused outright by `core/routing.ts` whenever
+    consequence is anything other than read-only — because the ability floor permits band 1 on reversible mutation, and
+    there is no measurement here to argue a mutation is safe. `gpt-5.4-nano` is deliberately not admitted: the same
+    argument would allow it, but a second unmeasured rung in one bucket buys no availability the first does not.
+
+24. **No scenario-scoped effort allowlist was added, because the declared candidate refs already are one.** The
+    considered change was a per-model list of the only efforts a model may be routed at, for models the corpus measures
+    at a single tier. Research showed it was redundant: `authorizeEffort` has exactly one call site and is always passed
+    an effort that policy enumerated on a `CandidateRef`, nothing raises effort dynamically (the escalation path is
+    itself a declared ref), and `allowSuperSaturation` is true for only two archetypes whose ladders name only
+    multi-tier-measured models. The one path that synthesizes a ref from live state is the fixed-builder review
+    fallback, which uses the user's current effort — and capping it there would make review _skip_ rather than degrade,
+    contradicting decision 20. Effort coverage therefore stays expressed as which (model, effort) pairs policy names.
+
+25. **Disqualification is reserved for measured failure modes; superseded generations degrade instead.** Review pushed
+    back on `claude-opus-4-8` being disqualified, and the objection holds: unlike `gemini-3.5-flash` (3.8% measured
+    context overflow) or `gemini-3.1-pro-preview` (11.7% pass at
+    $80.70), its exclusion rested on being beaten by Opus 5
+    at every tier. That is an ordering fact the cost ranking already expresses, and enforcing it as a ban made a machine
+    whose Anthropic catalog tops out at 4.8 *unroutable* for exactly the archetypes whose intent is "use the best Opus
+    available". It is now the tail of an Opus generation chain on `implementation_planning`,
+    `large_program_planning`, and `highest_risk_advisory`, with the preference for Opus 5 unchanged and enforced by three
+    separate mechanisms: endpoint expansion tries every scoped Opus 5 route first with the manufacturer route ahead of
+    gateways and resale, so an Anthropic outage degrades to Opus 5 elsewhere before the chain applies; the tail's own
+    numbers rank it last (51.8% pass at $8.27
+    per pass against Opus 5 at high with 72.3% at
+    $8.42); and its effort is
+    capped at `high`, including in the two archetypes that permit super-saturation, because its curve is flat and
+    expensive above that (56.0% at max for $22.47).
+    4.8 precedes 4.6 in the chain because it is the higher generation and is measured agentically, where 4.6 is retained
+    only as the scoped frugal candidate.
+
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
-telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work.
+telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work. The
+unresolved comparison between `gpt-5.4-mini` and `claude-haiku-4-5` is the clearest next evidence gap: both are routed
+on price alone, and a bounded classification eval would settle which belongs in front.

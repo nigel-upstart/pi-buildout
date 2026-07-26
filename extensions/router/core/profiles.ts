@@ -46,6 +46,8 @@ const OPUS_5_IDS = endpointIds("claude-opus-5", "anthropic.claude-opus-5");
 const FABLE_5_IDS = endpointIds("claude-fable-5", "anthropic.claude-fable-5");
 const SONNET_5_IDS = endpointIds("claude-sonnet-5", "anthropic.claude-sonnet-5", ["bedrock/anthropic.claude-sonnet-5"]);
 const OPUS_46_IDS = endpointIds("claude-opus-4-6", "anthropic.claude-opus-4-6-v1", ["claude-opus-4.6"]);
+// Availability tail of the Opus generation chain, so a degraded machine still resolves a profile.
+const OPUS_48_IDS = endpointIds("claude-opus-4-8", "anthropic.claude-opus-4-8-v1", ["claude-opus-4.8"]);
 const GPT_OSS_IDS = ["gpt-oss-120b", "openai.gpt-oss-120b", "openai.gpt-oss-120b-1:0"] as const;
 
 const HAIKU_IDS = ["claude-haiku-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4.5"] as const;
@@ -112,18 +114,21 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     includeExamples: false,
   },
   {
-    id: "openai-gpt-5.4-5.5-deliberate-v1",
+    // Replaces the retired gpt-5.4/gpt-5.5 profile. Those models are disqualified as
+    // generation-superseded, so their profile was unreachable; this one covers the small-model rung that
+    // took over their cheap slot. Unmeasured and lowest-band, so it is as narrow as the gpt-oss profile.
+    id: "openai-gpt-5.4-mini-bounded-v1",
     version: 1,
     vendor: "openai",
-    modelIds: ["gpt-5.4", "gpt-5.5"],
-    archetypes: ["deliberate_tool_workflow", "exact_extraction", "long_context_synthesis", "code_review"],
-    efforts: ["low", "medium", "high", "xhigh"],
+    modelIds: ["gpt-5.4-mini"],
+    archetypes: ["fast_classification", "exact_extraction"],
+    efforts: ["low", "medium"],
     executionSurface: "pi-coding-agent",
     guidelines: [
-      "When asked to design a procedure, return it directly; when asked to execute one, follow it literally.",
-      "Checkpoint before irreversible external effects and verify each executed state transition.",
+      "Answer the bounded question or produce the requested structure directly, with no exploratory tool work.",
+      "When a schema is supplied, emit exactly that schema and nothing else.",
     ],
-    outputContract: "Return the requested procedure or an execution receipt, with unresolved checkpoints explicit.",
+    outputContract: "Return only the requested classification or structured record.",
     criticalConstraints: SHARED_CONSTRAINTS,
     includeExamples: false,
   },
@@ -191,7 +196,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-planning-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: [...OPUS_5_IDS, ...FABLE_5_IDS],
+    modelIds: [...OPUS_5_IDS, ...FABLE_5_IDS, ...OPUS_48_IDS],
     archetypes: ["implementation_planning", "large_program_planning", "highest_risk_advisory", "code_review"],
     efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",

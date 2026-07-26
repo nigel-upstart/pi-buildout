@@ -35,8 +35,11 @@ function registry() {
     model("openai-codex", "gpt-5.6-luna", "openai"),
     model("openai-codex", "gpt-5.6-terra", "openai"),
     model("openai-codex", "gpt-5.6-sol", "openai"),
+    // The previous-generation core models stay in the fixture registry on purpose: they are scoped in
+    // on real machines, and the router must refuse them rather than never see them.
     model("openai-codex", "gpt-5.5", "openai"),
     model("openai-codex", "gpt-5.4", "openai"),
+    model("openai-codex", "gpt-5.4-mini", "openai"),
     model("anthropic", "claude-haiku-4-5", "anthropic"),
     model("anthropic", "claude-sonnet-5", "anthropic"),
     model("anthropic", "claude-opus-5", "anthropic"),
@@ -470,7 +473,7 @@ describe("routing helpers", () => {
     );
     const snapshot = registrySnapshotId(registry());
     assert.equal(snapshot, registrySnapshotId([...registry()].reverse()));
-    assert.match(snapshot, /^registry-v1:10:[0-9a-f]{16}$/);
+    assert.match(snapshot, /^registry-v1:11:[0-9a-f]{16}$/);
   });
 });
 
@@ -629,6 +632,61 @@ describe("balanced tier and scoped frugal candidate", () => {
     assert.equal(extraction.primary.modelId, "gpt-5.6-terra");
     assert.equal(extraction.primary.effort, "medium");
     assert.equal(extraction.primary.rankReason, "bootstrap");
+  });
+
+  it("never routes the generation-superseded core models, even though they are scoped in", () => {
+    const readOnly = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
+    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+      const decision = selectOrdinaryRoute(archetype, withExtras(), REQUIREMENTS, [], undefined, undefined, readOnly);
+      assert.equal(decision.kind, "ordinary");
+      for (const choice of [decision.primary, ...decision.fallbacks]) {
+        assert.ok(
+          choice.logicalModelId !== "gpt-5.5" && choice.logicalModelId !== "gpt-5.4",
+          `${archetype} routed retired ${choice.logicalModelId}`,
+        );
+      }
+    }
+  });
+
+  it("uses the unmeasured small peer for read-only bounded work and nowhere else", () => {
+    const classification = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+    );
+    const peer = [classification.primary, ...classification.fallbacks].find(
+      (choice) => choice.logicalModelId === "gpt-5.4-mini",
+    );
+    assert.ok(peer, "the small peer must be reachable for read-only classification");
+    assert.equal(peer.unmeasuredPeer, true);
+    assert.equal(peer.ability, 1);
+    // It peers with the measured-by-consensus Haiku rung rather than outranking it.
+    const order = [classification.primary, ...classification.fallbacks].map((choice) => choice.logicalModelId);
+    assert.ok(order.indexOf("claude-haiku-4-5") < order.indexOf("gpt-5.4-mini"));
+
+    // Reversible mutation is not enough: an unmeasured candidate is read-only or nothing, so the
+    // ability floor alone (which permits band 1 here) must not be what decides it.
+    const mutating = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "reversible_mutation" }, []),
+    );
+    assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "gpt-5.4-mini"));
+    assert.ok(
+      mutating.exclusions.some(
+        (exclusion) =>
+          exclusion.candidate.includes("gpt-5.4-mini") && /read-only consequence only/.test(exclusion.detail),
+      ),
+      "the exclusion must say why the peer was refused",
+    );
   });
 
   it("authorizes gpt-oss-120b for bounded work only, and only on its Bedrock route", () => {
@@ -938,5 +996,66 @@ describe("scope and health drive the candidate pool", () => {
     const decision = selectReviewRoute(disqualifiedOnly, REQUIREMENTS, builder, "high", 3);
     // Two independent vendors are required, and a measured-overflow model is not an acceptable one.
     assert.equal(decision.kind, "unroutable");
+  });
+});
+
+describe("Opus generation chain", () => {
+  const PLANNING = ["implementation_planning", "large_program_planning", "highest_risk_advisory"];
+  const readOnly = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
+
+  function chainFor(archetype, models) {
+    const decision = selectOrdinaryRoute(archetype, models, REQUIREMENTS, [], undefined, undefined, readOnly);
+    assert.equal(decision.kind, "ordinary", decision.reason);
+    return [decision.primary, ...decision.fallbacks];
+  }
+
+  it("keeps a machine whose Anthropic catalog tops out at 4.8 routable rather than unroutable", () => {
+    // A resale catalog that never got Opus 5. Previously this model was disqualified outright, which
+    // dropped the Anthropic rung from the archetypes whose whole point is to use the best Opus.
+    const noOpus5 = [
+      model("openai-codex", "gpt-5.6-sol", "openai"),
+      model("github-copilot", "claude-opus-4-8", "anthropic"),
+    ];
+    for (const archetype of PLANNING) {
+      const chain = chainFor(archetype, noOpus5);
+      assert.ok(
+        chain.some((choice) => choice.logicalModelId === "claude-opus-4-8"),
+        `${archetype} should degrade to the highest available Opus`,
+      );
+    }
+  });
+
+  it("never lets the tail displace an Opus 5 endpoint that exists, including on a fallback provider", () => {
+    // Anthropic's own route is absent, so Opus 5 is only reachable through a gateway. That still
+    // outranks a previous-generation model, and the tail stays behind it.
+    const gatewayOpus5 = [
+      model("openai-codex", "gpt-5.6-sol", "openai"),
+      model("github-copilot", "claude-opus-5", "anthropic"),
+      model("github-copilot", "claude-opus-4-8", "anthropic"),
+    ];
+    for (const archetype of PLANNING) {
+      const chain = chainFor(archetype, gatewayOpus5);
+      const order = chain.map((choice) => choice.logicalModelId);
+      assert.equal(order[0], "claude-opus-5", `${archetype} must still prefer Opus 5`);
+      const tail = order.indexOf("claude-opus-4-8");
+      if (tail !== -1) {
+        assert.ok(tail > order.lastIndexOf("claude-opus-5"), `${archetype} put the tail ahead of Opus 5`);
+      }
+    }
+  });
+
+  it("caps the tail at its saturation tier even where super-saturation is allowed", () => {
+    const noOpus5 = [
+      model("openai-codex", "gpt-5.6-sol", "openai"),
+      model("github-copilot", "claude-opus-4-8", "anthropic"),
+    ];
+    // large_program_planning and highest_risk_advisory set allowSuperSaturation, so this proves the
+    // degraded rung is not silently promoted to the expensive flat end of its curve.
+    for (const archetype of ["large_program_planning", "highest_risk_advisory"]) {
+      for (const choice of chainFor(archetype, noOpus5)) {
+        if (choice.logicalModelId !== "claude-opus-4-8") continue;
+        assert.equal(choice.effort, "high");
+      }
+    }
   });
 });

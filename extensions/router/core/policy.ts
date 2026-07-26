@@ -38,6 +38,11 @@ export type CandidateRef = {
    * a lower peak context.
    */
   scopedFrugal?: boolean;
+  /**
+   * No source measures this candidate. Admitted only as a lowest-band price peer of an equally
+   * unmeasured rung, and only for read-only consequence; see `UNMEASURED_PEERS`.
+   */
+  unmeasuredPeer?: boolean;
   allowAlias: boolean;
   restricted: boolean;
 };
@@ -50,10 +55,10 @@ const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "gpt-5.6-luna": "openai",
   "gpt-5.6-terra": "openai",
   "gpt-5.6-sol": "openai",
-  "gpt-5.5": "openai",
-  "gpt-5.4": "openai",
+  "gpt-5.4-mini": "openai",
   "gpt-oss-120b": "openai",
   "claude-opus-5": "anthropic",
+  "claude-opus-4-8": "anthropic",
   "claude-opus-4-6": "anthropic",
   "claude-fable-5": "anthropic",
   "claude-sonnet-5": "anthropic",
@@ -64,32 +69,64 @@ const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
 };
 
 /**
- * Explicit ability declarations for candidates the evidence pack does not cover. Every entry must
- * name its basis; the evidence-derived band is preferred wherever it exists.
+ * Candidates no source in the evidence pack measures at all, admitted only as a lowest-band peer of
+ * an already-admitted lowest-band model, and only in the bounded read-only ladders.
+ *
+ * This is deliberately not the same mechanism as an evidence band, and it is not a quality claim.
+ * `claude-haiku-4-5` is itself admitted from a consensus figure with no agentic rollout row, so the
+ * bounded classification bucket already runs on a model the corpus does not measure agentically. A
+ * cheaper small model is a legitimate peer of that rung on price, which the live registry prices at
+ * decision time, but nothing here asserts it matches it on quality: the pack contains no row for any
+ * mini or nano model, so the comparison against Haiku is genuinely unresolved rather than favorable.
+ *
+ * The guardrails are therefore structural, not statistical:
+ *  - band 1 only, so consequence gating already bars irreversible work;
+ *  - `unmeasuredPeer`, which core/routing.ts refuses outside read-only consequence, so a peer can
+ *    never touch even reversible mutation;
+ *  - allowed only in `PEER_ARCHETYPES`, enforced by a policy invariant test;
+ *  - ordered after the measured rung it peers with, so it is reached on price or availability only.
+ *
+ * gpt-5.4-nano is intentionally absent: the same argument would admit it, but two unmeasured rungs in
+ * one bucket buys no availability that the first does not already provide.
  */
-const DECLARED_ABILITY: Readonly<Record<string, AbilityTier>> = {
-  // gpt-5.4 retains a tier-2 declaration only as a legacy deliberate-workflow fallback.
-  "gpt-5.4@medium": 2,
+const UNMEASURED_PEERS: Readonly<Record<string, { peerOf: string; basis: string }>> = {
+  "gpt-5.4-mini": {
+    peerOf: "claude-haiku-4-5",
+    basis:
+      "no DeepSWE, CursorBench, or consensus row exists for any mini or nano model in the 2026-07-25 pack; admitted as a price peer of the equally unmeasured claude-haiku-4-5 rung in read-only bounded work only",
+  },
 };
 
+/** Archetypes an unmeasured peer may appear in: bounded, read-only, lowest-band work. */
+export const PEER_ARCHETYPES: readonly Archetype[] = ["fast_classification", "exact_extraction"];
+
+/**
+ * Every candidate this policy can name must carry an evidence-derived ability band, either from a
+ * DeepSWE rollout row for that exact (model, effort) pair or from the consensus-only table in
+ * core/evidence.ts. Hand-declared bands are deliberately not supported: the one entry that used to
+ * exist (`gpt-5.4@medium`) was never measured at that effort, and a policy-local number that no
+ * source backs is indistinguishable from a guess. Unmeasured peers are the single exception, and they
+ * are pinned to band 1 rather than given a number of their own.
+ */
 function abilityFor(modelId: string, effort: EffortLevel): AbilityTier {
   const evidenceTier = evidenceAbility(modelId, effort);
   if (evidenceTier !== undefined) return evidenceTier;
-  const declared = DECLARED_ABILITY[`${modelId}@${effort}`];
-  if (declared !== undefined) return declared;
-  throw new Error(`no evidence band or declared ability exists for ${modelId}@${effort}`);
+  if (UNMEASURED_PEERS[modelId]) return 1;
+  throw new Error(`no evidence band exists for ${modelId}@${effort}`);
 }
 
 /** Declares one logical (model, effort) candidate. Endpoint expansion happens in core/routing.ts. */
 function candidates(logicalModelId: string, effort: EffortLevel): CandidateRef[] {
   const vendor = MODEL_VENDOR[logicalModelId];
   if (!vendor) throw new Error(`no vendor is declared for ${logicalModelId}`);
+  const peer = UNMEASURED_PEERS[logicalModelId];
   return [
     {
       logicalModelId,
       vendor,
       effort,
       ability: abilityFor(logicalModelId, effort),
+      ...(peer ? { unmeasuredPeer: true } : {}),
       allowAlias: false,
       restricted: false,
     },
@@ -107,9 +144,8 @@ const SOL_LOW = candidates("gpt-5.6-sol", "low");
 const SOL_MEDIUM = candidates("gpt-5.6-sol", "medium");
 const SOL_HIGH = candidates("gpt-5.6-sol", "high");
 const SOL_MAX = candidates("gpt-5.6-sol", "max");
-const GPT_55_XHIGH = candidates("gpt-5.5", "xhigh");
-const GPT_54_MEDIUM = candidates("gpt-5.4", "medium");
 const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
+const MINI_LOW = candidates("gpt-5.4-mini", "low");
 const OPUS_LOW = candidates("claude-opus-5", "low");
 const OPUS_MEDIUM = candidates("claude-opus-5", "medium");
 const OPUS_HIGH = candidates("claude-opus-5", "high");
@@ -117,6 +153,24 @@ const OPUS_XHIGH = candidates("claude-opus-5", "xhigh");
 const OPUS_MAX = candidates("claude-opus-5", "max");
 const FABLE_XHIGH = candidates("claude-fable-5", "xhigh");
 const OPUS_46_HIGH = candidates("claude-opus-4-6", "high").map((ref) => ({ ...ref, scopedFrugal: true }));
+/**
+ * Availability tail of the Opus generation chain, for the archetypes whose intent is "use the best
+ * Anthropic Opus available" rather than "use whichever model scores best".
+ *
+ * Opus 5 remains strongly preferred and nothing here competes with it: every scoped endpoint for Opus
+ * 5 is expanded and tried first, manufacturer route ahead of gateways and resale, so an Anthropic
+ * outage or an unscoped first-party route already degrades to Opus 5 on a fallback provider before any
+ * of this applies. This rung exists for the narrower case where no Opus 5 endpoint exists at all on the
+ * machine — a resale catalog that still tops out at 4.8 — where the alternative is dropping the
+ * Anthropic rung entirely.
+ *
+ * It is ordered last and ranks poorly on its own numbers (51.8% pass at $8.27 per pass against Opus 5
+ * at high with 72.3% and $8.42), which is the intended behavior: it should never displace a
+ * current-generation candidate that is present, only fill a gap that would otherwise be empty. 4.8
+ * precedes 4.6 because it is the higher generation and is measured agentically, where 4.6 is retained
+ * only as the scoped frugal candidate.
+ */
+const OPUS_GENERATION_TAIL = candidates("claude-opus-4-8", "high");
 /**
  * Preference order for the Google rung. Independent review requires two non-builder vendors, so the
  * chain exists to guarantee Google can always supply one: whichever entry is scoped in and healthy on
@@ -179,7 +233,19 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     primary: LUNA_LOW,
     // The cheap band-1 tiers serve ordinary classification. The two band-2+ entries exist so a
     // classification task carrying critical risk or an irreversible action mode is still routable.
-    fallback: [...HAIKU_LOW, ...TERRA_MEDIUM, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
+    //
+    // gpt-5.4-mini is the unmeasured price peer of the claude-haiku-4-5 rung and sits directly behind
+    // it; both are lowest-band, read-only-only entries, and the live registry decides which is actually
+    // cheaper on the machine in hand.
+    //
+    // gpt-oss-120b at high effort precedes gpt-5.6-terra at medium: this archetype is not
+    // evidence-ranked, so the declared order is the executed order, and on the only comparable
+    // measurement the two share, gpt-oss leads (consensus performance_best 36.5 against terra@medium's
+    // 16.3) while also sitting at the corpus cost floor. terra@medium's measured agentic behavior does
+    // not rescue the comparison either: 35.1% pass with a 14.7% regression-break rate, the worst of
+    // any tier in this ladder. It stays in the ladder only as the availability backup for gpt-oss,
+    // which is reachable on a single Amazon Bedrock route and is therefore absent on most machines.
+    fallback: [...HAIKU_LOW, ...MINI_LOW, ...GPT_OSS_HIGH, ...TERRA_MEDIUM, ...SOL_MEDIUM, ...OPUS_MEDIUM],
     qualityFloor: 0.96,
     deterministicPassFloor: 0.96,
     allowSuperSaturation: false,
@@ -189,7 +255,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   exact_extraction: {
     archetype: "exact_extraction",
     primary: TERRA_MEDIUM,
-    fallback: [...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
+    fallback: [...HAIKU_LOW, ...MINI_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
     qualityFloor: 0.98,
     deterministicPassFloor: 0.98,
     allowSuperSaturation: false,
@@ -199,7 +265,21 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   deliberate_tool_workflow: {
     archetype: "deliberate_tool_workflow",
     primary: SOL_MEDIUM,
-    fallback: [...SOL_HIGH, ...SOL_LOW, ...GPT_54_MEDIUM],
+    // gpt-5.4 at medium is gone from this ladder. It was carried only as a legacy fallback and had no
+    // rollout row at that effort at all; the one gpt-5.4 configuration the corpus does measure (xhigh)
+    // passes 51.8% with 12.4% regression breakage for $10.91 per pass, worse than every tier above it.
+    // Two current-generation entries replace it:
+    //
+    //  - gpt-5.6-terra at high is the cheap rung this archetype was reaching for: 53.8% pass at $2.11
+    //    per pass and 315s median, which is cheaper and faster than sol@medium ($3.05, 355s) for
+    //    procedural work whose steps are dictated rather than designed. Its consensus band is 43.0, so
+    //    it is band 1 and consequence gating bars it from the irreversible checkpoints in this
+    //    archetype on its own; it serves the local_read and reversible members of the same ladder.
+    //  - claude-opus-5 at medium is the non-OpenAI tail, and the closest measured neighbour of the Sol
+    //    tiers (68.1% pass and consensus 79.0 against sol@high's 69.3% and 79.9, $4.86 per pass against
+    //    sol@medium's $3.05, 588s median against 355s). It gives a workflow with external side effects a
+    //    vendor alternative, which an all-OpenAI ladder could not.
+    fallback: [...SOL_HIGH, ...SOL_LOW, ...TERRA_HIGH, ...OPUS_MEDIUM],
     qualityFloor: 0.8,
     deterministicPassFloor: 0.61,
     allowSuperSaturation: false,
@@ -259,7 +339,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   implementation_planning: {
     archetype: "implementation_planning",
     primary: OPUS_HIGH,
-    fallback: [...SOL_HIGH, ...FABLE_XHIGH],
+    fallback: [...SOL_HIGH, ...FABLE_XHIGH, ...OPUS_GENERATION_TAIL],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.72,
     allowSuperSaturation: false,
@@ -275,7 +355,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   large_program_planning: {
     archetype: "large_program_planning",
     primary: OPUS_XHIGH,
-    fallback: [...SOL_MAX, ...FABLE_XHIGH],
+    fallback: [...SOL_MAX, ...FABLE_XHIGH, ...OPUS_GENERATION_TAIL],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.72,
     allowSuperSaturation: true,
@@ -291,7 +371,17 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   long_context_synthesis: {
     archetype: "long_context_synthesis",
     primary: OPUS_MEDIUM,
-    fallback: [...SOL_HIGH, ...GPT_55_XHIGH, ...OPUS_46_HIGH],
+    // gpt-5.5 at xhigh used to hold the OpenAI tail here on its long-context numbers: 0% context
+    // overflow, p90 peak context 219,152, and the highest partial credit on failure in the ladder
+    // (83.1%), which is what a synthesis route degrades into when it does not fully succeed. It is
+    // retired anyway, because gpt-5.6-terra at max matches the shape and beats it on every number that
+    // matters: 69.6% pass against 67.0%, $7.10 per pass against $10.78, 928s median against 1,588s,
+    // consensus 84.7 against 68.8, with the same 0% overflow at a comparable p90 peak of 266,934. Terra
+    // is also effort-hungry rather than saturated early, so max is its measured top tier and not a
+    // super-saturation reach. claude-opus-4-6 precedes it because a scoped-frugal candidate is admitted
+    // only where step count binds, and where it is admitted its 23.6 median API calls are the cheapest
+    // way through a large-document pass.
+    fallback: [...SOL_HIGH, ...OPUS_46_HIGH, ...TERRA_MAX],
     qualityFloor: 0.72,
     deterministicPassFloor: 0.68,
     allowSuperSaturation: false,
@@ -301,7 +391,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   highest_risk_advisory: {
     archetype: "highest_risk_advisory",
     primary: OPUS_MAX,
-    fallback: [...SOL_MAX, ...OPUS_HIGH],
+    fallback: [...SOL_MAX, ...OPUS_HIGH, ...OPUS_GENERATION_TAIL],
     qualityFloor: 0.8,
     deterministicPassFloor: 0.73,
     allowSuperSaturation: true,

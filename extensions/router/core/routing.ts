@@ -98,6 +98,8 @@ export type RouteChoice = {
   escalationOnly?: boolean;
   /** Authorized only where step count rather than token cost is the binding constraint. */
   scopedFrugal?: boolean;
+  /** No source measures this candidate; authorized for read-only consequence only. */
+  unmeasuredPeer?: boolean;
   score?: number;
   scoreComponents?: RouteScoreComponents;
   evidenceScore?: number;
@@ -408,6 +410,17 @@ function evaluateEndpoint(
     });
     return undefined;
   }
+  // A candidate no source measures is admitted only as a lowest-band price peer in read-only work. The
+  // ability floor alone is not enough: it bars irreversible work but still permits reversible mutation,
+  // and there is no measurement here to argue that a mutation is safe.
+  if (ref.unmeasuredPeer === true && effectiveConsequence(archetype, context) !== "read_only") {
+    exclusions.push({
+      candidate: key,
+      code: "scope_unmet",
+      detail: "unmeasured peer candidate is authorized for read-only consequence only",
+    });
+    return undefined;
+  }
   const authorization = authorizeEffort(ref.logicalModelId, ref.effort, {
     allowSuperSaturation: policy.allowSuperSaturation,
     consequence: effectiveConsequence(archetype, context),
@@ -490,6 +503,7 @@ function evaluateEndpoint(
     ...(isFlatRateProvider(model.provider) ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
     ...(ref.escalationOnly ? { escalationOnly: true } : {}),
     ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
+    ...(ref.unmeasuredPeer ? { unmeasuredPeer: true } : {}),
     rankReason: "bootstrap",
   };
 }

@@ -51,7 +51,7 @@
       "archetype": "deliberate_tool_workflow",
       "primaryModel": "gpt-5.6-sol",
       "primaryEffort": "high",
-      "fallbackModel": "gpt-5.4"
+      "fallbackModel": "claude-opus-5"
     }
   },
   {
@@ -261,7 +261,7 @@
       "archetype": "deliberate_tool_workflow",
       "primaryModel": "gpt-5.6-sol",
       "primaryEffort": "medium",
-      "fallbackModel": "gpt-5.4"
+      "fallbackModel": "claude-opus-5"
     }
   },
   {
@@ -309,7 +309,7 @@
       "archetype": "deliberate_tool_workflow",
       "primaryModel": "gpt-5.6-sol",
       "primaryEffort": "medium",
-      "fallbackModel": "gpt-5.4"
+      "fallbackModel": "claude-opus-5"
     }
   },
   {
