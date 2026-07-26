@@ -96,11 +96,60 @@ Use: `extensions/router/telemetry.ts` studies and consumes this package's public
 global registries — to emit optional parented OTel spans without a static dependency, and no-ops cleanly when the
 package is absent. No `pi-telemetry-otel` source was copied.
 
+## LLM effectiveness research corpus and its upstream benchmark sources
+
+The router's bootstrap priors in [`extensions/router/core/evidence.ts`](extensions/router/core/evidence.ts) and
+[`specs/routing-layer/model-evidence-2026-07-25.json`](specs/routing-layer/model-evidence-2026-07-25.json) are derived
+from a local research corpus and the public benchmark captures it aggregates.
+
+- Source: local `llm-effectiveness` research corpus (`~/outputs/llm-effectiveness`), normalization version `2.0`
+- Revision reviewed: capture dated 2026-07-25, spend data through 2026-07-19
+- License: internal working data; not redistributed by this repository
+
+Use: numeric priors (deterministic pass rate, hard-task pass rate, regression-breakage rate, partial credit on failure,
+repeat reliability, wall time, agent steps, p90 peak context, cost per pass) were derived from that corpus's
+`analysis/router_capability_slices.py` output and its `ROUTING_LEARNINGS.md` interpretation, then transcribed as typed
+data with per-row provenance. No corpus code was copied into this repository.
+
+Upstream sources that corpus aggregates, all consumed as published measurements rather than code:
+
+- **DataCurve DeepSWE v1.1** — <https://deepswe.datacurve.ai/data/v1.1>; artifacts `trials.json` and `tasks.json`,
+  22,586 rollouts over 113 tasks on the `mini-swe-agent` harness. License not declared on the data page. Used for pass
+  rate, regression breakage, reliability, wall time, steps, peak context, and cost-per-pass priors, including the
+  language buckets.
+- **CursorBench 3.2** — <https://cursor.com/cursorbench>; captured 2026-07-24. License not declared. Used only as
+  independent corroboration of candidate ordering. Cursor's Grok 4.5 training-contamination disclosure is preserved.
+- **Artificial Analysis** — <https://artificialanalysis.ai>; captured 2026-07-24 from a logged-in non-Pro session.
+  License not declared; task cost/time are absent from that capture. Used for capability and list-price context only.
+- **CloudZero observed spend** — <https://app.cloudzero.com>; 30-day AWS Marketplace Claude window ending 2026-07-24.
+  Internal billing observations. Used only to distinguish observed route rates from published list prices.
+
+Two sources were added to that corpus on 2026-07-25 and inform the per-language routing policy without contributing
+numeric priors:
+
+- **SWE-bench Multilingual leaderboard** — <https://www.swebench.com/multilingual-leaderboard.html>; captured
+  2026-07-25; 300 tasks across 8 language labels, single-attempt `mini-swe-agent`. License not declared on the
+  leaderboard page; the SWE-bench project is MIT-licensed and the dataset is published as
+  `SWE-bench/SWE-bench_Multilingual`. Used only for language difficulty ordering, which is what survives the corpus's
+  generation-currency rule. Its per-vendor per-language comparisons were **deliberately not adopted**: all three OpenAI
+  submissions are GPT-5.2-era and excluded, so those comparisons were cross-generation rather than cross-vendor.
+- **OskarsEzerins `llm-benchmarks`** — <https://github.com/OskarsEzerins/llm-benchmarks>; revision `c5ad31674aeb`;
+  captured 2026-07-25; declared license MIT (© Oskars Ezerins). The only retained source that evaluates
+  current-generation router candidates on Ruby. Used as a weak near-tie preference and as the basis for requiring a
+  RuboCop gate on Ruby routes. Its four-task Minitest pass ratios were **deliberately not adopted** as pass-rate priors,
+  because they measure a different construct than the rollout verifier outcomes and have very low statistical power. No
+  upstream code was copied.
+
+Intentionally not adopted: no raw benchmark score is copied into runtime policy, no arithmetic is performed across
+incompatible benchmarks, no Artificial Analysis GitHub Copilot price is treated as a real cost, and no
+unsupported-vendor model (Kimi, Grok, GLM, Muse) is made a routing candidate. Benchmark pass rates are treated strictly
+as pre-telemetry ordering priors and never as the router's acceptance signal.
+
 ## Pi documentation and examples
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Release reviewed: `0.80.6` (the locally installed Homebrew package)
+- Releases reviewed: `0.80.6`, `0.82.0`, and `0.82.1` (the locally installed npm packages)
 - License declared by the package: MIT
 
 Ideas and API patterns used:
