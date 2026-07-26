@@ -100,7 +100,6 @@ package is absent. No `pi-telemetry-otel` source was copied.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Release reviewed: `0.80.6` (the locally installed Homebrew package)
 - License declared by the package: MIT
 
 Ideas and API patterns used:
