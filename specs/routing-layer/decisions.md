@@ -193,3 +193,203 @@ semantic summary only if it outperforms the deterministic round-robin baseline.
    profile families and deterministic lower-tier fallback resolution when a preferred exact ID is unavailable. Bifrost
    evaluation found its advertised Vertex 3.5 route unavailable in-region, so policy also lists exact
    `google-vertex/gemini-2.5-flash` behind 3.5 with a separate generation-specific profile.
+
+## Evidence-driven policy revision, 2026-07-25 (`router-policy-v5`)
+
+These decisions replace the hand-set priors of `router-policy-v4`. Each cites
+[`model-evidence-2026-07-25.md`](model-evidence-2026-07-25.md), which carries the provenance and construct limits of
+every number below. Benchmark pass rates are pre-telemetry ordering priors and never the router's acceptance signal.
+
+1. **Manufacturer-first endpoints with same-model backups.** The model manufacturer's own route is the primary instance
+   for a model; every other configured route for that model is an ordered availability backup placed ahead of any
+   different-model fallback. Route price only orders endpoints inside one preference tier, and flat-rate GitHub Copilot
+   endpoints are excluded from that comparison because their modeled token price is a capability proxy. Consequence:
+   Claude Opus 5 has no Copilot route, so its Anthropic direct route is mandatory with Bedrock Global and regional
+   profiles as backups.
+
+2. **All Opus references move to Claude Opus 5; Opus 4.8 is retired.** Opus 5 beats Opus 4.8 at every tier (72.3% versus
+   56.0% deterministic pass) at comparable cost per solved task ($8.42 versus $22.47), and Opus 5 at low effort
+   outscores Opus 4.8 at max on CursorBench. Keeping a superseded generation as a lower tier would only add a
+   worse-on-every-axis candidate.
+
+3. **Ability is derived, not declared.** Bands come from the cross-source consensus percentile (>= 90 -> 4, >= 75 ->
+   3, >= 45 -> 2, else 1). This moves Claude Sonnet 5 at high effort into the lowest band and removes it from the
+   reviewer ladder, and it removes the name-based heuristic's treatment of "pro" and "max" as capability signals.
+
+4. **Effort is a per-family, sometimes per-language, curve.** Opus 5 and Sol saturate at high; Terra needs max to be
+   top-tier; Luna is cliffed and is agentic-viable only at max; Fable at max is excluded as measurably worse than Fable
+   at xhigh; Sonnet 5 at xhigh and max are excluded for step and context thrash. Opus 5 additionally carries a
+   TypeScript ceiling at high, because its measured TypeScript pass rate falls above that tier.
+
+5. **Cost enters only as expected completion cost.** Pre-telemetry ordering seeds the existing robust cost-to-done shape
+   from measured priors, with attempt cost equal to `costPerPassUsd * passRate`, the mean cost of one dispatched
+   attempt, so failure is priced once by the intervention and retry terms. That product counts upstream failures which
+   recorded no cost as zero, so it diverges from the corpus's own `mean_cost_usd` column by up to 6.1% on the
+   `claude-fable-5` rows, which carry a 3.5-4.9% routing-error rate, and by under 0.5% on every other row. This is what
+   keeps `gpt-5.6-terra` at low effort ($1.78 per pass, 24.1% pass) and `gpt-5.6-luna` at medium effort behind stronger
+   configurations.
+
+6. **Planning, program planning, and highest-risk advisory pin Opus 5.** These archetypes order by capability rather
+   than expected completion cost, because their failure cost is paid by downstream pull requests rather than inside the
+   task. The pin only reorders an authorized pool and is ignored when the pinned choice is ineligible. Every other
+   archetype is ordered purely by measured cost-to-done, which on routine mixed-language work favors `gpt-5.6-sol` at
+   high effort and on Go favors `claude-opus-5`.
+
+7. **Language affinity is applied only where it is measured.** Go, Python, and TypeScript have DeepSWE coverage; the
+   affinity is applied only when the repository resolves to exactly one of them. Kotlin, Ruby, HCL/Terraform,
+   Kubernetes/Helm/Argo, protobuf, and Kafka have no coverage, so they receive no affinity and are routed by task shape
+   with deterministic gates as the real authority. The TypeScript rows are library and browser-runtime evidence; no
+   Next.js application or Vercel deployment task exists in the corpus, and the React-adjacent bucket is a labelled
+   14-task proxy.
+
+8. **Hard-task escalation changes the model prior instead of raising effort.** `gpt-5.6-luna` at max leads the corpus on
+   hard tasks (44.6% corpus-wide, 47.1% on the Go/Python/TypeScript subset, 44.4% TypeScript) but has 52.7% same-task
+   flakiness, so ambiguous work authorizes it as a retry candidate and it is explicitly demoted out of the primary slot.
+
+9. **Quality floors are calibrated to achievable behavior.** The best measured deterministic pass rate is 72.8%, and a
+   route cannot be accepted more often than it completes correctly, so implementation-class acceptance floors sit below
+   that ceiling and telemetry can actually mature. Non-agentic floors are unchanged because the agentic corpus does not
+   measure classification or extraction.
+
+10. **Google narrows to one current-generation candidate.** `google-vertex/gemini-3.6-flash` at high effort replaces the
+    3.5 and 2.5 entries, and `gemini-3.5-flash` and `gemini-3.1-pro-preview` are disqualified for measured context
+    overflow and cost per pass. Google therefore contributes a single reviewer rung, and a builder above that band
+    produces a recorded ceiling mismatch rather than a silent downgrade.
+
+11. **Language affinity is scoped to what each source can support.** A declarative per-language table records, for every
+    recognized language, whether its measured pass rate may enter scoring, an optional weak vendor tendency, a
+    confidence level, and the numbers behind the decision. Go and Python substitute their measured pass rates;
+    TypeScript does not, because its vendor gap is 1.4 points and single-source, so `gpt-5.6-sol` keeps TypeScript work
+    on the uncontested latency and cost basis. Ruby contributes a near-tie preference only, bounded to a 5% cost band,
+    because its single current-generation source has four single-file tasks measuring a Minitest pass ratio rather than
+    a verifier outcome. Kotlin contributes nothing: its Java proxy was withdrawn once the generation-currency rule
+    removed the GPT-5.2-era rows the apparent gap depended on. Ruby's real consequence is a mandatory `rubocop -a` gate,
+    since the correctness leader is also the style laggard (12-17 offenses against 6-10 for the GPT-5.6 family).
+
+12. **The balanced mid tier is admitted as fallbacks, not primaries.** `gpt-5.6-terra` at high, `gpt-5.6-luna` at high,
+    `gpt-5.6-sol` at low, `gpt-5.6-sol` at medium, and `gpt-5.6-terra` at medium are the efficient mid-range
+    configurations, and they enter the pools for the archetypes where their measured cost and latency can win. They are
+    not pinned anywhere; the cost objective decides whether they beat a stronger tier on a given task.
+
+13. **`gpt-5.6-luna`'s agentic minimum drops from max to high.** The original bar was set from the low and medium
+    breakage rates (27.7% and 23.5%) without checking where the cliff actually is. At high effort breakage is 9.1%,
+    comparable to `gpt-5.6-terra` at high (9.3%), which the policy already permits. Barring high effort was therefore
+    unjustified.
+
+14. **`gpt-oss-120b` is the cost floor for bounded work only.** It holds the corpus's top cost-efficiency percentile but
+    has no agentic rollout evidence, a 128K window, a 16.4K output cap, and no image input, so it is authorized for
+    classification and extraction and nothing else. Only the 120b variant is included; 20b measures lower with no
+    cost-efficiency row, and the `safeguard` variants report no reasoning support. It is reachable only through Amazon
+    Bedrock, making it the first candidate with no manufacturer tier, which endpoint expansion now models explicitly.
+
+15. **Claude Opus 4.6 is retained as a scoped frugal candidate.** Cost per pass already internalizes token efficiency on
+    billed routes, so frugality justifies a route only where steps rather than tokens bind. In the implemented policy
+    that means one condition: an estimate consuming over half the endpoint's window. Outside it the candidate is
+    excluded with a `scope_unmet` reason rather than left to rank late. A quota-surface step term was implemented and
+    then removed during review, because `claude-opus-4-6` has no rollout row for the term to resolve and its activation
+    condition left almost every archetype unroutable; the frugality rows remain as provenance only.
+
+16. **Archetypes the corpus does not measure keep their declared order.** Widening the pools exposed that agentic priors
+    were reordering `fast_classification` and `exact_extraction`. A multi-step repository pass rate is not a proxy for
+    single-shot classification or schema extraction, so those archetypes use their pool for availability only.
+
+17. **Minimum capability is gated on consequence, not on the archetype label.** The original bar used a static
+    per-archetype `mutatesRepository` flag, which inverted in practice: `deliberate_tool_workflow` was marked
+    non-mutating, so a task whose own action mode is `external_side_effect` had no capability bar while a reversible,
+    test-covered edit got the strict one. The tier is now derived from `actionMode` and `risk`, with the archetype flag
+    as a floor, and `irreversible` work additionally bars the lowest ability band. Regression cost is discounted by
+    `verificationStrength` (0.85 self-check, 0.5 unit tests, 0.25 integration or policy), partially rather than fully,
+    because a suite is not a complete guard against silent behavior change. Review is evaluated read-only so a builder
+    can always review its own output, and every archetype must retain a candidate above the lowest band so
+    high-consequence work stays routable.
+
+18. **The candidate pool is derived from the operator's model scope.** The hand-maintained provider table was verified
+    against a configured machine and was wrong in both directions: it named Bedrock profiles for Opus 5, `gpt-5.5` on
+    the OpenAI route, and `gemini-3.6-flash`, none of which were scoped in, and it missed the routes that were. Policy
+    now declares a logical model plus an effort, and endpoints resolve from the live registry filtered to
+    `enabledModels`. Endpoint order is derived from provider tier, ID specificity, and route price rather than declared.
+    A model with no scoped endpoint is reported as `not_in_scope`, which is a different fact from an endpoint being
+    unavailable.
+
+19. **Observed endpoint health gates eligibility.** `scripts/probe-scoped-models.mjs` probes every scoped endpoint with
+    a minimal real request; on the reference machine 32 of 34 worked, with two Llama 4 Bedrock profiles returning 400.
+    Only recurring failures disqualify an endpoint, because a 4xx recurs until configuration changes while a 5xx or
+    timeout is transient and removing the endpoint would shrink the fallback chain when it is most needed. Unprobed
+    endpoints stay eligible so the router does not depend on a probe having been run.
+
+20. **The Google rung is a preference chain so independent review always has a second vendor.** Review requires two
+    non-builder vendors, and on a machine without `gemini-3.6-flash` the single declared Google candidate resolved to
+    nothing, which would have made every review unroutable. The chain falls back to `gemini-2.5-pro` then
+    `gemini-2.5-flash`: lowest-band reviewers, accepted because an independent second opinion from a weaker model beats
+    no independent review, and review is read-only work where a weak reviewer cannot break anything. `gemini-3.5-flash`
+    is excluded from the chain despite being scoped on the reference machine, because it is disqualified for a measured
+    3.8% context-overflow rate.
+
+21. **The previous-generation OpenAI core models are retired, and current-generation tiers take their slots.** Review
+    asked why `gpt-5.4@medium` and `gpt-5.5@xhigh` were carried at all. They do not survive the question. `gpt-5.4` has
+    no rollout row at `medium`, and the one tier the corpus does measure (`xhigh`) passes 51.8% with 12.4% regression
+    breakage for $10.91 per pass — worse on every axis than `gpt-5.6-terra@high` (53.8%, 9.3%, $2.11). `gpt-5.5@xhigh`
+    held the long-context slot on genuinely good context behavior (0% overflow, p90 peak 219,152, 83.1% partial credit),
+    but `gpt-5.6-terra@max` matches that shape and beats it everywhere that matters: 69.6% pass against 67.0%,
+    $7.10 per
+    pass against $10.78, 928s median against 1,588s, consensus 84.7 against 68.8. Since the per-token price
+    of the core tiers is comparable, a lower pass rate is simply more expensive once retries are counted, so both models
+    are now disqualified as generation-superseded, on the same basis as `claude-opus-4-8`. Their replacements are
+    `gpt-5.6-terra@high` in the deliberate ladder, `gpt-5.6-terra@max` in the long-context ladder, and
+    `claude-opus-5@medium` as the deliberate ladder's non-OpenAI tail, which also ends that ladder being single-vendor.
+
+22. **Hand-declared ability bands are gone.** `gpt-5.4@medium` was the only entry in the policy-local ability table, and
+    it was a number no source backed. With it removed, every candidate must carry an evidence-derived band, from either
+    a rollout row for that exact (model, effort) pair or the consensus-only table.
+
+23. **A cheap small model is admitted as an explicitly unmeasured peer, not as a measured rung.** The bounded
+    classification bucket already runs on `claude-haiku-4-5`, which itself has only a consensus figure and no agentic
+    rollout row, so cheap unmeasured capability is not new there. `gpt-5.4-mini` is admitted beside it because per-token
+    price is real and the live registry prices it at decision time — but the pack contains no row for any mini or nano
+    model, so how it compares to Haiku is genuinely unresolved and is recorded as such rather than assumed favorable.
+    The guardrails are structural instead of statistical: band 1 only, `fast_classification` and `exact_extraction`
+    only, never a primary, ordered behind the rung it peers with, and refused outright by `core/routing.ts` whenever
+    consequence is anything other than read-only — because the ability floor permits band 1 on reversible mutation, and
+    there is no measurement here to argue a mutation is safe. `gpt-5.4-nano` is deliberately not admitted: the same
+    argument would allow it, but a second unmeasured rung in one bucket buys no availability the first does not.
+
+    The price argument is itself conditional on turn count, and is gated as such rather than assumed. `gpt-5.4-mini`
+    runs at roughly 0.75 of `gpt-5.6-luna`'s per-token price, so break-even is 1 / 0.75 ≈ 1.33 turns: a run taking a
+    third more turns than the model it undercuts has spent the whole discount, and beyond that it costs more. Since
+    nothing measures how many turns it takes, the discount may only be spent where there is almost no room for turn
+    inflation. `RoutingContext.singleShot` therefore requires both a `one_response` horizon and an expected turn budget
+    of at most 2, and the peer is excluded with a stated reason otherwise. Both signals are required rather than either:
+    a one-response horizon with a large turn estimate is still work that will iterate, and a small turn estimate on a
+    longer horizon is a guess about only the first leg.
+
+24. **No scenario-scoped effort allowlist was added, because the declared candidate refs already are one.** The
+    considered change was a per-model list of the only efforts a model may be routed at, for models the corpus measures
+    at a single tier. Research showed it was redundant: `authorizeEffort` has exactly one call site and is always passed
+    an effort that policy enumerated on a `CandidateRef`, nothing raises effort dynamically (the escalation path is
+    itself a declared ref), and `allowSuperSaturation` is true for only two archetypes whose ladders name only
+    multi-tier-measured models. The one path that synthesizes a ref from live state is the fixed-builder review
+    fallback, which uses the user's current effort — and capping it there would make review _skip_ rather than degrade,
+    contradicting decision 20. Effort coverage therefore stays expressed as which (model, effort) pairs policy names.
+
+25. **Disqualification is reserved for measured failure modes; superseded generations degrade instead.** Review pushed
+    back on `claude-opus-4-8` being disqualified, and the objection holds: unlike `gemini-3.5-flash` (3.8% measured
+    context overflow) or `gemini-3.1-pro-preview` (11.7% pass at
+    $80.70), its exclusion rested on being beaten by Opus 5
+    at every tier. That is an ordering fact the cost ranking already expresses, and enforcing it as a ban made a machine
+    whose Anthropic catalog tops out at 4.8 *unroutable* for exactly the archetypes whose intent is "use the best Opus
+    available". It is now the tail of an Opus generation chain on `implementation_planning`,
+    `large_program_planning`, and `highest_risk_advisory`, with the preference for Opus 5 unchanged and enforced by three
+    separate mechanisms: endpoint expansion tries every scoped Opus 5 route first with the manufacturer route ahead of
+    gateways and resale, so an Anthropic outage degrades to Opus 5 elsewhere before the chain applies; the tail's own
+    numbers rank it last (51.8% pass at $8.27
+    per pass against Opus 5 at high with 72.3% at
+    $8.42); and its effort is
+    capped at `high`, including in the two archetypes that permit super-saturation, because its curve is flat and
+    expensive above that (56.0% at max for $22.47).
+    4.8 precedes 4.6 in the chain because it is the higher generation and is measured agentically, where 4.6 is retained
+    only as the scoped frugal candidate.
+
+Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
+telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work. The
+unresolved comparison between `gpt-5.4-mini` and `claude-haiku-4-5` is the clearest next evidence gap: both are routed
+on price alone, and a bounded classification eval would settle which belongs in front.

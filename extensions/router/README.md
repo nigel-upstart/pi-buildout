@@ -70,6 +70,25 @@ Run `npm run test:eval:real`. The harness prefers already-exported `BIFROST_BASE
 fills missing values from the repository-local, gitignored `.env`. Start from `.env.example`; ordinary `npm test`
 explicitly skips real-provider calls so local credentials do not make quality checks costly or non-deterministic.
 
+## Model scope and endpoint health
+
+The router chooses only from models the operator has scoped in through `enabledModels`, the same set pi's model selector
+offers. Policy declares a logical model and an effort; concrete endpoints are resolved from the live registry, so all
+spellings of one model (Bedrock region profiles, resale catalog IDs, gateway paths) group together and an availability
+failure retries the same model before the router changes models.
+
+Set `PI_ROUTER_MODEL_SCOPE` to a comma-separated pattern list to pin the scope for a run.
+
+Probe which scoped endpoints actually work on this machine, then let routing exclude the broken ones:
+
+```sh
+node scripts/probe-scoped-models.mjs           # writes ~/.pi/agent/router-endpoint-health.json
+node scripts/probe-scoped-models.mjs --dry-run # list the scope without calling anything
+```
+
+Recurring failures (4xx and unusable responses) are excluded until re-probed. Transient failures (5xx, timeouts) and
+unprobed endpoints stay eligible. Override the record location with `PI_ROUTER_ENDPOINT_HEALTH_PATH`.
+
 ## Safety behavior
 
 - Only user input can trigger classification or a new lease.
@@ -77,8 +96,11 @@ explicitly skips real-provider calls so local credentials do not make quality ch
 - Explicit model or effort changes bypass automatic routing until the next task boundary.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
 - Executing work across a dependent pull-request stack is distinct from planning one. The stack route is restricted to
-  exact frontier-generation IDs (`gpt-5.6-terra/high`, `claude-opus-4-8/high`, then `gpt-5.6-sol/high` availability
-  fallbacks), so routing cannot silently hand stack mutation to older GPT generations or the broader Sonnet tier.
+  exact current-generation IDs (`gpt-5.6-sol/high` and `claude-opus-5/high`, plus their same-model availability
+  backups), so routing cannot silently hand stack mutation to older generations or the broader Sonnet tier.
+- Effort is capped at each model family's measured saturation tier, low-effort tiers with high measured regression
+  breakage are barred from repository-mutating routes, and candidates whose measured p90 peak context exceeds the window
+  headroom are excluded before scoring.
 - A validated provider-diverse classifier result may serve as failover, but complete classification failure retains the
   current selection instead of manufacturing evidence for a premium route.
 - The request remains a native user message and is never paraphrased into system policy.

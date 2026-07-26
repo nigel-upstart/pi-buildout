@@ -5,7 +5,7 @@ import { deriveArchetype } from "../core/archetype.ts";
 import { conservativeFeatures, validateTaskFeatures } from "../core/features.ts";
 import { BOOTSTRAP_ROUTE_POLICIES, reviewerRefs } from "../core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "../core/profiles.ts";
-import { selectOrdinaryRoute, selectReviewRoute } from "../core/routing.ts";
+import { deriveRoutingContext, selectOrdinaryRoute, selectReviewRoute } from "../core/routing.ts";
 import { scoreFeatureAxes } from "./score.ts";
 
 const fixtures = JSON.parse(await readFile(new URL("./corpus/routes.json", import.meta.url), "utf8"));
@@ -46,14 +46,17 @@ function registry() {
   for (const vendor of ["openai", "anthropic", "google"]) {
     for (const ability of [1, 2, 3, 4]) refs.push(...reviewerRefs(vendor, ability));
   }
+  // Policy names logical models, so the corpus synthesizes one manufacturer endpoint per model. This
+  // is what a machine with everything scoped in looks like.
+  const providerFor = { openai: "openai-codex", anthropic: "anthropic", google: "google-vertex" };
   const unique = new Map();
   for (const ref of refs) {
-    const key = `${ref.provider}/${ref.modelId}`;
+    const key = `${providerFor[ref.vendor]}/${ref.logicalModelId}`;
     if (unique.has(key)) continue;
     unique.set(key, {
-      provider: ref.provider,
-      modelId: ref.modelId,
-      name: ref.modelId,
+      provider: providerFor[ref.vendor],
+      modelId: ref.logicalModelId,
+      name: ref.logicalModelId,
       vendor: ref.vendor,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
@@ -72,10 +75,14 @@ const models = registry();
 const requirements = { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true };
 const PREMIUM_ARCHETYPES = new Set(["large_program_planning", "highest_risk_advisory"]);
 
+// Premium choices are the super-saturation and highest-cost-per-pass configurations. Only the
+// premium archetypes may take one as a primary; every other archetype must stay on a saturated tier.
 function isPremiumChoice(choice) {
+  const logical = choice.logicalModelId ?? choice.modelId;
   return (
-    (choice.modelId === "gpt-5.6-sol" && choice.effort === "max") ||
-    (choice.modelId === "claude-fable-5" && choice.effort === "high")
+    (logical === "gpt-5.6-sol" && choice.effort === "max") ||
+    (logical === "claude-opus-5" && (choice.effort === "xhigh" || choice.effort === "max")) ||
+    logical === "claude-fable-5"
   );
 }
 
@@ -97,7 +104,17 @@ describe("routing golden corpus", () => {
               "medium",
               2,
             )
-          : selectOrdinaryRoute(archetype, models, requirements);
+          : selectOrdinaryRoute(
+              archetype,
+              models,
+              requirements,
+              [],
+              undefined,
+              undefined,
+              // Consequence, verification strength, and interactivity come from the fixture's own
+              // features, so the corpus exercises the real derivation rather than a default.
+              deriveRoutingContext(features, []),
+            );
       assert.notEqual(decision.kind, "unroutable", decision.reason);
       const fallbacks = decision.kind === "review" ? [decision.fallback] : decision.fallbacks;
       if (fixture.expected.primaryModel) assert.equal(decision.primary.modelId, fixture.expected.primaryModel);

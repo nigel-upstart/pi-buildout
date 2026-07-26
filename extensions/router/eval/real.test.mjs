@@ -153,7 +153,7 @@ const synopsis = {
 
 describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
   it("measures classifier accuracy and calibration without provider mocks", async () => {
-    const primaryId = process.env.ROUTER_EVAL_PRIMARY_MODEL ?? "gpt-5.5";
+    const primaryId = process.env.ROUTER_EVAL_PRIMARY_MODEL ?? "gpt-5.6-sol";
     const secondaryId = process.env.ROUTER_EVAL_SECONDARY_MODEL ?? "claude-sonnet-5";
     const primaryVendor = classifierVendor(primaryId);
     const secondaryVendor = classifierVendor(secondaryId);
@@ -283,7 +283,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
       {
         archetype: "deliberate_tool_workflow",
         vendor: "openai",
-        modelId: "gpt-5.5",
+        modelId: "gpt-5.6-sol",
         effort: "medium",
         request:
           "Return a dry-run release checklist in this response with an explicit human checkpoint before publish; do not create files or ask where to save it.",
@@ -474,7 +474,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
       }
       const judgeId =
         treatment.vendor === "anthropic"
-          ? (process.env.ROUTER_EVAL_OPENAI_JUDGE_MODEL ?? "gpt-5.5")
+          ? (process.env.ROUTER_EVAL_OPENAI_JUDGE_MODEL ?? "gpt-5.6-sol")
           : (process.env.ROUTER_EVAL_ANTHROPIC_JUDGE_MODEL ?? "claude-sonnet-5");
       const judgeVendor = treatment.vendor === "anthropic" ? "openai" : "anthropic";
       const judgeModel = model(judgeId, `bifrost-${judgeVendor}`);

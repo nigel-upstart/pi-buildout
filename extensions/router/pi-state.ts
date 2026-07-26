@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
-import { extname } from "node:path";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { extname, join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ARCHETYPES } from "./core/archetype.ts";
 import type { Archetype } from "./core/archetype.ts";
@@ -9,10 +12,15 @@ import { validateFallbackTopology } from "./core/fallback.ts";
 import { validateTaskFeatures } from "./core/features.ts";
 import type { TaskFeatures } from "./core/features.ts";
 import type { LeaseState, TaskLease } from "./core/lease.ts";
-import { policyAbility } from "./core/policy.ts";
+import { evidenceAbility } from "./core/evidence.ts";
+import { ENDPOINT_TIERS, POLICY_VERSION, policyAbility } from "./core/policy.ts";
+import type { EndpointTier } from "./core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
+import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
+import type { EndpointHealthRecord } from "./core/health.ts";
 import { canonicalVendor } from "./core/routing.ts";
+import { matchesScope } from "./core/scope.ts";
 import type { RegistryModelSnapshot, RouteRequirements } from "./core/routing.ts";
 import type { RepositoryMetadata, SynopsisEntry } from "./core/synopsis.ts";
 
@@ -109,7 +117,9 @@ function isRouteChoice(value: unknown, archetype: Archetype): boolean {
     !EFFORT_LEVELS.includes(choice.effort as EffortLevel) ||
     typeof choice.profileId !== "string" ||
     typeof choice.contextWindow !== "number" ||
-    typeof choice.ability !== "number"
+    typeof choice.ability !== "number" ||
+    typeof choice.logicalModelId !== "string" ||
+    !ENDPOINT_TIERS.includes(choice.endpointTier as EndpointTier)
   ) {
     return false;
   }
@@ -140,7 +150,10 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     typeof lease.promptProfileId !== "string" ||
     object(lease.selected)?.profileId !== lease.promptProfileId ||
     typeof lease.modelSnapshotId !== "string" ||
-    typeof lease.policyVersion !== "string" ||
+    // A lease written by an earlier policy version predates fields that RouteChoice now declares
+    // non-optional, so restoring it would produce a value whose type is a lie. Reject it and let the
+    // next user turn create a fresh lease rather than degrading silently.
+    lease.policyVersion !== POLICY_VERSION ||
     typeof lease.lastPromptFingerprint !== "string" ||
     typeof lease.manualOverride !== "boolean" ||
     (lease.planValidationRepairAttempted !== undefined && typeof lease.planValidationRepairAttempted !== "boolean")
@@ -169,13 +182,27 @@ export function restoreLeaseState(entries: readonly unknown[], defaultMode: Leas
   return { mode: defaultMode, manualOverride: false };
 }
 
-export function buildRegistrySnapshot(ctx: ExtensionContext): RegistryModelSnapshot[] {
+/**
+ * The registry the router may choose from: every model the operator scoped in through
+ * `enabledModels`, narrowed to the ones whose vendor the router supports, annotated with configured
+ * availability and last observed health.
+ *
+ * Scope comes from settings rather than from a table in this repository, because the set of models a
+ * machine can actually reach is the operator's decision and changes without this code changing.
+ */
+export function buildRegistrySnapshot(
+  ctx: ExtensionContext,
+  scope: RouterScope = EMPTY_SCOPE,
+): RegistryModelSnapshot[] {
   const available = new Set(ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`));
   const snapshots: RegistryModelSnapshot[] = [];
   for (const model of ctx.modelRegistry.getAll()) {
     const vendor = canonicalVendor(model.provider, model.id);
     if (!vendor) continue;
+    if (!matchesScope(model.provider, model.id, scope.patterns)) continue;
+    const health = findEndpointHealth(scope.health, model.provider, model.id);
     snapshots.push({
+      ...(health ? { health } : {}),
       provider: model.provider,
       modelId: model.id,
       name: model.name,
@@ -193,6 +220,53 @@ export function buildRegistrySnapshot(ctx: ExtensionContext): RegistryModelSnaps
   return snapshots;
 }
 
+export type RouterScope = {
+  /** `enabledModels` patterns. Empty means no scope is configured, so everything available is in scope. */
+  patterns: readonly string[];
+  health: EndpointHealthRecord | undefined;
+};
+
+export const EMPTY_SCOPE: RouterScope = { patterns: [], health: undefined };
+
+/**
+ * Reads the operator's model scope and the endpoint health record. Project settings win over user
+ * settings, matching how pi resolves configuration. Every read is best-effort: a missing or malformed
+ * file yields no scope and no health, which is the permissive default rather than an empty registry.
+ */
+export async function readRouterScope(cwd: string): Promise<RouterScope> {
+  // An explicit override wins over settings. It exists so a run can be pinned to a known scope
+  // without editing configuration, which tests rely on and operators can use for a one-off.
+  const override = process.env.PI_ROUTER_MODEL_SCOPE;
+  const overridePatterns =
+    override === undefined
+      ? undefined
+      : override
+          .split(",")
+          .map((pattern) => pattern.trim())
+          .filter((pattern) => pattern.length > 0);
+  const [project, user] = await Promise.all([
+    readJsonFile(join(cwd, CONFIG_DIR_NAME, "settings.json")),
+    readJsonFile(join(homedir(), ".pi", "agent", "settings.json")),
+  ]);
+  const patterns = stringArray(object(project)?.enabledModels);
+  const fallbackPatterns = stringArray(object(user)?.enabledModels);
+  const healthPath =
+    process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH ?? join(homedir(), ".pi", "agent", "router-endpoint-health.json");
+  const health = await readJsonFile(healthPath);
+  return {
+    patterns: overridePatterns ?? (patterns.length > 0 ? patterns : fallbackPatterns),
+    health: isEndpointHealthRecord(health) ? health : undefined,
+  };
+}
+
+async function readJsonFile(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
 export function snapshotForModel(
   model: Model<Api> | undefined,
   registry: readonly RegistryModelSnapshot[],
@@ -203,19 +277,20 @@ export function snapshotForModel(
 }
 
 export function modelAbility(modelId: string, effort: EffortLevel): number {
-  // Effort changes ability differently per model (e.g. claude-sonnet-5 and
-  // gemini-3.5-flash gain a tier at "high" while gpt-5.6-terra does not), so the
-  // policy candidate table in core/policy.ts is authoritative whenever it knows
-  // the (model, effort) pair. The regex heuristic below is only a fallback for
-  // models or effort levels absent from that table and cannot express per-model
-  // effort scaling.
-  const known = policyAbility(modelId, effort);
+  // Effort changes ability differently per model, so the policy candidate table in core/policy.ts is
+  // authoritative whenever it knows the (model, effort) pair, and the evidence bands in
+  // core/evidence.ts answer for measured models outside the current candidate set. The regex
+  // heuristic below is only a last resort for models with no measurement at all.
+  const known = policyAbility(modelId, effort) ?? evidenceAbility(modelId, effort);
   if (known !== undefined) return known;
+  // Deliberately pessimistic and name-based only where a family name is a reliable capacity signal.
+  // "pro" and "max" are not: gemini-3.1-pro-preview measured in the lowest band, and "max" appears
+  // in effort labels rather than model capability.
   let ability = 2;
-  if (/luna|haiku|nano|mini/.test(modelId)) ability = 1;
-  if (/terra|sonnet|gemini-3\.5-flash/.test(modelId)) ability = 2;
+  if (/luna|haiku|nano|mini|flash|lite/.test(modelId)) ability = 1;
+  if (/terra|sonnet/.test(modelId)) ability = 1;
   if (/sol|opus/.test(modelId)) ability = 3;
-  if (/fable|pro|max/.test(modelId)) ability = 4;
+  if (modelId.includes("fable")) ability = 4;
   if ((effort === "xhigh" || effort === "max") && ability < 4) ability++;
   return ability;
 }

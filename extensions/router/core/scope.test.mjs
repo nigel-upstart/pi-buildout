@@ -1,0 +1,171 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { healthVerdict, isEndpointHealthRecord } from "./health.ts";
+import { canonicalModelId, endpointSpecificity, endpointTierFor, isFlatRateProvider, matchesScope } from "./scope.ts";
+
+describe("canonical model identity", () => {
+  it("reduces every observed spelling of a model to one logical ID", () => {
+    // Bedrock region profiles, vendor paths, version suffixes and date stamps, all from the real
+    // registry on a configured machine.
+    assert.equal(canonicalModelId("claude-opus-5"), "claude-opus-5");
+    assert.equal(canonicalModelId("anthropic.claude-opus-5"), "claude-opus-5");
+    assert.equal(canonicalModelId("global.anthropic.claude-opus-5"), "claude-opus-5");
+    assert.equal(canonicalModelId("us.anthropic.claude-opus-4-6-v1"), "claude-opus-4-6");
+    assert.equal(canonicalModelId("us.anthropic.claude-haiku-4-5-20251001-v1:0"), "claude-haiku-4-5");
+    assert.equal(canonicalModelId("us.anthropic.claude-opus-4-5-20251101-v1:0"), "claude-opus-4-5");
+    assert.equal(canonicalModelId("openai.gpt-oss-120b-1:0"), "gpt-oss-120b");
+    assert.equal(canonicalModelId("openai.gpt-5.6-sol"), "gpt-5.6-sol");
+    assert.equal(canonicalModelId("amazon.nova-lite-v1:0"), "nova-lite");
+    // A gateway carries the real ID in its last path segment.
+    assert.equal(canonicalModelId("bedrock/anthropic.claude-sonnet-5"), "claude-sonnet-5");
+  });
+
+  it("normalizes the dotted Claude spelling resale catalogs use", () => {
+    assert.equal(canonicalModelId("claude-opus-4.7"), "claude-opus-4-7");
+    assert.equal(canonicalModelId("claude-sonnet-4.6"), "claude-sonnet-4-6");
+    assert.equal(canonicalModelId("claude-haiku-4.5"), "claude-haiku-4-5");
+  });
+
+  it("leaves dotted GPT and Gemini IDs alone, because their own catalogs use dots", () => {
+    assert.equal(canonicalModelId("gpt-5.6-terra"), "gpt-5.6-terra");
+    assert.equal(canonicalModelId("gpt-5.4-mini"), "gpt-5.4-mini");
+    assert.equal(canonicalModelId("gemini-3.5-flash"), "gemini-3.5-flash");
+    assert.equal(canonicalModelId("gemini-2.5-pro"), "gemini-2.5-pro");
+    assert.equal(canonicalModelId("gemini-3-flash-preview"), "gemini-3-flash-preview");
+  });
+
+  it("collapses the spellings of one model to a single group", () => {
+    const opus5 = [
+      "claude-opus-5",
+      "anthropic.claude-opus-5",
+      "us.anthropic.claude-opus-5",
+      "global.anthropic.claude-opus-5",
+      "eu.anthropic.claude-opus-5",
+    ].map(canonicalModelId);
+    assert.equal(new Set(opus5).size, 1);
+  });
+});
+
+describe("endpoint preference", () => {
+  it("ranks first-party routes above gateways and resale, and treats unknown providers as resale", () => {
+    assert.equal(endpointTierFor("anthropic"), "manufacturer");
+    assert.equal(endpointTierFor("openai-codex"), "manufacturer");
+    assert.equal(endpointTierFor("google-vertex"), "manufacturer");
+    assert.equal(endpointTierFor("bifrost"), "gateway");
+    assert.equal(endpointTierFor("amazon-bedrock"), "resale");
+    assert.equal(endpointTierFor("github-copilot"), "resale");
+    // A provider nobody has classified must not be promoted above a first-party route.
+    assert.equal(endpointTierFor("some-new-broker"), "resale");
+  });
+
+  it("identifies flat-rate providers so their modeled token price is not treated as a cost", () => {
+    assert.equal(isFlatRateProvider("github-copilot"), true);
+    assert.equal(isFlatRateProvider("anthropic"), false);
+  });
+
+  it("prefers the plainest spelling of an ID within a provider", () => {
+    const plain = endpointSpecificity("anthropic.claude-opus-5");
+    const global = endpointSpecificity("global.anthropic.claude-opus-5");
+    const regional = endpointSpecificity("us.anthropic.claude-opus-5");
+    assert.ok(plain < global, "a bare ID is preferred over a global profile");
+    assert.ok(global < regional, "a global profile is preferred over a single region");
+    const versioned = endpointSpecificity("us.anthropic.claude-opus-4-6-v1");
+    const dated = endpointSpecificity("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    assert.ok(plain < regional, "a bare ID is preferred over a region profile");
+    assert.ok(regional < versioned, "an unversioned ID is preferred over a pinned version");
+    assert.ok(versioned < dated, "a dated release is the least preferred");
+  });
+});
+
+describe("model scope", () => {
+  // The real scope from a configured machine, abbreviated.
+  const patterns = [
+    "anthropic/claude-opus-5",
+    "anthropic/claude-fable-5",
+    "amazon-bedrock/openai.gpt-oss-120b-1:0",
+    "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+    "github-copilot/gpt-5.5",
+    "openai-codex/gpt-5.6-sol",
+  ];
+
+  it("admits exactly the scoped endpoints", () => {
+    assert.equal(matchesScope("anthropic", "claude-opus-5", patterns), true);
+    assert.equal(matchesScope("amazon-bedrock", "openai.gpt-oss-120b-1:0", patterns), true);
+    assert.equal(matchesScope("github-copilot", "gpt-5.5", patterns), true);
+  });
+
+  it("excludes an endpoint the operator did not scope in, even for a scoped model", () => {
+    // claude-opus-5 is scoped on the Anthropic route only; its Bedrock profiles are not.
+    assert.equal(matchesScope("amazon-bedrock", "global.anthropic.claude-opus-5", patterns), false);
+    // gpt-5.5 is scoped on Copilot only here, not on the OpenAI route.
+    assert.equal(matchesScope("openai-codex", "gpt-5.5", patterns), false);
+    assert.equal(matchesScope("google-vertex", "gemini-3.6-flash", patterns), false);
+  });
+
+  it("treats an empty pattern list as no scope configured", () => {
+    assert.equal(matchesScope("anything", "at-all", []), true);
+  });
+
+  it("supports globs and bare model IDs", () => {
+    assert.equal(matchesScope("anthropic", "claude-opus-5", ["anthropic/*"]), true);
+    assert.equal(matchesScope("anthropic", "claude-opus-5", ["*opus*"]), true);
+    assert.equal(matchesScope("anthropic", "claude-opus-5", ["claude-opus-5"]), true);
+    assert.equal(matchesScope("anthropic", "claude-sonnet-5", ["*opus*"]), false);
+  });
+
+  it("ignores a thinking-level suffix without mangling Bedrock IDs that end in a version", () => {
+    assert.equal(matchesScope("openai-codex", "gpt-5.6-sol", ["openai-codex/gpt-5.6-sol:high"]), true);
+    // `:0` is part of the identity, not a thinking level.
+    assert.equal(
+      matchesScope("amazon-bedrock", "openai.gpt-oss-120b-1:0", ["amazon-bedrock/openai.gpt-oss-120b-1:0"]),
+      true,
+    );
+  });
+});
+
+describe("endpoint health", () => {
+  it("excludes only recurring failures", () => {
+    // A 4xx will recur until configuration changes, so routing to it wastes an attempt.
+    const clientError = healthVerdict({
+      provider: "amazon-bedrock",
+      modelId: "us.meta.llama4-scout-17b-instruct-v1:0",
+      status: "client_error",
+      httpStatus: 400,
+      detail: "Validation error",
+    });
+    assert.equal(clientError.usable, false);
+    assert.match(clientError.reason, /400/);
+    assert.equal(healthVerdict({ provider: "p", modelId: "m", status: "failed" }).usable, false);
+  });
+
+  it("keeps transient failures and unprobed endpoints usable", () => {
+    // Excluding an endpoint for a provider outage would shrink the chain exactly when it is needed.
+    assert.equal(healthVerdict({ provider: "p", modelId: "m", status: "server_error" }).usable, true);
+    assert.equal(healthVerdict({ provider: "p", modelId: "m", status: "timeout" }).usable, true);
+    assert.equal(healthVerdict({ provider: "p", modelId: "m", status: "unknown" }).usable, true);
+    assert.equal(healthVerdict({ provider: "p", modelId: "m", status: "ok" }).usable, true);
+    // No record at all is not evidence of failure.
+    assert.equal(healthVerdict(undefined).usable, true);
+  });
+
+  it("validates a health record and rejects a malformed one rather than trusting it", () => {
+    assert.equal(
+      isEndpointHealthRecord({
+        schemaVersion: 1,
+        probedAt: "2026-07-25T00:00:00.000Z",
+        endpoints: [{ provider: "anthropic", modelId: "claude-opus-5", status: "ok" }],
+      }),
+      true,
+    );
+    assert.equal(isEndpointHealthRecord({ schemaVersion: 2, probedAt: "x", endpoints: [] }), false);
+    assert.equal(
+      isEndpointHealthRecord({
+        schemaVersion: 1,
+        probedAt: "x",
+        endpoints: [{ provider: "a", modelId: "b", status: "not-a-status" }],
+      }),
+      false,
+    );
+    assert.equal(isEndpointHealthRecord(undefined), false);
+  });
+});
