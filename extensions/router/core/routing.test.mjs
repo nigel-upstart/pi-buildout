@@ -649,6 +649,8 @@ describe("balanced tier and scoped frugal candidate", () => {
   });
 
   it("uses the unmeasured small peer for read-only bounded work and nowhere else", () => {
+    // One-shot read-only work is the only place the peer's per-token discount is real.
+    const oneShot = { ...FEATURES, actionMode: "information_only", horizon: "one_response", expectedAgentTurns: 1 };
     const classification = selectOrdinaryRoute(
       "fast_classification",
       withExtras(),
@@ -656,7 +658,7 @@ describe("balanced tier and scoped frugal candidate", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+      deriveRoutingContext(oneShot, []),
     );
     const peer = [classification.primary, ...classification.fallbacks].find(
       (choice) => choice.logicalModelId === "gpt-5.4-mini",
@@ -677,7 +679,7 @@ describe("balanced tier and scoped frugal candidate", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...FEATURES, actionMode: "reversible_mutation" }, []),
+      deriveRoutingContext({ ...oneShot, actionMode: "reversible_mutation" }, []),
     );
     assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "gpt-5.4-mini"));
     assert.ok(
@@ -687,6 +689,36 @@ describe("balanced tier and scoped frugal candidate", () => {
       ),
       "the exclusion must say why the peer was refused",
     );
+  });
+
+  it("refuses the peer once the work can take turns, because the per-token discount does not survive them", () => {
+    // At roughly 0.75 of the per-token price it undercuts, break-even is about 1.33x the turns. Nothing
+    // measures this model's turn count, so anything that can iterate is outside its case.
+    for (const iterating of [
+      { horizon: "one_response", expectedAgentTurns: 6 },
+      { horizon: "single_pr", expectedAgentTurns: 1 },
+    ]) {
+      const decision = selectOrdinaryRoute(
+        "fast_classification",
+        withExtras(),
+        REQUIREMENTS,
+        [],
+        undefined,
+        undefined,
+        deriveRoutingContext({ ...FEATURES, actionMode: "information_only", ...iterating }, []),
+      );
+      assert.equal(decision.kind, "ordinary");
+      assert.ok(
+        [decision.primary, ...decision.fallbacks].every((choice) => choice.logicalModelId !== "gpt-5.4-mini"),
+        `peer routed for ${JSON.stringify(iterating)}`,
+      );
+      assert.ok(
+        decision.exclusions.some(
+          (exclusion) => exclusion.candidate.includes("gpt-5.4-mini") && /one-shot work only/.test(exclusion.detail),
+        ),
+        "the exclusion must name the turn-budget reason",
+      );
+    }
   });
 
   it("authorizes gpt-oss-120b for bounded work only, and only on its Bedrock route", () => {

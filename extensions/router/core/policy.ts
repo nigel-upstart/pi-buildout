@@ -79,10 +79,18 @@ const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
  * decision time, but nothing here asserts it matches it on quality: the pack contains no row for any
  * mini or nano model, so the comparison against Haiku is genuinely unresolved rather than favorable.
  *
+ * The whole case for a peer is per-token price, and that case is conditional. `gpt-5.4-mini` runs at
+ * roughly 0.75 of `gpt-5.6-luna`'s per-token price, so the break-even point is 1 / 0.75 ≈ 1.33 turns:
+ * a model that needs a third more turns than the one it undercuts has already spent the discount, and
+ * nothing measures how many turns it takes. A peer therefore belongs only on one-shot or near-one-shot
+ * reasoning, never on anything that iterates.
+ *
  * The guardrails are therefore structural, not statistical:
  *  - band 1 only, so consequence gating already bars irreversible work;
  *  - `unmeasuredPeer`, which core/routing.ts refuses outside read-only consequence, so a peer can
  *    never touch even reversible mutation;
+ *  - the same flag also refuses it outside a one-shot turn budget, which is where the price argument
+ *    holds;
  *  - allowed only in `PEER_ARCHETYPES`, enforced by a policy invariant test;
  *  - ordered after the measured rung it peers with, so it is reached on price or availability only.
  *
@@ -93,7 +101,7 @@ const UNMEASURED_PEERS: Readonly<Record<string, { peerOf: string; basis: string 
   "gpt-5.4-mini": {
     peerOf: "claude-haiku-4-5",
     basis:
-      "no DeepSWE, CursorBench, or consensus row exists for any mini or nano model in the 2026-07-25 pack; admitted as a price peer of the equally unmeasured claude-haiku-4-5 rung in read-only bounded work only",
+      "no DeepSWE, CursorBench, or consensus row exists for any mini or nano model in the 2026-07-25 pack; admitted as a price peer of the equally unmeasured claude-haiku-4-5 rung at roughly 0.75 of gpt-5.6-luna's per-token price, restricted to read-only one-shot work because a 1.33x turn count erases that discount",
   },
 };
 
@@ -235,8 +243,9 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     // classification task carrying critical risk or an irreversible action mode is still routable.
     //
     // gpt-5.4-mini is the unmeasured price peer of the claude-haiku-4-5 rung and sits directly behind
-    // it; both are lowest-band, read-only-only entries, and the live registry decides which is actually
-    // cheaper on the machine in hand.
+    // it; both are lowest-band entries, and the live registry decides which is actually cheaper on the
+    // machine in hand. The peer is additionally confined to read-only one-shot work, because its only
+    // claim is a per-token discount that a third more turns would spend.
     //
     // gpt-oss-120b at high effort precedes gpt-5.6-terra at medium: this archetype is not
     // evidence-ranked, so the declared order is the executed order, and on the only comparable

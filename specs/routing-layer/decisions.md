@@ -353,6 +353,15 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     there is no measurement here to argue a mutation is safe. `gpt-5.4-nano` is deliberately not admitted: the same
     argument would allow it, but a second unmeasured rung in one bucket buys no availability the first does not.
 
+    The price argument is itself conditional on turn count, and is gated as such rather than assumed. `gpt-5.4-mini`
+    runs at roughly 0.75 of `gpt-5.6-luna`'s per-token price, so break-even is 1 / 0.75 ≈ 1.33 turns: a run taking a
+    third more turns than the model it undercuts has spent the whole discount, and beyond that it costs more. Since
+    nothing measures how many turns it takes, the discount may only be spent where there is almost no room for turn
+    inflation. `RoutingContext.singleShot` therefore requires both a `one_response` horizon and an expected turn budget
+    of at most 2, and the peer is excluded with a stated reason otherwise. Both signals are required rather than either:
+    a one-response horizon with a large turn estimate is still work that will iterate, and a small turn estimate on a
+    longer horizon is a guess about only the first leg.
+
 24. **No scenario-scoped effort allowlist was added, because the declared candidate refs already are one.** The
     considered change was a per-model list of the only efforts a model may be routed at, for models the corpus measures
     at a single tier. Research showed it was redundant: `authorizeEffort` has exactly one call site and is always passed
