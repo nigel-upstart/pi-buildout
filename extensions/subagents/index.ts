@@ -252,7 +252,7 @@ function parentFallback(
   const fallbackModel = explicitRequestedModel ?? ctx.model;
   if (!fallbackModel) throw new Error("Cannot create a subagent because the parent has no selected model.");
 
-  const fallbackEffort = explicitRequestedEffort ?? clampThinkingLevel(parentThinking(pi), fallbackModel);
+  const fallbackEffort = clampThinkingLevel(explicitRequestedEffort ?? parentThinking(pi), fallbackModel);
 
   return {
     model: fallbackModel,
