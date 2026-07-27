@@ -8,6 +8,11 @@
     "node": ">=22.19.0"
   },
   "packageManager": "npm@11.17.0",
+  "overrides": {
+    "markdownlint-cli2": {
+      "js-yaml": "5.2.2"
+    }
+  },
   "scripts": {
     "prepare": "lefthook install",
     "format": "prettier --write .",
@@ -17,11 +22,11 @@
     "lint:markdown": "markdownlint-cli2 \"**/*.md\"",
     "lint:shell": "shellcheck scripts/*.sh",
     "typecheck": "tsc --noEmit",
-    "test": "node --test extensions/*/*.test.mjs",
+    "test": "node --test extensions/*/*.test.mjs scripts/*.test.mjs",
     "knip": "knip",
     "secrets": "secretlint \"**/*\"",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run secrets",
-    "audit": "npm audit --audit-level=high"
+    "audit": "node scripts/check-audit.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.80.6",
