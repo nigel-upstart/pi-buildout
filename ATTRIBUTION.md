@@ -149,7 +149,7 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6` and `0.82.0` (the locally installed npm package)
+- Releases reviewed: `0.80.6`, `0.82.0`, and `0.82.1` (the locally installed npm packages)
 - License declared by the package: MIT
 
 Ideas and API patterns used:

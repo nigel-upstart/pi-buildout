@@ -5,8 +5,10 @@ import {
   boundContextForModel,
   clampThinkingLevel,
   excludeCurrentDelegationTurn,
+  findRequestedModel,
   formatModelCatalog,
   parseClassifierDecision,
+  parseModelRequest,
   supportedThinkingLevels,
   truncateMiddle,
 } from "./helpers.ts";
@@ -20,6 +22,28 @@ test("classifier parser accepts fenced JSON and rejects invalid effort", () => {
   );
   assert.equal(parseClassifierDecision('{"model":"x/y","effort":"extreme"}'), undefined);
   assert.equal(parseClassifierDecision("not json"), undefined);
+});
+
+test("model requests parse effort suffixes without breaking provider ids that contain colons", () => {
+  assert.deepEqual(parseModelRequest("openai-codex/gpt-5.6-luna:high"), {
+    reference: "openai-codex/gpt-5.6-luna",
+    effort: "high",
+  });
+  assert.deepEqual(parseModelRequest("amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0"), {
+    reference: "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+  });
+});
+
+test("model request resolution accepts qualified ids and preferred-provider bare ids", () => {
+  const models = [
+    { provider: "openai", id: "gpt-5.5" },
+    { provider: "openai-codex", id: "gpt-5.5" },
+    { provider: "openai-codex", id: "gpt-5.6-luna" },
+  ];
+  assert.deepEqual(findRequestedModel("openai-codex/gpt-5.5", models).model, models[1]);
+  assert.deepEqual(findRequestedModel("gpt-5.5", models, "openai-codex").model, models[1]);
+  assert.deepEqual(findRequestedModel("gpt-5.6-luna", models).model, models[2]);
+  assert.match(findRequestedModel("gpt-5.5", models).error ?? "", /ambiguous/);
 });
 
 test("thinking support follows model maps and clamps safely", () => {
@@ -93,4 +117,50 @@ test("child context is bounded to a conservative fraction of its model window", 
     }),
     "",
   );
+});
+
+test("auth bridge forwards api key and headers, and rejects header injection", async () => {
+  const { default: subagentAuthBridge } = await import("./auth-bridge.ts");
+  /** @param {Record<string, string>} env */
+  const run = (env) => {
+    /** @type {[string, unknown][]} */
+    const registered = [];
+    Object.assign(process.env, env);
+    const pi = /** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ (
+      /** @type {unknown} */ ({
+        /** @param {string} name @param {unknown} config */
+        registerProvider: (name, config) => {
+          registered.push([name, config]);
+        },
+      })
+    );
+    subagentAuthBridge(pi);
+    for (const key of Object.keys(env)) delete process.env[key];
+    return registered;
+  };
+
+  assert.deepEqual(
+    run({
+      PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai",
+      PI_SIMPLE_SUBAGENT_API_KEY: "secret",
+      PI_SIMPLE_SUBAGENT_AUTH_HEADERS: JSON.stringify({ Authorization: "Bearer secret" }),
+    }),
+    [["corporate-ai", { apiKey: "secret", headers: { Authorization: "Bearer secret" } }]],
+  );
+  assert.deepEqual(
+    run({
+      PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai",
+      PI_SIMPLE_SUBAGENT_AUTH_HEADERS: JSON.stringify({ "X-Key": "abc" }),
+    }),
+    [["corporate-ai", { headers: { "X-Key": "abc" } }]],
+  );
+  assert.deepEqual(
+    run({
+      PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai",
+      PI_SIMPLE_SUBAGENT_AUTH_HEADERS: JSON.stringify({ "X-Key": "abc\r\nX-Injected: 1" }),
+    }),
+    [],
+  );
+  assert.deepEqual(run({ PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai" }), []);
+  assert.equal(process.env.PI_SIMPLE_SUBAGENT_API_KEY, undefined);
 });
