@@ -1,7 +1,26 @@
 import type { Archetype } from "./archetype.ts";
-import { BOOTSTRAP_ROUTE_POLICIES, POLICY_VERSION, reviewerRefs } from "./policy.ts";
-import type { CandidateRef } from "./policy.ts";
+import {
+  authorizeEffort,
+  consequenceRank,
+  findEvidencePrior,
+  languageEvidence,
+  resolveEvidenceLanguage,
+  scoreEvidencePrior,
+} from "./evidence.ts";
+import type { ConsequenceTier, EvidenceCostWeights, EvidenceScoreContext, RoutableLanguage } from "./evidence.ts";
+import type { TaskFeatures } from "./features.ts";
+import { healthVerdict } from "./health.ts";
+import type { EndpointHealth } from "./health.ts";
+import {
+  BOOTSTRAP_ROUTE_POLICIES,
+  ENDPOINT_TIERS,
+  HARD_TASK_ESCALATION_REFS,
+  POLICY_VERSION,
+  reviewerRefs,
+} from "./policy.ts";
+import type { CandidateRef, EndpointTier } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
+import { canonicalModelId, endpointSpecificity, endpointTierFor, isFlatRateProvider } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
 export type RegistryModelSnapshot = {
@@ -22,6 +41,8 @@ export type RegistryModelSnapshot = {
     cacheRead: number;
     cacheWrite: number;
   };
+  /** Last observed outcome for this endpoint, from the probe record. Absent means never probed. */
+  health?: EndpointHealth;
 };
 
 export type RouteRequirements = {
@@ -32,14 +53,20 @@ export type RouteRequirements = {
 
 type ExclusionCode =
   | "not_in_registry"
+  | "not_in_scope"
+  | "endpoint_unhealthy"
   | "unavailable"
   | "context_headroom"
+  | "context_headroom_prior"
   | "image_unsupported"
   | "tools_unsupported"
   | "effort_unsupported"
+  | "effort_unauthorized"
+  | "thrash_guard"
+  | "scope_unmet"
+  | "escalation_without_primary"
   | "profile_missing"
-  | "duplicate_model"
-  | "fallback_vendor";
+  | "duplicate_model";
 
 type CandidateExclusion = {
   candidate: string;
@@ -57,14 +84,28 @@ type RouteScoreComponents = {
 export type RouteChoice = {
   provider: string;
   modelId: string;
+  /** Manufacturer model ID shared by every endpoint serving this model. */
+  logicalModelId: string;
   vendor: ModelVendor;
   effort: EffortLevel;
   ability: number;
   profileId: string;
   contextWindow: number;
+  endpointTier: EndpointTier;
+  /** Blended per-million route price, absent for flat-rate subscription endpoints. */
+  endpointBlendedCost?: number;
+  /** Authorized as a retry only; never placed in the primary slot. */
+  escalationOnly?: boolean;
+  /** Authorized only where step count rather than token cost is the binding constraint. */
+  scopedFrugal?: boolean;
+  /** No source measures this candidate; authorized for read-only consequence only. */
+  unmeasuredPeer?: boolean;
   score?: number;
   scoreComponents?: RouteScoreComponents;
-  rankReason: "bootstrap" | "telemetry" | "controlled_holdout" | "review_ability" | "fixed_builder_fallback";
+  evidenceScore?: number;
+  evidenceLanguage?: RoutableLanguage;
+  rankReason:
+    "bootstrap" | "evidence_prior" | "telemetry" | "controlled_holdout" | "review_ability" | "fixed_builder_fallback";
 };
 
 export type RouteSample = {
@@ -135,6 +176,172 @@ const DEFAULT_COST_WEIGHTS: CostWeights = {
   retryCost: 10,
 };
 
+/**
+ * Evidence-prior weights extend the telemetry weights with two axes the priors can price and
+ * observed samples cannot yet: measured regression breakage on repository-mutating work, and
+ * measured nondeterminism on unattended work.
+ */
+const DEFAULT_EVIDENCE_WEIGHTS: EvidenceCostWeights = {
+  ...DEFAULT_COST_WEIGHTS,
+  regressionBreakCost: 40,
+  nondeterminismCost: 15,
+};
+
+/** Foreground developer loops price wall time far higher than background work. */
+const FOREGROUND_WAIT_MULTIPLIER = 8;
+
+/**
+ * Default closeness required before a weakly evidenced language tendency may reorder two candidates.
+ * Bounded deliberately: a low-power directional prior should settle a near-tie, never override a
+ * measured cost difference. A language may widen this from its own evidence.
+ */
+const DEFAULT_NEAR_TIE_FRACTION = 0.05;
+
+/** Output-weighted blend used only to order endpoints that resolve to the same model and effort. */
+function blendedEndpointCost(model: RegistryModelSnapshot): number {
+  return 0.25 * model.costPerMillion.input + 0.75 * model.costPerMillion.output;
+}
+
+/**
+ * Task shape that modifies scoring without changing which models are policy-authorized. Derived
+ * from trusted harness state and classifier features by the extension, never from route cost.
+ */
+export type RoutingContext = {
+  /** Present only when the repository resolves to exactly one measured language. */
+  language?: RoutableLanguage | undefined;
+  /** High ambiguity or high complexity work; selects the measured hard-task priors. */
+  hardTask: boolean;
+  /** Autonomous work where a non-deterministic pass is not usable. */
+  unattended: boolean;
+  /** Foreground developer loop, where wall time dominates. */
+  foreground: boolean;
+  /** What a wrong result costs, derived from the task's action mode and risk. */
+  consequence: ConsequenceTier;
+  /** Multiplier on the regression term, lowered when the task runs the tests that would catch it. */
+  verificationDiscount: number;
+  /**
+   * One-shot or near-one-shot work: a single response with a turn budget small enough that a cheaper
+   * per-token model cannot lose its advantage by taking more turns. Gates the unmeasured peer rung.
+   */
+  singleShot: boolean;
+};
+
+/** Review produces findings rather than state changes, so it is evaluated as read-only work. */
+const REVIEW_CONTEXT: RoutingContext = {
+  hardTask: false,
+  unattended: false,
+  foreground: false,
+  consequence: "read_only",
+  verificationDiscount: 1,
+  // Reading a diff and forming findings is not one-shot work.
+  singleShot: false,
+};
+
+const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
+  hardTask: false,
+  unattended: false,
+  foreground: false,
+  // Conservative default: assume a wrong answer changes reversible state and that nothing verifies it.
+  consequence: "reversible",
+  verificationDiscount: 1,
+  singleShot: false,
+};
+
+/**
+ * Turn budget under which a cheaper-per-token model is still cheaper in practice.
+ *
+ * The peer rung is admitted on per-token price: `gpt-5.4-mini` runs at roughly 0.75 of
+ * `gpt-5.6-luna`'s per-token price on the reference catalog. That advantage is entirely conditional on
+ * turn count, because the break-even multiplier is 1 / 0.75 ≈ 1.33 — a run that takes a third more
+ * turns than the model it undercuts costs the same, and anything beyond that costs more. Since no
+ * source measures how many turns this model actually takes, the only safe place to spend the discount
+ * is work where there is almost no room for turn inflation: a single response, plus one turn of slack.
+ */
+const SINGLE_SHOT_TURN_BUDGET = 2;
+
+/**
+ * An archetype that always changes repository state cannot be softened to read-only by a classifier
+ * that under-reads the task, so the effective consequence is the stronger of the two signals.
+ */
+function effectiveConsequence(archetype: Archetype, context: RoutingContext): ConsequenceTier {
+  const floor: ConsequenceTier = BOOTSTRAP_ROUTE_POLICIES[archetype].mutatesRepository ? "reversible" : "read_only";
+  return consequenceRank(context.consequence) >= consequenceRank(floor) ? context.consequence : floor;
+}
+
+/**
+ * Derives the scoring context from trusted harness state and classifier features. It changes how
+ * authorized candidates are ordered; it never adds or removes a candidate, and it never consults
+ * route price.
+ */
+export function deriveRoutingContext(
+  features: Pick<
+    TaskFeatures,
+    "ambiguity" | "interactivity" | "actionMode" | "risk" | "verificationStrength" | "horizon" | "expectedAgentTurns"
+  >,
+  languageBuckets: readonly string[],
+): RoutingContext {
+  const language = resolveEvidenceLanguage(languageBuckets);
+  return {
+    ...DEFAULT_ROUTING_CONTEXT,
+    ...(language ? { language } : {}),
+    // High ambiguity is the classifier's own signal that the task resembles the corpus's hard tail.
+    hardTask: features.ambiguity === "high",
+    // Autonomous work cannot rely on a human noticing a non-deterministic pass.
+    unattended: features.interactivity === "autonomous",
+    foreground: features.interactivity === "developer_loop",
+    consequence: consequenceOf(features),
+    verificationDiscount: verificationDiscountOf(features),
+    // Both signals are required. A one-response horizon with a large turn estimate is still a task that
+    // will iterate, and a small turn estimate on a longer horizon is a guess about only the first leg.
+    singleShot: features.horizon === "one_response" && features.expectedAgentTurns <= SINGLE_SHOT_TURN_BUDGET,
+  };
+}
+
+/**
+ * Consequence is about what a wrong result costs, so it reads the action mode first and lets critical
+ * risk escalate. `information_only` and `local_read` genuinely cannot break anything, which is what
+ * makes the cheapest adequate configuration correct for classification and extraction work.
+ */
+// Only `critical` risk escalates. `high` risk is deliberately left to the action mode, because a
+// high-risk read or a high-risk reversible edit is still recoverable, and the archetypes where high
+// risk matters most already require an independent review under the risk policy in archetype.ts.
+function consequenceOf(features: Pick<TaskFeatures, "actionMode" | "risk">): ConsequenceTier {
+  if (features.actionMode === "external_side_effect" || features.actionMode === "destructive") return "irreversible";
+  if (features.risk === "critical") return "irreversible";
+  if (features.actionMode === "reversible_mutation") return "reversible";
+  return "read_only";
+}
+
+/**
+ * Measured regression breakage is exactly "previously passing tests now fail". A task that runs those
+ * tests catches it inside the loop; a task with no verification ships it. The discount is deliberately
+ * partial, because a test suite is not a complete guard against silent behavior change.
+ */
+function verificationDiscountOf(features: Pick<TaskFeatures, "verificationStrength">): number {
+  switch (features.verificationStrength) {
+    case "security_and_policy":
+    case "integration_tests":
+      return 0.25;
+    case "unit_tests":
+      return 0.5;
+    case "self_check":
+      return 0.85;
+    default:
+      return 1;
+  }
+}
+
+function evidenceScoreContext(archetype: Archetype, context: RoutingContext): EvidenceScoreContext {
+  return {
+    language: context.language,
+    consequence: effectiveConsequence(archetype, context),
+    verificationDiscount: context.verificationDiscount,
+    unattended: context.unattended,
+    waitMultiplier: context.foreground ? FOREGROUND_WAIT_MULTIPLIER : 1,
+    hardTask: context.hardTask,
+  };
+}
+
 // Amazon Bedrock cross-region inference profiles prefix the underlying vendor path with a
 // region code ("us.", "eu.", "au.", "jp.", "global."). Strip it only when it is immediately
 // followed by a known vendor path segment so unrelated IDs are not misparsed.
@@ -172,37 +379,138 @@ function modelKey(model: Pick<RegistryModelSnapshot, "provider" | "modelId">): s
   return `${model.provider}/${model.modelId}`;
 }
 
-function findSnapshot(
-  ref: CandidateRef,
-  registry: readonly RegistryModelSnapshot[],
-): RegistryModelSnapshot | undefined {
-  return registry.find((model) => model.provider === ref.provider && model.modelId === ref.modelId);
+/**
+ * Every endpoint in the live registry that serves this logical model, ordered by preference: the
+ * manufacturer's own route first, then a gateway, then resale; within a tier the plainest spelling of
+ * the ID, then the cheaper route, with flat-rate subscription endpoints last because their modeled
+ * token price is a capability proxy rather than a cost.
+ *
+ * The registry passed here is already scoped to the operator's `enabledModels`, so an endpoint absent
+ * from this list is one they did not scope in, one their auth does not cover, or one a probe found
+ * broken.
+ */
+function resolveEndpoints(ref: CandidateRef, registry: readonly RegistryModelSnapshot[]): RegistryModelSnapshot[] {
+  return registry
+    .filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId)
+    .sort((left, right) => {
+      const tier =
+        ENDPOINT_TIERS.indexOf(endpointTierFor(left.provider)) -
+        ENDPOINT_TIERS.indexOf(endpointTierFor(right.provider));
+      if (tier !== 0) return tier;
+      const specificity = endpointSpecificity(left.modelId) - endpointSpecificity(right.modelId);
+      if (specificity !== 0) return specificity;
+      const leftFlat = isFlatRateProvider(left.provider);
+      const rightFlat = isFlatRateProvider(right.provider);
+      if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
+      return blendedEndpointCost(left) - blendedEndpointCost(right);
+    });
 }
 
-function evaluateCandidate(
+function evaluateEndpoint(
   ref: CandidateRef,
-  registry: readonly RegistryModelSnapshot[],
+  model: RegistryModelSnapshot,
   archetype: Archetype,
   requirements: RouteRequirements,
   exclusions: CandidateExclusion[],
+  context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
 ): RouteChoice | undefined {
-  const key = `${ref.provider}/${ref.modelId}`;
-  const model = findSnapshot(ref, registry);
-  if (!model) {
-    exclusions.push({ candidate: key, code: "not_in_registry", detail: "exact provider/model ID is absent" });
-    return undefined;
-  }
+  const key = `${model.provider}/${model.modelId}`;
   if (!model.available) {
     exclusions.push({ candidate: key, code: "unavailable", detail: "endpoint auth/availability is not configured" });
     return undefined;
   }
-  if (requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.7)) {
+  const health = healthVerdict(model.health);
+  if (!health.usable) {
+    exclusions.push({ candidate: key, code: "endpoint_unhealthy", detail: health.reason });
+    return undefined;
+  }
+  const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
+  // A scoped frugal candidate exists for tasks whose context headroom is already tight, where fewer
+  // steps means a lower peak context. Outside that condition it is strictly worse than the current
+  // generation, so it is excluded rather than left to rank late.
+  if (ref.scopedFrugal === true && !frugalityWarranted(model, requirements)) {
+    exclusions.push({
+      candidate: key,
+      code: "scope_unmet",
+      detail: "frugal-scoped candidate requires constrained context headroom",
+    });
+    return undefined;
+  }
+  // A candidate no source measures is admitted only as a lowest-band price peer, and only where both
+  // of its justifications hold.
+  //
+  // Consequence: the ability floor alone is not enough, because it bars irreversible work but still
+  // permits reversible mutation, and there is no measurement here to argue that a mutation is safe.
+  //
+  // Turn budget: the rung exists for per-token price, and that saving is erased by roughly a third more
+  // turns (see SINGLE_SHOT_TURN_BUDGET). Outside one-shot work the discount is notional, so it is
+  // refused rather than left to a cost model that cannot price turns it has never measured.
+  if (ref.unmeasuredPeer === true) {
+    if (effectiveConsequence(archetype, context) !== "read_only") {
+      exclusions.push({
+        candidate: key,
+        code: "scope_unmet",
+        detail: "unmeasured peer candidate is authorized for read-only consequence only",
+      });
+      return undefined;
+    }
+    if (!context.singleShot) {
+      exclusions.push({
+        candidate: key,
+        code: "scope_unmet",
+        detail:
+          "unmeasured peer candidate is authorized for one-shot work only; its per-token discount does not survive extra turns",
+      });
+      return undefined;
+    }
+  }
+  const authorization = authorizeEffort(ref.logicalModelId, ref.effort, {
+    allowSuperSaturation: policy.allowSuperSaturation,
+    consequence: effectiveConsequence(archetype, context),
+    language: context.language,
+  });
+  if (!authorization.authorized) {
+    exclusions.push({ candidate: key, code: "effort_unauthorized", detail: authorization.reason });
+    return undefined;
+  }
+  const headroom = Math.floor(model.contextWindow * 0.7);
+  if (requirements.estimatedFinishedTokens > headroom) {
     exclusions.push({
       candidate: key,
       code: "context_headroom",
       detail: `${String(requirements.estimatedFinishedTokens)} estimated tokens exceed 70% of ${String(model.contextWindow)}`,
     });
     return undefined;
+  }
+  const prior = findEvidencePrior(ref.logicalModelId, ref.effort);
+  if (prior) {
+    // The task estimate and the configuration's measured p90 peak context are alternative lower
+    // bounds on what this run needs, so the window must accommodate the larger of the two rather
+    // than their sum. This is what excludes max-effort OpenAI configurations on 272K windows.
+    if (prior.p90PeakContextTokens > headroom) {
+      exclusions.push({
+        candidate: key,
+        code: "context_headroom_prior",
+        detail: `measured p90 peak context ${String(prior.p90PeakContextTokens)} exceeds 70% of ${String(model.contextWindow)}`,
+      });
+      return undefined;
+    }
+    if (prior.contextOverflowRate > 0.02) {
+      exclusions.push({
+        candidate: key,
+        code: "thrash_guard",
+        detail: `measured context-overflow rate ${prior.contextOverflowRate.toFixed(3)} exceeds 0.02`,
+      });
+      return undefined;
+    }
+    if (archetype === "long_context_synthesis" && prior.p90PeakContextTokens > Math.floor(model.contextWindow * 0.5)) {
+      exclusions.push({
+        candidate: key,
+        code: "thrash_guard",
+        detail: `long-context routes require p90 peak context under half the window; measured ${String(prior.p90PeakContextTokens)}`,
+      });
+      return undefined;
+    }
   }
   if (requirements.requiresImages && !model.inputTypes.includes("image")) {
     exclusions.push({ candidate: key, code: "image_unsupported", detail: "route includes image input" });
@@ -231,23 +539,91 @@ function evaluateCandidate(
     vendor: model.vendor,
     effort: ref.effort,
     ability: ref.ability,
+    logicalModelId: ref.logicalModelId,
     profileId: profile.id,
     contextWindow: model.contextWindow,
+    endpointTier: endpointTierFor(model.provider),
+    ...(isFlatRateProvider(model.provider) ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
+    ...(ref.escalationOnly ? { escalationOnly: true } : {}),
+    ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
+    ...(ref.unmeasuredPeer ? { unmeasuredPeer: true } : {}),
     rankReason: "bootstrap",
   };
+}
+
+/**
+ * Context headroom is "constrained" when the task estimate already consumes most of what the endpoint
+ * can offer. A frugal model earns its place there because fewer steps means a lower peak context.
+ */
+function frugalityWarranted(model: RegistryModelSnapshot, requirements: RouteRequirements): boolean {
+  return requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.5);
+}
+
+/**
+ * Evaluates a logical candidate across every endpoint that serves it, keeping the eligible ones in
+ * preference order so an endpoint failure retries the same model before routing changes models.
+ */
+function evaluateCandidate(
+  ref: CandidateRef,
+  registry: readonly RegistryModelSnapshot[],
+  archetype: Archetype,
+  requirements: RouteRequirements,
+  exclusions: CandidateExclusion[],
+  context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
+): RouteChoice[] {
+  const endpoints = resolveEndpoints(ref, registry);
+  if (endpoints.length === 0) {
+    exclusions.push({
+      candidate: `${ref.logicalModelId}@${ref.effort}`,
+      code: "not_in_scope",
+      detail: "no scoped registry endpoint serves this model",
+    });
+    return [];
+  }
+  return endpoints
+    .map((model) => evaluateEndpoint(ref, model, archetype, requirements, exclusions, context))
+    .filter((choice): choice is RouteChoice => choice !== undefined);
+}
+
+/**
+ * An escalation-only candidate may outrank the leaders on the hard-task prior, but its measured
+ * flakiness makes it unfit for a first attempt. This runs on the final ordered chain rather than
+ * inside one ranking branch, so no archetype and no ranking path can bypass it.
+ *
+ * It fails closed: when no ordinary candidate survives eligibility, the escalation candidates are
+ * dropped entirely rather than promoted, which leaves the route unroutable and preserves the existing
+ * model selection. An escalation prior is authorization to retry differently, never a licence to make
+ * the least reliable configuration the first attempt.
+ */
+function demoteEscalationOnly(choices: readonly RouteChoice[], exclusions: CandidateExclusion[]): RouteChoice[] {
+  const ordinary = choices.filter((choice) => choice.escalationOnly !== true);
+  const escalation = choices.filter((choice) => choice.escalationOnly === true);
+  if (escalation.length === 0) return [...ordinary];
+  if (ordinary.length === 0) {
+    for (const choice of escalation) {
+      exclusions.push({
+        candidate: `${choice.provider}/${choice.modelId}@${choice.effort}`,
+        code: "escalation_without_primary",
+        detail: "escalation-only candidates cannot serve as a first attempt and no ordinary candidate was eligible",
+      });
+    }
+    return [];
+  }
+  return [...ordinary, ...escalation];
 }
 
 function deduplicateChoices(choices: readonly RouteChoice[], exclusions: CandidateExclusion[]): RouteChoice[] {
   const seen = new Set<string>();
   return choices.filter((choice) => {
-    // Deduplicate only an exact endpoint. Different providers for one model
-    // are deliberate availability fallbacks, not duplicate route choices.
-    const key = `${choice.provider}/${choice.modelId}`;
+    // Deduplicate only an exact endpoint at an exact effort. Different providers for one model are
+    // deliberate availability fallbacks, and the same endpoint at a different effort is a distinct
+    // route choice that archetypes such as highest_risk_advisory rely on.
+    const key = `${choice.provider}/${choice.modelId}@${choice.effort}`;
     if (seen.has(key)) {
       exclusions.push({
         candidate: key,
         code: "duplicate_model",
-        detail: "the exact provider/model endpoint is listed more than once",
+        detail: "the exact provider/model endpoint and effort is listed more than once",
       });
       return false;
     }
@@ -265,48 +641,157 @@ export function isControlledHoldout(key: string, oneIn = 20): boolean {
   return (hash >>> 0) % Math.max(1, oneIn) === 0;
 }
 
-function telemetryOrder(
-  choices: RouteChoice[],
+/**
+ * One logical (model, effort) choice and every eligible endpoint that serves it. Endpoints stay
+ * grouped so an availability failure retries the same model before the router changes models.
+ */
+type CandidateGroup = {
+  key: string;
+  logicalModelId: string;
+  effort: EffortLevel;
+  endpoints: RouteChoice[];
+};
+
+/**
+ * Endpoint order within one model: manufacturer route first, then gateway, then resale. Route price
+ * only breaks ties inside a tier, and flat-rate subscription endpoints sort last in their tier
+ * because their modeled token price is a capability proxy rather than a cost.
+ */
+function orderEndpoints(endpoints: readonly RouteChoice[]): RouteChoice[] {
+  return [...endpoints].sort((left, right) => {
+    const tier = ENDPOINT_TIERS.indexOf(left.endpointTier) - ENDPOINT_TIERS.indexOf(right.endpointTier);
+    if (tier !== 0) return tier;
+    const leftFlat = left.endpointBlendedCost === undefined;
+    const rightFlat = right.endpointBlendedCost === undefined;
+    if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
+    return (left.endpointBlendedCost ?? 0) - (right.endpointBlendedCost ?? 0);
+  });
+}
+
+function groupCandidates(choices: readonly RouteChoice[]): CandidateGroup[] {
+  const groups = new Map<string, CandidateGroup>();
+  for (const choice of choices) {
+    const key = `${choice.logicalModelId}@${choice.effort}`;
+    const group = groups.get(key);
+    if (group) group.endpoints.push(choice);
+    else groups.set(key, { key, logicalModelId: choice.logicalModelId, effort: choice.effort, endpoints: [choice] });
+  }
+  return [...groups.values()].map((group) => ({ ...group, endpoints: orderEndpoints(group.endpoints) }));
+}
+
+function sampleFor(
+  choice: RouteChoice,
+  archetype: Archetype,
+  samples: readonly RouteSample[],
+): RouteSample | undefined {
+  return samples.find(
+    (sample) =>
+      sample.provider === choice.provider && sample.modelId === choice.modelId && sample.archetype === archetype,
+  );
+}
+
+function orderGroups(
+  groups: CandidateGroup[],
   archetype: Archetype,
   qualityFloor: number,
   samples: readonly RouteSample[],
-  weights?: CostWeights,
-  explorationKey?: string,
+  weights: CostWeights | undefined,
+  explorationKey: string | undefined,
+  context: RoutingContext,
 ): { choices: RouteChoice[]; mature: boolean; controlledHoldout: boolean } {
-  const comparable = choices.map((choice) =>
-    samples.find(
-      (sample) =>
-        sample.provider === choice.provider && sample.modelId === choice.modelId && sample.archetype === archetype,
-    ),
-  );
+  const primaries = groups.map((group) => group.endpoints[0]);
+  const comparable = primaries.map((choice) => (choice ? sampleFor(choice, archetype, samples) : undefined));
   const mature =
-    choices.length > 0 &&
+    groups.length > 0 &&
     comparable.every((sample) => sample && sample.comparableSamples >= 30 && sample.acceptedRate >= qualityFloor);
-  if (!mature) return { choices, mature: false, controlledHoldout: false };
+  const controlledHoldout = explorationKey ? isControlledHoldout(explorationKey) : false;
 
-  const appliedWeights = weights ?? DEFAULT_COST_WEIGHTS;
-  const scored = choices.map((choice, index) => {
-    const sample = comparable[index];
-    if (!sample) throw new Error("mature route is missing its comparable telemetry sample");
-    return {
-      ...choice,
-      score: robustCostToDone(sample, appliedWeights),
-      scoreComponents: {
+  if (mature) {
+    const appliedWeights = weights ?? DEFAULT_COST_WEIGHTS;
+    const matureRankReason: RouteChoice["rankReason"] = controlledHoldout ? "controlled_holdout" : "telemetry";
+    const scored = groups.map((group, index) => {
+      const sample = comparable[index];
+      if (!sample) throw new Error("mature route is missing its comparable telemetry sample");
+      const score = robustCostToDone(sample, appliedWeights);
+      const scoreComponents = {
         p75ModelAndToolCost: sample.p75ModelAndToolCost,
         developerWaitCost: appliedWeights.developerWaitValuePerMs * sample.p75WallTimeMs,
         humanInterventionCost: appliedWeights.humanInterventionCost * sample.probabilityHumanIntervention,
         retryCost: appliedWeights.retryCost * sample.probabilityRetry,
-      },
-      rankReason: "telemetry" as const,
-    };
+      };
+      return {
+        group,
+        score,
+        endpoints: group.endpoints.map((choice) => ({
+          ...choice,
+          score,
+          scoreComponents,
+          rankReason: matureRankReason,
+        })),
+      };
+    });
+    const ordered = controlledHoldout ? scored : scored.sort((left, right) => left.score - right.score);
+    return { choices: ordered.flatMap((entry) => entry.endpoints), mature: true, controlledHoldout };
+  }
+
+  // Archetypes the corpus does not measure keep their declared order: an agentic pass rate is not a
+  // proxy for single-shot classification or schema extraction quality.
+  if (!BOOTSTRAP_ROUTE_POLICIES[archetype].evidenceRanked) {
+    return { mature: false, controlledHoldout: false, choices: groups.flatMap((group) => group.endpoints) };
+  }
+
+  // Pre-telemetry ordering uses the measured evidence priors rather than policy list order, so a
+  // cheap-but-weak configuration cannot win on token price and a strong configuration does not need
+  // to be hand-placed first.
+  const scoreContext = evidenceScoreContext(archetype, context);
+  const scored = groups.map((group) => {
+    const prior = findEvidencePrior(group.logicalModelId, group.effort);
+    const evidence = prior ? scoreEvidencePrior(prior, DEFAULT_EVIDENCE_WEIGHTS, scoreContext) : undefined;
+    return { group, evidence };
   });
-  const controlledHoldout = explorationKey ? isControlledHoldout(explorationKey) : false;
+  const ranked = scored
+    .filter((entry) => entry.evidence !== undefined)
+    .sort((left, right) => (left.evidence?.score ?? 0) - (right.evidence?.score ?? 0));
+  // A weakly evidenced language tendency may break a near-tie but can never move a candidate past a
+  // materially better score. Ruby is the motivating case: its only current-generation source has four
+  // tasks and measures a different construct, which justifies a preference and not a weight.
+  const languagePolicy = languageEvidence(context.language);
+  const tendency = languagePolicy?.vendorTendency;
+  const leader = ranked[0]?.evidence?.score;
+  if (tendency !== undefined && leader !== undefined && leader > 0) {
+    const limit = leader * (1 + (languagePolicy?.nearTieFraction ?? DEFAULT_NEAR_TIE_FRACTION));
+    const preferred = ranked.findIndex(
+      (entry) => (entry.evidence?.score ?? Infinity) <= limit && entry.group.endpoints[0]?.vendor === tendency,
+    );
+    if (preferred > 0) ranked.unshift(...ranked.splice(preferred, 1));
+  }
+  // Candidates without evidence keep their declared policy order behind every scored candidate.
+  const unscored = scored.filter((entry) => entry.evidence === undefined);
+  const ordered = [...ranked, ...unscored];
+  // A pinned primary is a deliberate capability-first prior for archetypes whose failure cost is
+  // paid downstream rather than inside the task. It only reorders; it never adds a candidate.
+  const pin = BOOTSTRAP_ROUTE_POLICIES[archetype].pinnedPrimary;
+  const pinIndex = pin
+    ? ordered.findIndex(
+        (entry) => entry.group.logicalModelId === pin.logicalModelId && entry.group.effort === pin.effort,
+      )
+    : -1;
+  if (pinIndex > 0) ordered.unshift(...ordered.splice(pinIndex, 1));
   return {
-    mature: true,
-    controlledHoldout,
-    choices: controlledHoldout
-      ? scored.map((choice) => ({ ...choice, rankReason: "controlled_holdout" as const }))
-      : scored.sort((left, right) => left.score - right.score),
+    mature: false,
+    controlledHoldout: false,
+    choices: ordered.flatMap((entry) =>
+      entry.group.endpoints.map((choice) => ({
+        ...choice,
+        ...(entry.evidence
+          ? {
+              evidenceScore: entry.evidence.score,
+              ...(entry.evidence.languageUsed ? { evidenceLanguage: entry.evidence.languageUsed } : {}),
+              rankReason: "evidence_prior" as const,
+            }
+          : {}),
+      })),
+    ),
   };
 }
 
@@ -317,15 +802,28 @@ export function selectOrdinaryRoute(
   samples: readonly RouteSample[] = [],
   weights?: CostWeights,
   explorationKey?: string,
+  context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
 ): RouteDecision {
   const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
   const exclusions: CandidateExclusion[] = [];
-  const evaluated = [...policy.primary, ...policy.fallback]
-    .map((candidate) => evaluateCandidate(candidate, registry, archetype, requirements, exclusions))
-    .filter((choice): choice is RouteChoice => choice !== undefined);
+  // Hard, ambiguous work additionally authorizes the escalation prior as a retry candidate.
+  const pool = context.hardTask
+    ? [...policy.primary, ...policy.fallback, ...HARD_TASK_ESCALATION_REFS]
+    : [...policy.primary, ...policy.fallback];
+  const evaluated = pool.flatMap((candidate) =>
+    evaluateCandidate(candidate, registry, archetype, requirements, exclusions, context),
+  );
   const deduplicated = deduplicateChoices(evaluated, exclusions);
-  const ranked = telemetryOrder(deduplicated, archetype, policy.qualityFloor, samples, weights, explorationKey);
-  const [primary, ...fallbacks] = ranked.choices;
+  const ranked = orderGroups(
+    groupCandidates(deduplicated),
+    archetype,
+    policy.qualityFloor,
+    samples,
+    weights,
+    explorationKey,
+    context,
+  );
+  const [primary, ...fallbacks] = demoteEscalationOnly(ranked.choices, exclusions);
 
   if (!primary || fallbacks.length === 0) {
     return {
@@ -352,25 +850,26 @@ function builderChoice(
   builder: RegistryModelSnapshot,
   builderEffort: EffortLevel,
   builderAbility: number,
-  registry: readonly RegistryModelSnapshot[],
   requirements: RouteRequirements,
   exclusions: CandidateExclusion[],
 ): RouteChoice | undefined {
   const ability = Math.max(1, Math.min(4, Math.round(builderAbility))) as CandidateRef["ability"];
-  const eligible = evaluateCandidate(
+  const eligible = evaluateEndpoint(
     {
-      provider: builder.provider,
-      modelId: builder.modelId,
+      // A builder chosen by the user is evaluated as itself, on its own endpoint, not expanded across
+      // a resale chain: the point of the builder fallback is to reuse exactly what the user has.
+      logicalModelId: canonicalModelId(builder.modelId),
       vendor: builder.vendor,
       effort: builderEffort,
       ability,
       allowAlias: false,
       restricted: false,
     },
-    registry,
+    builder,
     "code_review",
     requirements,
     exclusions,
+    REVIEW_CONTEXT,
   );
   return eligible ? { ...eligible, rankReason: "fixed_builder_fallback" } : undefined;
 }
@@ -390,8 +889,8 @@ export function selectReviewRoute(
   for (const vendor of vendors) {
     const refsForVendor = reviewerRefs(vendor, builderAbility);
     const eligible = refsForVendor
-      .map((ref) => evaluateCandidate(ref, registry, "code_review", requirements, exclusions))
-      .find((choice): choice is RouteChoice => choice !== undefined);
+      .flatMap((ref) => evaluateCandidate(ref, registry, "code_review", requirements, exclusions, REVIEW_CONTEXT))
+      .at(0);
     if (eligible) {
       if (eligible.ability < builderAbility) ceilingMismatchVendors.push(vendor);
       choices.push({ ...eligible, rankReason: "review_ability" });
@@ -403,7 +902,7 @@ export function selectReviewRoute(
     const rightDistance = Math.abs(right.ability - builderAbility);
     return leftDistance - rightDistance;
   });
-  const fixedBuilder = builderChoice(builder, builderEffort, builderAbility, registry, requirements, exclusions);
+  const fixedBuilder = builderChoice(builder, builderEffort, builderAbility, requirements, exclusions);
   const primary = choices[0];
   const fallback = choices[1];
   if (choices.length !== 2 || !primary || !fallback || !fixedBuilder) {

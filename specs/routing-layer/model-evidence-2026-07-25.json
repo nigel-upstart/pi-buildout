@@ -1,0 +1,2808 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-25",
+  "rows": [
+    {
+      "modelId": "claude-fable-5",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6527,
+        "hardTaskPassRate": 0.2679,
+        "regressionBreakRate": 0.0465,
+        "partialCreditOnFailure": 0.6771,
+        "repeatAllPassRate": 0.3717,
+        "repeatFlakyRate": 0.4956,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0487,
+        "medianWallTimeSeconds": 878.2996,
+        "p90WallTimeSeconds": 1769.4447,
+        "medianSteps": 48.0,
+        "p90PeakContextTokens": 157736,
+        "costPerPassUsd": 13.2531
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7647,
+          "hardTaskPassRate": 0.4375,
+          "regressionBreakRate": 0.0515,
+          "medianWallTimeSeconds": 938.3847
+        },
+        "python": {
+          "passRate": 0.6838,
+          "hardTaskPassRate": 0.3125,
+          "regressionBreakRate": 0.0809,
+          "medianWallTimeSeconds": 815.6882
+        },
+        "typescript": {
+          "passRate": 0.5286,
+          "hardTaskPassRate": 0.1944,
+          "regressionBreakRate": 0.0214,
+          "medianWallTimeSeconds": 956.334
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5179,
+          "hardTaskPassRate": 0.4167,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 1018.4958
+        },
+        "upstart_core": {
+          "passRate": 0.6578,
+          "hardTaskPassRate": 0.2404,
+          "regressionBreakRate": 0.051,
+          "medianWallTimeSeconds": 873.452
+        }
+      },
+      "cursorbench": {
+        "scorePct": 66.5,
+        "costPerTaskUsd": 8.77,
+        "rank": 8
+      },
+      "consensus": {
+        "performanceLow": 73.47,
+        "performanceBest": 78.83,
+        "performanceHigh": 85.71,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-fable-5",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5708,
+        "hardTaskPassRate": 0.25,
+        "regressionBreakRate": 0.0487,
+        "partialCreditOnFailure": 0.7391,
+        "repeatAllPassRate": 0.2478,
+        "repeatFlakyRate": 0.5664,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0066,
+        "routingErrorRate": 0.042,
+        "medianWallTimeSeconds": 393.4904,
+        "p90WallTimeSeconds": 928.5703,
+        "medianSteps": 28.0,
+        "p90PeakContextTokens": 78470,
+        "costPerPassUsd": 6.2486
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6838,
+          "hardTaskPassRate": 0.4688,
+          "regressionBreakRate": 0.0294,
+          "medianWallTimeSeconds": 375.9709
+        },
+        "python": {
+          "passRate": 0.5588,
+          "hardTaskPassRate": 0.3438,
+          "regressionBreakRate": 0.1029,
+          "medianWallTimeSeconds": 355.3411
+        },
+        "typescript": {
+          "passRate": 0.5214,
+          "hardTaskPassRate": 0.2222,
+          "regressionBreakRate": 0.0214,
+          "medianWallTimeSeconds": 403.4176
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4643,
+          "hardTaskPassRate": 0.4167,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 491.8011
+        },
+        "upstart_core": {
+          "passRate": 0.5874,
+          "hardTaskPassRate": 0.2885,
+          "regressionBreakRate": 0.051,
+          "medianWallTimeSeconds": 380.9517
+        }
+      },
+      "cursorbench": {
+        "scorePct": 62.1,
+        "costPerTaskUsd": 4.46,
+        "rank": 18
+      },
+      "consensus": {
+        "performanceLow": 61.22,
+        "performanceBest": 63.01,
+        "performanceHigh": 65.31,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-fable-5",
+      "effort": "max",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6726,
+        "hardTaskPassRate": 0.2946,
+        "regressionBreakRate": 0.0664,
+        "partialCreditOnFailure": 0.6492,
+        "repeatAllPassRate": 0.4956,
+        "repeatFlakyRate": 0.3451,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0354,
+        "medianWallTimeSeconds": 1875.5125,
+        "p90WallTimeSeconds": 3110.6726,
+        "medianSteps": 79.0,
+        "p90PeakContextTokens": 269878,
+        "costPerPassUsd": 30.7441
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7132,
+          "hardTaskPassRate": 0.3438,
+          "regressionBreakRate": 0.0735,
+          "medianWallTimeSeconds": 1892.3815
+        },
+        "python": {
+          "passRate": 0.6985,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 1702.3756
+        },
+        "typescript": {
+          "passRate": 0.5714,
+          "hardTaskPassRate": 0.3056,
+          "regressionBreakRate": 0.05,
+          "medianWallTimeSeconds": 2070.777
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5357,
+          "hardTaskPassRate": 0.6667,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 2293.8053
+        },
+        "upstart_core": {
+          "passRate": 0.6602,
+          "hardTaskPassRate": 0.2115,
+          "regressionBreakRate": 0.0728,
+          "medianWallTimeSeconds": 1858.9841
+        }
+      },
+      "cursorbench": {
+        "scorePct": 70.5,
+        "costPerTaskUsd": 17.32,
+        "rank": 1
+      },
+      "consensus": {
+        "performanceLow": 79.59,
+        "performanceBest": 90.82,
+        "performanceHigh": 100.0,
+        "sourceCount": 3,
+        "rangeConfidence": 90,
+        "estimateConfidence": 92.0
+      }
+    },
+    {
+      "modelId": "claude-fable-5",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6305,
+        "hardTaskPassRate": 0.2857,
+        "regressionBreakRate": 0.0376,
+        "partialCreditOnFailure": 0.7246,
+        "repeatAllPassRate": 0.3451,
+        "repeatFlakyRate": 0.4867,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0022,
+        "routingErrorRate": 0.0354,
+        "medianWallTimeSeconds": 631.0299,
+        "p90WallTimeSeconds": 1415.0093,
+        "medianSteps": 40.0,
+        "p90PeakContextTokens": 116987,
+        "costPerPassUsd": 9.3559
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6985,
+          "hardTaskPassRate": 0.375,
+          "regressionBreakRate": 0.0441,
+          "medianWallTimeSeconds": 624.4163
+        },
+        "python": {
+          "passRate": 0.6397,
+          "hardTaskPassRate": 0.375,
+          "regressionBreakRate": 0.0662,
+          "medianWallTimeSeconds": 547.9019
+        },
+        "typescript": {
+          "passRate": 0.5714,
+          "hardTaskPassRate": 0.3056,
+          "regressionBreakRate": 0.0143,
+          "medianWallTimeSeconds": 685.3875
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5,
+          "hardTaskPassRate": 0.5,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 759.1464
+        },
+        "upstart_core": {
+          "passRate": 0.6359,
+          "hardTaskPassRate": 0.3173,
+          "regressionBreakRate": 0.0413,
+          "medianWallTimeSeconds": 622.4787
+        }
+      },
+      "cursorbench": {
+        "scorePct": 65.2,
+        "costPerTaskUsd": 6.8,
+        "rank": 10
+      },
+      "consensus": {
+        "performanceLow": 69.39,
+        "performanceBest": 74.74,
+        "performanceHigh": 81.63,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-fable-5",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6991,
+        "hardTaskPassRate": 0.3036,
+        "regressionBreakRate": 0.0487,
+        "partialCreditOnFailure": 0.7994,
+        "repeatAllPassRate": 0.5133,
+        "repeatFlakyRate": 0.3717,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1231.5535,
+        "p90WallTimeSeconds": 2370.5369,
+        "medianSteps": 61.5,
+        "p90PeakContextTokens": 206553,
+        "costPerPassUsd": 19.0181
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7132,
+          "hardTaskPassRate": 0.3125,
+          "regressionBreakRate": 0.0441,
+          "medianWallTimeSeconds": 1257.2219
+        },
+        "python": {
+          "passRate": 0.7426,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 1118.0392
+        },
+        "typescript": {
+          "passRate": 0.6357,
+          "hardTaskPassRate": 0.3889,
+          "regressionBreakRate": 0.0214,
+          "medianWallTimeSeconds": 1405.6225
+        },
+        "web_ui_proxy": {
+          "passRate": 0.6071,
+          "hardTaskPassRate": 0.5833,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 1459.569
+        },
+        "upstart_core": {
+          "passRate": 0.6966,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0534,
+          "medianWallTimeSeconds": 1213.9003
+        }
+      },
+      "consensus": {
+        "performanceLow": 89.8,
+        "performanceBest": 91.58,
+        "performanceHigh": 93.88,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-opus-4-8",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5177,
+        "hardTaskPassRate": 0.125,
+        "regressionBreakRate": 0.0796,
+        "partialCreditOnFailure": 0.8018,
+        "repeatAllPassRate": 0.2566,
+        "repeatFlakyRate": 0.5221,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 887.7987,
+        "p90WallTimeSeconds": 1692.6914,
+        "medianSteps": 67.0,
+        "p90PeakContextTokens": 148042,
+        "costPerPassUsd": 8.2711
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.5809,
+          "hardTaskPassRate": 0.4062,
+          "regressionBreakRate": 0.0515,
+          "medianWallTimeSeconds": 884.5281
+        },
+        "python": {
+          "passRate": 0.5588,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.1176,
+          "medianWallTimeSeconds": 753.5704
+        },
+        "typescript": {
+          "passRate": 0.4357,
+          "hardTaskPassRate": 0.1111,
+          "regressionBreakRate": 0.0857,
+          "medianWallTimeSeconds": 1022.5706
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3929,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 1075.6192
+        },
+        "upstart_core": {
+          "passRate": 0.5243,
+          "hardTaskPassRate": 0.1346,
+          "regressionBreakRate": 0.085,
+          "medianWallTimeSeconds": 876.4171
+        }
+      },
+      "cursorbench": {
+        "scorePct": 58.0,
+        "costPerTaskUsd": 3.15,
+        "rank": 27
+      },
+      "consensus": {
+        "performanceLow": 41.84,
+        "performanceBest": 44.07,
+        "performanceHigh": 46.94,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-opus-4-8",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.4071,
+        "hardTaskPassRate": 0.0804,
+        "regressionBreakRate": 0.0665,
+        "partialCreditOnFailure": 0.8177,
+        "repeatAllPassRate": 0.1947,
+        "repeatFlakyRate": 0.4867,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 517.0756,
+        "p90WallTimeSeconds": 1154.9822,
+        "medianSteps": 47.0,
+        "p90PeakContextTokens": 98925,
+        "costPerPassUsd": 5.6262
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.4632,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0368,
+          "medianWallTimeSeconds": 485.0464
+        },
+        "python": {
+          "passRate": 0.4044,
+          "hardTaskPassRate": 0.0938,
+          "regressionBreakRate": 0.1111,
+          "medianWallTimeSeconds": 438.3185
+        },
+        "typescript": {
+          "passRate": 0.4,
+          "hardTaskPassRate": 0.0556,
+          "regressionBreakRate": 0.0571,
+          "medianWallTimeSeconds": 598.5863
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3393,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 699.9081
+        },
+        "upstart_core": {
+          "passRate": 0.4223,
+          "hardTaskPassRate": 0.1154,
+          "regressionBreakRate": 0.0681,
+          "medianWallTimeSeconds": 499.1976
+        }
+      },
+      "cursorbench": {
+        "scorePct": 53.1,
+        "costPerTaskUsd": 2.02,
+        "rank": 37
+      },
+      "consensus": {
+        "performanceLow": 24.49,
+        "performanceBest": 25.38,
+        "performanceHigh": 26.53,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-opus-4-8",
+      "effort": "max",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5597,
+        "hardTaskPassRate": 0.1518,
+        "regressionBreakRate": 0.0597,
+        "partialCreditOnFailure": 0.706,
+        "repeatAllPassRate": 0.3186,
+        "repeatFlakyRate": 0.4602,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0597,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 2952.8726,
+        "p90WallTimeSeconds": 6471.5125,
+        "medianSteps": 113.0,
+        "p90PeakContextTokens": 307636,
+        "costPerPassUsd": 22.4687
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6176,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0735,
+          "medianWallTimeSeconds": 2994.3761
+        },
+        "python": {
+          "passRate": 0.6324,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 2601.9371
+        },
+        "typescript": {
+          "passRate": 0.4571,
+          "hardTaskPassRate": 0.1111,
+          "regressionBreakRate": 0.0286,
+          "medianWallTimeSeconds": 3322.599
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3571,
+          "hardTaskPassRate": 0.3333,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 3252.3291
+        },
+        "upstart_core": {
+          "passRate": 0.568,
+          "hardTaskPassRate": 0.1827,
+          "regressionBreakRate": 0.0655,
+          "medianWallTimeSeconds": 2931.8057
+        }
+      },
+      "cursorbench": {
+        "scorePct": 62.3,
+        "costPerTaskUsd": 5.77,
+        "rank": 17
+      },
+      "consensus": {
+        "performanceLow": 57.14,
+        "performanceBest": 67.75,
+        "performanceHigh": 92.31,
+        "sourceCount": 3,
+        "rangeConfidence": 90,
+        "estimateConfidence": 90.0
+      }
+    },
+    {
+      "modelId": "claude-opus-4-8",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.4867,
+        "hardTaskPassRate": 0.1607,
+        "regressionBreakRate": 0.0575,
+        "partialCreditOnFailure": 0.8283,
+        "repeatAllPassRate": 0.2389,
+        "repeatFlakyRate": 0.5221,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 729.1386,
+        "p90WallTimeSeconds": 1393.308,
+        "medianSteps": 60.0,
+        "p90PeakContextTokens": 126503,
+        "costPerPassUsd": 7.0756
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.5221,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0588,
+          "medianWallTimeSeconds": 751.4338
+        },
+        "python": {
+          "passRate": 0.4926,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 635.2993
+        },
+        "typescript": {
+          "passRate": 0.4714,
+          "hardTaskPassRate": 0.1111,
+          "regressionBreakRate": 0.0286,
+          "medianWallTimeSeconds": 825.4694
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3929,
+          "hardTaskPassRate": 0.1667,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 892.0803
+        },
+        "upstart_core": {
+          "passRate": 0.4951,
+          "hardTaskPassRate": 0.1538,
+          "regressionBreakRate": 0.0607,
+          "medianWallTimeSeconds": 714.0451
+        }
+      },
+      "cursorbench": {
+        "scorePct": 56.1,
+        "costPerTaskUsd": 2.81,
+        "rank": 31
+      },
+      "consensus": {
+        "performanceLow": 36.73,
+        "performanceBest": 37.18,
+        "performanceHigh": 37.76,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-opus-4-8",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5376,
+        "hardTaskPassRate": 0.1696,
+        "regressionBreakRate": 0.0664,
+        "partialCreditOnFailure": 0.7493,
+        "repeatAllPassRate": 0.2832,
+        "repeatFlakyRate": 0.5221,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0177,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1836.477,
+        "p90WallTimeSeconds": 3619.7351,
+        "medianSteps": 89.5,
+        "p90PeakContextTokens": 226976,
+        "costPerPassUsd": 14.7373
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6691,
+          "hardTaskPassRate": 0.4375,
+          "regressionBreakRate": 0.0588,
+          "medianWallTimeSeconds": 1781.236
+        },
+        "python": {
+          "passRate": 0.5368,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 1691.5426
+        },
+        "typescript": {
+          "passRate": 0.4071,
+          "hardTaskPassRate": 0.1111,
+          "regressionBreakRate": 0.0643,
+          "medianWallTimeSeconds": 2090.7591
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3393,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 2170.5192
+        },
+        "upstart_core": {
+          "passRate": 0.5364,
+          "hardTaskPassRate": 0.1923,
+          "regressionBreakRate": 0.0728,
+          "medianWallTimeSeconds": 1820.2632
+        }
+      },
+      "consensus": {
+        "performanceLow": 51.02,
+        "performanceBest": 53.7,
+        "performanceHigh": 57.14,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-opus-5",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.7235,
+        "hardTaskPassRate": 0.3839,
+        "regressionBreakRate": 0.0489,
+        "partialCreditOnFailure": 0.8305,
+        "repeatAllPassRate": 0.5044,
+        "repeatFlakyRate": 0.3717,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1009.1752,
+        "p90WallTimeSeconds": 1832.5083,
+        "medianSteps": 64.0,
+        "p90PeakContextTokens": 195478,
+        "costPerPassUsd": 8.4212
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.8162,
+          "hardTaskPassRate": 0.7188,
+          "regressionBreakRate": 0.0294,
+          "medianWallTimeSeconds": 1004.6009
+        },
+        "python": {
+          "passRate": 0.7059,
+          "hardTaskPassRate": 0.4688,
+          "regressionBreakRate": 0.1176,
+          "medianWallTimeSeconds": 939.7948
+        },
+        "typescript": {
+          "passRate": 0.6429,
+          "hardTaskPassRate": 0.3056,
+          "regressionBreakRate": 0.0145,
+          "medianWallTimeSeconds": 1169.5478
+        },
+        "web_ui_proxy": {
+          "passRate": 0.6607,
+          "hardTaskPassRate": 0.5833,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 1361.3089
+        },
+        "upstart_core": {
+          "passRate": 0.7209,
+          "hardTaskPassRate": 0.3654,
+          "regressionBreakRate": 0.0537,
+          "medianWallTimeSeconds": 1005.3207
+        }
+      },
+      "cursorbench": {
+        "scorePct": 66.7,
+        "costPerTaskUsd": 3.91,
+        "rank": 6
+      },
+      "consensus": {
+        "performanceLow": 88.78,
+        "performanceBest": 92.22,
+        "performanceHigh": 94.9,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-opus-5",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5774,
+        "hardTaskPassRate": 0.2768,
+        "regressionBreakRate": 0.0668,
+        "partialCreditOnFailure": 0.8334,
+        "repeatAllPassRate": 0.3097,
+        "repeatFlakyRate": 0.5398,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 336.7314,
+        "p90WallTimeSeconds": 932.596,
+        "medianSteps": 29.0,
+        "p90PeakContextTokens": 80867,
+        "costPerPassUsd": 2.8992
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6838,
+          "hardTaskPassRate": 0.5,
+          "regressionBreakRate": 0.0441,
+          "medianWallTimeSeconds": 336.3622
+        },
+        "python": {
+          "passRate": 0.5441,
+          "hardTaskPassRate": 0.3125,
+          "regressionBreakRate": 0.125,
+          "medianWallTimeSeconds": 317.242
+        },
+        "typescript": {
+          "passRate": 0.5357,
+          "hardTaskPassRate": 0.2222,
+          "regressionBreakRate": 0.0511,
+          "medianWallTimeSeconds": 350.901
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4821,
+          "hardTaskPassRate": 0.4167,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 361.0745
+        },
+        "upstart_core": {
+          "passRate": 0.5874,
+          "hardTaskPassRate": 0.2885,
+          "regressionBreakRate": 0.0733,
+          "medianWallTimeSeconds": 329.6767
+        }
+      },
+      "cursorbench": {
+        "scorePct": 62.8,
+        "costPerTaskUsd": 2.55,
+        "rank": 16
+      },
+      "consensus": {
+        "performanceLow": 63.27,
+        "performanceBest": 65.94,
+        "performanceHigh": 69.39,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-opus-5",
+      "effort": "max",
+      "deepswe": {
+        "nTrials": 449,
+        "passRate": 0.7283,
+        "hardTaskPassRate": 0.3839,
+        "regressionBreakRate": 0.0517,
+        "partialCreditOnFailure": 0.7782,
+        "repeatAllPassRate": 0.5487,
+        "repeatFlakyRate": 0.3363,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1802.969,
+        "p90WallTimeSeconds": 2715.6829,
+        "medianSteps": 91.0,
+        "p90PeakContextTokens": 292421,
+        "costPerPassUsd": 16.263
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.806,
+          "hardTaskPassRate": 0.625,
+          "regressionBreakRate": 0.0224,
+          "medianWallTimeSeconds": 1808.5543
+        },
+        "python": {
+          "passRate": 0.7426,
+          "hardTaskPassRate": 0.375,
+          "regressionBreakRate": 0.1194,
+          "medianWallTimeSeconds": 1669.4115
+        },
+        "typescript": {
+          "passRate": 0.6331,
+          "hardTaskPassRate": 0.3611,
+          "regressionBreakRate": 0.0292,
+          "medianWallTimeSeconds": 1876.9756
+        },
+        "web_ui_proxy": {
+          "passRate": 0.6071,
+          "hardTaskPassRate": 0.5,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 2271.0145
+        },
+        "upstart_core": {
+          "passRate": 0.7262,
+          "hardTaskPassRate": 0.3942,
+          "regressionBreakRate": 0.0568,
+          "medianWallTimeSeconds": 1792.9933
+        }
+      },
+      "cursorbench": {
+        "scorePct": 70.0,
+        "costPerTaskUsd": 8.23,
+        "rank": 2
+      },
+      "consensus": {
+        "performanceLow": 97.96,
+        "performanceBest": 99.11,
+        "performanceHigh": 100.0,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-opus-5",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6814,
+        "hardTaskPassRate": 0.3304,
+        "regressionBreakRate": 0.0446,
+        "partialCreditOnFailure": 0.8166,
+        "repeatAllPassRate": 0.4867,
+        "repeatFlakyRate": 0.4071,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 588.0724,
+        "p90WallTimeSeconds": 1464.3437,
+        "medianSteps": 43.0,
+        "p90PeakContextTokens": 136395,
+        "costPerPassUsd": 4.8555
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7794,
+          "hardTaskPassRate": 0.5312,
+          "regressionBreakRate": 0.0221,
+          "medianWallTimeSeconds": 580.4604
+        },
+        "python": {
+          "passRate": 0.6838,
+          "hardTaskPassRate": 0.5312,
+          "regressionBreakRate": 0.0815,
+          "medianWallTimeSeconds": 507.8976
+        },
+        "typescript": {
+          "passRate": 0.5929,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0438,
+          "medianWallTimeSeconds": 697.5906
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5357,
+          "hardTaskPassRate": 0.5833,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 740.011
+        },
+        "upstart_core": {
+          "passRate": 0.6845,
+          "hardTaskPassRate": 0.3365,
+          "regressionBreakRate": 0.049,
+          "medianWallTimeSeconds": 572.5986
+        }
+      },
+      "cursorbench": {
+        "scorePct": 64.3,
+        "costPerTaskUsd": 3.29,
+        "rank": 13
+      },
+      "consensus": {
+        "performanceLow": 75.51,
+        "performanceBest": 78.95,
+        "performanceHigh": 81.63,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-opus-5",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 451,
+        "passRate": 0.7251,
+        "hardTaskPassRate": 0.3839,
+        "regressionBreakRate": 0.047,
+        "partialCreditOnFailure": 0.7901,
+        "repeatAllPassRate": 0.5133,
+        "repeatFlakyRate": 0.3451,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1448.4388,
+        "p90WallTimeSeconds": 2394.8897,
+        "medianSteps": 80.0,
+        "p90PeakContextTokens": 251671,
+        "costPerPassUsd": 12.5445
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.8593,
+          "hardTaskPassRate": 0.625,
+          "regressionBreakRate": 0.0222,
+          "medianWallTimeSeconds": 1448.0639
+        },
+        "python": {
+          "passRate": 0.7059,
+          "hardTaskPassRate": 0.4375,
+          "regressionBreakRate": 0.1119,
+          "medianWallTimeSeconds": 1328.2832
+        },
+        "typescript": {
+          "passRate": 0.6071,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0217,
+          "medianWallTimeSeconds": 1603.5853
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5536,
+          "hardTaskPassRate": 0.4167,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 1780.7805
+        },
+        "upstart_core": {
+          "passRate": 0.7226,
+          "hardTaskPassRate": 0.3654,
+          "regressionBreakRate": 0.0516,
+          "medianWallTimeSeconds": 1448.0639
+        }
+      },
+      "consensus": {
+        "performanceLow": 95.92,
+        "performanceBest": 97.07,
+        "performanceHigh": 97.96,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.4823,
+        "hardTaskPassRate": 0.1964,
+        "regressionBreakRate": 0.0708,
+        "partialCreditOnFailure": 0.8167,
+        "repeatAllPassRate": 0.2212,
+        "repeatFlakyRate": 0.5752,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1539.1867,
+        "p90WallTimeSeconds": 2882.274,
+        "medianSteps": 138.0,
+        "p90PeakContextTokens": 286022,
+        "costPerPassUsd": 15.3621
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.4706,
+          "hardTaskPassRate": 0.1562,
+          "regressionBreakRate": 0.1029,
+          "medianWallTimeSeconds": 1366.3385
+        },
+        "python": {
+          "passRate": 0.4926,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0662,
+          "medianWallTimeSeconds": 1483.5113
+        },
+        "typescript": {
+          "passRate": 0.5143,
+          "hardTaskPassRate": 0.2778,
+          "regressionBreakRate": 0.0643,
+          "medianWallTimeSeconds": 1635.2008
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4821,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0357,
+          "medianWallTimeSeconds": 1870.2945
+        },
+        "upstart_core": {
+          "passRate": 0.4927,
+          "hardTaskPassRate": 0.2404,
+          "regressionBreakRate": 0.0777,
+          "medianWallTimeSeconds": 1514.0877
+        }
+      },
+      "cursorbench": {
+        "scorePct": 56.9,
+        "costPerTaskUsd": 3.19,
+        "rank": 29
+      },
+      "consensus": {
+        "performanceLow": 32.65,
+        "performanceBest": 37.12,
+        "performanceHigh": 42.86,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.3031,
+        "hardTaskPassRate": 0.0982,
+        "regressionBreakRate": 0.0802,
+        "partialCreditOnFailure": 0.7913,
+        "repeatAllPassRate": 0.0796,
+        "repeatFlakyRate": 0.4956,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 628.6773,
+        "p90WallTimeSeconds": 1316.567,
+        "medianSteps": 70.0,
+        "p90PeakContextTokens": 137187,
+        "costPerPassUsd": 7.2227
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.3382,
+          "hardTaskPassRate": 0.0625,
+          "regressionBreakRate": 0.0882,
+          "medianWallTimeSeconds": 624.2289
+        },
+        "python": {
+          "passRate": 0.3015,
+          "hardTaskPassRate": 0.125,
+          "regressionBreakRate": 0.0809,
+          "medianWallTimeSeconds": 555.0707
+        },
+        "typescript": {
+          "passRate": 0.3429,
+          "hardTaskPassRate": 0.1389,
+          "regressionBreakRate": 0.0857,
+          "medianWallTimeSeconds": 723.2431
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3036,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 829.1802
+        },
+        "upstart_core": {
+          "passRate": 0.3277,
+          "hardTaskPassRate": 0.1442,
+          "regressionBreakRate": 0.085,
+          "medianWallTimeSeconds": 617.95
+        }
+      },
+      "cursorbench": {
+        "scorePct": 47.7,
+        "costPerTaskUsd": 1.3,
+        "rank": 46
+      },
+      "consensus": {
+        "performanceLow": 9.18,
+        "performanceBest": 10.91,
+        "performanceHigh": 12.24,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "effort": "max",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5265,
+        "hardTaskPassRate": 0.3304,
+        "regressionBreakRate": 0.0554,
+        "partialCreditOnFailure": 0.7001,
+        "repeatAllPassRate": 0.2566,
+        "repeatFlakyRate": 0.531,
+        "contextOverflowRate": 0.0022,
+        "timeoutRate": 0.0597,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 4371.3285,
+        "p90WallTimeSeconds": 7991.083,
+        "medianSteps": 259.0,
+        "p90PeakContextTokens": 557025,
+        "costPerPassUsd": 49.0658
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.4926,
+          "hardTaskPassRate": 0.3438,
+          "regressionBreakRate": 0.0667,
+          "medianWallTimeSeconds": 4357.2771
+        },
+        "python": {
+          "passRate": 0.5956,
+          "hardTaskPassRate": 0.4688,
+          "regressionBreakRate": 0.0588,
+          "medianWallTimeSeconds": 4007.8767
+        },
+        "typescript": {
+          "passRate": 0.4929,
+          "hardTaskPassRate": 0.3611,
+          "regressionBreakRate": 0.05,
+          "medianWallTimeSeconds": 4725.6622
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4821,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 4865.6244
+        },
+        "upstart_core": {
+          "passRate": 0.5267,
+          "hardTaskPassRate": 0.2788,
+          "regressionBreakRate": 0.0584,
+          "medianWallTimeSeconds": 4369.1578
+        }
+      },
+      "cursorbench": {
+        "scorePct": 61.5,
+        "costPerTaskUsd": 6.45,
+        "rank": 19
+      },
+      "consensus": {
+        "performanceLow": 44.9,
+        "performanceBest": 57.73,
+        "performanceHigh": 76.92,
+        "sourceCount": 3,
+        "rangeConfidence": 90,
+        "estimateConfidence": 90.0
+      }
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.396,
+        "hardTaskPassRate": 0.1696,
+        "regressionBreakRate": 0.051,
+        "partialCreditOnFailure": 0.807,
+        "repeatAllPassRate": 0.1416,
+        "repeatFlakyRate": 0.5044,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 980.806,
+        "p90WallTimeSeconds": 1805.0208,
+        "medianSteps": 100.5,
+        "p90PeakContextTokens": 189034,
+        "costPerPassUsd": 10.2866
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.4118,
+          "hardTaskPassRate": 0.0938,
+          "regressionBreakRate": 0.0515,
+          "medianWallTimeSeconds": 871.1205
+        },
+        "python": {
+          "passRate": 0.3603,
+          "hardTaskPassRate": 0.1562,
+          "regressionBreakRate": 0.0515,
+          "medianWallTimeSeconds": 932.1772
+        },
+        "typescript": {
+          "passRate": 0.45,
+          "hardTaskPassRate": 0.2778,
+          "regressionBreakRate": 0.0571,
+          "medianWallTimeSeconds": 1072.4013
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5179,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 1180.7897
+        },
+        "upstart_core": {
+          "passRate": 0.4078,
+          "hardTaskPassRate": 0.2115,
+          "regressionBreakRate": 0.0534,
+          "medianWallTimeSeconds": 948.9498
+        }
+      },
+      "cursorbench": {
+        "scorePct": 52.4,
+        "costPerTaskUsd": 2.16,
+        "rank": 39
+      },
+      "consensus": {
+        "performanceLow": 22.45,
+        "performanceBest": 22.45,
+        "performanceHigh": 22.45,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.4956,
+        "hardTaskPassRate": 0.1964,
+        "regressionBreakRate": 0.0643,
+        "partialCreditOnFailure": 0.8098,
+        "repeatAllPassRate": 0.2301,
+        "repeatFlakyRate": 0.5221,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 2230.4012,
+        "p90WallTimeSeconds": 3874.8181,
+        "medianSteps": 174.0,
+        "p90PeakContextTokens": 359865,
+        "costPerPassUsd": 24.016
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.4779,
+          "hardTaskPassRate": 0.2188,
+          "regressionBreakRate": 0.0735,
+          "medianWallTimeSeconds": 2058.4559
+        },
+        "python": {
+          "passRate": 0.5515,
+          "hardTaskPassRate": 0.4688,
+          "regressionBreakRate": 0.0662,
+          "medianWallTimeSeconds": 2011.9513
+        },
+        "typescript": {
+          "passRate": 0.4929,
+          "hardTaskPassRate": 0.1944,
+          "regressionBreakRate": 0.0647,
+          "medianWallTimeSeconds": 2482.0176
+        },
+        "web_ui_proxy": {
+          "passRate": 0.375,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0364,
+          "medianWallTimeSeconds": 2712.7181
+        },
+        "upstart_core": {
+          "passRate": 0.5073,
+          "hardTaskPassRate": 0.2019,
+          "regressionBreakRate": 0.0681,
+          "medianWallTimeSeconds": 2187.5708
+        }
+      },
+      "consensus": {
+        "performanceLow": 38.78,
+        "performanceBest": 45.03,
+        "performanceHigh": 53.06,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 78.0
+      }
+    },
+    {
+      "modelId": "gemini-3.1-pro-preview",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.1173,
+        "hardTaskPassRate": 0.0446,
+        "regressionBreakRate": 0.2279,
+        "partialCreditOnFailure": 0.5983,
+        "repeatAllPassRate": 0.0177,
+        "repeatFlakyRate": 0.2655,
+        "contextOverflowRate": 0.0442,
+        "timeoutRate": 0.0044,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1163.1486,
+        "p90WallTimeSeconds": 5004.3198,
+        "medianSteps": 77.0,
+        "p90PeakContextTokens": 817098,
+        "costPerPassUsd": 80.7007
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.1544,
+          "hardTaskPassRate": 0.0938,
+          "regressionBreakRate": 0.1912,
+          "medianWallTimeSeconds": 1155.7207
+        },
+        "python": {
+          "passRate": 0.0956,
+          "hardTaskPassRate": 0.0312,
+          "regressionBreakRate": 0.375,
+          "medianWallTimeSeconds": 898.6923
+        },
+        "typescript": {
+          "passRate": 0.1214,
+          "hardTaskPassRate": 0.0278,
+          "regressionBreakRate": 0.1429,
+          "medianWallTimeSeconds": 1416.6885
+        },
+        "web_ui_proxy": {
+          "passRate": 0.0357,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.0536,
+          "medianWallTimeSeconds": 1075.173
+        },
+        "upstart_core": {
+          "passRate": 0.1238,
+          "hardTaskPassRate": 0.0577,
+          "regressionBreakRate": 0.2354,
+          "medianWallTimeSeconds": 1148.4224
+        }
+      },
+      "consensus": {
+        "performanceLow": 4.08,
+        "performanceBest": 4.08,
+        "performanceHigh": 4.08,
+        "sourceCount": 1,
+        "rangeConfidence": 30,
+        "estimateConfidence": 50.0
+      }
+    },
+    {
+      "modelId": "gemini-3.5-flash",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.3739,
+        "hardTaskPassRate": 0.1161,
+        "regressionBreakRate": 0.115,
+        "partialCreditOnFailure": 0.7131,
+        "repeatAllPassRate": 0.115,
+        "repeatFlakyRate": 0.5487,
+        "contextOverflowRate": 0.0376,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1460.7703,
+        "p90WallTimeSeconds": 2714.9067,
+        "medianSteps": 82.0,
+        "p90PeakContextTokens": 924506,
+        "costPerPassUsd": 19.6361
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.3971,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0735,
+          "medianWallTimeSeconds": 1427.8303
+        },
+        "python": {
+          "passRate": 0.3676,
+          "hardTaskPassRate": 0.0625,
+          "regressionBreakRate": 0.1765,
+          "medianWallTimeSeconds": 1166.6809
+        },
+        "typescript": {
+          "passRate": 0.35,
+          "hardTaskPassRate": 0.1111,
+          "regressionBreakRate": 0.0929,
+          "medianWallTimeSeconds": 1694.627
+        },
+        "web_ui_proxy": {
+          "passRate": 0.2679,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0357,
+          "medianWallTimeSeconds": 1576.8175
+        },
+        "upstart_core": {
+          "passRate": 0.3714,
+          "hardTaskPassRate": 0.1346,
+          "regressionBreakRate": 0.1141,
+          "medianWallTimeSeconds": 1443.922
+        }
+      },
+      "consensus": {
+        "performanceLow": 20.41,
+        "performanceBest": 20.41,
+        "performanceHigh": 20.41,
+        "sourceCount": 1,
+        "rangeConfidence": 30,
+        "estimateConfidence": 50.0
+      }
+    },
+    {
+      "modelId": "gemini-3.6-flash",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.4845,
+        "hardTaskPassRate": 0.1786,
+        "regressionBreakRate": 0.1131,
+        "partialCreditOnFailure": 0.8025,
+        "repeatAllPassRate": 0.2212,
+        "repeatFlakyRate": 0.5398,
+        "contextOverflowRate": 0.0088,
+        "timeoutRate": 0.0133,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 964.3678,
+        "p90WallTimeSeconds": 1922.7934,
+        "medianSteps": 95.5,
+        "p90PeakContextTokens": 278035,
+        "costPerPassUsd": 7.3074
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.5809,
+          "hardTaskPassRate": 0.5,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 881.7841
+        },
+        "python": {
+          "passRate": 0.4118,
+          "hardTaskPassRate": 0.0938,
+          "regressionBreakRate": 0.1691,
+          "medianWallTimeSeconds": 872.0215
+        },
+        "typescript": {
+          "passRate": 0.4857,
+          "hardTaskPassRate": 0.1389,
+          "regressionBreakRate": 0.0719,
+          "medianWallTimeSeconds": 1072.0184
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3571,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 1064.2152
+        },
+        "upstart_core": {
+          "passRate": 0.4927,
+          "hardTaskPassRate": 0.2212,
+          "regressionBreakRate": 0.1119,
+          "medianWallTimeSeconds": 949.2115
+        }
+      },
+      "cursorbench": {
+        "scorePct": 53.5,
+        "costPerTaskUsd": 1.56,
+        "rank": 36
+      },
+      "consensus": {
+        "performanceLow": 28.57,
+        "performanceBest": 35.72,
+        "performanceHigh": 65.38,
+        "sourceCount": 3,
+        "rangeConfidence": 78,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "gpt-5.4",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5177,
+        "hardTaskPassRate": 0.2143,
+        "regressionBreakRate": 0.1239,
+        "partialCreditOnFailure": 0.8261,
+        "repeatAllPassRate": 0.2478,
+        "repeatFlakyRate": 0.531,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1209.5173,
+        "p90WallTimeSeconds": 2031.3601,
+        "medianSteps": 63.0,
+        "p90PeakContextTokens": 264469,
+        "costPerPassUsd": 10.9184
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6324,
+          "hardTaskPassRate": 0.3438,
+          "regressionBreakRate": 0.0735,
+          "medianWallTimeSeconds": 1213.9745
+        },
+        "python": {
+          "passRate": 0.4632,
+          "hardTaskPassRate": 0.1875,
+          "regressionBreakRate": 0.2353,
+          "medianWallTimeSeconds": 1130.9589
+        },
+        "typescript": {
+          "passRate": 0.5,
+          "hardTaskPassRate": 0.1944,
+          "regressionBreakRate": 0.0786,
+          "medianWallTimeSeconds": 1263.4464
+        },
+        "web_ui_proxy": {
+          "passRate": 0.375,
+          "hardTaskPassRate": 0.1667,
+          "regressionBreakRate": 0.0357,
+          "medianWallTimeSeconds": 1373.0221
+        },
+        "upstart_core": {
+          "passRate": 0.5316,
+          "hardTaskPassRate": 0.2212,
+          "regressionBreakRate": 0.1286,
+          "medianWallTimeSeconds": 1207.5922
+        }
+      },
+      "consensus": {
+        "performanceLow": 41.84,
+        "performanceBest": 50.86,
+        "performanceHigh": 71.15,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 76.0
+      }
+    },
+    {
+      "modelId": "gpt-5.5",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6438,
+        "hardTaskPassRate": 0.3036,
+        "regressionBreakRate": 0.0951,
+        "partialCreditOnFailure": 0.8514,
+        "repeatAllPassRate": 0.3717,
+        "repeatFlakyRate": 0.531,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1881.0673,
+        "p90WallTimeSeconds": 3263.8212,
+        "medianSteps": 60.0,
+        "p90PeakContextTokens": 161665,
+        "costPerPassUsd": 7.9223
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.75,
+          "hardTaskPassRate": 0.375,
+          "regressionBreakRate": 0.0515,
+          "medianWallTimeSeconds": 1821.534
+        },
+        "python": {
+          "passRate": 0.6176,
+          "hardTaskPassRate": 0.2188,
+          "regressionBreakRate": 0.1765,
+          "medianWallTimeSeconds": 1750.5821
+        },
+        "typescript": {
+          "passRate": 0.6071,
+          "hardTaskPassRate": 0.3611,
+          "regressionBreakRate": 0.05,
+          "medianWallTimeSeconds": 2049.6699
+        },
+        "web_ui_proxy": {
+          "passRate": 0.6607,
+          "hardTaskPassRate": 0.4167,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 2036.9581
+        },
+        "upstart_core": {
+          "passRate": 0.6578,
+          "hardTaskPassRate": 0.3269,
+          "regressionBreakRate": 0.0922,
+          "medianWallTimeSeconds": 1867.521
+        }
+      },
+      "cursorbench": {
+        "scorePct": 58.4,
+        "costPerTaskUsd": 2.05,
+        "rank": 25
+      },
+      "consensus": {
+        "performanceLow": 50.0,
+        "performanceBest": 62.05,
+        "performanceHigh": 71.43,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 77.0
+      }
+    },
+    {
+      "modelId": "gpt-5.5",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.2699,
+        "hardTaskPassRate": 0.0625,
+        "regressionBreakRate": 0.1482,
+        "partialCreditOnFailure": 0.7347,
+        "repeatAllPassRate": 0.0885,
+        "repeatFlakyRate": 0.3894,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 485.6083,
+        "p90WallTimeSeconds": 961.3935,
+        "medianSteps": 27.0,
+        "p90PeakContextTokens": 60176,
+        "costPerPassUsd": 4.4467
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.3529,
+          "hardTaskPassRate": 0.0938,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 529.6344
+        },
+        "python": {
+          "passRate": 0.25,
+          "hardTaskPassRate": 0.125,
+          "regressionBreakRate": 0.2059,
+          "medianWallTimeSeconds": 396.5952
+        },
+        "typescript": {
+          "passRate": 0.2714,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.1357,
+          "medianWallTimeSeconds": 533.9924
+        },
+        "web_ui_proxy": {
+          "passRate": 0.2679,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.0536,
+          "medianWallTimeSeconds": 585.1294
+        },
+        "upstart_core": {
+          "passRate": 0.2913,
+          "hardTaskPassRate": 0.1058,
+          "regressionBreakRate": 0.1456,
+          "medianWallTimeSeconds": 481.585
+        }
+      },
+      "cursorbench": {
+        "scorePct": 46.6,
+        "costPerTaskUsd": 0.98,
+        "rank": 49
+      },
+      "consensus": {
+        "performanceLow": 2.04,
+        "performanceBest": 5.48,
+        "performanceHigh": 8.16,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "gpt-5.5",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5398,
+        "hardTaskPassRate": 0.2411,
+        "regressionBreakRate": 0.0796,
+        "partialCreditOnFailure": 0.8107,
+        "repeatAllPassRate": 0.2832,
+        "repeatFlakyRate": 0.4956,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1132.5122,
+        "p90WallTimeSeconds": 2247.5043,
+        "medianSteps": 43.0,
+        "p90PeakContextTokens": 121582,
+        "costPerPassUsd": 5.093
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6029,
+          "hardTaskPassRate": 0.2188,
+          "regressionBreakRate": 0.0588,
+          "medianWallTimeSeconds": 1132.946
+        },
+        "python": {
+          "passRate": 0.5221,
+          "hardTaskPassRate": 0.1562,
+          "regressionBreakRate": 0.1176,
+          "medianWallTimeSeconds": 1003.4668
+        },
+        "typescript": {
+          "passRate": 0.5643,
+          "hardTaskPassRate": 0.3611,
+          "regressionBreakRate": 0.05,
+          "medianWallTimeSeconds": 1345.3639
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5179,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 1355.923
+        },
+        "upstart_core": {
+          "passRate": 0.5631,
+          "hardTaskPassRate": 0.2308,
+          "regressionBreakRate": 0.0752,
+          "medianWallTimeSeconds": 1125.7545
+        }
+      },
+      "cursorbench": {
+        "scorePct": 53.8,
+        "costPerTaskUsd": 1.51,
+        "rank": 35
+      },
+      "consensus": {
+        "performanceLow": 30.61,
+        "performanceBest": 44.39,
+        "performanceHigh": 55.1,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 77.0
+      }
+    },
+    {
+      "modelId": "gpt-5.5",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6704,
+        "hardTaskPassRate": 0.2946,
+        "regressionBreakRate": 0.0597,
+        "partialCreditOnFailure": 0.8308,
+        "repeatAllPassRate": 0.4336,
+        "repeatFlakyRate": 0.4513,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1588.3888,
+        "p90WallTimeSeconds": 2568.1205,
+        "medianSteps": 76.5,
+        "p90PeakContextTokens": 219152,
+        "costPerPassUsd": 10.7797
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.75,
+          "hardTaskPassRate": 0.3125,
+          "regressionBreakRate": 0.0368,
+          "medianWallTimeSeconds": 1490.3872
+        },
+        "python": {
+          "passRate": 0.6691,
+          "hardTaskPassRate": 0.2188,
+          "regressionBreakRate": 0.125,
+          "medianWallTimeSeconds": 1582.5136
+        },
+        "typescript": {
+          "passRate": 0.6214,
+          "hardTaskPassRate": 0.3056,
+          "regressionBreakRate": 0.0286,
+          "medianWallTimeSeconds": 1655.5506
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4821,
+          "hardTaskPassRate": 0.3333,
+          "regressionBreakRate": 0.0357,
+          "medianWallTimeSeconds": 1664.1726
+        },
+        "upstart_core": {
+          "passRate": 0.6796,
+          "hardTaskPassRate": 0.3173,
+          "regressionBreakRate": 0.0631,
+          "medianWallTimeSeconds": 1583.985
+        }
+      },
+      "consensus": {
+        "performanceLow": 50.0,
+        "performanceBest": 68.79,
+        "performanceHigh": 86.54,
+        "sourceCount": 3,
+        "rangeConfidence": 90,
+        "estimateConfidence": 90.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.4425,
+        "hardTaskPassRate": 0.1875,
+        "regressionBreakRate": 0.0907,
+        "partialCreditOnFailure": 0.8115,
+        "repeatAllPassRate": 0.1593,
+        "repeatFlakyRate": 0.5929,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 394.0738,
+        "p90WallTimeSeconds": 765.1992,
+        "medianSteps": 44.0,
+        "p90PeakContextTokens": 141595,
+        "costPerPassUsd": 1.7581
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.5147,
+          "hardTaskPassRate": 0.1875,
+          "regressionBreakRate": 0.0662,
+          "medianWallTimeSeconds": 394.1235
+        },
+        "python": {
+          "passRate": 0.4265,
+          "hardTaskPassRate": 0.1562,
+          "regressionBreakRate": 0.1618,
+          "medianWallTimeSeconds": 319.5825
+        },
+        "typescript": {
+          "passRate": 0.4357,
+          "hardTaskPassRate": 0.1944,
+          "regressionBreakRate": 0.05,
+          "medianWallTimeSeconds": 456.5272
+        },
+        "web_ui_proxy": {
+          "passRate": 0.375,
+          "hardTaskPassRate": 0.1667,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 474.05
+        },
+        "upstart_core": {
+          "passRate": 0.4587,
+          "hardTaskPassRate": 0.1923,
+          "regressionBreakRate": 0.0922,
+          "medianWallTimeSeconds": 390.8778
+        }
+      },
+      "cursorbench": {
+        "scorePct": 56.8,
+        "costPerTaskUsd": 0.82,
+        "rank": 30
+      },
+      "consensus": {
+        "performanceLow": 28.57,
+        "performanceBest": 33.93,
+        "performanceHigh": 40.82,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.0155,
+        "hardTaskPassRate": 0.0,
+        "regressionBreakRate": 0.2765,
+        "partialCreditOnFailure": 0.3637,
+        "repeatAllPassRate": 0.0,
+        "repeatFlakyRate": 0.0442,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 69.9233,
+        "p90WallTimeSeconds": 130.3232,
+        "medianSteps": 12.0,
+        "p90PeakContextTokens": 22783,
+        "costPerPassUsd": 4.6754
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.0147,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.1985,
+          "medianWallTimeSeconds": 91.7932
+        },
+        "python": {
+          "passRate": 0.0,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.3676,
+          "medianWallTimeSeconds": 48.8244
+        },
+        "typescript": {
+          "passRate": 0.0357,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.2714,
+          "medianWallTimeSeconds": 70.2583
+        },
+        "web_ui_proxy": {
+          "passRate": 0.0357,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.0536,
+          "medianWallTimeSeconds": 66.4166
+        },
+        "upstart_core": {
+          "passRate": 0.017,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.2791,
+          "medianWallTimeSeconds": 67.9872
+        }
+      },
+      "cursorbench": {
+        "scorePct": 37.6,
+        "costPerTaskUsd": 0.16,
+        "rank": 50
+      },
+      "consensus": {
+        "performanceLow": 0.0,
+        "performanceBest": 0.0,
+        "performanceHigh": 0.0,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "effort": "max",
+      "deepswe": {
+        "nTrials": 448,
+        "passRate": 0.6719,
+        "hardTaskPassRate": 0.4464,
+        "regressionBreakRate": 0.0513,
+        "partialCreditOnFailure": 0.8368,
+        "repeatAllPassRate": 0.375,
+        "repeatFlakyRate": 0.5268,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 982.9724,
+        "p90WallTimeSeconds": 1822.5964,
+        "medianSteps": 92.5,
+        "p90PeakContextTokens": 323620,
+        "costPerPassUsd": 4.507
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7868,
+          "hardTaskPassRate": 0.5312,
+          "regressionBreakRate": 0.0294,
+          "medianWallTimeSeconds": 913.5786
+        },
+        "python": {
+          "passRate": 0.6544,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 918.3582
+        },
+        "typescript": {
+          "passRate": 0.5956,
+          "hardTaskPassRate": 0.4444,
+          "regressionBreakRate": 0.0294,
+          "medianWallTimeSeconds": 1111.2031
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5714,
+          "hardTaskPassRate": 0.5,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 1137.3551
+        },
+        "upstart_core": {
+          "passRate": 0.6789,
+          "hardTaskPassRate": 0.4712,
+          "regressionBreakRate": 0.0515,
+          "medianWallTimeSeconds": 985.1519
+        }
+      },
+      "cursorbench": {
+        "scorePct": 61.1,
+        "costPerTaskUsd": 1.97,
+        "rank": 20
+      },
+      "consensus": {
+        "performanceLow": 61.22,
+        "performanceBest": 70.56,
+        "performanceHigh": 77.55,
+        "sourceCount": 3,
+        "rangeConfidence": 90,
+        "estimateConfidence": 92.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.1128,
+        "hardTaskPassRate": 0.0179,
+        "regressionBreakRate": 0.2345,
+        "partialCreditOnFailure": 0.6432,
+        "repeatAllPassRate": 0.0177,
+        "repeatFlakyRate": 0.2566,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 151.8157,
+        "p90WallTimeSeconds": 308.0654,
+        "medianSteps": 22.0,
+        "p90PeakContextTokens": 50487,
+        "costPerPassUsd": 1.9171
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.1544,
+          "hardTaskPassRate": 0.0625,
+          "regressionBreakRate": 0.2059,
+          "medianWallTimeSeconds": 171.4524
+        },
+        "python": {
+          "passRate": 0.0588,
+          "hardTaskPassRate": 0.0312,
+          "regressionBreakRate": 0.3162,
+          "medianWallTimeSeconds": 115.2204
+        },
+        "typescript": {
+          "passRate": 0.1571,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.2,
+          "medianWallTimeSeconds": 173.9654
+        },
+        "web_ui_proxy": {
+          "passRate": 0.1607,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.0357,
+          "medianWallTimeSeconds": 161.0437
+        },
+        "upstart_core": {
+          "passRate": 0.1238,
+          "hardTaskPassRate": 0.0192,
+          "regressionBreakRate": 0.2403,
+          "medianWallTimeSeconds": 151.8157
+        }
+      },
+      "cursorbench": {
+        "scorePct": 47.7,
+        "costPerTaskUsd": 0.39,
+        "rank": 45
+      },
+      "consensus": {
+        "performanceLow": 2.04,
+        "performanceBest": 5.17,
+        "performanceHigh": 9.18,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5686,
+        "hardTaskPassRate": 0.2589,
+        "regressionBreakRate": 0.0619,
+        "partialCreditOnFailure": 0.8374,
+        "repeatAllPassRate": 0.2832,
+        "repeatFlakyRate": 0.5044,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 608.9866,
+        "p90WallTimeSeconds": 1197.006,
+        "medianSteps": 63.0,
+        "p90PeakContextTokens": 220033,
+        "costPerPassUsd": 2.7008
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6471,
+          "hardTaskPassRate": 0.1875,
+          "regressionBreakRate": 0.0368,
+          "medianWallTimeSeconds": 636.9794
+        },
+        "python": {
+          "passRate": 0.6176,
+          "hardTaskPassRate": 0.3125,
+          "regressionBreakRate": 0.0956,
+          "medianWallTimeSeconds": 515.9009
+        },
+        "typescript": {
+          "passRate": 0.4857,
+          "hardTaskPassRate": 0.3056,
+          "regressionBreakRate": 0.0429,
+          "medianWallTimeSeconds": 701.9255
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4107,
+          "hardTaskPassRate": 0.3333,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 753.8403
+        },
+        "upstart_core": {
+          "passRate": 0.5825,
+          "hardTaskPassRate": 0.2692,
+          "regressionBreakRate": 0.0583,
+          "medianWallTimeSeconds": 594.7758
+        }
+      },
+      "consensus": {
+        "performanceLow": 44.9,
+        "performanceBest": 52.93,
+        "performanceHigh": 59.18,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 78.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-sol",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6925,
+        "hardTaskPassRate": 0.3393,
+        "regressionBreakRate": 0.0466,
+        "partialCreditOnFailure": 0.8195,
+        "repeatAllPassRate": 0.4867,
+        "repeatFlakyRate": 0.3805,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 516.9483,
+        "p90WallTimeSeconds": 932.0024,
+        "medianSteps": 32.0,
+        "p90PeakContextTokens": 150938,
+        "costPerPassUsd": 5.0072
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.75,
+          "hardTaskPassRate": 0.375,
+          "regressionBreakRate": 0.0368,
+          "medianWallTimeSeconds": 554.0765
+        },
+        "python": {
+          "passRate": 0.6912,
+          "hardTaskPassRate": 0.1875,
+          "regressionBreakRate": 0.1037,
+          "medianWallTimeSeconds": 432.4012
+        },
+        "typescript": {
+          "passRate": 0.6571,
+          "hardTaskPassRate": 0.2222,
+          "regressionBreakRate": 0.0143,
+          "medianWallTimeSeconds": 551.451
+        },
+        "web_ui_proxy": {
+          "passRate": 0.6786,
+          "hardTaskPassRate": 0.1667,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 555.5321
+        },
+        "upstart_core": {
+          "passRate": 0.699,
+          "hardTaskPassRate": 0.3173,
+          "regressionBreakRate": 0.0511,
+          "medianWallTimeSeconds": 515.057
+        }
+      },
+      "cursorbench": {
+        "scorePct": 63.5,
+        "costPerTaskUsd": 2.79,
+        "rank": 15
+      },
+      "consensus": {
+        "performanceLow": 72.45,
+        "performanceBest": 79.91,
+        "performanceHigh": 85.71,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 78.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-sol",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.4535,
+        "hardTaskPassRate": 0.0893,
+        "regressionBreakRate": 0.0951,
+        "partialCreditOnFailure": 0.8125,
+        "repeatAllPassRate": 0.1947,
+        "repeatFlakyRate": 0.5221,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 211.1409,
+        "p90WallTimeSeconds": 457.8617,
+        "medianSteps": 21.0,
+        "p90PeakContextTokens": 65054,
+        "costPerPassUsd": 2.3686
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.5515,
+          "hardTaskPassRate": 0.0625,
+          "regressionBreakRate": 0.0588,
+          "medianWallTimeSeconds": 240.1007
+        },
+        "python": {
+          "passRate": 0.3824,
+          "hardTaskPassRate": 0.125,
+          "regressionBreakRate": 0.1544,
+          "medianWallTimeSeconds": 176.4163
+        },
+        "typescript": {
+          "passRate": 0.4929,
+          "hardTaskPassRate": 0.0556,
+          "regressionBreakRate": 0.0786,
+          "medianWallTimeSeconds": 220.5302
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4107,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 207.1569
+        },
+        "upstart_core": {
+          "passRate": 0.4757,
+          "hardTaskPassRate": 0.0962,
+          "regressionBreakRate": 0.0971,
+          "medianWallTimeSeconds": 208.7842
+        }
+      },
+      "cursorbench": {
+        "scorePct": 52.6,
+        "costPerTaskUsd": 1.01,
+        "rank": 38
+      },
+      "consensus": {
+        "performanceLow": 24.49,
+        "performanceBest": 27.93,
+        "performanceHigh": 30.61,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-sol",
+      "effort": "max",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.7235,
+        "hardTaskPassRate": 0.3839,
+        "regressionBreakRate": 0.0667,
+        "partialCreditOnFailure": 0.7997,
+        "repeatAllPassRate": 0.5398,
+        "repeatFlakyRate": 0.3186,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 1011.5508,
+        "p90WallTimeSeconds": 1738.544,
+        "medianSteps": 53.0,
+        "p90PeakContextTokens": 267865,
+        "costPerPassUsd": 11.5696
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7868,
+          "hardTaskPassRate": 0.3125,
+          "regressionBreakRate": 0.0515,
+          "medianWallTimeSeconds": 1068.059
+        },
+        "python": {
+          "passRate": 0.7426,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.1119,
+          "medianWallTimeSeconds": 952.1703
+        },
+        "typescript": {
+          "passRate": 0.6571,
+          "hardTaskPassRate": 0.3056,
+          "regressionBreakRate": 0.0286,
+          "medianWallTimeSeconds": 1052.3525
+        },
+        "web_ui_proxy": {
+          "passRate": 0.6786,
+          "hardTaskPassRate": 0.4167,
+          "regressionBreakRate": 0.0536,
+          "medianWallTimeSeconds": 1107.3101
+        },
+        "upstart_core": {
+          "passRate": 0.7282,
+          "hardTaskPassRate": 0.375,
+          "regressionBreakRate": 0.0634,
+          "medianWallTimeSeconds": 1010.2725
+        }
+      },
+      "cursorbench": {
+        "scorePct": 67.2,
+        "costPerTaskUsd": 5.69,
+        "rank": 5
+      },
+      "consensus": {
+        "performanceLow": 91.84,
+        "performanceBest": 94.08,
+        "performanceHigh": 96.15,
+        "sourceCount": 3,
+        "rangeConfidence": 90,
+        "estimateConfidence": 93.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-sol",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6106,
+        "hardTaskPassRate": 0.2143,
+        "regressionBreakRate": 0.0619,
+        "partialCreditOnFailure": 0.8278,
+        "repeatAllPassRate": 0.3628,
+        "repeatFlakyRate": 0.4425,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 354.8955,
+        "p90WallTimeSeconds": 732.429,
+        "medianSteps": 26.0,
+        "p90PeakContextTokens": 104459,
+        "costPerPassUsd": 3.0494
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6544,
+          "hardTaskPassRate": 0.1875,
+          "regressionBreakRate": 0.0294,
+          "medianWallTimeSeconds": 386.0866
+        },
+        "python": {
+          "passRate": 0.6103,
+          "hardTaskPassRate": 0.125,
+          "regressionBreakRate": 0.1176,
+          "medianWallTimeSeconds": 289.9042
+        },
+        "typescript": {
+          "passRate": 0.5857,
+          "hardTaskPassRate": 0.1667,
+          "regressionBreakRate": 0.0357,
+          "medianWallTimeSeconds": 387.8199
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5536,
+          "hardTaskPassRate": 0.1667,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 377.6871
+        },
+        "upstart_core": {
+          "passRate": 0.6165,
+          "hardTaskPassRate": 0.2019,
+          "regressionBreakRate": 0.0607,
+          "medianWallTimeSeconds": 353.229
+        }
+      },
+      "cursorbench": {
+        "scorePct": 60.0,
+        "costPerTaskUsd": 1.95,
+        "rank": 21
+      },
+      "consensus": {
+        "performanceLow": 59.18,
+        "performanceBest": 63.78,
+        "performanceHigh": 67.35,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-sol",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.7058,
+        "hardTaskPassRate": 0.3393,
+        "regressionBreakRate": 0.0599,
+        "partialCreditOnFailure": 0.8198,
+        "repeatAllPassRate": 0.5221,
+        "repeatFlakyRate": 0.3363,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 694.5637,
+        "p90WallTimeSeconds": 1294.5479,
+        "medianSteps": 39.0,
+        "p90PeakContextTokens": 201252,
+        "costPerPassUsd": 6.6703
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7721,
+          "hardTaskPassRate": 0.4062,
+          "regressionBreakRate": 0.0368,
+          "medianWallTimeSeconds": 759.156
+        },
+        "python": {
+          "passRate": 0.75,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.1176,
+          "medianWallTimeSeconds": 636.277
+        },
+        "typescript": {
+          "passRate": 0.6214,
+          "hardTaskPassRate": 0.1944,
+          "regressionBreakRate": 0.0288,
+          "medianWallTimeSeconds": 719.9362
+        },
+        "web_ui_proxy": {
+          "passRate": 0.6071,
+          "hardTaskPassRate": 0.3333,
+          "regressionBreakRate": 0.0545,
+          "medianWallTimeSeconds": 765.575
+        },
+        "upstart_core": {
+          "passRate": 0.7136,
+          "hardTaskPassRate": 0.3077,
+          "regressionBreakRate": 0.0608,
+          "medianWallTimeSeconds": 690.3932
+        }
+      },
+      "consensus": {
+        "performanceLow": 77.55,
+        "performanceBest": 85.59,
+        "performanceHigh": 91.84,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 78.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-terra",
+      "effort": "high",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.5376,
+        "hardTaskPassRate": 0.2143,
+        "regressionBreakRate": 0.0929,
+        "partialCreditOnFailure": 0.8201,
+        "repeatAllPassRate": 0.2212,
+        "repeatFlakyRate": 0.5841,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 314.9634,
+        "p90WallTimeSeconds": 591.1014,
+        "medianSteps": 31.0,
+        "p90PeakContextTokens": 104217,
+        "costPerPassUsd": 2.11
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6471,
+          "hardTaskPassRate": 0.2812,
+          "regressionBreakRate": 0.0441,
+          "medianWallTimeSeconds": 319.6066
+        },
+        "python": {
+          "passRate": 0.4632,
+          "hardTaskPassRate": 0.0938,
+          "regressionBreakRate": 0.1765,
+          "medianWallTimeSeconds": 270.5151
+        },
+        "typescript": {
+          "passRate": 0.5571,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.0643,
+          "medianWallTimeSeconds": 374.296
+        },
+        "web_ui_proxy": {
+          "passRate": 0.4107,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0179,
+          "medianWallTimeSeconds": 377.2467
+        },
+        "upstart_core": {
+          "passRate": 0.5558,
+          "hardTaskPassRate": 0.2692,
+          "regressionBreakRate": 0.0947,
+          "medianWallTimeSeconds": 313.7403
+        }
+      },
+      "cursorbench": {
+        "scorePct": 54.2,
+        "costPerTaskUsd": 0.89,
+        "rank": 34
+      },
+      "consensus": {
+        "performanceLow": 32.65,
+        "performanceBest": 42.98,
+        "performanceHigh": 51.02,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 78.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-terra",
+      "effort": "low",
+      "deepswe": {
+        "nTrials": 449,
+        "passRate": 0.2405,
+        "hardTaskPassRate": 0.0804,
+        "regressionBreakRate": 0.1537,
+        "partialCreditOnFailure": 0.7004,
+        "repeatAllPassRate": 0.0619,
+        "repeatFlakyRate": 0.3805,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 151.9605,
+        "p90WallTimeSeconds": 286.1798,
+        "medianSteps": 20.0,
+        "p90PeakContextTokens": 49031,
+        "costPerPassUsd": 1.7783
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.2794,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.1544,
+          "medianWallTimeSeconds": 175.0358
+        },
+        "python": {
+          "passRate": 0.2444,
+          "hardTaskPassRate": 0.1935,
+          "regressionBreakRate": 0.1926,
+          "medianWallTimeSeconds": 116.6755
+        },
+        "typescript": {
+          "passRate": 0.2302,
+          "hardTaskPassRate": 0.0278,
+          "regressionBreakRate": 0.1295,
+          "medianWallTimeSeconds": 186.3119
+        },
+        "web_ui_proxy": {
+          "passRate": 0.1607,
+          "hardTaskPassRate": 0.0,
+          "regressionBreakRate": 0.0536,
+          "medianWallTimeSeconds": 167.5889
+        },
+        "upstart_core": {
+          "passRate": 0.2512,
+          "hardTaskPassRate": 0.0962,
+          "regressionBreakRate": 0.1585,
+          "medianWallTimeSeconds": 150.656
+        }
+      },
+      "cursorbench": {
+        "scorePct": 46.9,
+        "costPerTaskUsd": 0.53,
+        "rank": 48
+      },
+      "consensus": {
+        "performanceLow": 4.08,
+        "performanceBest": 5.23,
+        "performanceHigh": 6.12,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-terra",
+      "effort": "max",
+      "deepswe": {
+        "nTrials": 451,
+        "passRate": 0.6962,
+        "hardTaskPassRate": 0.375,
+        "regressionBreakRate": 0.0687,
+        "partialCreditOnFailure": 0.8394,
+        "repeatAllPassRate": 0.4956,
+        "repeatFlakyRate": 0.3894,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 927.55,
+        "p90WallTimeSeconds": 1483.8536,
+        "medianSteps": 71.0,
+        "p90PeakContextTokens": 266934,
+        "costPerPassUsd": 7.1037
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.7721,
+          "hardTaskPassRate": 0.4062,
+          "regressionBreakRate": 0.0368,
+          "medianWallTimeSeconds": 898.0561
+        },
+        "python": {
+          "passRate": 0.6838,
+          "hardTaskPassRate": 0.25,
+          "regressionBreakRate": 0.1176,
+          "medianWallTimeSeconds": 889.5258
+        },
+        "typescript": {
+          "passRate": 0.6547,
+          "hardTaskPassRate": 0.3333,
+          "regressionBreakRate": 0.036,
+          "medianWallTimeSeconds": 975.4516
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5536,
+          "hardTaskPassRate": 0.3333,
+          "regressionBreakRate": 0.0536,
+          "medianWallTimeSeconds": 1089.5272
+        },
+        "upstart_core": {
+          "passRate": 0.7032,
+          "hardTaskPassRate": 0.3942,
+          "regressionBreakRate": 0.0633,
+          "medianWallTimeSeconds": 921.3716
+        }
+      },
+      "cursorbench": {
+        "scorePct": 64.9,
+        "costPerTaskUsd": 2.89,
+        "rank": 11
+      },
+      "consensus": {
+        "performanceLow": 79.59,
+        "performanceBest": 84.65,
+        "performanceHigh": 87.76,
+        "sourceCount": 3,
+        "rangeConfidence": 90,
+        "estimateConfidence": 93.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-terra",
+      "effort": "medium",
+      "deepswe": {
+        "nTrials": 450,
+        "passRate": 0.3511,
+        "hardTaskPassRate": 0.0991,
+        "regressionBreakRate": 0.1467,
+        "partialCreditOnFailure": 0.7311,
+        "repeatAllPassRate": 0.1239,
+        "repeatFlakyRate": 0.4779,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 193.9661,
+        "p90WallTimeSeconds": 374.2207,
+        "medianSteps": 24.0,
+        "p90PeakContextTokens": 63942,
+        "costPerPassUsd": 1.6612
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.3235,
+          "hardTaskPassRate": 0.0312,
+          "regressionBreakRate": 0.1397,
+          "medianWallTimeSeconds": 214.129
+        },
+        "python": {
+          "passRate": 0.3481,
+          "hardTaskPassRate": 0.0312,
+          "regressionBreakRate": 0.1778,
+          "medianWallTimeSeconds": 163.35
+        },
+        "typescript": {
+          "passRate": 0.4214,
+          "hardTaskPassRate": 0.1389,
+          "regressionBreakRate": 0.1286,
+          "medianWallTimeSeconds": 229.0011
+        },
+        "web_ui_proxy": {
+          "passRate": 0.3393,
+          "hardTaskPassRate": 0.0833,
+          "regressionBreakRate": 0.0536,
+          "medianWallTimeSeconds": 239.5288
+        },
+        "upstart_core": {
+          "passRate": 0.365,
+          "hardTaskPassRate": 0.125,
+          "regressionBreakRate": 0.1484,
+          "medianWallTimeSeconds": 193.6815
+        }
+      },
+      "cursorbench": {
+        "scorePct": 50.3,
+        "costPerTaskUsd": 0.61,
+        "rank": 42
+      },
+      "consensus": {
+        "performanceLow": 16.33,
+        "performanceBest": 16.33,
+        "performanceHigh": 16.33,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 80.0
+      }
+    },
+    {
+      "modelId": "gpt-5.6-terra",
+      "effort": "xhigh",
+      "deepswe": {
+        "nTrials": 452,
+        "passRate": 0.6018,
+        "hardTaskPassRate": 0.2321,
+        "regressionBreakRate": 0.0863,
+        "partialCreditOnFailure": 0.8126,
+        "repeatAllPassRate": 0.3628,
+        "repeatFlakyRate": 0.4425,
+        "contextOverflowRate": 0.0,
+        "timeoutRate": 0.0,
+        "routingErrorRate": 0.0,
+        "medianWallTimeSeconds": 509.0496,
+        "p90WallTimeSeconds": 880.2675,
+        "medianSteps": 39.0,
+        "p90PeakContextTokens": 168148,
+        "costPerPassUsd": 3.5349
+      },
+      "byLanguage": {
+        "go": {
+          "passRate": 0.6471,
+          "hardTaskPassRate": 0.1875,
+          "regressionBreakRate": 0.0588,
+          "medianWallTimeSeconds": 516.8461
+        },
+        "python": {
+          "passRate": 0.5588,
+          "hardTaskPassRate": 0.125,
+          "regressionBreakRate": 0.1544,
+          "medianWallTimeSeconds": 433.9077
+        },
+        "typescript": {
+          "passRate": 0.6214,
+          "hardTaskPassRate": 0.2778,
+          "regressionBreakRate": 0.0429,
+          "medianWallTimeSeconds": 559.2128
+        },
+        "web_ui_proxy": {
+          "passRate": 0.5357,
+          "hardTaskPassRate": 0.3333,
+          "regressionBreakRate": 0.0,
+          "medianWallTimeSeconds": 564.3804
+        },
+        "upstart_core": {
+          "passRate": 0.6092,
+          "hardTaskPassRate": 0.2596,
+          "regressionBreakRate": 0.085,
+          "medianWallTimeSeconds": 505.5497
+        }
+      },
+      "consensus": {
+        "performanceLow": 55.1,
+        "performanceBest": 60.84,
+        "performanceHigh": 65.31,
+        "sourceCount": 2,
+        "rangeConfidence": 70,
+        "estimateConfidence": 79.0
+      }
+    }
+  ],
+  "frugality": {
+    "source": "swebench_multilingual",
+    "construct": "single-attempt mini-swe-agent resolve rate and median API calls over 300 tasks in 8 language splits",
+    "note": "Documentation only. Retained as the provenance for keeping claude-opus-4-6 as a scoped candidate. It is NOT consumed by the router: no runtime term prices these API-call figures, because claude-opus-4-6 has no rollout row to score and the earlier quota-surface step term could never resolve them. Not comparable to DeepSWE passed or CursorBench score_pct. Only models this source retains under the generation-currency rule appear.",
+    "rows": [
+      {
+        "modelId": "claude-opus-4-6",
+        "effort": "high",
+        "medianApiCalls": 23.6,
+        "resolveRate": 0.708,
+        "perLanguageMedianApiCalls": {
+          "go": 22.0,
+          "python": null,
+          "typescript": 22.0,
+          "ruby": 19.5
+        }
+      }
+    ]
+  }
+}
