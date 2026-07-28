@@ -238,10 +238,11 @@ regression minimum; and `external_side_effect`, `destructive`, or `critical` ris
 band, because there effort tuning cannot substitute for capability. An archetype that always changes repository state
 acts as a floor under that derivation so a mis-read task cannot be downgraded to read-only. Regression cost is
 discounted by verification strength, since measured breakage is precisely "previously passing tests now fail" and a task
-that runs those tests catches it in the loop. Review is evaluated as read-only work for ability-band purposes, so review
-never inherits a mutation-driven ability floor; independence is enforced separately, and a generated authorization,
-advisory, or completion review is still barred from its tracked parent/builder. Every archetype must keep at least one
-candidate above the lowest ability band so high-consequence work stays routable.
+that runs those tests catches it in the loop. The `code_review` archetype is declared non-mutating, so a review inherits
+no capability floor from its label; it still inherits one from its own declared `actionMode` and `risk`, so a review of
+`external_side_effect` or `destructive` work, or work of `critical` risk, keeps that floor. Independence is a separate
+rule: a generated authorization, advisory, or completion review is barred from its tracked parent/builder. Every
+archetype must keep at least one candidate above the lowest ability band so high-consequence work stays routable.
 
 Effort is constrained per model family, not uniformly: measured saturation tiers cap ordinary archetypes, non-monotonic
 and thrashing tiers are excluded outright, repository-mutating archetypes enforce a per-family minimum effort, and a
