@@ -171,3 +171,27 @@ Major pieces intentionally not adopted include Pi's full interactive mode, sessi
 workflows, custom provider implementations, and bundled role-based subagent profiles. No Pi source file or example was
 copied verbatim; the extension is original code using Pi's published APIs and adapting the documented architectural
 patterns.
+
+## `shell-quote` and `shlex` (router shell tokenizer dependencies)
+
+- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.10.0`, MIT) and `shlex`
+  (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
+- Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
+  copied or modified, and both ship their own type declarations.
+
+What each is used for, and why both:
+
+- `shell-quote`'s `parse` supplies the token structure the read-only gate needs, classifying control operators, glob
+  patterns, and comments as distinct entries rather than as text.
+- `shlex`'s `split` supplies malformed-quoting detection, which `shell-quote` does not report: it accepts an unbalanced
+  quote silently.
+
+Behavior of both libraries that this repository deliberately compensates for, rather than relying on:
+
+- Both treat newlines and carriage returns as ordinary whitespace, so a two-line command lexes into one argument list.
+  Control characters are therefore rejected on the raw string before either lexer runs.
+- `shell-quote` performs parameter expansion during parsing and yields an empty token for an unset variable, so `$` and
+  backticks are rejected before parsing rather than interpreted.
+
+The argv policy itself — the allowed binaries, git subcommands, and per-binary flag allowlists — is original code in
+this repository and is not derived from either package.
