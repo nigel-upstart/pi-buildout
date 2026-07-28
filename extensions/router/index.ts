@@ -916,13 +916,17 @@ export default function routerExtension(pi: ExtensionAPI): void {
     const repository = await readRepositoryMetadata(pi, ctx.cwd);
     const baselineHead = parent.safetyEvidence.baselineHead;
     let diffText = "";
+    let diffCaptured = false;
     try {
       const result = await pi.exec(
         "git",
         ["-C", ctx.cwd, "diff", "--no-ext-diff", "--binary", baselineHead ?? "HEAD", "--"],
         { timeout: 10_000 },
       );
-      if (result.code === 0) diffText = result.stdout;
+      if (result.code === 0) {
+        diffText = result.stdout;
+        diffCaptured = true;
+      }
     } catch {
       // Missing git evidence is handled by the validation below; it never degrades to authorization.
     }
@@ -941,6 +945,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
     if (codeBuilder && (checks.length === 0 || checks.some((check) => !check.passed))) {
       return { reason: "post-build review requires passing latest deterministic checks and no unresolved failures" };
     }
+    if (codeBuilder && repositoryChanged && !diffCaptured) {
+      return { reason: "the repository changed but its diff could not be captured for review evidence" };
+    }
     if (!codeBuilder && parent.safetyEvidence.mutations.length === 0) {
       return { reason: "no successful mutation evidence was recorded for completion review" };
     }
@@ -949,7 +956,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       ...(baselineHead ? { baselineHead } : {}),
       ...(repository.head ? { completedHead: repository.head } : {}),
       changedFiles,
-      ...(repositoryChanged
+      ...(repositoryChanged && diffCaptured
         ? {
             diffFingerprint: safetyFingerprint({
               baselineHead,
