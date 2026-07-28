@@ -278,6 +278,25 @@ export function initialLifecycle(policy: SafetyPolicy, taskFingerprint: string):
   }
 }
 
+/** The lifecycle instruction added to the system prompt, or undefined where no phase constraint applies. */
+export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | undefined {
+  switch (lifecycle.phase) {
+    case "preflight":
+      return "Safety lifecycle: remain non-mutating. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. Execution requires a separate independent approval of the exact task and plan fingerprints.";
+    case "advisory_pending":
+      return "Safety lifecycle: remain non-mutating while gathering bounded context for a pre-action advisor.";
+    case "authorized_execution":
+      return `Safety lifecycle: execute only authorized plan ${lifecycle.plan.planFingerprint}; changed targets, steps, or preconditions require a new preflight and review.`;
+    case "review":
+      return `Safety lifecycle: read-only ${lifecycle.reviewKind} review scoped to ${lifecycle.scopeFingerprint}; submit the verdict with submit_safety_review.`;
+    case "ordinary":
+    case "building":
+    case "ready_after_advisory":
+    case "completed":
+      return undefined;
+  }
+}
+
 export function lifecycleRequiresCompletionReview(lifecycle: LeaseLifecycle): boolean {
   return (
     lifecycle.phase === "building" ||

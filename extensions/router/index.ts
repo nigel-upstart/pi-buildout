@@ -29,6 +29,7 @@ import {
   isPotentiallyMutatingTool,
   lifecycleRequiresCompletionReview,
   lifecycleToolBlockReason,
+  safetyContextForLifecycle,
   safetyFingerprint,
   validateActionPlan,
   validateSafetyReview,
@@ -1497,16 +1498,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       if (!active) return;
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
-      const safetyContext =
-        active.lifecycle.phase === "preflight"
-          ? "Safety lifecycle: remain non-mutating. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. Execution requires a separate independent approval of the exact task and plan fingerprints."
-          : active.lifecycle.phase === "advisory_pending"
-            ? "Safety lifecycle: remain non-mutating while gathering bounded context for a pre-action advisor."
-            : active.lifecycle.phase === "authorized_execution"
-              ? `Safety lifecycle: execute only authorized plan ${active.lifecycle.plan.planFingerprint}; changed targets, steps, or preconditions require a new preflight and review.`
-              : active.lifecycle.phase === "review"
-                ? `Safety lifecycle: read-only ${active.lifecycle.reviewKind} review scoped to ${active.lifecycle.scopeFingerprint}; submit the verdict with submit_safety_review.`
-                : undefined;
+      const safetyContext = safetyContextForLifecycle(active.lifecycle);
       const compiled = compilePrompt({
         baseSystemPrompt: safetyContext ? `${event.systemPrompt}\n\n${safetyContext}` : event.systemPrompt,
         profile,

@@ -6,6 +6,7 @@ import {
   initialLifecycle,
   isLeaseLifecycle,
   lifecycleToolBlockReason,
+  safetyContextForLifecycle,
   safetyFingerprint,
   validateActionPlan,
   validateSafetyReview,
@@ -157,6 +158,26 @@ describe("deterministic safety tool gate", () => {
 
     const advisory = initialLifecycle("advisory_then_completion_review", "task");
     assert.match(lifecycleToolBlockReason(advisory, "custom_mutator", {}), /advisory/);
+  });
+
+  it("maps only constrained phases to a lifecycle prompt", () => {
+    assert.match(
+      safetyContextForLifecycle(initialLifecycle("authorization_then_completion_review", "t")),
+      /preflight|non-mutating/,
+    );
+    assert.match(safetyContextForLifecycle(initialLifecycle("advisory_then_completion_review", "t")), /advisor/);
+    assert.equal(safetyContextForLifecycle(initialLifecycle("completion_review", "t")), undefined);
+    assert.equal(safetyContextForLifecycle(initialLifecycle("ordinary", "t")), undefined);
+    assert.match(
+      safetyContextForLifecycle({
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: "t",
+        reviewKind: "completion",
+        scopeFingerprint: "a".repeat(64),
+      }),
+      /read-only completion review scoped to a{64}/,
+    );
   });
 
   it("keeps generated reviews read-only except for the scoped verdict tool", () => {
