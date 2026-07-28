@@ -3,15 +3,20 @@ import type { TaskFeatures } from "./features.ts";
 import { findPromptProfile } from "./profiles.ts";
 import type { EffortLevel } from "./profiles.ts";
 import type { RouteChoice } from "./routing.ts";
+import { deriveSafetyPolicy, initialLifecycle } from "./safety.ts";
+import type { LeaseLifecycle, SafetyEvidenceLog } from "./safety.ts";
 
 export type HardBoundary = "new_session" | "post_compaction" | "post_push" | "subagent";
 export type RouterMode = "off" | "shadow" | "active";
 
 export type TaskLease = {
-  version: 1;
+  version: 2;
   taskId: string;
+  /** Parent linkage is valid only for a router-generated lifecycle review. */
   parentTaskId?: string;
   parentLease?: TaskLease;
+  lifecycle: LeaseLifecycle;
+  safetyEvidence: SafetyEvidenceLog;
   startedAt: string;
   updatedAt: string;
   archetype: Archetype;
@@ -25,8 +30,6 @@ export type TaskLease = {
   policyVersion: string;
   lastPromptFingerprint: string;
   manualOverride: boolean;
-  reviewRequired?: boolean;
-  reviewCompleted?: boolean;
   repositoryLanguageBucket?: string;
   contextSizeBucket?: string;
   planValidationRepairAttempted?: boolean;
@@ -175,11 +178,21 @@ export function changeEffortWithinLease(
 }
 
 export function createTaskLease(
-  input: Omit<TaskLease, "version" | "attemptIndex" | "promptProfileId" | "manualOverride">,
+  input: Omit<
+    TaskLease,
+    "version" | "attemptIndex" | "promptProfileId" | "manualOverride" | "lifecycle" | "safetyEvidence"
+  > &
+    Partial<Pick<TaskLease, "lifecycle" | "safetyEvidence">>,
 ): TaskLease {
   return {
-    version: 1,
+    version: 2,
     ...input,
+    lifecycle: input.lifecycle ?? initialLifecycle(deriveSafetyPolicy(input.features), input.lastPromptFingerprint),
+    safetyEvidence: input.safetyEvidence ?? {
+      baselineChangedFiles: [],
+      checks: [],
+      mutations: [],
+    },
     attemptIndex: 0,
     promptProfileId: input.selected.profileId,
     manualOverride: false,

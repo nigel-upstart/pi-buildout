@@ -77,7 +77,7 @@ describe("modelAbility", () => {
     assert.equal(reviewers.get("anthropic").ability, 3);
     assert.equal(reviewers.get("google").modelId, "gemini-3.6-flash");
     assert.deepEqual(decision.ceilingMismatchVendors, ["google"]);
-    assert.equal(decision.builderFallback.vendor, "openai");
+    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
 });
 
@@ -172,6 +172,49 @@ describe("lease restoration and context estimates", () => {
       ).active,
       undefined,
     );
+    const legacyImplicitChild = structuredClone(active);
+    legacyImplicitChild.parentTaskId = active.taskId;
+    legacyImplicitChild.parentLease = structuredClone(active);
+    assert.equal(
+      restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: legacyImplicitChild } }],
+        "shadow",
+      ).active,
+      undefined,
+      "parent-linked leases without an explicit review lifecycle must fail closed",
+    );
+    const malformedIndependentReview = structuredClone(active);
+    malformedIndependentReview.lifecycle = {
+      phase: "review",
+      policy: "ordinary",
+      taskFingerprint: active.lifecycle.taskFingerprint,
+      reviewKind: "completion",
+      scopeFingerprint: "a".repeat(64),
+    };
+    assert.equal(
+      restoreLeaseState(
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { mode: "active", active: malformedIndependentReview },
+          },
+        ],
+        "shadow",
+      ).active,
+      undefined,
+      "the generated review lifecycle requires a code-review child and explicit parent lease",
+    );
+    const legacyVersion = structuredClone(active);
+    legacyVersion.version = 1;
+    assert.equal(
+      restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: legacyVersion } }],
+        "shadow",
+      ).active,
+      undefined,
+      "leases without explicit v2 lifecycle state must be discarded",
+    );
     const tampered = structuredClone(active);
     tampered.selected.modelId = "unknown-model";
     assert.equal(
@@ -207,6 +250,34 @@ describe("lease restoration and context estimates", () => {
 });
 
 describe("readRepositoryMetadata", () => {
+  it("inspects a standalone review delta without mutating it", async () => {
+    const calls = [];
+    const metadata = await readRepositoryMetadata(
+      {
+        exec: async (command, args) => {
+          calls.push([command, ...args]);
+          if (command === "gh") {
+            return {
+              code: 0,
+              stdout: "diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n",
+              stderr: "",
+              killed: false,
+            };
+          }
+          return { code: 0, stdout: "", stderr: "", killed: false };
+        },
+      },
+      "/repo",
+      "Review PR #305 for correctness and risk",
+    );
+    assert.equal(metadata.reviewDelta.source, "pull_request");
+    assert.equal(metadata.reviewDelta.reference, "PR #305");
+    assert.deepEqual(metadata.reviewDelta.files, ["src/a.ts"]);
+    assert.deepEqual(metadata.reviewDelta.languageBuckets, ["typescript"]);
+    assert.ok(calls.some((call) => call.join(" ") === "gh pr diff 305 --patch"));
+    assert.ok(calls.every((call) => !call.includes("checkout") && !call.includes("fetch")));
+  });
+
   it("uses git state and deterministic language buckets", async () => {
     const outputs = new Map([
       ["rev-parse --show-toplevel", "/repo"],

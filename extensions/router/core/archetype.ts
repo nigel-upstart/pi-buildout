@@ -98,9 +98,10 @@ export function deriveArchetype(features: TaskFeatures): ArchetypeDecision {
   }
 
   const requiresIndependentReview =
-    archetype === "code_review" ||
-    ((features.risk === "high" || features.risk === "critical") && features.actionMode !== "information_only");
-  if (requiresIndependentReview) reasons.push("independent review required by risk/review policy");
+    (features.risk === "high" || features.risk === "critical") &&
+    (features.workflowType === "coding_implementation" || features.intent === "implement") &&
+    features.actionMode === "reversible_mutation";
+  if (requiresIndependentReview) reasons.push("high-risk code builder requires post-completion review");
 
   return { archetype, reasons, requiresIndependentReview };
 }

@@ -165,6 +165,34 @@ extensions/router/
    via the Symbol-registry (falling back to no-op if that package isn't present/configured).
 5. Ship in **shadow mode** first (log decisions without acting on them), per `SPEC.md`'s implementation sequence.
 
+## Decision: explicit review kinds and irreversible-action authorization
+
+Safety lifecycle is persisted in the lease as a discriminated v2 state. The router does not infer read-only behavior,
+parent restoration, approval, or recursive-review eligibility from `parentLease`, archetype, or whichever model happened
+to be selected previously.
+
+Three review kinds have non-interchangeable effects:
+
+- **Authorization review** evaluates a validated concrete plan before a high/critical-risk irreversible action. Only an
+  exact-scope `approve` from a generated different-vendor review creates an execution lease. Reviewer failure,
+  rejection, builder fallback, manual model/effort override, session change, compaction, new user input, or plan change
+  cannot do so.
+- **Advisory review** runs before other high-risk reversible non-code action. It supplies failure modes and safer
+  sequencing but is not approval. This avoids turning every mutation into a hard authorization gate.
+- **Completion review** runs after tracked high-risk work. Code builders must first supply attributable diff and passing
+  deterministic-check evidence; the reviewer inspects that evidence rather than reviewing an intent-only plan.
+
+Generated reviews know their parent builder, route across the two other vendors, expose only bounded read tools plus the
+scoped verdict tool, and never fall back to the builder. Standalone review is orthogonal: it has no parent or fake
+builder, collects a bounded read-only local/PR delta before classification, then uses feature-based `code_review` model
+selection. It is an ordinary lease, may perform explicitly requested side effects, and cannot recursively trigger
+completion review.
+
+The irreversible preflight tool allowlist is deterministic. Unknown tools and shell composition are denied; after
+approval, mutating tool names are limited to those in the reviewed plan. The plan and verdict schemas, canonical
+fingerprints, lifecycle validation, and boundary invalidation are implemented locally; no external safety-state-machine
+implementation or code was consulted or adapted for this decision, so no new attribution entry is required.
+
 ## Deferred follow-up: evidence-aware synopsis compaction
 
 The synopsis keeps bounded, newest-first items and now removes excess recent outcomes, goals, and prior decisions in

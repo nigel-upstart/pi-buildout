@@ -11,6 +11,7 @@ import {
   robustCostToDone,
   selectOrdinaryRoute,
   selectReviewRoute,
+  selectStandaloneReviewRoute,
 } from "./routing.ts";
 
 function model(provider, modelId, vendor, contextWindow = 1_000_000) {
@@ -392,14 +393,22 @@ describe("ordinary route selection", () => {
 });
 
 describe("review route selection", () => {
-  it("selects both non-builder vendors and fixes the builder as final fallback", () => {
+  it("routes standalone review from delta features without inventing a builder", () => {
+    const decision = selectStandaloneReviewRoute(registry(), REQUIREMENTS, [], undefined, "standalone", TYPESCRIPT);
+    assert.equal(decision.kind, "ordinary");
+    assert.equal(decision.archetype, "code_review");
+    assert.ok(
+      [decision.primary, ...decision.fallbacks].every((choice) => choice.rankReason !== "fixed_builder_fallback"),
+    );
+  });
+
+  it("selects both non-builder vendors without allowing the builder to review itself", () => {
     const models = registry();
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
     assert.deepEqual(new Set([decision.primary.vendor, decision.fallback.vendor]), new Set(["anthropic", "google"]));
-    assert.equal(decision.builderFallback.vendor, "openai");
-    assert.equal(decision.builderFallback.rankReason, "fixed_builder_fallback");
+    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
 
   it("tries a stronger reviewer tier when the closest at-or-above model is unavailable", () => {
@@ -415,7 +424,7 @@ describe("review route selection", () => {
     assert.equal(anthropic.modelId, "claude-fable-5");
   });
 
-  it("rejects an unavailable fixed builder fallback", () => {
+  it("does not require the tracked builder endpoint to remain available for read-only review", () => {
     const models = registry();
     const builder = { ...models.find((candidate) => candidate.modelId === "gpt-5.6-terra"), available: false };
     const decision = selectReviewRoute(
@@ -425,8 +434,8 @@ describe("review route selection", () => {
       "medium",
       2,
     );
-    assert.equal(decision.kind, "unroutable");
-    assert.ok(decision.exclusions.some((exclusion) => exclusion.code === "unavailable"));
+    assert.equal(decision.kind, "review");
+    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
 });
 
@@ -846,15 +855,12 @@ describe("consequence gating invariants", () => {
     );
   });
 
-  it("still reviews with the builder as final fallback even when the builder is a low tier", () => {
-    // Review is a read-only judgment, so a builder whose effort is barred from state-changing work
-    // must still be able to review its own output.
+  it("keeps tracked review independent even when the builder is a low tier", () => {
     const models = registry();
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
-    assert.equal(decision.builderFallback.modelId, "gpt-5.6-terra");
-    assert.equal(decision.builderFallback.effort, "medium");
+    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
 });
 
@@ -1015,7 +1021,6 @@ describe("scope and health drive the candidate pool", () => {
     assert.equal(decision.kind, "review");
     const vendors = new Set([decision.primary.vendor, decision.fallback.vendor]);
     assert.deepEqual(vendors, new Set(["anthropic", "google"]));
-    assert.equal(decision.builderFallback.vendor, "openai");
   });
 
   it("refuses to route a disqualified Gemini generation even when it is the only one scoped", () => {

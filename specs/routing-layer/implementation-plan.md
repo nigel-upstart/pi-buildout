@@ -77,7 +77,7 @@ classification, and route work runs.
 ### 4. Fallback, review topology, and telemetry
 
 - Sequential fallback controller with reason codes and parent-lease restoration.
-- Two non-builder review candidates plus fixed builder fallback.
+- Two non-builder candidates for tracked-work review; standalone review uses feature-based ordinary fallback.
 - Append-only JSONL audit/attempt events; in-memory p50/p75/p90 and mature-route samples.
 - Optional parented OTel spans through `pi-telemetry-otel` Symbol registries.
 

@@ -10,7 +10,33 @@ process.env.PI_ROUTER_MODEL_SCOPE = "*";
 process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH = "/nonexistent-router-health.json";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
-import routerExtension, { automaticRoutingBlockReason, deterministicCheckCommand } from "./index.ts";
+import routerExtension, {
+  automaticRoutingBlockReason,
+  deterministicCheckCommand,
+  safetyToolBlockReason,
+} from "./index.ts";
+
+function irreversibleActionPlan() {
+  return {
+    objective: "Rotate the production credential under a bounded overlap window.",
+    targets: ["production/keyring"],
+    assumptions: ["The old credential remains valid during overlap."],
+    preconditions: ["Break-glass access has been tested."],
+    steps: [
+      {
+        id: "rotate",
+        action: "Create the replacement, activate it, then revoke the old credential.",
+        target: "production/keyring",
+        expectedEffect: "The old credential permanently stops authenticating.",
+        potentiallyIrreversible: true,
+      },
+    ],
+    verification: ["Authenticate with the replacement from two clients."],
+    rollback: ["Reactivate the old credential before overlap ends."],
+    abortConditions: ["Stop if break-glass access or replacement verification fails."],
+    authorizedToolNames: ["bash"],
+  };
+}
 
 describe("automatic routing gate", () => {
   it("requires validated semantic evidence instead of promoting classifier failure to a premium route", () => {
@@ -27,6 +53,41 @@ describe("deterministicCheckCommand", () => {
     assert.equal(deterministicCheckCommand("npm test | tee test.log"), undefined);
     assert.equal(deterministicCheckCommand("npm test & wait"), undefined);
     assert.equal(deterministicCheckCommand("echo hello"), undefined);
+  });
+});
+
+describe("safetyToolBlockReason", () => {
+  it("restricts explicit lifecycle phases without treating standalone review as a child review", () => {
+    const standaloneReview = {
+      manualOverride: false,
+      lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task" },
+    };
+    assert.equal(safetyToolBlockReason(standaloneReview, "subagent", { action: "create" }), undefined);
+    assert.equal(
+      safetyToolBlockReason(standaloneReview, "bash", { command: "gh pr comment 305 --body review" }),
+      undefined,
+    );
+
+    const independentReview = {
+      manualOverride: false,
+      lifecycle: {
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: "task",
+        reviewKind: "completion",
+        scopeFingerprint: "a".repeat(64),
+      },
+    };
+    assert.equal(safetyToolBlockReason(independentReview, "bash", { command: "git diff --stat" }), undefined);
+    assert.match(safetyToolBlockReason(independentReview, "subagent", { action: "create" }), /read-only/);
+    assert.match(
+      safetyToolBlockReason(independentReview, "bash", { command: "gh pr comment 305 --body review" }),
+      /read-only/,
+    );
+    assert.match(
+      safetyToolBlockReason({ ...independentReview, manualOverride: true }, "submit_safety_review", {}),
+      /Manual.*invalidated/,
+    );
   });
 });
 
@@ -61,6 +122,8 @@ describe("routerExtension", () => {
     }
     assert.match(commands.get("route").description, /model-router mode/);
     assert.equal(tools.has("submit_implementation_plan"), true);
+    assert.equal(tools.has("submit_action_plan"), true);
+    assert.equal(tools.has("submit_safety_review"), true);
   });
 
   it("carries routing enablement mode through /clear (session_shutdown → session_start)", async () => {
@@ -275,7 +338,7 @@ describe("routerExtension", () => {
       rankReason: "evidence_prior",
     };
     const lease = {
-      version: 1,
+      version: 2,
       taskId: "planning-task",
       startedAt: now,
       updatedAt: now,
@@ -288,9 +351,9 @@ describe("routerExtension", () => {
       modelSnapshotId: "snapshot",
       policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
+      lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task-fingerprint" },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
       manualOverride: false,
-      reviewRequired: false,
-      reviewCompleted: false,
     };
     const makeModel = (choice) => ({
       provider: choice.provider,
@@ -443,7 +506,7 @@ describe("routerExtension", () => {
       },
     ];
     const lease = {
-      version: 1,
+      version: 2,
       taskId: "auth-failover-task",
       startedAt: now,
       updatedAt: now,
@@ -456,6 +519,8 @@ describe("routerExtension", () => {
       modelSnapshotId: "snapshot",
       policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
+      lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task-fingerprint" },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
       manualOverride: false,
     };
     const makeModel = (choice) => ({
@@ -553,23 +618,222 @@ describe("routerExtension", () => {
     }
   });
 
-  it("runs a required review as a read-only child lease and restores the builder", async () => {
+  it("authorizes only an approved exact irreversible-action plan and invalidates it on user input", async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const appended = [];
+    const sent = [];
+    const selectedModels = [];
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-authorization-"));
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    const now = new Date().toISOString();
+    const features = {
+      ...conservativeFeatures("authorization lifecycle test"),
+      intent: "operate",
+      workflowType: "incident_or_operations",
+      actionMode: "destructive",
+      risk: "critical",
+      confidence: 0.99,
+    };
+    const parent = {
+      version: 2,
+      taskId: "irreversible-parent",
+      startedAt: now,
+      updatedAt: now,
+      archetype: "highest_risk_advisory",
+      features,
+      selected: {
+        provider: "openai-codex",
+        modelId: "gpt-5.6-sol",
+        logicalModelId: "gpt-5.6-sol",
+        vendor: "openai",
+        effort: "high",
+        ability: 4,
+        profileId: "openai-gpt-5.6-agent-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "bootstrap",
+      },
+      fallbacks: [
+        {
+          provider: "anthropic",
+          modelId: "claude-opus-5",
+          logicalModelId: "claude-opus-5",
+          vendor: "anthropic",
+          effort: "high",
+          ability: 4,
+          profileId: "anthropic-claude-planning-v1",
+          contextWindow: 1_000_000,
+          endpointTier: "manufacturer",
+          rankReason: "evidence_prior",
+        },
+      ],
+      attemptIndex: 0,
+      promptProfileId: "openai-gpt-5.6-agent-v1",
+      modelSnapshotId: "snapshot",
+      policyVersion: POLICY_VERSION,
+      lastPromptFingerprint: "fingerprint",
+      lifecycle: {
+        phase: "preflight",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: "task-fingerprint",
+      },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+      manualOverride: false,
+    };
+    const makeModel = (provider, id, api) => ({
+      provider,
+      id,
+      name: id,
+      api,
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
+    const models = [
+      makeModel("openai-codex", "gpt-5.6-sol", "openai-responses"),
+      makeModel("anthropic", "claude-opus-5", "anthropic-messages"),
+      makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
+    ];
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "active", manualOverride: false, active: parent },
+      },
+    ];
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: () => {},
+      registerTool: (tool) => tools.set(tool.name, tool),
+      appendEntry: (customType, data) => appended.push({ customType, data }),
+      sendMessage: (message, options) => sent.push({ message, options }),
+      setModel: async (model) => {
+        selectedModels.push(model);
+        return true;
+      },
+      setThinkingLevel: () => {},
+      getThinkingLevel: () => "high",
+      exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+    };
+    routerExtension(pi);
+    const ctx = {
+      cwd: telemetryDirectory,
+      model: models[0],
+      modelRegistry: {
+        getAll: () => models,
+        getAvailable: () => models,
+        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+      },
+      sessionManager: {
+        getBranch: () => branch,
+        getSessionId: () => "authorization-session",
+      },
+      getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        setWorkingMessage: () => {},
+        setWorkingVisible: () => {},
+        notify: () => {},
+      },
+    };
+    const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    const completeReview = async (child, verdict) => {
+      ctx.model = models.find(
+        (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
+      );
+      hooks.get("agent_start")();
+      await tools.get("submit_safety_review").execute(
+        `review-${verdict}`,
+        {
+          reviewKind: "authorization",
+          scopeFingerprint: child.lifecycle.scopeFingerprint,
+          verdict,
+          summary: verdict === "approve" ? "The exact plan is bounded." : "Rollback is not yet credible.",
+          evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+          findings: verdict === "approve" ? [] : ["Strengthen rollback verification."],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      await hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: child.selected.provider,
+              model: child.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+      await hooks.get("agent_settled")({}, ctx);
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      assert.match(
+        hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
+        /preflight/,
+      );
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const rejectedChild = latestLease();
+      assert.equal(rejectedChild.lifecycle.reviewKind, "authorization");
+      await completeReview(rejectedChild, "reject");
+      assert.equal(latestLease().lifecycle.phase, "preflight");
+      assert.equal(sent.length, 1, "rejection must not send an execution continuation");
+
+      ctx.model = models[0];
+      await hooks.get("agent_settled")({}, ctx);
+      const approvedChild = latestLease();
+      await completeReview(approvedChild, "approve");
+      assert.equal(latestLease().lifecycle.phase, "authorized_execution");
+      assert.equal(latestLease().lifecycle.authorization.planFingerprint, latestLease().lifecycle.plan.planFingerprint);
+      assert.equal(sent.length, 3, "approval adds the second review request and one execution continuation");
+      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
+      assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
+
+      await hooks.get("input")({ text: "Change the target and continue", source: "interactive" }, ctx);
+      assert.equal(latestLease().lifecycle.phase, "preflight");
+      assert.match(
+        hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
+        /preflight/,
+      );
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+    }
+  });
+
+  it("runs a required completion review as a read-only child lease and restores the builder", async () => {
     const hooks = new Map();
     const appended = [];
     const sent = [];
     const selectedModels = [];
+    const tools = new Map();
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-adapter-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
     const now = new Date().toISOString();
     const features = {
       ...conservativeFeatures("required review test"),
+      intent: "implement",
+      workflowType: "coding_implementation",
       actionMode: "reversible_mutation",
       risk: "critical",
       confidence: 0.99,
     };
     const parent = {
-      version: 1,
+      version: 2,
       taskId: "parent-task",
       startedAt: now,
       updatedAt: now,
@@ -606,9 +870,14 @@ describe("routerExtension", () => {
       modelSnapshotId: "snapshot",
       policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
+      lifecycle: { phase: "building", policy: "completion_review", taskFingerprint: "task-fingerprint" },
+      safetyEvidence: {
+        baselineHead: "base-head",
+        baselineChangedFiles: [],
+        checks: [{ command: "npm test", passed: true, recordedAt: now }],
+        mutations: [{ toolName: "edit", inputFingerprint: "e".repeat(64), recordedAt: now }],
+      },
       manualOverride: false,
-      reviewRequired: true,
-      reviewCompleted: false,
     };
     const makeModel = (provider, id, api) => ({
       provider,
@@ -637,13 +906,31 @@ describe("routerExtension", () => {
     const pi = {
       on: (event, handler) => hooks.set(event, handler),
       registerCommand: () => {},
-      registerTool: () => {},
+      registerTool: (tool) => tools.set(tool.name, tool),
       appendEntry: (customType, data) => appended.push({ customType, data }),
       sendMessage: (message, options) => sent.push({ message, options }),
       setModel: async (model) => selectedModels.push(model),
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
-      exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+      exec: async (command, args) => {
+        const joined = args?.join(" ") ?? "";
+        if (command === "git" && joined.includes("rev-parse --show-toplevel")) {
+          return { stdout: `${telemetryDirectory}\n`, stderr: "", code: 0, killed: false };
+        }
+        if (command === "git" && joined.includes("rev-parse HEAD")) {
+          return { stdout: "completed-head\n", stderr: "", code: 0, killed: false };
+        }
+        if (command === "git" && joined.includes("status --porcelain")) {
+          return { stdout: " M src/a.ts\n", stderr: "", code: 0, killed: false };
+        }
+        if (command === "git" && joined.includes("ls-files")) {
+          return { stdout: "src/a.ts\n", stderr: "", code: 0, killed: false };
+        }
+        if (command === "git" && joined.includes("diff --no-ext-diff --binary")) {
+          return { stdout: "diff --git a/src/a.ts b/src/a.ts\n+safe change\n", stderr: "", code: 0, killed: false };
+        }
+        return { stdout: "", stderr: "", code: 1, killed: false };
+      },
     };
     routerExtension(pi);
     const ctx = {
@@ -672,26 +959,36 @@ describe("routerExtension", () => {
       assert.equal(sent[0].options.triggerTurn, true);
       const child = appended.at(-1).data.active;
       assert.equal(child.parentTaskId, parent.taskId);
+      assert.equal(child.lifecycle.phase, "review");
+      assert.equal(child.lifecycle.reviewKind, "completion");
       assert.equal(child.archetype, "code_review");
       assert.notEqual(child.selected.vendor, "openai");
-      assert.deepEqual(hooks.get("tool_call")({ toolName: "edit", input: {} }), {
-        block: true,
-        reason: "Independent review lease is read-only",
-      });
+      assert.match(hooks.get("tool_call")({ toolName: "edit", input: {} }).reason, /read-only/);
       assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff --stat" } }), undefined);
-      assert.deepEqual(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff | sh" } }), {
-        block: true,
-        reason: "Independent review lease is read-only",
-      });
-      assert.deepEqual(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }), {
-        block: true,
-        reason: "Independent review lease is read-only",
-      });
+      assert.match(
+        hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff | sh" } }).reason,
+        /read-only/,
+      );
+      assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /read-only/);
       await hooks.get("agent_settled")({}, ctx);
       assert.equal(appended.at(-1).data.active.taskId, child.taskId, "pending review must not restore its parent");
       ctx.model = selectedModels[0];
       hooks.get("agent_start")();
       hooks.get("turn_start")();
+      await tools.get("submit_safety_review").execute(
+        "review-tool-call",
+        {
+          reviewKind: "completion",
+          scopeFingerprint: child.lifecycle.scopeFingerprint,
+          verdict: "pass",
+          summary: "The implementation and passing check match the tracked task.",
+          evidence: ["Inspected the baseline-to-working-tree diff and npm test evidence."],
+          findings: [],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
       await hooks.get("agent_end")(
         {
           messages: [
@@ -709,7 +1006,8 @@ describe("routerExtension", () => {
       await hooks.get("agent_settled")({}, ctx);
       const restored = appended.at(-1).data.active;
       assert.equal(restored.taskId, parent.taskId);
-      assert.equal(restored.reviewCompleted, true);
+      assert.equal(restored.lifecycle.phase, "completed");
+      assert.equal(restored.lifecycle.completionReview.verdict, "pass");
       assert.equal(restored.selected.modelId, "gpt-5.6-sol");
       // The reviewer is the Anthropic rung at or above the builder's evidence band.
       assert.equal(selectedModels[0].id, "claude-opus-5");
