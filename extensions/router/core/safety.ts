@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import type { Static, TUnsafe } from "typebox";
 import { Check, Errors } from "typebox/value";
+import { isCodeBuilder } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
 
 function stringEnum<const TValues extends readonly string[]>(values: TValues): TUnsafe<TValues[number]> {
@@ -259,8 +260,7 @@ export function deriveSafetyPolicy(features: TaskFeatures): SafetyPolicy {
   const irreversible = features.actionMode === "external_side_effect" || features.actionMode === "destructive";
   if (highRisk && irreversible) return "authorization_then_completion_review";
   const mutating = features.actionMode === "reversible_mutation";
-  const codeBuilder = features.workflowType === "coding_implementation" || features.intent === "implement";
-  if (highRisk && mutating && codeBuilder) return "completion_review";
+  if (highRisk && mutating && isCodeBuilder(features)) return "completion_review";
   if (highRisk && mutating) return "advisory_then_completion_review";
   return "ordinary";
 }

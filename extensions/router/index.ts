@@ -7,6 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
+import { isCodeBuilder } from "./core/features.ts";
 import { resolveFallback } from "./core/fallback.ts";
 import type { FailureKind } from "./core/fallback.ts";
 import {
@@ -931,8 +932,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       (baselineHead !== undefined && repository.head !== undefined && repository.head !== baselineHead);
     const latestChecks = new Map(parent.safetyEvidence.checks.map((check) => [check.command, check]));
     const checks = [...latestChecks.values()];
-    const codeBuilder =
-      parent.features.workflowType === "coding_implementation" || parent.features.intent === "implement";
+    const codeBuilder = isCodeBuilder(parent.features);
     if (codeBuilder && parent.safetyEvidence.mutations.length === 0) {
       return { reason: "no successful implementation mutation was recorded for this task" };
     }
@@ -1846,8 +1846,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     if (lifecycleRequiresCompletionReview(active.lifecycle)) {
       const collected = await collectCompletionEvidence(ctx, active);
       if (collected.evidence) {
-        const codeBuilder =
-          active.features.workflowType === "coding_implementation" || active.features.intent === "implement";
+        const codeBuilder = isCodeBuilder(active.features);
         await startIndependentReview(
           ctx,
           active,

@@ -1,3 +1,4 @@
+import { isCodeBuilder } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
 
 export const ARCHETYPES = [
@@ -99,7 +100,7 @@ export function deriveArchetype(features: TaskFeatures): ArchetypeDecision {
 
   const requiresIndependentReview =
     (features.risk === "high" || features.risk === "critical") &&
-    (features.workflowType === "coding_implementation" || features.intent === "implement") &&
+    isCodeBuilder(features) &&
     features.actionMode === "reversible_mutation";
   if (requiresIndependentReview) reasons.push("high-risk code builder requires post-completion review");
 

@@ -107,6 +107,11 @@ export const TaskFeaturesSchema = Type.Object(
 
 export type TaskFeatures = Static<typeof TaskFeaturesSchema>;
 
+/** A task that authors repository changes, and therefore carries builder-specific evidence duties. */
+export function isCodeBuilder(features: Pick<TaskFeatures, "workflowType" | "intent">): boolean {
+  return features.workflowType === "coding_implementation" || features.intent === "implement";
+}
+
 export type ValidationResult<T> = { success: true; value: T; errors: [] } | { success: false; errors: string[] };
 
 export function validateTaskFeatures(value: unknown): ValidationResult<TaskFeatures> {
