@@ -97,6 +97,12 @@ describe("irreversible action plans", () => {
     invalid.steps[0].potentiallyIrreversible = false;
     assert.match(validateActionPlan(invalid).errors.join("\n"), /potentially irreversible effect/);
   });
+
+  it("rejects steps that act outside the declared targets", () => {
+    const invalid = actionPlan();
+    invalid.steps[0].target = "staging/keyring";
+    assert.match(validateActionPlan(invalid).errors.join("\n"), /undeclared target: staging\/keyring/);
+  });
 });
 
 describe("deterministic safety tool gate", () => {

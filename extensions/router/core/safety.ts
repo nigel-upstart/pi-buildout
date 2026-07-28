@@ -210,9 +210,13 @@ export function validateActionPlan(value: unknown): ActionPlanValidation {
   }
   const ids = new Set<string>();
   const errors: string[] = [];
+  const declaredTargets = new Set(value.targets);
   for (const step of value.steps) {
     if (ids.has(step.id)) errors.push(`duplicate action step id: ${step.id}`);
     ids.add(step.id);
+    if (!declaredTargets.has(step.target)) {
+      errors.push(`step ${step.id} acts on undeclared target: ${step.target}`);
+    }
   }
   if (!value.steps.some((step) => step.potentiallyIrreversible)) {
     errors.push("at least one step must identify the potentially irreversible effect being authorized");
