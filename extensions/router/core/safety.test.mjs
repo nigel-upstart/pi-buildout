@@ -86,10 +86,11 @@ describe("irreversible action plans", () => {
     assert.equal(result.fingerprint, safetyFingerprint(actionPlan()));
     assert.equal(result.fingerprint.length, 64);
 
-    const reordered = {
-      ...actionPlan(),
-      objective: actionPlan().objective,
-    };
+    // Property insertion order must not change the fingerprint, so build the same plan with the
+    // objective inserted last rather than first.
+    const { objective, ...rest } = actionPlan();
+    const reordered = { ...rest, objective };
+    assert.notDeepEqual(Object.keys(reordered), Object.keys(actionPlan()), "the fixture must reorder properties");
     assert.equal(safetyFingerprint(reordered), result.fingerprint);
   });
 

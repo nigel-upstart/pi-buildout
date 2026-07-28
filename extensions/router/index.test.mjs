@@ -125,6 +125,15 @@ describe("safetyToolBlockReason", () => {
       safetyToolBlockReason({ ...independentReview, manualOverride: true }, "submit_safety_review", {}),
       /Manual.*invalidated/,
     );
+    assert.equal(
+      safetyToolBlockReason({ ...standaloneReview, manualOverride: true }, "edit", { path: "README.md" }),
+      undefined,
+      "a manual override on ordinary work must not block normal tools",
+    );
+    assert.equal(
+      safetyToolBlockReason({ ...standaloneReview, manualOverride: true }, "bash", { command: "npm test" }),
+      undefined,
+    );
   });
 });
 
@@ -934,9 +943,20 @@ describe("routerExtension", () => {
       ctx.model = models[0];
       await hooks.get("agent_settled")({}, ctx);
       const approvedChild = latestLease();
+      assert.notEqual(
+        approvedChild.selected.vendor,
+        parent.selected.vendor,
+        "an authorization review must not be routed to the builder's vendor",
+      );
       await completeReview(approvedChild, "approve");
       assert.equal(latestLease().lifecycle.phase, "authorized_execution");
       assert.equal(latestLease().lifecycle.authorization.planFingerprint, latestLease().lifecycle.plan.planFingerprint);
+      assert.equal(latestLease().lifecycle.authorization.reviewerVendor, approvedChild.selected.vendor);
+      assert.notEqual(
+        latestLease().lifecycle.authorization.reviewerVendor,
+        parent.selected.vendor,
+        "the recorded authorization must name an independent reviewer vendor",
+      );
       assert.equal(sent.length, 3, "approval adds the second review request and one execution continuation");
       assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
       assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
