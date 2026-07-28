@@ -116,8 +116,10 @@ unprobed endpoints stay eligible. Override the record location with `PI_ROUTER_E
   preflight into authorization; on a safety-managed lease they invalidate authorization and keep mutation blocked until
   active routing is safely restored.
 - Preflight, advisory-pending, and generated-review phases use a deterministic read-only tool allowlist. Unknown tools
-  and shell composition are blocked. Authorized execution additionally rejects mutating tool names absent from the
-  reviewed plan.
+  and shell composition are blocked. A `bash` command is lexed into argv (`core/shell.ts`) and then checked against
+  per-binary allowlists of subcommands and options, so a permitted binary cannot be handed a writing option, a second
+  command, substitution, or a malformed quote. Authorized execution additionally rejects mutating tool names absent from
+  the reviewed plan.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
 - Executing work across a dependent pull-request stack is distinct from planning one. The stack route is restricted to
   exact current-generation IDs (`gpt-5.6-sol/high` and `claude-opus-5/high`, plus their same-model availability

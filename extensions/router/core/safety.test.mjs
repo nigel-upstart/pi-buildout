@@ -5,6 +5,7 @@ import {
   deriveSafetyPolicy,
   initialLifecycle,
   isLeaseLifecycle,
+  isPotentiallyMutatingTool,
   lifecycleToolBlockReason,
   safetyContextForLifecycle,
   safetyFingerprint,
@@ -159,6 +160,29 @@ describe("deterministic safety tool gate", () => {
 
     const advisory = initialLifecycle("advisory_then_completion_review", "task");
     assert.match(lifecycleToolBlockReason(advisory, "custom_mutator", {}), /advisory/);
+  });
+
+  it("keeps the read-only classifier and the mutation classifier inverses of each other", () => {
+    // A command the read-only gate refuses must count as potentially mutating, so a classifier gap
+    // can only ever narrow what runs, never widen what is recorded as a mutation.
+    const preflight = initialLifecycle("authorization_then_completion_review", "task");
+    for (const command of [
+      "git diff --stat HEAD",
+      "rg -n pattern src",
+      "find . -name '*.ts'",
+      "find . -exec rm {} +",
+      "git diff --output=/tmp/leak",
+      "npm test",
+      "ls\nrm -rf /",
+      "",
+    ]) {
+      const blocked = lifecycleToolBlockReason(preflight, "bash", { command }) !== undefined;
+      assert.equal(
+        isPotentiallyMutatingTool("bash", { command }),
+        blocked,
+        `${JSON.stringify(command)} must be blocked in preflight exactly when it counts as mutating`,
+      );
+    }
   });
 
   it("maps only constrained phases to a lifecycle prompt", () => {

@@ -4,6 +4,7 @@ import type { Static, TUnsafe } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { isCodeBuilder } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
+import { isReadOnlyShellCommand } from "./shell.ts";
 
 function stringEnum<const TValues extends readonly string[]>(values: TValues): TUnsafe<TValues[number]> {
   return Type.Unsafe<TValues[number]>({ type: "string", enum: [...values] });
@@ -302,21 +303,6 @@ export function lifecycleRequiresCompletionReview(lifecycle: LeaseLifecycle): bo
     lifecycle.phase === "building" ||
     lifecycle.phase === "ready_after_advisory" ||
     lifecycle.phase === "authorized_execution"
-  );
-}
-
-function isReadOnlyShellCommand(command: string): boolean {
-  const normalized = command.trim();
-  if (normalized.length === 0 || /[;&|><`$(){}\n\r]/.test(normalized)) return false;
-  if (
-    /(?:^|\s)(?:--output(?:=|\s)|--ext-diff\b|--textconv\b|--pre(?:=|\s)|-delete\b|-exec(?:dir)?\b|-ok(?:dir)?\b|-fprintf?\b|-fprint0\b|-fls\b|--compile\b)/.test(
-      normalized,
-    )
-  ) {
-    return false;
-  }
-  return /^(?:git\s+(?:diff|status|show|log|rev-parse|ls-files)\b|rg\b|grep\b|find\b|ls\b|pwd\b|wc\b|head\b|tail\b|file\b)/.test(
-    normalized,
   );
 }
 
