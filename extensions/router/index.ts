@@ -203,7 +203,10 @@ function statusLabel(state: LeaseState): string {
   return `route:${state.mode}${lease.executionFailed ? ":failed" : ""}:${lease.lifecycle.phase} ${lease.selected.vendor}/${lease.selected.modelId} ${lease.selected.effort}`;
 }
 
-function resumeCompletedLifecycle(completed: Extract<LeaseLifecycle, { phase: "completed" }>): LeaseLifecycle {
+export function resumeCompletedLifecycle(
+  completed: Extract<LeaseLifecycle, { phase: "completed" }>,
+  sessionId: string,
+): LeaseLifecycle {
   if (completed.policy === "completion_review") {
     return { phase: "building", policy: completed.policy, taskFingerprint: completed.taskFingerprint };
   }
@@ -216,13 +219,22 @@ function resumeCompletedLifecycle(completed: Extract<LeaseLifecycle, { phase: "c
     };
   }
   if (completed.policy === "authorization_then_completion_review" && completed.plan && completed.authorization) {
-    return {
-      phase: "authorized_execution",
-      policy: completed.policy,
-      taskFingerprint: completed.taskFingerprint,
-      plan: completed.plan,
-      authorization: completed.authorization,
-    };
+    // An approval is scoped to the session that obtained it, exactly as the restore-time check in
+    // session_start enforces. Resuming completed work elsewhere must re-earn authorization.
+    return completed.authorization.sessionId === sessionId
+      ? {
+          phase: "authorized_execution",
+          policy: completed.policy,
+          taskFingerprint: completed.taskFingerprint,
+          plan: completed.plan,
+          authorization: completed.authorization,
+        }
+      : {
+          phase: "preflight",
+          policy: completed.policy,
+          taskFingerprint: completed.taskFingerprint,
+          plan: completed.plan,
+        };
   }
   return { phase: "ordinary", policy: "ordinary", taskFingerprint: completed.taskFingerprint };
 }
@@ -981,7 +993,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     if (state.mode === "active" && pending && active.lifecycle.phase === "completed") {
       active = {
         ...active,
-        lifecycle: resumeCompletedLifecycle(active.lifecycle),
+        lifecycle: resumeCompletedLifecycle(active.lifecycle, ctx.sessionManager.getSessionId()),
         updatedAt: new Date().toISOString(),
       };
       state = installLease(state, active);

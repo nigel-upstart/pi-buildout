@@ -13,6 +13,7 @@ import { conservativeFeatures } from "./core/features.ts";
 import routerExtension, {
   automaticRoutingBlockReason,
   deterministicCheckCommand,
+  resumeCompletedLifecycle,
   safetyToolBlockReason,
 } from "./index.ts";
 
@@ -53,6 +54,42 @@ describe("deterministicCheckCommand", () => {
     assert.equal(deterministicCheckCommand("npm test | tee test.log"), undefined);
     assert.equal(deterministicCheckCommand("npm test & wait"), undefined);
     assert.equal(deterministicCheckCommand("echo hello"), undefined);
+  });
+});
+
+describe("resumeCompletedLifecycle", () => {
+  it("restores an approval only inside the session that obtained it", () => {
+    const plan = {
+      taskFingerprint: "task",
+      planFingerprint: "f".repeat(64),
+      submittedAt: "2026-07-28T00:00:00.000Z",
+      plan: irreversibleActionPlan(),
+    };
+    const completed = {
+      phase: "completed",
+      policy: "authorization_then_completion_review",
+      taskFingerprint: "task",
+      completionReview: {
+        kind: "completion",
+        verdict: "pass",
+        summary: "done",
+        completedAt: "2026-07-28T01:00:00.000Z",
+      },
+      plan,
+      authorization: {
+        taskFingerprint: "task",
+        planFingerprint: plan.planFingerprint,
+        reviewTaskId: "review",
+        reviewerVendor: "anthropic",
+        sessionId: "approving-session",
+        approvedAt: "2026-07-28T00:01:00.000Z",
+      },
+    };
+    assert.equal(resumeCompletedLifecycle(completed, "approving-session").phase, "authorized_execution");
+    const elsewhere = resumeCompletedLifecycle(completed, "another-session");
+    assert.equal(elsewhere.phase, "preflight", "an approval must not cross a session boundary");
+    assert.equal(elsewhere.authorization, undefined);
+    assert.equal(elsewhere.plan.planFingerprint, plan.planFingerprint, "the submitted plan survives re-authorization");
   });
 });
 
