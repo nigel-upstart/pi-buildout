@@ -52,7 +52,7 @@ Safety is an explicit persisted lease lifecycle, not an inference from archetype
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
 builder, and two non-builder-vendor attempts; they never fall back to the builder for a verdict. Standalone
 user-requested reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta, classify its
-scope/languages/complexity/ risk/horizon/context/tool needs, and use feature-based review routing. They do not inherit
+scope/languages/complexity/risk/horizon/context/tool needs, and use feature-based review routing. They do not inherit
 the current lease, invent a builder, become read-only merely because another task preceded them, or trigger recursive
 automatic review. They may perform explicitly requested external operations such as posting review comments.
 
