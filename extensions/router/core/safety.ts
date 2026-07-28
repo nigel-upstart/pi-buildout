@@ -286,7 +286,7 @@ function isReadOnlyShellCommand(command: string): boolean {
   const normalized = command.trim();
   if (normalized.length === 0 || /[;&|><`$(){}\n\r]/.test(normalized)) return false;
   if (
-    /(?:^|\s)(?:--output(?:=|\s)|--ext-diff\b|--textconv\b|--pre(?:=|\s)|-delete\b|-exec(?:dir)?\b|-ok(?:dir)?\b|-fprint\b|--compile\b)/.test(
+    /(?:^|\s)(?:--output(?:=|\s)|--ext-diff\b|--textconv\b|--pre(?:=|\s)|-delete\b|-exec(?:dir)?\b|-ok(?:dir)?\b|-fprintf?\b|-fprint0\b|-fls\b|--compile\b)/.test(
       normalized,
     )
   ) {

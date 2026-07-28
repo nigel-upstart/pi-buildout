@@ -108,6 +108,11 @@ describe("deterministic safety tool gate", () => {
     assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "git status; rm -rf out" }), /preflight/);
     assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "git diff --output=/tmp/leak" }), /preflight/);
     assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -delete" }), /preflight/);
+    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprintf out %p" }), /preflight/);
+    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprint0 out" }), /preflight/);
+    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fls out" }), /preflight/);
+    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprint out" }), /preflight/);
+    assert.equal(lifecycleToolBlockReason(preflight, "bash", { command: "find . -name '*.ts'" }), undefined);
     assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "rg --pre mutate pattern" }), /preflight/);
     assert.equal(lifecycleToolBlockReason(preflight, "submit_action_plan", {}), undefined);
 
