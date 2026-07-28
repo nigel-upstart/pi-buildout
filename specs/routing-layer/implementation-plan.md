@@ -14,8 +14,10 @@ have now been adopted:
 
 1. Ordinary routes have one primary and a task-leased chain of every eligible, policy-authorized provider endpoint, so
    an endpoint-specific availability or credential failure can continue without broadening model policy.
-2. Review is sequential across both non-builder model vendors, with the existing builder as a fixed final fallback when
-   independence cannot be obtained. This is not a parallel review panel.
+2. Tracked-work review is sequential across the two non-builder model vendors and never falls back to the builder; when
+   independence cannot be obtained the parent is restored with an explicit unavailable/skipped outcome. Standalone
+   user-requested review is an ordinary lease using the feature-based `code_review` fallback chain. Neither form is a
+   parallel review panel.
 3. High-risk implementation requires review, deterministic verification outranks LLM judgment, and model IDs/profile
    compatibility are hard eligibility filters.
 4. Multi-PR planning and implementation are separate attempts and leases with separate telemetry.
