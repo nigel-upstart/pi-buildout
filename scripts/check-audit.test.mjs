@@ -9,7 +9,7 @@ const braceNodes = [
 
 function auditReport() {
   return {
-    metadata: { vulnerabilities: { total: 3 } },
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 3, critical: 0, total: 3 } },
     vulnerabilities: {
       "brace-expansion": {
         name: "brace-expansion",
@@ -74,5 +74,15 @@ describe("evaluateAudit", () => {
 
   it("rejects unsuccessful or malformed npm audit reports", () => {
     assert.throws(() => evaluateAudit({ error: { summary: "registry unavailable" } }), /invalid or unsuccessful/);
+  });
+
+  it("fails closed when positive totals have missing or malformed vulnerability entries", () => {
+    const totals = { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 };
+
+    assert.throws(() => evaluateAudit({ metadata: { vulnerabilities: totals }, vulnerabilities: {} }), /invalid/);
+    assert.throws(
+      () => evaluateAudit({ metadata: { vulnerabilities: totals }, vulnerabilities: { minimatch: null } }),
+      /invalid/,
+    );
   });
 });
