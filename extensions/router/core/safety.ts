@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import type { Static, TUnsafe } from "typebox";
 import { Check, Errors } from "typebox/value";
-import { isCodeBuilder } from "./features.ts";
+import { isCodeBuilder, isStandaloneReviewWork } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
 import { isReadOnlyShellCommand } from "./shell.ts";
 
@@ -255,8 +255,7 @@ export function validateSafetyReview(
 }
 
 export function deriveSafetyPolicy(features: TaskFeatures): SafetyPolicy {
-  const standaloneReview = features.workflowType === "code_review" || features.intent === "review";
-  if (standaloneReview) return "ordinary";
+  if (isStandaloneReviewWork(features)) return "ordinary";
   const highRisk = features.risk === "high" || features.risk === "critical";
   const irreversible = features.actionMode === "external_side_effect" || features.actionMode === "destructive";
   if (highRisk && irreversible) return "authorization_then_completion_review";

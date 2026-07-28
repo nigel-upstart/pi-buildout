@@ -112,6 +112,15 @@ export function isCodeBuilder(features: Pick<TaskFeatures, "workflowType" | "int
   return features.workflowType === "coding_implementation" || features.intent === "implement";
 }
 
+/**
+ * Review the user asked for directly. It has no builder to be independent of and no work of its own
+ * to review afterwards, so the safety lifecycle and the archetype's review duty must agree on it:
+ * a task can be classified as both review and implementation, and only one guard used to exclude it.
+ */
+export function isStandaloneReviewWork(features: Pick<TaskFeatures, "workflowType" | "intent">): boolean {
+  return features.workflowType === "code_review" || features.intent === "review";
+}
+
 export type ValidationResult<T> = { success: true; value: T; errors: [] } | { success: false; errors: string[] };
 
 export function validateTaskFeatures(value: unknown): ValidationResult<TaskFeatures> {

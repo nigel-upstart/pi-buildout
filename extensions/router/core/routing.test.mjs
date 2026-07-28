@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { deriveArchetype } from "./archetype.ts";
 import { BOOTSTRAP_ROUTE_POLICIES } from "./policy.ts";
 import { conservativeFeatures } from "./features.ts";
+import { deriveSafetyPolicy } from "./safety.ts";
 import {
   canonicalVendor,
   deriveRoutingContext,
@@ -92,6 +93,37 @@ describe("deriveArchetype", () => {
       reviewIntent: true,
     };
     assert.equal(deriveArchetype(features).archetype, "highest_risk_advisory");
+  });
+
+  it("claims a post-completion review duty only where the safety policy creates one", () => {
+    const builder = {
+      ...conservativeFeatures(),
+      intent: "implement",
+      workflowType: "coding_implementation",
+      risk: "high",
+      actionMode: "reversible_mutation",
+    };
+    assert.equal(deriveArchetype(builder).requiresIndependentReview, true);
+    assert.equal(deriveSafetyPolicy(builder), "completion_review");
+
+    // "Review this and fix it" classifies as both review and implementation. The safety policy is
+    // ordinary there, so the archetype must not claim a review duty the lifecycle never creates.
+    for (const reviewShape of [
+      { workflowType: "code_review", intent: "implement" },
+      { workflowType: "coding_implementation", intent: "review" },
+    ]) {
+      const features = { ...builder, ...reviewShape };
+      assert.equal(deriveSafetyPolicy(features), "ordinary");
+      assert.equal(
+        deriveArchetype(features).requiresIndependentReview,
+        false,
+        `${reviewShape.workflowType}/${reviewShape.intent} must not require an independent review`,
+      );
+      assert.ok(
+        !deriveArchetype(features).reasons.some((reason) => reason.includes("post-completion review")),
+        "the explanation must not name a review that will not happen",
+      );
+    }
   });
 });
 
