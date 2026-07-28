@@ -152,6 +152,14 @@ describe("isReadOnlyShellCommand", () => {
     }
   });
 
+  it("permits only side-effect-reducing options before a git subcommand", () => {
+    assert.equal(isReadOnlyShellCommand("git --no-optional-locks status --porcelain"), true);
+    assert.equal(isReadOnlyShellCommand("git --no-pager --no-optional-locks log --oneline"), true);
+    assert.equal(isReadOnlyShellCommand("rg --no-config -n pattern src"), true);
+    assert.equal(isReadOnlyShellCommand("git --exec-path=/tmp/evil status"), false);
+    assert.equal(isReadOnlyShellCommand("git --no-optional-locks commit -m x"), false);
+  });
+
   it("refuses any binary, subcommand, or environment prefix outside the allowlist", () => {
     assert.match(readOnlyShellCommandRejection("cat file"), /cat is not a read-only command/);
     assert.match(readOnlyShellCommandRejection("npm test"), /npm is not a read-only command/);

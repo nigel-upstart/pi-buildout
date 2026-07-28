@@ -90,8 +90,10 @@ export function tokenizeShellCommand(command: string): ShellTokenization {
  * `-fprint0`, and `-fls` were exactly that kind of denylist gap.
  */
 type BinaryPolicy = {
-  /** When present, the first argument must be one of these and no option may precede it. */
+  /** When present, the first argument must be one of these, preceded only by `preSubcommandFlags`. */
   readonly subcommands?: readonly string[];
+  /** The only options permitted before a subcommand, because they reduce rather than add side effects. */
+  readonly preSubcommandFlags?: readonly string[];
   /** Permitted `--long` options, without any `=value` suffix. */
   readonly longFlags: readonly string[];
   /** Permitted single-dash words, such as `find`'s predicates. */
@@ -110,6 +112,10 @@ type BinaryPolicy = {
 // `--output`/`-o` (writes a file), and `--ext-diff`/`--textconv` (run external programs).
 const GIT_POLICY: BinaryPolicy = {
   subcommands: ["diff", "status", "show", "log", "rev-parse", "ls-files"],
+  // `git status` and `git diff` may refresh the index and start a pager or fsmonitor. Neither changes
+  // tracked content, so they stay permitted, but the two options that suppress those effects are
+  // allowed in the one position git accepts them.
+  preSubcommandFlags: ["--no-optional-locks", "--no-pager"],
   longFlags: [
     "--abbrev",
     "--abbrev-commit",
@@ -195,9 +201,13 @@ const GIT_POLICY: BinaryPolicy = {
 };
 
 // Deliberately excluded from `rg`: `--pre`, `--pre-glob`, and `--hostname-bin`, which execute a
-// program the model names.
+// program the model names. `--no-config` is permitted so a caller can also neutralize a `--pre`
+// arriving from an ambient RIPGREP_CONFIG_PATH; it is not required, because this module classifies
+// commands rather than issuing them, and setting that variable needs an assignment prefix or an
+// export this gate already refuses.
 const RIPGREP_POLICY: BinaryPolicy = {
   longFlags: [
+    "--no-config",
     "--after-context",
     "--before-context",
     "--case-sensitive",
@@ -455,6 +465,7 @@ export function readOnlyShellCommandRejection(command: string): string | undefin
   if (!policy) return `${binary} is not a read-only command`;
   let args: readonly string[] = rest;
   if (policy.subcommands) {
+    while (policy.preSubcommandFlags?.includes(args[0] ?? "")) args = args.slice(1);
     const subcommand = args[0];
     if (subcommand === undefined) return `${binary} requires a read-only subcommand`;
     if (!policy.subcommands.includes(subcommand)) {
