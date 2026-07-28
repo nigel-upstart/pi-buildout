@@ -278,6 +278,47 @@ describe("readRepositoryMetadata", () => {
     assert.ok(calls.every((call) => !call.includes("checkout") && !call.includes("fetch")));
   });
 
+  it("falls back to the working-tree diff when no pull request is referenced", async () => {
+    const calls = [];
+    const metadata = await readRepositoryMetadata(
+      {
+        exec: async (command, args) => {
+          calls.push([command, ...args]);
+          if (command === "git" && args.includes("diff")) {
+            return {
+              code: 0,
+              stdout: [
+                "diff --git a/src/a.ts b/src/a.ts",
+                "@@ -1 +1 @@",
+                "-old",
+                "+new",
+                "diff --git a/scripts/run.sh b/scripts/run.sh",
+                "@@ -1 +1 @@",
+                "-echo old",
+                "+echo new",
+              ].join("\n"),
+              stderr: "",
+              killed: false,
+            };
+          }
+          return { code: 0, stdout: "", stderr: "", killed: false };
+        },
+      },
+      "/repo",
+      "Review my uncommitted work for correctness",
+    );
+    assert.equal(metadata.reviewDelta.source, "working_tree");
+    assert.equal(metadata.reviewDelta.reference, "HEAD to working tree/index");
+    assert.deepEqual(metadata.reviewDelta.files, ["src/a.ts", "scripts/run.sh"]);
+    assert.deepEqual(metadata.reviewDelta.languageBuckets, ["shell", "typescript"]);
+    assert.ok(
+      calls.some((call) => call.join(" ") === "git -C /repo diff --no-ext-diff --unified=1 HEAD --"),
+      "the working-tree delta is read with a bounded diff",
+    );
+    assert.ok(calls.every((call) => call[0] !== "gh"));
+    assert.ok(calls.every((call) => !call.includes("checkout") && !call.includes("fetch")));
+  });
+
   it("uses git state and deterministic language buckets", async () => {
     const outputs = new Map([
       ["rev-parse --show-toplevel", "/repo"],

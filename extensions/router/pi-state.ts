@@ -372,6 +372,22 @@ function languageBuckets(files: readonly string[]): string[] {
   return [...buckets].sort();
 }
 
+/** Pure patch parsing, kept separate from the command execution that produces the patch. */
+function parseReviewDelta(
+  patch: string,
+  source: NonNullable<RepositoryMetadata["reviewDelta"]>["source"],
+  reference: string,
+): NonNullable<RepositoryMetadata["reviewDelta"]> {
+  const files = [
+    ...new Set(
+      [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)]
+        .map((match) => match[2] ?? match[1])
+        .filter((file): file is string => typeof file === "string"),
+    ),
+  ].slice(0, 100);
+  return { source, reference, files, languageBuckets: languageBuckets(files), patchExcerpt: patch.slice(0, 4_000) };
+}
+
 export async function readRepositoryMetadata(
   pi: ExtensionAPI,
   cwd: string,
@@ -405,21 +421,11 @@ export async function readRepositoryMetadata(
             timeout: 10_000,
           });
       if (result.code === 0 && result.stdout.trim()) {
-        const patch = result.stdout;
-        const files = [
-          ...new Set(
-            [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)]
-              .map((match) => match[2] ?? match[1])
-              .filter((file): file is string => typeof file === "string"),
-          ),
-        ].slice(0, 100);
-        reviewDelta = {
-          source: pullRequest ? "pull_request" : "working_tree",
-          reference: pullRequestUrl ?? (pullRequestNumber ? `PR #${pullRequestNumber}` : "HEAD to working tree/index"),
-          files,
-          languageBuckets: languageBuckets(files),
-          patchExcerpt: patch.slice(0, 4_000),
-        };
+        reviewDelta = parseReviewDelta(
+          result.stdout,
+          pullRequest ? "pull_request" : "working_tree",
+          pullRequestUrl ?? (pullRequestNumber ? `PR #${pullRequestNumber}` : "HEAD to working tree/index"),
+        );
       }
     } catch {
       // Review routing still uses the prompt and bounded repository metadata when the delta is unavailable.
