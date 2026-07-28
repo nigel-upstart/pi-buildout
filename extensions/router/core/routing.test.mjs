@@ -7,6 +7,7 @@ import {
   canonicalVendor,
   deriveRoutingContext,
   isControlledHoldout,
+  isStandaloneReviewRequest,
   registrySnapshotId,
   robustCostToDone,
   selectOrdinaryRoute,
@@ -1093,6 +1094,30 @@ describe("Opus generation chain", () => {
         if (choice.logicalModelId !== "claude-opus-4-8") continue;
         assert.equal(choice.effort, "high");
       }
+    }
+  });
+});
+
+describe("isStandaloneReviewRequest", () => {
+  it("detects explicit review verbs and pull-request references only", () => {
+    for (const prompt of [
+      "Review this change for risk",
+      "Please audit the migration script",
+      "Inspect the failing job",
+      "Can you look over my patch",
+      "Take a pass at PR #305",
+      "Check https://github.com/acme/widgets/pull/42 before we merge",
+      "opinions on pull request 7",
+    ]) {
+      assert.equal(isStandaloneReviewRequest(prompt), true, prompt);
+    }
+    for (const prompt of [
+      "Implement the retry policy",
+      "Rotate the production credential",
+      "Explain how the router picks a model",
+      "Fix the flaky test in shard 3",
+    ]) {
+      assert.equal(isStandaloneReviewRequest(prompt), false, prompt);
     }
   });
 });

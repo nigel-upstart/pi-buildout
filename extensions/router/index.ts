@@ -39,6 +39,7 @@ import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import {
   deriveRoutingContext,
+  isStandaloneReviewRequest,
   registrySnapshotId,
   selectOrdinaryRoute,
   selectReviewRoute,
@@ -1298,8 +1299,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       const currentSynopsis = synopsis(
         ctx,
         repository,
-        Boolean(repository.reviewDelta) ||
-          /\b(?:review|audit|inspect|look\s+over|pr\s*#?\d+|pull request)\b/i.test(event.prompt),
+        Boolean(repository.reviewDelta) || isStandaloneReviewRequest(event.prompt),
       );
       let active = state.active;
       let classification: ClassificationResult | undefined;

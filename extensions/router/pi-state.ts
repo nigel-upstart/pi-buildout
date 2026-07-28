@@ -19,7 +19,7 @@ import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
-import { canonicalVendor } from "./core/routing.ts";
+import { canonicalVendor, isStandaloneReviewRequest } from "./core/routing.ts";
 import { matchesScope } from "./core/scope.ts";
 import { isLeaseLifecycle, isSafetyEvidenceLog } from "./core/safety.ts";
 import type { RegistryModelSnapshot, RouteRequirements } from "./core/routing.ts";
@@ -396,10 +396,7 @@ export async function readRepositoryMetadata(
   const pullRequestNumber = possibleReviewPrompt
     ? /\b(?:pr|pull request)\s*#?(\d+)\b/i.exec(possibleReviewPrompt)?.[1]
     : undefined;
-  if (
-    possibleReviewPrompt &&
-    (/\b(?:review|audit|inspect|look\s+over)\b/i.test(possibleReviewPrompt) || pullRequestUrl || pullRequestNumber)
-  ) {
+  if (possibleReviewPrompt && isStandaloneReviewRequest(possibleReviewPrompt)) {
     const pullRequest = pullRequestUrl ?? pullRequestNumber;
     try {
       const result = pullRequest
