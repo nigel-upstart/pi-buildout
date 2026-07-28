@@ -1138,6 +1138,7 @@ describe("isStandaloneReviewRequest", () => {
       "Inspect the failing job",
       "Can you look over my patch",
       "Take a pass at PR #305",
+      "Take a pass at PR # 305",
       "Check https://github.com/acme/widgets/pull/42 before we merge",
       "opinions on pull request 7",
     ]) {

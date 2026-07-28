@@ -852,7 +852,7 @@ export function isStandaloneReviewRequest(prompt: string): boolean {
   return (
     /\b(?:review|audit|inspect|look\s+over)\b/i.test(prompt) ||
     /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/i.test(prompt) ||
-    /\b(?:pr|pull request)\s*#?\d+\b/i.test(prompt)
+    /\b(?:pr|pull request)\s*#?\s*\d+\b/i.test(prompt)
   );
 }
 
