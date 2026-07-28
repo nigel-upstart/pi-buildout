@@ -302,6 +302,108 @@ describe("routerExtension", () => {
     }
   });
 
+  it("retains one evidence entry per deterministic check command", async () => {
+    const hooks = new Map();
+    const appended = [];
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-check-evidence-"));
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    const now = new Date().toISOString();
+    const choice = {
+      provider: "openai",
+      modelId: "gpt-5.6-terra",
+      logicalModelId: "gpt-5.6-terra",
+      vendor: "openai",
+      effort: "high",
+      ability: 2,
+      profileId: "openai-gpt-5.6-agent-v1",
+      contextWindow: 1_000_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    };
+    const lease = {
+      version: 2,
+      taskId: "check-evidence-task",
+      startedAt: now,
+      updatedAt: now,
+      archetype: "median_repository_implementation",
+      features: conservativeFeatures("check evidence retention test"),
+      selected: choice,
+      fallbacks: [{ ...choice, provider: "openai-codex" }],
+      attemptIndex: 0,
+      promptProfileId: choice.profileId,
+      modelSnapshotId: "snapshot",
+      policyVersion: POLICY_VERSION,
+      lastPromptFingerprint: "fingerprint",
+      lifecycle: { phase: "building", policy: "completion_review", taskFingerprint: "task-fingerprint" },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+      manualOverride: false,
+    };
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "active", manualOverride: false, active: lease },
+      },
+    ];
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: () => {},
+      registerTool: () => {},
+      appendEntry: (customType, data) => appended.push({ customType, data }),
+      sendMessage: () => {},
+      setModel: async () => true,
+      setThinkingLevel: () => {},
+      getThinkingLevel: () => "high",
+      exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+    };
+    routerExtension(pi);
+    const ctx = {
+      cwd: telemetryDirectory,
+      model: undefined,
+      modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
+      sessionManager: { getBranch: () => branch, getSessionId: () => "check-evidence-session" },
+      getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
+      ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+    };
+    const latestChecks = () =>
+      appended.findLast((entry) => entry.customType === "model-router-state")?.data.active.safetyEvidence.checks;
+    const runCheck = (toolCallId, command, isError) => {
+      hooks.get("tool_call")({ toolCallId, toolName: "bash", input: { command } });
+      hooks.get("tool_execution_end")({ toolCallId, toolName: "bash", isError });
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      runCheck("call-1", "npm test", true);
+      runCheck("call-2", "npm run lint", false);
+      runCheck("call-3", "npm test", false);
+      assert.deepEqual(
+        latestChecks().map((check) => [check.command, check.passed]),
+        [
+          ["npm run lint", true],
+          ["npm test", true],
+        ],
+        "each command keeps exactly its latest outcome",
+      );
+
+      for (let index = 0; index < 25; index++) {
+        runCheck(`flood-${String(index)}`, `npm test -- shard${String(index)}`, false);
+      }
+      assert.equal(latestChecks().length, 20, "retention stays bounded");
+
+      for (let index = 0; index < 25; index++) runCheck(`repeat-${String(index)}`, "npm run lint", index === 24);
+      const repeated = latestChecks().filter((check) => check.command === "npm run lint");
+      assert.deepEqual(
+        repeated.map((check) => check.passed),
+        [false],
+        "a repeated command keeps exactly one entry and retains its unresolved failure",
+      );
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+    }
+  });
+
   it("repairs one missing planning validation before fallback and reports exhaustion once", async () => {
     const hooks = new Map();
     const commands = new Map();

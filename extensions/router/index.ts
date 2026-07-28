@@ -1606,7 +1606,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
             ...state.active.safetyEvidence,
             checks: check
               ? [
-                  ...state.active.safetyEvidence.checks,
+                  ...state.active.safetyEvidence.checks.filter((entry) => entry.command !== check),
                   { command: check, passed: !event.isError, recordedAt: now },
                 ].slice(-20)
               : state.active.safetyEvidence.checks,
