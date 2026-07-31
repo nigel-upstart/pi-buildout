@@ -28,6 +28,7 @@ already exposes every hook this spec's pipeline needs:
 | Model eligibility, context window, cost, API keys        | `ctx.modelRegistry` / `ModelRegistry`                     |
 | Builder identity (for independent review routing)        | `ctx.model`                                               |
 | Apply the lease (model + effort)                         | `setModel(model)`, `setThinkingLevel(level)`              |
+| Expose only phase-valid lifecycle validators             | `getActiveTools()` / `setActiveTools()`                   |
 | Inject the compiled model-specific prompt profile        | `before_agent_start` → `systemPrompt` result              |
 | Resolve exact policy IDs against live endpoints          | `ctx.modelRegistry.getAll()` / `.getAvailable()`          |
 | Persist/reevaluate the lease across turns                | `appendEntry` + re-check on `input`                       |
@@ -190,8 +191,10 @@ completion review.
 
 The irreversible preflight tool allowlist is deterministic. Unknown tools and shell composition are denied; after
 approval, mutating tool names are limited to those in the reviewed plan. The plan and verdict schemas, canonical
-fingerprints, lifecycle validation, and boundary invalidation are implemented locally; no external safety-state-machine
-implementation or code was consulted or adapted for this decision, so no new attribution entry is required.
+fingerprints, lifecycle validation, and boundary invalidation are implemented locally. Pi's documented dynamic active-
+tool API is used as a second, model-facing layer: action-plan and verdict validators are registered for execution but
+activated only when the current lifecycle accepts them. No external safety-state-machine implementation or code was
+consulted or adapted for this decision; the Pi API provenance is recorded in the root attribution file.
 
 ## Deferred follow-up: evidence-aware synopsis compaction
 

@@ -98,17 +98,17 @@ export function deterministicBoundaryGate(state: LeaseState, input: BoundaryInpu
   if (DISCONTINUITY_PATTERN.test(prompt)) {
     return { action: "new_task", reason: "explicit semantic discontinuity" };
   }
-  if (state.manualOverride || state.active.manualOverride) {
-    return { action: "continue", reason: "manual model/effort override remains in force", lease: state.active };
-  }
   if (CONTINUATION_PATTERN.test(prompt) || prompt.length <= 12) {
     return { action: "continue", reason: "deterministic continuation signal", lease: state.active };
   }
+  const manualOverride = state.manualOverride || state.active.manualOverride;
   return {
     action: "classify_continuity",
-    reason: hasSignificantReusableCache(input.cachedTokens, input.expectedReuseRatio)
-      ? "semantic alignment is inconclusive and reusable cache is significant"
-      : "semantic alignment is inconclusive",
+    reason: manualOverride
+      ? "manual model/effort selection remains in force while semantic continuity is checked"
+      : hasSignificantReusableCache(input.cachedTokens, input.expectedReuseRatio)
+        ? "semantic alignment is inconclusive and reusable cache is significant"
+        : "semantic alignment is inconclusive",
     lease: state.active,
   };
 }

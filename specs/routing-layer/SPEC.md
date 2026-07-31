@@ -261,18 +261,20 @@ The policy derived once at task creation is one of:
 2. `completion_review` — high-risk code building, followed by independent review after implementation evidence exists;
 3. `advisory_then_completion_review` — high-risk reversible non-code work, with a pre-action advisor and post-action
    reviewer; or
-4. `authorization_then_completion_review` — high/critical-risk `external_side_effect` or `destructive` work, with hard
-   pre-execution authorization and post-action review.
+4. `authorization_then_completion_review` — high/critical-risk `external_side_effect` or `destructive` work, plus
+   autonomous program-unknown external-effect loops, with hard pre-execution authorization and post-action review.
 
 Only the fourth policy is an approval gate. It begins in `preflight`, where deterministic tool enforcement allows
 bounded inspection and `submit_action_plan` but blocks editing, arbitrary shell composition, subagents, and unknown
-tools. The plan must name concrete targets, steps and irreversible effects, preconditions, verification, rollback, abort
-conditions, and mutating tool names. Its canonical fingerprint is bound to the original task fingerprint. A generated
-independent review must call `submit_safety_review` with the exact combined scope fingerprint and an `approve` verdict.
-Missing, invalid, rejected, aborted, or exhausted review leaves the parent in preflight. Approval creates
-`authorized_execution`, scoped to the exact task, plan, reviewer, and session; execution rejects mutating tool names not
-listed by the plan. A new user instruction, plan change, session boundary, compaction, restoration error, or
-model/effort manual override invalidates approval.
+tools. Pi's active tool set exposes `submit_action_plan` only in `preflight` and `submit_safety_review` only in a
+generated `review` phase; registration alone must not advertise either validator during ordinary work. The plan must
+name concrete targets, steps and irreversible effects, preconditions, verification, rollback, abort conditions, and
+mutating tool names. Its canonical fingerprint is bound to the original task fingerprint. A generated independent review
+must call `submit_safety_review` with the exact combined scope fingerprint and an `approve` verdict. Missing, invalid,
+rejected, aborted, or exhausted review leaves the parent in preflight. Approval creates `authorized_execution`, scoped
+to the exact task, plan, reviewer, and session; execution rejects mutating tool names not listed by the plan. A new user
+instruction, plan change, session boundary, compaction, restoration error, or model/effort manual override invalidates
+approval.
 
 The advisory policy temporarily blocks mutation only long enough to obtain the pre-action consultation; advisor outcome
 is persisted as advice and never represented as authorization. If both independent advisor attempts are unavailable, the
@@ -379,7 +381,9 @@ under another model family's prompt profile.
 
 - High-risk code builders require post-completion independent review with diff and passing deterministic-check evidence.
 - High/critical-risk irreversible actions require a validated concrete plan and exact-scope different-vendor approval
-  before mutating execution; advisory and completion verdicts cannot authorize.
+  before mutating execution; advisory and completion verdicts cannot authorize. Autonomous, program-unknown loops that
+  repeatedly create external side effects across repositories or services deterministically receive the same gate even
+  if classifier risk is only medium.
 - High-risk reversible non-code work receives pre-action advice and post-action review without misrepresenting advice as
   hard authorization.
 - Standalone review is parentless, feature-routed from its delta, and excluded from recursive automatic review.
@@ -388,7 +392,9 @@ under another model family's prompt profile.
 - No unknown model, unsupported effort, context-window violation, or unvalidated model/archetype/profile combination may
   reach execution.
 - Explicit manual model or effort selection bypasses automatic model selection until the next task boundary or until the
-  user re-enables it; it does not bypass preflight/review tool enforcement and invalidates any existing authorization.
+  user re-enables it; it does not pin semantic continuity. A nontrivial later request is still continuity-classified,
+  and a newly detected task receives a fresh lease while preserving the explicitly selected model/effort. Manual
+  selection does not bypass preflight/review tool enforcement and invalidates any existing authorization.
 - Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.

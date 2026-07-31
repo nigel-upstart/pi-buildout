@@ -157,6 +157,8 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
+- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
+  during the lease phases that can accept them.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child

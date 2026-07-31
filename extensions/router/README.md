@@ -43,11 +43,19 @@ Safety is an explicit persisted lease lifecycle, not an inference from archetype
 - High-risk, potentially irreversible external/repository/runtime actions start in a non-mutating `preflight` phase.
   `submit_action_plan` validates concrete targets, steps, effects, preconditions, verification, rollback, abort
   conditions, and tool names. A different-vendor reviewer must approve the exact task/plan fingerprint through
-  `submit_safety_review` before the lease becomes `authorized_execution`. Rejection, missing evidence, reviewer failure,
-  plan change, new user input, compaction, session change, or manual model/effort override cannot authorize execution.
+  `submit_safety_review` before the lease becomes `authorized_execution`. Each validator is active in Pi's model-facing
+  tool set only during the lifecycle phase that accepts it, so ordinary work cannot accidentally call a lease-only tool.
+  Rejection, missing evidence, reviewer failure, plan change, new user input, compaction, session change, or manual
+  model/effort override cannot authorize execution.
 - Other high-risk reversible non-code work consults a read-only advisor before acting and receives a completion review
   afterward. Advice is explicitly not authorization; cautionary advice is carried back to the tracked worker.
+- Unattended or indefinite loops that repeatedly create external effects across repositories or services are treated as
+  broad-impact authorization work even when each individual effect is reversible or the classifier reports medium risk.
 - Ordinary and non-destructive work is unchanged.
+
+Manual model/effort selection preserves that explicit selection, not the semantic identity of the previous task. A
+nontrivial subsequent request still receives continuity classification; when it is a new task, the router creates a
+fresh lease and safety lifecycle while carrying the selected model/effort into that lease.
 
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
 builder, and two non-builder-vendor attempts; they never fall back to the builder for a verdict. Standalone

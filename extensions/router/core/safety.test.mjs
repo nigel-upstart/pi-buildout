@@ -74,6 +74,18 @@ describe("router safety policy", () => {
       "standalone review is orthogonal to tracked-work safety lifecycles",
     );
     assert.equal(
+      deriveSafetyPolicy({
+        ...base,
+        risk: "medium",
+        actionMode: "external_side_effect",
+        intent: "operate",
+        interactivity: "autonomous",
+        horizon: "program_unknown_size",
+      }),
+      "authorization_then_completion_review",
+      "an indefinite unattended external-effect loop is broad-impact even if the classifier understates risk",
+    );
+    assert.equal(
       deriveSafetyPolicy({ ...base, risk: "high", actionMode: "local_read", intent: "research" }),
       "ordinary",
     );

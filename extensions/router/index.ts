@@ -116,6 +116,52 @@ export function deterministicCheckCommand(command: string): string | undefined {
   return normalized.slice(0, 500);
 }
 
+const SAFETY_LIFECYCLE_TOOL_NAMES = new Set(["submit_action_plan", "submit_safety_review"]);
+
+/** Keep lifecycle validators out of the model's tool surface unless the active phase can accept them. */
+export function activeToolsForSafetyLifecycle(
+  activeTools: readonly string[],
+  lifecycle: LeaseLifecycle | undefined,
+): string[] {
+  const next = activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name));
+  if (lifecycle?.phase === "preflight") next.push("submit_action_plan");
+  if (lifecycle?.phase === "review") next.push("submit_safety_review");
+  return next;
+}
+
+function sameRouteChoice(left: RouteChoice, right: RouteChoice): boolean {
+  return (
+    left.provider === right.provider &&
+    left.modelId === right.modelId &&
+    left.effort === right.effort &&
+    left.profileId === right.profileId
+  );
+}
+
+/** Carry an explicit model/effort choice across a semantic task boundary without carrying the old lease. */
+export function routeChoicesForNewLease(
+  routedSelection: RouteChoice,
+  routedFallbacks: readonly RouteChoice[],
+  previousSelection: RouteChoice | undefined,
+  preservePreviousSelection: boolean,
+): { selected: RouteChoice; previousSelection?: RouteChoice; fallbacks: RouteChoice[] } {
+  const selected = preservePreviousSelection && previousSelection ? previousSelection : routedSelection;
+  const fallbackCandidates =
+    preservePreviousSelection && previousSelection ? [routedSelection, ...routedFallbacks] : [...routedFallbacks];
+  const fallbacks: RouteChoice[] = [];
+  for (const candidate of fallbackCandidates) {
+    if (sameRouteChoice(candidate, selected) || fallbacks.some((existing) => sameRouteChoice(existing, candidate))) {
+      continue;
+    }
+    fallbacks.push(candidate);
+  }
+  return {
+    selected,
+    ...(previousSelection ? { previousSelection } : {}),
+    fallbacks,
+  };
+}
+
 export function safetyToolBlockReason(
   lease: Pick<TaskLease, "lifecycle" | "manualOverride"> | undefined,
   toolName: string,
@@ -307,6 +353,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
   const taskStartedAt = new Map<string, number>();
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
+
+  function syncSafetyLifecycleTools(lifecycle: LeaseLifecycle | undefined): void {
+    const current = pi.getActiveTools();
+    const next = activeToolsForSafetyLifecycle(current, lifecycle);
+    if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
+      pi.setActiveTools(next);
+    }
+  }
 
   function invalidateAuthorization(lease: TaskLease, reason: string): TaskLease {
     const authorizationLifecycle =
@@ -1038,7 +1092,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     name: "submit_action_plan",
     label: "Validate irreversible-action plan",
     description:
-      "Submit a concrete, scoped preflight plan for a high-risk potentially irreversible action. Validation does not authorize execution; a separate independent review must approve the exact task/plan fingerprint.",
+      "Submit a concrete irreversible-action plan only when router context explicitly says the active safety lifecycle is preflight. Never infer preflight from the action itself. Validation does not authorize execution; a separate independent review must approve the exact task/plan fingerprint.",
     parameters: ActionPlanSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = state.active;
@@ -1091,7 +1145,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     name: "submit_safety_review",
     label: "Submit scoped safety review",
     description:
-      "Submit the verdict for a router-generated authorization, advisory, or completion review. The review kind and scope fingerprint must exactly match the active read-only review lease.",
+      "Submit a verdict only when router context explicitly identifies a generated read-only review lease. Never use this for an ordinary user-requested review. The review kind and scope fingerprint must exactly match the active lease.",
     parameters: SafetyReviewSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = state.active;
@@ -1252,6 +1306,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("input", (event, ctx) => {
+    // The next task boundary is not known yet. Remove phase-scoped validators before Pi builds
+    // the turn prompt; before_agent_start restores exactly the validator accepted by the lease.
+    syncSafetyLifecycleTools(undefined);
     if (state.mode === "off") return { action: "continue" as const };
     if (
       state.active &&
@@ -1296,7 +1353,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    if (state.mode === "off") return;
+    let exposedSafetyLifecycle: LeaseLifecycle | undefined;
+    if (state.mode === "off") {
+      syncSafetyLifecycleTools(undefined);
+      return;
+    }
     try {
       const pending = pendingInput;
       pendingInput = undefined;
@@ -1434,6 +1495,13 @@ export default function routerExtension(pi: ExtensionAPI): void {
         const currentSnapshot = snapshotForModel(ctx.model, routed.registry);
         const currentEffort = pi.getThinkingLevel();
         const priorSelection = previousChoice(currentSnapshot, currentEffort, routed.decision.archetype);
+        const preserveManualSelection = state.manualOverride || state.active?.manualOverride === true;
+        const routeChoices = routeChoicesForNewLease(
+          routed.decision.primary,
+          routed.decision.kind === "review" ? [routed.decision.fallback] : routed.decision.fallbacks,
+          priorSelection,
+          preserveManualSelection,
+        );
         const taskFingerprint = safetyFingerprint({
           prompt: event.prompt,
           repositoryRoot: repository.root,
@@ -1449,9 +1517,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
           updatedAt: now,
           archetype: routed.decision.archetype,
           features: routedClassification.features,
-          selected: routed.decision.primary,
-          ...(priorSelection ? { previousSelection: priorSelection } : {}),
-          fallbacks: routed.decision.kind === "review" ? [routed.decision.fallback] : routed.decision.fallbacks,
+          selected: routeChoices.selected,
+          ...(routeChoices.previousSelection ? { previousSelection: routeChoices.previousSelection } : {}),
+          fallbacks: routeChoices.fallbacks,
           modelSnapshotId: registrySnapshotId(routed.registry),
           policyVersion: routed.decision.policyVersion,
           lastPromptFingerprint: promptFingerprint(event.prompt),
@@ -1488,7 +1556,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
             safetyPolicy,
             lifecyclePhase: lease.lifecycle.phase,
             exclusions: routed.decision.exclusions,
-            selection: routed.decision.primary,
+            selection: lease.selected,
+            manualSelectionPreserved: preserveManualSelection && priorSelection !== undefined,
             telemetryMature: routed.decision.telemetryMature,
             controlledHoldout: routed.decision.kind === "ordinary" ? routed.decision.controlledHoldout : false,
             fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
@@ -1516,6 +1585,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       if (!active) return;
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
+      exposedSafetyLifecycle = active.lifecycle;
       const safetyContext = safetyContextForLifecycle(active.lifecycle);
       const compiled = compilePrompt({
         baseSystemPrompt: safetyContext ? `${event.systemPrompt}\n\n${safetyContext}` : event.systemPrompt,
@@ -1534,6 +1604,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
         },
       };
     } finally {
+      syncSafetyLifecycleTools(exposedSafetyLifecycle);
       ctx.ui.setWorkingMessage();
     }
   });

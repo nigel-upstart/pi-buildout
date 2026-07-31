@@ -14,9 +14,11 @@ process.env.PI_ROUTER_LAST_MODE_PATH = join(await mkdtemp(join(tmpdir(), "pi-rou
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import routerExtension, {
+  activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
   deterministicCheckCommand,
   resumeCompletedLifecycle,
+  routeChoicesForNewLease,
   safetyToolBlockReason,
 } from "./index.ts";
 
@@ -126,6 +128,80 @@ describe("resumeCompletedLifecycle", () => {
     assert.equal(elsewhere.phase, "preflight", "an approval must not cross a session boundary");
     assert.equal(elsewhere.authorization, undefined);
     assert.equal(elsewhere.plan.planFingerprint, plan.planFingerprint, "the submitted plan survives re-authorization");
+  });
+});
+
+describe("lease-scoped tool exposure", () => {
+  it("exposes each safety validator only in the lifecycle phase that can accept it", () => {
+    const ordinaryTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
+    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, undefined), ["read", "bash"]);
+    assert.deepEqual(
+      activeToolsForSafetyLifecycle(ordinaryTools, {
+        phase: "preflight",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: "task",
+      }),
+      ["read", "bash", "submit_action_plan"],
+    );
+    assert.deepEqual(
+      activeToolsForSafetyLifecycle(ordinaryTools, {
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: "task",
+        reviewKind: "completion",
+        scopeFingerprint: "a".repeat(64),
+      }),
+      ["read", "bash", "submit_safety_review"],
+    );
+  });
+});
+
+describe("manual route selection at a new task boundary", () => {
+  it("preserves the explicit model and effort while replacing the stale task lease", () => {
+    const current = {
+      provider: "openai",
+      modelId: "gpt-5.6-luna",
+      logicalModelId: "gpt-5.6-luna",
+      vendor: "openai",
+      effort: "low",
+      ability: 1,
+      profileId: "openai-gpt-5.6-agent-v1",
+      contextWindow: 272_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    };
+    const routed = { ...current, modelId: "gpt-5.6-sol", logicalModelId: "gpt-5.6-sol", effort: "high", ability: 3 };
+    const fallback = {
+      ...routed,
+      provider: "anthropic",
+      modelId: "claude-opus-5",
+      logicalModelId: "claude-opus-5",
+      vendor: "anthropic",
+    };
+    const preserved = routeChoicesForNewLease(routed, [fallback], current, true);
+    assert.equal(preserved.selected, current);
+    assert.equal(preserved.previousSelection, current);
+    assert.deepEqual(preserved.fallbacks, [routed, fallback]);
+
+    const automatic = routeChoicesForNewLease(routed, [fallback], current, false);
+    assert.equal(automatic.selected, routed);
+    assert.deepEqual(automatic.fallbacks, [fallback]);
+  });
+
+  it("does not duplicate the explicit selection in fallback order", () => {
+    const selected = {
+      provider: "openai",
+      modelId: "gpt-5.6-sol",
+      logicalModelId: "gpt-5.6-sol",
+      vendor: "openai",
+      effort: "high",
+      ability: 3,
+      profileId: "openai-gpt-5.6-agent-v1",
+      contextWindow: 272_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    };
+    assert.deepEqual(routeChoicesForNewLease(selected, [selected], selected, true).fallbacks, []);
   });
 });
 
@@ -430,12 +506,17 @@ describe("routerExtension", () => {
     const workingMessages = [];
     const visibility = [];
     const never = new Promise(() => {});
+    let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
     routerExtension({
       on: (event, handler) => hooks.set(event, handler),
       registerCommand: () => {},
       registerTool: () => {},
       appendEntry: () => {},
       exec: () => never,
+      getActiveTools: () => activeTools,
+      setActiveTools: (tools) => {
+        activeTools = tools;
+      },
     });
     const result = await hooks.get("input")(
       { text: "New task", source: "interactive" },
@@ -451,6 +532,7 @@ describe("routerExtension", () => {
     assert.deepEqual(result, { action: "continue" });
     assert.deepEqual(workingMessages, ["Routing..."]);
     assert.deepEqual(visibility, [true]);
+    assert.deepEqual(activeTools, ["read", "bash"], "lease-scoped validators are hidden before classification");
   });
 
   it("fails active mode back to shadow when the audit log cannot append", async () => {
@@ -974,6 +1056,7 @@ describe("routerExtension", () => {
       safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
       manualOverride: false,
     };
+    let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
     const makeModel = (provider, id, api) => ({
       provider,
       id,
@@ -1010,6 +1093,10 @@ describe("routerExtension", () => {
       },
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
+      getActiveTools: () => activeTools,
+      setActiveTools: (tools) => {
+        activeTools = tools;
+      },
       exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
     };
     routerExtension(pi);
@@ -1039,6 +1126,12 @@ describe("routerExtension", () => {
       ctx.model = models.find(
         (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
       );
+      const reviewStart = await hooks.get("before_agent_start")(
+        { prompt: "Perform the generated review", systemPrompt: "base" },
+        ctx,
+      );
+      assert.match(reviewStart.systemPrompt, /read-only authorization review/);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_safety_review"]);
       hooks.get("agent_start")();
       await tools.get("submit_safety_review").execute(
         `review-${verdict}`,
@@ -1072,6 +1165,12 @@ describe("routerExtension", () => {
     };
     try {
       await hooks.get("session_start")({ reason: "reload" }, ctx);
+      const preflightStart = await hooks.get("before_agent_start")(
+        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+        ctx,
+      );
+      assert.match(preflightStart.systemPrompt, /Safety lifecycle: remain non-mutating/);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan"]);
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
         /preflight/,
@@ -1106,6 +1205,7 @@ describe("routerExtension", () => {
       assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
 
       await hooks.get("input")({ text: "Change the target and continue", source: "interactive" }, ctx);
+      assert.deepEqual(activeTools, ["read", "bash"]);
       assert.equal(latestLease().lifecycle.phase, "preflight");
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,

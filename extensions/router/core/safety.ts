@@ -258,7 +258,11 @@ export function deriveSafetyPolicy(features: TaskFeatures): SafetyPolicy {
   if (isStandaloneReviewWork(features)) return "ordinary";
   const highRisk = features.risk === "high" || features.risk === "critical";
   const irreversible = features.actionMode === "external_side_effect" || features.actionMode === "destructive";
-  if (highRisk && irreversible) return "authorization_then_completion_review";
+  const broadAutonomousExternalLoop =
+    features.actionMode === "external_side_effect" &&
+    features.interactivity === "autonomous" &&
+    features.horizon === "program_unknown_size";
+  if ((highRisk || broadAutonomousExternalLoop) && irreversible) return "authorization_then_completion_review";
   const mutating = features.actionMode === "reversible_mutation";
   if (highRisk && mutating && isCodeBuilder(features)) return "completion_review";
   if (highRisk && mutating) return "advisory_then_completion_review";
