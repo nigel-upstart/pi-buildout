@@ -13,6 +13,10 @@ export default tseslint.config(
     ignores: ["node_modules/**", "coverage/**", "patches/**"],
   },
   eslint.configs.recommended,
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: { globals: globals.node },
+  },
   ...tseslint.configs.strictTypeChecked.map((config) => ({ ...config, files: typedFiles })),
   ...tseslint.configs.stylisticTypeChecked.map((config) => ({ ...config, files: typedFiles })),
   {
