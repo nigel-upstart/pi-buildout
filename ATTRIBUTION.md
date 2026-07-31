@@ -1,49 +1,5 @@
 # Attribution
 
-## Dependency-audit allowlist research
-
-The reviewed allowlist in [`scripts/check-audit.mjs`](scripts/check-audit.mjs) was informed by these upstream artifacts:
-
-- Pi's published `@earendil-works/pi-coding-agent@0.80.6` package and shrinkwrap:
-  [npm tarball](https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.80.6.tgz) and
-  [source tag](https://github.com/earendil-works/pi/tree/v0.80.6/packages/coding-agent) (revision
-  `2b3fda9921b5590f285165287bd442a25817f17b`, MIT). The reviewed tarball has npm integrity
-  `sha512-vcfD6tOk402isLl3Cm/qbn2O10TvgroMp1+/fEGM24ZdvETFCdOYv5VZ7m59EI5fPsjfSJh+CpQ5bhBrhfOg7g==` and pins its nested
-  `brace-expansion` to `5.0.6`.
-- ESLint's legacy dependency path: [`eslint@9.39.5`](https://github.com/eslint/eslint/tree/v9.39.5) (revision
-  `4a24e8c09d374d773a034e36b1d7a7fbe1216478`, MIT) resolves through
-  [`minimatch@3.1.5`](https://github.com/isaacs/minimatch/tree/v3.1.5) (revision
-  `7bba97888a27a6162983056bcce2a6e28f668712`, ISC) to
-  [`brace-expansion@1.1.16`](https://github.com/juliangruber/brace-expansion/tree/v1.1.16) (revision
-  `447763a91a613cfa67ac73096cbc1de9a2304f97`, MIT).
-- GitHub Advisory Database research for [GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp)
-  (reviewed database revision `9abbad74b022844878ae09855eadd45809145d9b`) and
-  [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) (reviewed database revision
-  `708d12fbe7adf5190c8b34d9755d7e821797cfbe`). The
-  [GitHub Advisory Database](https://github.com/github/advisory-database) is licensed CC-BY-4.0.
-
-This repository adopted only the advisory identifiers, affected dependency/path facts, and exact-path allowlisting
-needed to explain the currently unavoidable findings. It did not copy upstream implementation code or advisory prose,
-vendor the dependency trees, suppress unrelated advisories, or adopt the upstream packages' fixes; upgrades remain the
-preferred remediation.
-
-## Closed fork PR #19
-
-- Source: `nigel-upstart/pi-buildout`, PR #19
-- Canonical URL: <https://github.com/zew1me/pi-buildout/pull/19>
-- Revision reviewed: `4a7532ff3a2d48a70591ffa016be4349963b02fc`
-- License: MIT
-
-The provider-verified thinking-level filtering in [`extensions/effort`](extensions/effort) was ported from this closed
-PR and adapted to the current main branch. It uses Pi's model capability metadata to hide and reject unsupported effort
-levels while preserving the historical choices on older Pi versions. The installer's atomic per-extension replacement
-pattern was also adapted from the PR so stale files are removed without exposing a partially copied extension. Its
-GitHub Actions quality workflow and generic local-state/credential ignore rules were retained as repository-wide
-safeguards for the non-router extensions.
-
-The PR's router extension, routing specifications and documentation, router-specific configuration and tooling, and
-router-specific installer behavior were intentionally not adopted. No code under `extensions/router` was copied.
-
 ## Subagent implementations
 
 The subagent extension in [`extensions/subagents`](extensions/subagents) was informed by the two implementations
