@@ -1,24 +1,26 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 1313dd9..6139782 100644
+index 1313dd9..e12e71f 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
-@@ -1,4 +1,5 @@
+@@ -1,7 +1,6 @@
  import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-+import { homedir } from "node:os";
  import { basename, dirname, join, resolve, sep } from "node:path";
  import chalk from "chalk";
- import { CONFIG_DIR_NAME } from "../config.js";
-@@ -10,7 +11,8 @@ import { findGitPaths } from "./footer-data-provider.js";
+-import { CONFIG_DIR_NAME } from "../config.js";
+ import { loadThemeFromPath } from "../modes/interactive/theme/theme.js";
+ import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.js";
+ import { createEventBus } from "./event-bus.js";
+@@ -10,7 +9,8 @@ import { findGitPaths } from "./footer-data-provider.js";
  import { DefaultPackageManager } from "./package-manager.js";
  import { loadPromptTemplates } from "./prompt-templates.js";
  import { SettingsManager } from "./settings-manager.js";
 -import { loadSkills } from "./skills.js";
-+import { getActiveSkillEntries, getProjectAgentSkillDirs } from "./skill-management.js";
++import { getActiveSkillEntries, getSkillCatalogDirs } from "./skill-management.js";
 +import { loadSkills, loadSkillsFromDir } from "./skills.js";
  import { createSourceInfo } from "./source-info.js";
  import { resetTimings } from "./timings.js";
  function resolvePromptInput(input, description) {
-@@ -28,6 +30,14 @@ function resolvePromptInput(input, description) {
+@@ -28,6 +28,14 @@ function resolvePromptInput(input, description) {
      }
      return input;
  }
@@ -33,7 +35,7 @@ index 1313dd9..6139782 100644
  function loadContextFileFromDir(dir) {
      const candidates = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
      for (const filename of candidates) {
-@@ -326,9 +336,10 @@ export class DefaultResourceLoader {
+@@ -326,9 +334,10 @@ export class DefaultResourceLoader {
          }
          this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
          this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
@@ -47,7 +49,7 @@ index 1313dd9..6139782 100644
          this.lastSkillPaths = skillPaths;
          this.updateSkillsFromPaths(skillPaths, metadataByPath);
          for (const p of this.additionalSkillPaths) {
-@@ -496,6 +507,39 @@ export class DefaultResourceLoader {
+@@ -496,6 +505,34 @@ export class DefaultResourceLoader {
              };
          });
      }
@@ -70,12 +72,7 @@ index 1313dd9..6139782 100644
 +        return this.findCatalogSkillPath(source);
 +    }
 +    findCatalogSkillPath(name) {
-+        const dirs = [
-+            join(this.agentDir, "skills"),
-+            join(homedir(), ".agents", "skills"),
-+            join(this.cwd, CONFIG_DIR_NAME, "skills"),
-+            ...getProjectAgentSkillDirs(this.cwd),
-+        ];
++        const dirs = getSkillCatalogDirs({ cwd: this.cwd, agentDir: this.agentDir });
 +        for (const dir of dirs) {
 +            const result = loadSkillsFromDir({ dir, source: "path" });
 +            const skill = result.skills.find((s) => s.name === name);
@@ -89,14 +86,15 @@ index 1313dd9..6139782 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..ef29c8d
+index 0000000..a913c77
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,207 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
 +import { dirname, join, relative, resolve, sep } from "node:path";
++import { CONFIG_DIR_NAME } from "../config.js";
 +import { loadSkillsFromDir } from "./skills.js";
 +
 +function readJson(path) {
@@ -243,10 +241,12 @@ index 0000000..ef29c8d
 +    }
 +    return dirs;
 +}
++export function getSkillCatalogDirs({ cwd, agentDir }) {
++    return [join(agentDir, "skills"), join(homedir(), ".agents", "skills"), join(cwd, CONFIG_DIR_NAME, "skills"), ...getProjectAgentSkillDirs(cwd)];
++}
 +export function getSkillCatalog({ cwd, agentDir }) {
-+    const dirs = [join(agentDir, "skills"), join(homedir(), ".agents", "skills"), join(cwd, ".pi", "skills"), ...getProjectAgentSkillDirs(cwd)];
 +    const found = new Map();
-+    for (const dir of dirs) {
++    for (const dir of getSkillCatalogDirs({ cwd, agentDir })) {
 +        for (const skill of loadSkillsFromDir({ dir, source: "path" }).skills) {
 +            if (!found.has(skill.name))
 +                found.set(skill.name, skill);
