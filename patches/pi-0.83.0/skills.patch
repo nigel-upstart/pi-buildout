@@ -1,5 +1,5 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 1313dd9..e12e71f 100644
+index 1313dd9..e28d263 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -1,7 +1,6 @@
@@ -15,7 +15,7 @@ index 1313dd9..e12e71f 100644
  import { loadPromptTemplates } from "./prompt-templates.js";
  import { SettingsManager } from "./settings-manager.js";
 -import { loadSkills } from "./skills.js";
-+import { getActiveSkillEntries, getSkillCatalogDirs } from "./skill-management.js";
++import { getActiveSkillEntries, getSkillCatalog, getSkillCatalogDirs } from "./skill-management.js";
 +import { loadSkills, loadSkillsFromDir } from "./skills.js";
  import { createSourceInfo } from "./source-info.js";
  import { resetTimings } from "./timings.js";
@@ -49,14 +49,18 @@ index 1313dd9..e12e71f 100644
          this.lastSkillPaths = skillPaths;
          this.updateSkillsFromPaths(skillPaths, metadataByPath);
          for (const p of this.additionalSkillPaths) {
-@@ -496,6 +505,34 @@ export class DefaultResourceLoader {
+@@ -496,6 +505,38 @@ export class DefaultResourceLoader {
              };
          });
      }
 +    getActiveSkillPaths() {
 +        const paths = [];
++        const catalogPaths = new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
 +        for (const entry of getActiveSkillEntries({ cwd: this.cwd, agentDir: this.agentDir })) {
-+            const resolved = this.resolveSkillEntry(entry.source);
++            const source = entrySource(entry);
++            if (!source)
++                continue;
++            const resolved = looksLikePath(source) ? this.resolveResourcePath(source) : catalogPaths.get(source);
 +            if (resolved)
 +                paths.push(resolved);
 +        }
