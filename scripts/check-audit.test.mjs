@@ -2,14 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { evaluateAudit } from "./check-audit.mjs";
 
-const braceNodes = [
-  "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
-  "node_modules/brace-expansion",
-];
+const braceNodes = ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"];
 
 function auditReport() {
   return {
-    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 3, critical: 0, total: 3 } },
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 4, critical: 0, total: 4 } },
     vulnerabilities: {
       "brace-expansion": {
         name: "brace-expansion",
@@ -23,6 +20,21 @@ function auditReport() {
           {
             severity: "high",
             url: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+          },
+          {
+            severity: "high",
+            url: "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
+          },
+        ],
+      },
+      undici: {
+        name: "undici",
+        severity: "high",
+        nodes: ["node_modules/@earendil-works/pi-coding-agent/node_modules/undici"],
+        via: [
+          {
+            severity: "high",
+            url: "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
           },
         ],
       },
@@ -49,7 +61,9 @@ describe("evaluateAudit", () => {
     assert.equal(result.unexplained.length, 0);
     assert.deepEqual(result.acceptedAdvisories.map(({ advisoryUrl }) => advisoryUrl).sort(), [
       "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
+      "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
       "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+      "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
     ]);
   });
 
