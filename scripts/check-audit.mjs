@@ -15,24 +15,34 @@ const ALLOWLIST = [
   {
     package: "brace-expansion",
     advisoryUrl: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
-    nodePaths: [
-      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
-      "node_modules/brace-expansion",
-    ],
-    recordedAt: "2026-07-27",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
+    recordedAt: "2026-08-06",
     reason:
-      "Pi's published shrinkwrap pins brace-expansion 5.0.6, while ESLint 9's minimatch 3 tree uses the legacy 1.1.16 API; the available patched release is brace-expansion 5.0.8.",
+      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
   },
   {
     package: "brace-expansion",
     advisoryUrl: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-    nodePaths: [
-      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
-      "node_modules/brace-expansion",
-    ],
-    recordedAt: "2026-07-27",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
+    recordedAt: "2026-08-06",
     reason:
-      "Pi's published shrinkwrap pins brace-expansion 5.0.6, while ESLint 9's minimatch 3 tree uses the legacy 1.1.16 API; the available patched release is brace-expansion 5.0.8.",
+      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
+  },
+  {
+    package: "brace-expansion",
+    advisoryUrl: "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
+    recordedAt: "2026-08-06",
+    reason:
+      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
+  },
+  {
+    package: "undici",
+    advisoryUrl: "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/undici"],
+    recordedAt: "2026-08-06",
+    reason:
+      "Pi's published shrinkwrap pins undici 8.5.0; npm audit fix only proposes downgrading Pi and cannot update the nested dependency.",
   },
 ];
 
