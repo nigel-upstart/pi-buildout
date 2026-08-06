@@ -342,7 +342,7 @@ index 0fefeba..2aedb15 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 462e240..73b94bf 100644
+index 462e240..59b49f4 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -21,6 +21,7 @@ import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScop
@@ -387,17 +387,17 @@ index 462e240..73b94bf 100644
 +        if (result.session) {
 +            const loader = this.session.resourceLoader;
 +            const resolved = loader.resolveSkillEntry(result.session.source);
-+            if (!resolved) {
-+                this.showError(`Skill not found in the catalog: ${result.session.source}`);
-+                return;
-+            }
 +            if (result.session.action === "add") {
++                if (!resolved) {
++                    this.showError(`Skill not found in the catalog: ${result.session.source}`);
++                    return;
++                }
 +                if (!loader.additionalSkillPaths.includes(resolved)) {
 +                    loader.additionalSkillPaths.push(resolved);
 +                }
 +            }
 +            else {
-+                loader.additionalSkillPaths = loader.additionalSkillPaths.filter((path) => path !== resolved && path !== result.session.source);
++                loader.additionalSkillPaths = loader.additionalSkillPaths.filter((path) => path !== result.session.source && (!resolved || path !== resolved));
 +            }
 +            result.lines = [`${result.session.action === "add" ? "Enabled" : "Disabled"} ${result.session.source} for this session.`];
 +        }
