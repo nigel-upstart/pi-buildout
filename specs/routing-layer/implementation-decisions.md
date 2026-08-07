@@ -77,18 +77,17 @@ providers.
 **Why it is not a nerf:** every archetype still has an independently named prompt, feature override, and expected route,
 and Node's test runner reports every row as a separate test.
 
-## S8 — One repository lint tool and runtime-tested JavaScript fixtures
+## S8 — One repository lint tool and typed fixtures
 
-**Decision:** use ESLint as the only JavaScript/TypeScript linter and Prettier as the formatter; remove the leftover
-Biome configuration. Keep all router production `.ts` files under strict TypeScript checking, while router `.test.mjs`
-files are checked by ESLint and executed by Node's test runner rather than also being statically modeled by TypeScript.
+**Decision:** use ESLint as the only TypeScript linter and Prettier as the formatter; remove the leftover Biome
+configuration. Keep all router production and test `.ts` files under strict TypeScript checking, and execute tests with
+Node's native TypeScript type stripping.
 
-**Why it is simpler:** there is one lint authority and no duplicate formatter. JavaScript test doubles can remain
-minimal structural fakes instead of implementing dozens of unused pi API members solely to satisfy `checkJs`.
+**Why it is simpler:** there is one lint authority and no duplicate formatter. Test doubles use small, local structural
+types for the pi API members they exercise instead of implementing dozens of unused members.
 
-**Why it is not a nerf:** strict TypeScript still covers every shipped router source file, ESLint covers source and test
-code, and every JavaScript fixture runs in the deterministic test suite. The repository's other JavaScript remains under
-its existing `checkJs` policy.
+**Why it is not a nerf:** strict TypeScript and type-aware ESLint cover every router source and test file, and every
+fixture runs in the deterministic test suite.
 
 ## Rejected simplifications
 

@@ -12,6 +12,13 @@ import {
   validateActionPlan,
   validateSafetyReview,
 } from "./safety.ts";
+import type { LeaseLifecycle } from "./safety.ts";
+
+function blocked(lifecycle: LeaseLifecycle, toolName: string, input: Record<string, unknown>): string {
+  const reason = lifecycleToolBlockReason(lifecycle, toolName, input);
+  assert.ok(reason, `${toolName} should be blocked`);
+  return reason;
+}
 
 function actionPlan() {
   return {
@@ -95,7 +102,7 @@ describe("router safety policy", () => {
 describe("irreversible action plans", () => {
   it("validates concrete irreversible effects and fingerprints plans canonically", () => {
     const result = validateActionPlan(actionPlan());
-    assert.equal(result.success, true, result.success ? "" : result.errors.join("\n"));
+    if (!result.success) assert.fail(result.errors.join("\n"));
     assert.equal(result.fingerprint, safetyFingerprint(actionPlan()));
     assert.equal(result.fingerprint.length, 64);
 
@@ -109,14 +116,22 @@ describe("irreversible action plans", () => {
 
   it("rejects vague plans that do not identify an irreversible step", () => {
     const invalid = actionPlan();
-    invalid.steps[0].potentiallyIrreversible = false;
-    assert.match(validateActionPlan(invalid).errors.join("\n"), /potentially irreversible effect/);
+    const [step] = invalid.steps;
+    assert.ok(step);
+    step.potentiallyIrreversible = false;
+    const result = validateActionPlan(invalid);
+    assert.equal(result.success, false);
+    if (!result.success) assert.match(result.errors.join("\n"), /potentially irreversible effect/);
   });
 
   it("rejects steps that act outside the declared targets", () => {
     const invalid = actionPlan();
-    invalid.steps[0].target = "staging/keyring";
-    assert.match(validateActionPlan(invalid).errors.join("\n"), /undeclared target: staging\/keyring/);
+    const [step] = invalid.steps;
+    assert.ok(step);
+    step.target = "staging/keyring";
+    const result = validateActionPlan(invalid);
+    assert.equal(result.success, false);
+    if (!result.success) assert.match(result.errors.join("\n"), /undeclared target: staging\/keyring/);
   });
 });
 
@@ -125,21 +140,21 @@ describe("deterministic safety tool gate", () => {
     const preflight = initialLifecycle("authorization_then_completion_review", "task");
     assert.equal(lifecycleToolBlockReason(preflight, "read", { path: "README.md" }), undefined);
     assert.equal(lifecycleToolBlockReason(preflight, "bash", { command: "git diff --stat" }), undefined);
-    assert.match(lifecycleToolBlockReason(preflight, "edit", { path: "README.md" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "git status; rm -rf out" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "git diff --output=/tmp/leak" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -delete" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprintf out %p" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprint0 out" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fls out" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprint out" }), /preflight/);
+    assert.match(blocked(preflight, "edit", { path: "README.md" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "git status; rm -rf out" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "git diff --output=/tmp/leak" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "find . -delete" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "find . -fprintf out %p" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "find . -fprint0 out" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "find . -fls out" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "find . -fprint out" }), /preflight/);
     assert.equal(lifecycleToolBlockReason(preflight, "bash", { command: "find . -name '*.ts'" }), undefined);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "rg --pre mutate pattern" }), /preflight/);
+    assert.match(blocked(preflight, "bash", { command: "rg --pre mutate pattern" }), /preflight/);
     assert.equal(lifecycleToolBlockReason(preflight, "submit_action_plan", {}), undefined);
 
     const validated = validateActionPlan(actionPlan());
     assert.equal(validated.success, true);
-    const authorized = {
+    const authorized: LeaseLifecycle = {
       phase: "authorized_execution",
       policy: "authorization_then_completion_review",
       taskFingerprint: "task",
@@ -159,7 +174,7 @@ describe("deterministic safety tool gate", () => {
       },
     };
     assert.equal(lifecycleToolBlockReason(authorized, "bash", { command: "deploy production" }), undefined);
-    assert.match(lifecycleToolBlockReason(authorized, "custom_mutator", {}), /outside.*reviewed action plan/);
+    assert.match(blocked(authorized, "custom_mutator", {}), /outside.*reviewed action plan/);
     assert.equal(isLeaseLifecycle(authorized), true);
     assert.equal(
       isLeaseLifecycle({
@@ -171,7 +186,7 @@ describe("deterministic safety tool gate", () => {
     );
 
     const advisory = initialLifecycle("advisory_then_completion_review", "task");
-    assert.match(lifecycleToolBlockReason(advisory, "custom_mutator", {}), /advisory/);
+    assert.match(blocked(advisory, "custom_mutator", {}), /advisory/);
   });
 
   it("keeps the read-only classifier and the mutation classifier inverses of each other", () => {
@@ -198,27 +213,27 @@ describe("deterministic safety tool gate", () => {
   });
 
   it("maps only constrained phases to a lifecycle prompt", () => {
-    assert.match(
-      safetyContextForLifecycle(initialLifecycle("authorization_then_completion_review", "t")),
-      /preflight|non-mutating/,
-    );
-    assert.match(safetyContextForLifecycle(initialLifecycle("advisory_then_completion_review", "t")), /advisor/);
+    const preflightContext = safetyContextForLifecycle(initialLifecycle("authorization_then_completion_review", "t"));
+    assert.ok(preflightContext);
+    assert.match(preflightContext, /preflight|non-mutating/);
+    const advisoryContext = safetyContextForLifecycle(initialLifecycle("advisory_then_completion_review", "t"));
+    assert.ok(advisoryContext);
+    assert.match(advisoryContext, /advisor/);
     assert.equal(safetyContextForLifecycle(initialLifecycle("completion_review", "t")), undefined);
     assert.equal(safetyContextForLifecycle(initialLifecycle("ordinary", "t")), undefined);
-    assert.match(
-      safetyContextForLifecycle({
-        phase: "review",
-        policy: "ordinary",
-        taskFingerprint: "t",
-        reviewKind: "completion",
-        scopeFingerprint: "a".repeat(64),
-      }),
-      /read-only completion review scoped to a{64}/,
-    );
+    const reviewContext = safetyContextForLifecycle({
+      phase: "review",
+      policy: "ordinary",
+      taskFingerprint: "t",
+      reviewKind: "completion",
+      scopeFingerprint: "a".repeat(64),
+    });
+    assert.ok(reviewContext);
+    assert.match(reviewContext, /read-only completion review scoped to a{64}/);
   });
 
   it("keeps generated reviews read-only except for the scoped verdict tool", () => {
-    const review = {
+    const review: LeaseLifecycle = {
       phase: "review",
       policy: "ordinary",
       taskFingerprint: "task",
@@ -226,7 +241,7 @@ describe("deterministic safety tool gate", () => {
       scopeFingerprint: "a".repeat(64),
     };
     assert.equal(lifecycleToolBlockReason(review, "submit_safety_review", {}), undefined);
-    assert.match(lifecycleToolBlockReason(review, "write", {}), /read-only/);
+    assert.match(blocked(review, "write", {}), /read-only/);
   });
 });
 
@@ -246,20 +261,19 @@ describe("review verdict validation", () => {
       scope,
     );
     assert.equal(valid.success, true);
-    assert.match(
-      validateSafetyReview(
-        {
-          reviewKind: "authorization",
-          scopeFingerprint: "b".repeat(64),
-          verdict: "pass",
-          summary: "Wrong scope and verdict.",
-          evidence: ["Mismatch."],
-          findings: [],
-        },
-        "authorization",
-        scope,
-      ).errors.join("\n"),
-      /scope fingerprint|invalid for authorization/,
+    const invalid = validateSafetyReview(
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: "b".repeat(64),
+        verdict: "pass",
+        summary: "Wrong scope and verdict.",
+        evidence: ["Mismatch."],
+        findings: [],
+      },
+      "authorization",
+      scope,
     );
+    assert.equal(invalid.success, false);
+    if (!invalid.success) assert.match(invalid.errors.join("\n"), /scope fingerprint|invalid for authorization/);
   });
 });

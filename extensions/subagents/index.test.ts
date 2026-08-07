@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   appendBoundedTail,
   boundContextForModel,
@@ -121,21 +122,16 @@ test("child context is bounded to a conservative fraction of its model window", 
 
 test("auth bridge forwards api key and headers, and rejects header injection", async () => {
   const { default: subagentAuthBridge } = await import("./auth-bridge.ts");
-  /** @param {Record<string, string>} env */
-  const run = (env) => {
-    /** @type {[string, unknown][]} */
-    const registered = [];
+  const run = (env: Record<string, string>): [string, unknown][] => {
+    const registered: [string, unknown][] = [];
     Object.assign(process.env, env);
-    const pi = /** @type {import("@earendil-works/pi-coding-agent").ExtensionAPI} */ (
-      /** @type {unknown} */ ({
-        /** @param {string} name @param {unknown} config */
-        registerProvider: (name, config) => {
-          registered.push([name, config]);
-        },
-      })
-    );
+    const pi = {
+      registerProvider: (name: string, config: unknown): void => {
+        registered.push([name, config]);
+      },
+    } as unknown as ExtensionAPI;
     subagentAuthBridge(pi);
-    for (const key of Object.keys(env)) delete process.env[key];
+    for (const key of Object.keys(env)) Reflect.deleteProperty(process.env, key);
     return registered;
   };
 

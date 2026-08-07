@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { findMarkdownPointers, formatBacklinkTable } from "./helpers.ts";
 import markdownBacklinksExtension from "./index.ts";
 
 describe("markdownBacklinksExtension", () => {
   it("loads and registers its lifecycle hooks", () => {
-    const hooks = new Map();
-    // @ts-expect-error Only lifecycle hook registration is exercised by this test.
-    markdownBacklinksExtension({ on: (event, handler) => hooks.set(event, handler) });
+    type EventName = Parameters<ExtensionAPI["on"]>[0];
+    type EventHandler = Parameters<ExtensionAPI["on"]>[1];
+    const hooks = new Map<EventName, EventHandler>();
+    const api = {
+      on: (event: EventName, handler: EventHandler): void => {
+        hooks.set(event, handler);
+      },
+    };
+    markdownBacklinksExtension(api as ExtensionAPI);
 
     assert.deepEqual([...hooks.keys()].sort(), ["before_agent_start", "session_start", "tool_result"]);
   });

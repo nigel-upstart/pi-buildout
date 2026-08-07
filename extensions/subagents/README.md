@@ -68,6 +68,6 @@ Even full fan-out is therefore bounded to 56 child processes per root tree.
 ## Verification
 
 ```bash
-node --test extensions/subagents/*.test.mjs
+node --test extensions/subagents/*.test.ts
 pi -e extensions/subagents/index.ts --list-models > /dev/null
 ```

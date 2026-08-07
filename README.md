@@ -57,19 +57,18 @@ The gate checks Prettier formatting (120-column width and LF line endings), stri
 style, shell scripts, TypeScript types, tests, unused code and dependencies with Knip, and committed secrets. Run
 `npm run audit` separately to check the dependency tree for known high-severity vulnerabilities.
 
-The pre-commit hook auto-fixes and re-stages supported staged files with Prettier, ESLint, and Markdownlint. The
-pre-push hook is deliberately conservative: it runs the complete read-only `npm run check` gate and rejects the push
-instead of modifying files. Files in `patches/` are upstream runtime snapshots, so authored-code formatting and lint
-checks intentionally leave them unchanged.
+The pre-commit hook validates staged-file safety, auto-fixes and re-stages supported files with Prettier, ESLint, and
+Markdownlint, and runs the strict project typecheck whenever TypeScript is staged. The pre-push hook is deliberately
+conservative: it runs the complete read-only `npm run check` gate and rejects the push instead of modifying files. Files
+in `patches/` are upstream runtime snapshots, so authored-code formatting and lint checks intentionally leave them
+unchanged.
 
 ## Verification
 
-Run all extension helper tests:
+Run all TypeScript extension and script tests:
 
 ```bash
-status=0
-for test in extensions/*/*.test.mjs; do node --test "$test" || status=$?; done
-exit "$status"
+npm test
 ```
 
 Extensions are TypeScript modules loaded directly by pi's extension loader. Use `/reload` after reinstalling them in a

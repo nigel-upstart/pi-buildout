@@ -34,7 +34,7 @@ already exposes every hook this spec's pipeline needs:
 | Persist/reevaluate the lease across turns                | `appendEntry` + re-check on `input`                       |
 
 The existing extensions in this repo (`extensions/{clear,effort,markdown-backlinks}`, each `index.ts` + `helpers.ts` +
-`index.test.mjs`) already demonstrate the shape this layer should take.
+`index.test.ts`) already demonstrate the shape this layer should take.
 
 **The prose functional spec (`SPEC.md`) is the implementation authority — not the historical Python prototype described
 in `source-basis.md`.** That prototype was untested and untrialed; its output shapes, schemas, and behavior were not
@@ -93,7 +93,7 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
 
 - **Runtime:** Node.js / ESM, matching pi's own `"type": "module"`. pi loads `.ts` extensions directly — no build step
   for the extension itself.
-- **Tests:** `node --test` over `*.test.mjs`, matching this repo's existing convention.
+- **Tests:** `node --test` over strict `*.test.ts` files, executed with Node's native type stripping.
 - **Schema/validation:** **TypeBox**, reused from pi's dependency tree through its canonical `typebox` / `typebox/value`
   exports — not Zod. One definition yields runtime validation (fail closed on malformed classifier output), static TS
   types, and the schema used for the required classifier tool call. No separate extension-local install is needed.
@@ -342,8 +342,8 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     A model with no scoped endpoint is reported as `not_in_scope`, which is a different fact from an endpoint being
     unavailable.
 
-19. **Observed endpoint health gates eligibility.** `scripts/probe-scoped-models.mjs` probes every scoped endpoint with
-    a minimal real request; on the reference machine 32 of 34 worked, with two Llama 4 Bedrock profiles returning 400.
+19. **Observed endpoint health gates eligibility.** `scripts/probe-scoped-models.ts` probes every scoped endpoint with a
+    minimal real request; on the reference machine 32 of 34 worked, with two Llama 4 Bedrock profiles returning 400.
     Only recurring failures disqualify an endpoint, because a 4xx recurs until configuration changes while a 5xx or
     timeout is transient and removing the endpoint would shrink the fallback chain when it is most needed. Unprobed
     endpoints stay eligible so the router does not depend on a probe having been run.

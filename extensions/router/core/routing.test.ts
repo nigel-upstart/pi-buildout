@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { deriveArchetype } from "./archetype.ts";
+import type { Archetype } from "./archetype.ts";
 import { BOOTSTRAP_ROUTE_POLICIES } from "./policy.ts";
+import type { ModelVendor } from "./profiles.ts";
 import { conservativeFeatures } from "./features.ts";
+import type { TaskFeatures } from "./features.ts";
 import { deriveSafetyPolicy } from "./safety.ts";
 import {
   canonicalVendor,
@@ -15,8 +18,14 @@ import {
   selectReviewRoute,
   selectStandaloneReviewRoute,
 } from "./routing.ts";
+import type { RegistryModelSnapshot, RouteRequirements, RouteSample } from "./routing.ts";
 
-function model(provider, modelId, vendor, contextWindow = 1_000_000) {
+function model(
+  provider: string,
+  modelId: string,
+  vendor: ModelVendor,
+  contextWindow = 1_000_000,
+): RegistryModelSnapshot {
   return {
     provider,
     modelId,
@@ -33,7 +42,7 @@ function model(provider, modelId, vendor, contextWindow = 1_000_000) {
   };
 }
 
-function registry() {
+function registry(): RegistryModelSnapshot[] {
   return [
     model("openai-codex", "gpt-5.6-luna", "openai"),
     model("openai-codex", "gpt-5.6-terra", "openai"),
@@ -52,22 +61,42 @@ function registry() {
 }
 
 // Contexts are built through deriveRoutingContext so the fixtures cannot drift from the real derivation.
-const FEATURES = {
+type RoutingFeatures = Parameters<typeof deriveRoutingContext>[0];
+type OrdinaryArchetype = Parameters<typeof selectOrdinaryRoute>[0];
+
+const ROUTING_FEATURE_DEFAULTS: RoutingFeatures = {
   ambiguity: "low",
   interactivity: "single_response",
-  actionMode: "reversible_mutation",
+  actionMode: "information_only",
   risk: "medium",
+  verificationStrength: "none",
+  horizon: "one_response",
+  expectedAgentTurns: 1,
+};
+
+function routingContext(features: Partial<RoutingFeatures>, languageBuckets: readonly string[]) {
+  return deriveRoutingContext({ ...ROUTING_FEATURE_DEFAULTS, ...features }, languageBuckets);
+}
+
+const FEATURES: RoutingFeatures = {
+  ...ROUTING_FEATURE_DEFAULTS,
+  actionMode: "reversible_mutation",
   verificationStrength: "unit_tests",
 };
-const GO = deriveRoutingContext(FEATURES, ["go"]);
-const TYPESCRIPT = deriveRoutingContext(FEATURES, ["typescript"]);
-const HARD_GO = deriveRoutingContext({ ...FEATURES, ambiguity: "high" }, ["go"]);
+const GO = routingContext(FEATURES, ["go"]);
+const TYPESCRIPT = routingContext(FEATURES, ["typescript"]);
+const HARD_GO = routingContext({ ...FEATURES, ambiguity: "high" }, ["go"]);
 
-const REQUIREMENTS = { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true };
+const REQUIREMENTS: RouteRequirements = {
+  estimatedFinishedTokens: 50_000,
+  requiresImages: false,
+  requiresTools: true,
+};
+const ALL_ARCHETYPES = Object.keys(BOOTSTRAP_ROUTE_POLICIES) as Archetype[];
 
 describe("deriveArchetype", () => {
   it("routes planning by horizon before implementation", () => {
-    const features = {
+    const features: TaskFeatures = {
       ...conservativeFeatures(),
       intent: "plan",
       workflowType: "implementation_planning",
@@ -84,7 +113,7 @@ describe("deriveArchetype", () => {
   });
 
   it("keeps critical ambiguous advice out of review routing when review is only inferred", () => {
-    const features = {
+    const features: TaskFeatures = {
       ...conservativeFeatures(),
       intent: "research",
       workflowType: "research_or_analysis",
@@ -96,7 +125,7 @@ describe("deriveArchetype", () => {
   });
 
   it("claims a post-completion review duty only where the safety policy creates one", () => {
-    const builder = {
+    const builder: TaskFeatures = {
       ...conservativeFeatures(),
       intent: "implement",
       workflowType: "coding_implementation",
@@ -111,8 +140,8 @@ describe("deriveArchetype", () => {
     for (const reviewShape of [
       { workflowType: "code_review", intent: "implement" },
       { workflowType: "coding_implementation", intent: "review" },
-    ]) {
-      const features = { ...builder, ...reviewShape };
+    ] as const) {
+      const features: TaskFeatures = { ...builder, ...reviewShape };
       assert.equal(deriveSafetyPolicy(features), "ordinary");
       assert.equal(
         deriveArchetype(features).requiresIndependentReview,
@@ -202,7 +231,7 @@ describe("ordinary route selection", () => {
       ["implementation_planning", "high"],
       ["large_program_planning", "xhigh"],
       ["highest_risk_advisory", "max"],
-    ]) {
+    ] as const) {
       const decision = selectOrdinaryRoute(archetype, registry(), REQUIREMENTS);
       assert.equal(decision.kind, "ordinary");
       assert.equal(decision.primary.modelId, "claude-opus-5", `${archetype} must pin Opus 5`);
@@ -226,7 +255,7 @@ describe("ordinary route selection", () => {
     assert.notEqual(decision.primary.effort, "xhigh");
     assert.ok(
       decision.exclusions.some(
-        (exclusion) => exclusion.code === "effort_unauthorized" && /typescript ceiling high/.test(exclusion.detail),
+        (exclusion) => exclusion.code === "effort_unauthorized" && exclusion.detail.includes("typescript ceiling high"),
       ),
     );
   });
@@ -242,6 +271,7 @@ describe("ordinary route selection", () => {
     assert.ok([decision.primary, ...decision.fallbacks].every((choice) => choice.vendor !== "google"));
 
     const withCurrent = selectOrdinaryRoute("algorithmic_iterative_coding", registry(), REQUIREMENTS);
+    assert.equal(withCurrent.kind, "ordinary");
     assert.ok(withCurrent.fallbacks.some((choice) => choice.modelId === "gemini-3.6-flash"));
   });
 
@@ -285,7 +315,9 @@ describe("ordinary route selection", () => {
     const decision = selectOrdinaryRoute("implementation_planning", models, REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.primary.provider, "anthropic");
-    assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
+    const firstFallback = decision.fallbacks[0];
+    assert.ok(firstFallback);
+    assert.equal(firstFallback.provider, "amazon-bedrock");
   });
 
   it("gates low-effort tiers on task consequence rather than on the archetype label", () => {
@@ -305,7 +337,7 @@ describe("ordinary route selection", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+      routingContext({ ...FEATURES, actionMode: "information_only" }, []),
     );
     assert.equal(readOnly.kind, "ordinary");
     assert.equal(readOnly.primary.modelId, "gpt-5.6-terra");
@@ -319,13 +351,13 @@ describe("ordinary route selection", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...FEATURES, actionMode: "external_side_effect" }, []),
+      routingContext({ ...FEATURES, actionMode: "external_side_effect" }, []),
     );
     assert.equal(irreversible.kind, "ordinary");
     assert.notEqual(irreversible.primary.modelId, "gpt-5.6-terra");
     assert.ok(
       irreversible.exclusions.some(
-        (exclusion) => exclusion.code === "effort_unauthorized" && /irreversible floor/.test(exclusion.detail),
+        (exclusion) => exclusion.code === "effort_unauthorized" && exclusion.detail.includes("irreversible floor"),
       ),
     );
   });
@@ -369,7 +401,7 @@ describe("ordinary route selection", () => {
   });
 
   it("keeps evidence-prior order until every comparable candidate is mature", () => {
-    const samples = [
+    const samples: RouteSample[] = [
       {
         provider: "openai-codex",
         modelId: "gpt-5.6-sol",
@@ -390,8 +422,10 @@ describe("ordinary route selection", () => {
 
     // Maturity requires a comparable sample for every eligible group, so derive them from the
     // evidence-ordered decision rather than hand-listing candidates.
+    const firstSample = samples[0];
+    assert.ok(firstSample);
     const matureSamples = [decision.primary, ...decision.fallbacks].map((choice) => ({
-      ...samples[0],
+      ...firstSample,
       provider: choice.provider,
       modelId: choice.modelId,
       // Make claude-opus-5 the cheapest so telemetry demonstrably reorders away from the prior order.
@@ -402,10 +436,12 @@ describe("ordinary route selection", () => {
     assert.equal(mature.telemetryMature, true);
     assert.equal(mature.primary.modelId, "claude-opus-5");
     assert.equal(mature.primary.rankReason, "telemetry");
-    assert.equal(mature.primary.scoreComponents.p75ModelAndToolCost, 1);
-    assert.ok(Math.abs(mature.primary.scoreComponents.developerWaitCost - 0.0001) < 1e-12);
-    assert.equal(mature.primary.scoreComponents.humanInterventionCost, 0);
-    assert.equal(mature.primary.scoreComponents.retryCost, 0);
+    const scoreComponents = mature.primary.scoreComponents;
+    assert.ok(scoreComponents);
+    assert.equal(scoreComponents.p75ModelAndToolCost, 1);
+    assert.ok(Math.abs(scoreComponents.developerWaitCost - 0.0001) < 1e-12);
+    assert.equal(scoreComponents.humanInterventionCost, 0);
+    assert.equal(scoreComponents.retryCost, 0);
 
     const holdoutKey = Array.from({ length: 100 }, (_, index) => `task-${index}`).find((key) =>
       isControlledHoldout(key),
@@ -431,13 +467,16 @@ describe("review route selection", () => {
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.archetype, "code_review");
     assert.ok(
-      [decision.primary, ...decision.fallbacks].every((choice) => choice.rankReason !== "fixed_builder_fallback"),
+      [decision.primary, ...decision.fallbacks].every(
+        (choice) => (choice.rankReason as string) !== "fixed_builder_fallback",
+      ),
     );
   });
 
   it("selects both non-builder vendors without allowing the builder to review itself", () => {
     const models = registry();
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
+    assert.ok(builder);
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
     assert.deepEqual(new Set([decision.primary.vendor, decision.fallback.vendor]), new Set(["anthropic", "google"]));
@@ -451,15 +490,19 @@ describe("review route selection", () => {
         : candidate,
     );
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    assert.ok(builder);
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
     assert.equal(decision.kind, "review");
     const anthropic = [decision.primary, decision.fallback].find((choice) => choice.vendor === "anthropic");
+    assert.ok(anthropic);
     assert.equal(anthropic.modelId, "claude-fable-5");
   });
 
   it("does not require the tracked builder endpoint to remain available for read-only review", () => {
     const models = registry();
-    const builder = { ...models.find((candidate) => candidate.modelId === "gpt-5.6-terra"), available: false };
+    const availableBuilder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
+    assert.ok(availableBuilder);
+    const builder: RegistryModelSnapshot = { ...availableBuilder, available: false };
     const decision = selectReviewRoute(
       models.map((candidate) => (candidate.modelId === builder.modelId ? builder : candidate)),
       REQUIREMENTS,
@@ -520,21 +563,21 @@ describe("routing helpers", () => {
 });
 
 describe("routing context derivation", () => {
-  const features = { ambiguity: "low", interactivity: "single_response" };
+  const features: Partial<RoutingFeatures> = { ambiguity: "low", interactivity: "single_response" };
 
   it("applies a language affinity only for a single measured language", () => {
-    assert.equal(deriveRoutingContext(features, ["go", "shell"]).language, "go");
-    assert.equal(deriveRoutingContext(features, ["typescript", "javascript"]).language, "typescript");
+    assert.equal(routingContext(features, ["go", "shell"]).language, "go");
+    assert.equal(routingContext(features, ["typescript", "javascript"]).language, "typescript");
     // Kotlin, Ruby, HCL, Helm, protobuf and Kafka work is unmeasured, so no affinity is applied.
-    assert.equal(deriveRoutingContext(features, ["kotlin", "ruby"]).language, undefined);
-    assert.equal(deriveRoutingContext(features, ["go", "python"]).language, undefined);
+    assert.equal(routingContext(features, ["kotlin", "ruby"]).language, undefined);
+    assert.equal(routingContext(features, ["go", "python"]).language, undefined);
   });
 
   it("maps classifier features onto the scoring axes", () => {
-    assert.equal(deriveRoutingContext({ ...features, ambiguity: "high" }, []).hardTask, true);
-    assert.equal(deriveRoutingContext({ ...features, interactivity: "autonomous" }, []).unattended, true);
-    assert.equal(deriveRoutingContext({ ...features, interactivity: "developer_loop" }, []).foreground, true);
-    const conservative = deriveRoutingContext(features, []);
+    assert.equal(routingContext({ ...features, ambiguity: "high" }, []).hardTask, true);
+    assert.equal(routingContext({ ...features, interactivity: "autonomous" }, []).unattended, true);
+    assert.equal(routingContext({ ...features, interactivity: "developer_loop" }, []).foreground, true);
+    const conservative = routingContext(features, []);
     assert.deepEqual(
       { hardTask: conservative.hardTask, unattended: conservative.unattended, foreground: conservative.foreground },
       { hardTask: false, unattended: false, foreground: false },
@@ -549,7 +592,7 @@ describe("routing context derivation", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...FEATURES, interactivity: "developer_loop" }, ["typescript"]),
+      routingContext({ ...FEATURES, interactivity: "developer_loop" }, ["typescript"]),
     );
     assert.equal(foreground.kind, "ordinary");
     assert.equal(foreground.primary.modelId, "gpt-5.6-sol");
@@ -564,7 +607,7 @@ describe("routing context derivation", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...FEATURES, ambiguity: "high" }, []),
+      routingContext({ ...FEATURES, ambiguity: "high" }, []),
     );
     assert.equal(hard.kind, "ordinary");
     assert.notEqual(hard.primary.modelId, "gpt-5.6-luna");
@@ -575,6 +618,7 @@ describe("routing context derivation", () => {
     assert.equal(escalation.escalationOnly, true);
 
     const routine = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
+    assert.equal(routine.kind, "ordinary");
     assert.ok(
       [routine.primary, ...routine.fallbacks].every((choice) => choice.modelId !== "gpt-5.6-luna"),
       "routine tasks must not authorize the escalation candidate at all",
@@ -591,7 +635,7 @@ describe("weakly evidenced language tendencies", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext(FEATURES, ["ruby"]),
+      routingContext(FEATURES, ["ruby"]),
     );
     assert.equal(ruby.kind, "ordinary");
     // gpt-5.6-sol@high and claude-opus-5@medium sit within the near-tie band on corpus-wide priors,
@@ -610,7 +654,7 @@ describe("weakly evidenced language tendencies", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext(FEATURES, ["ruby"]),
+      routingContext(FEATURES, ["ruby"]),
     );
     assert.equal(ruby.kind, "ordinary");
     // The pin already selects Opus 5 here, so assert the weaker Anthropic tier did not jump the queue.
@@ -625,10 +669,11 @@ describe("weakly evidenced language tendencies", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext(FEATURES, ["kotlin"]),
+      routingContext(FEATURES, ["kotlin"]),
     );
     const unmeasured = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
     assert.equal(kotlin.kind, "ordinary");
+    assert.equal(unmeasured.kind, "ordinary");
     assert.equal(kotlin.primary.modelId, unmeasured.primary.modelId);
     assert.equal(kotlin.primary.effort, unmeasured.primary.effort);
   });
@@ -647,7 +692,7 @@ describe("balanced tier and scoped frugal candidate", () => {
   it("keeps non-agentic archetypes on their declared order despite agentic priors", () => {
     // The corpus does not measure classification or extraction, so a multi-step repository pass rate
     // must not reorder these pools.
-    const readOnlyContext = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
+    const readOnlyContext = routingContext({ ...FEATURES, actionMode: "information_only" }, []);
     const classification = selectOrdinaryRoute(
       "fast_classification",
       withExtras(),
@@ -671,14 +716,15 @@ describe("balanced tier and scoped frugal candidate", () => {
       undefined,
       readOnlyContext,
     );
+    assert.equal(extraction.kind, "ordinary");
     assert.equal(extraction.primary.modelId, "gpt-5.6-terra");
     assert.equal(extraction.primary.effort, "medium");
     assert.equal(extraction.primary.rankReason, "bootstrap");
   });
 
   it("never routes the generation-superseded core models, even though they are scoped in", () => {
-    const readOnly = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
-    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+    const readOnly = routingContext({ ...FEATURES, actionMode: "information_only" }, []);
+    for (const archetype of ALL_ARCHETYPES) {
       const decision = selectOrdinaryRoute(archetype, withExtras(), REQUIREMENTS, [], undefined, undefined, readOnly);
       assert.equal(decision.kind, "ordinary");
       for (const choice of [decision.primary, ...decision.fallbacks]) {
@@ -692,7 +738,12 @@ describe("balanced tier and scoped frugal candidate", () => {
 
   it("uses the unmeasured small peer for read-only bounded work and nowhere else", () => {
     // One-shot read-only work is the only place the peer's per-token discount is real.
-    const oneShot = { ...FEATURES, actionMode: "information_only", horizon: "one_response", expectedAgentTurns: 1 };
+    const oneShot: RoutingFeatures = {
+      ...FEATURES,
+      actionMode: "information_only",
+      horizon: "one_response",
+      expectedAgentTurns: 1,
+    };
     const classification = selectOrdinaryRoute(
       "fast_classification",
       withExtras(),
@@ -700,8 +751,9 @@ describe("balanced tier and scoped frugal candidate", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext(oneShot, []),
+      routingContext(oneShot, []),
     );
+    assert.equal(classification.kind, "ordinary");
     const peer = [classification.primary, ...classification.fallbacks].find(
       (choice) => choice.logicalModelId === "gpt-5.4-mini",
     );
@@ -721,13 +773,14 @@ describe("balanced tier and scoped frugal candidate", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...oneShot, actionMode: "reversible_mutation" }, []),
+      routingContext({ ...oneShot, actionMode: "reversible_mutation" }, []),
     );
+    assert.equal(mutating.kind, "ordinary");
     assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "gpt-5.4-mini"));
     assert.ok(
       mutating.exclusions.some(
         (exclusion) =>
-          exclusion.candidate.includes("gpt-5.4-mini") && /read-only consequence only/.test(exclusion.detail),
+          exclusion.candidate.includes("gpt-5.4-mini") && exclusion.detail.includes("read-only consequence only"),
       ),
       "the exclusion must say why the peer was refused",
     );
@@ -739,7 +792,7 @@ describe("balanced tier and scoped frugal candidate", () => {
     for (const iterating of [
       { horizon: "one_response", expectedAgentTurns: 6 },
       { horizon: "single_pr", expectedAgentTurns: 1 },
-    ]) {
+    ] as const) {
       const decision = selectOrdinaryRoute(
         "fast_classification",
         withExtras(),
@@ -747,7 +800,7 @@ describe("balanced tier and scoped frugal candidate", () => {
         [],
         undefined,
         undefined,
-        deriveRoutingContext({ ...FEATURES, actionMode: "information_only", ...iterating }, []),
+        routingContext({ ...FEATURES, actionMode: "information_only", ...iterating }, []),
       );
       assert.equal(decision.kind, "ordinary");
       assert.ok(
@@ -756,7 +809,8 @@ describe("balanced tier and scoped frugal candidate", () => {
       );
       assert.ok(
         decision.exclusions.some(
-          (exclusion) => exclusion.candidate.includes("gpt-5.4-mini") && /one-shot work only/.test(exclusion.detail),
+          (exclusion) =>
+            exclusion.candidate.includes("gpt-5.4-mini") && exclusion.detail.includes("one-shot work only"),
         ),
         "the exclusion must name the turn-budget reason",
       );
@@ -771,8 +825,9 @@ describe("balanced tier and scoped frugal candidate", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+      routingContext({ ...FEATURES, actionMode: "information_only" }, []),
     );
+    assert.equal(extraction.kind, "ordinary");
     const oss = [extraction.primary, ...extraction.fallbacks].find(
       (choice) => choice.logicalModelId === "gpt-oss-120b",
     );
@@ -783,16 +838,19 @@ describe("balanced tier and scoped frugal candidate", () => {
 
     // It is not authorized for repository-mutating work at all.
     const mutating = selectOrdinaryRoute("median_repository_implementation", withExtras(), REQUIREMENTS);
+    assert.equal(mutating.kind, "ordinary");
     assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "gpt-oss-120b"));
   });
 
   it("admits the balanced mid tier as fallbacks without letting it take a mutating primary", () => {
     const median = selectOrdinaryRoute("median_repository_implementation", withExtras(), REQUIREMENTS);
+    assert.equal(median.kind, "ordinary");
     const chain = [median.primary, ...median.fallbacks].map((choice) => `${choice.logicalModelId}@${choice.effort}`);
     assert.ok(chain.includes("gpt-5.6-terra@high"), "terra@high should be an authorized mid fallback");
     assert.equal(median.primary.logicalModelId, "gpt-5.6-sol");
 
     const algorithmic = selectOrdinaryRoute("algorithmic_iterative_coding", withExtras(), REQUIREMENTS);
+    assert.equal(algorithmic.kind, "ordinary");
     const algoChain = [algorithmic.primary, ...algorithmic.fallbacks].map(
       (choice) => `${choice.logicalModelId}@${choice.effort}`,
     );
@@ -805,6 +863,7 @@ describe("balanced tier and scoped frugal candidate", () => {
 
   it("excludes the frugal scoped candidate unless steps are the binding constraint", () => {
     const roomy = selectOrdinaryRoute("median_repository_implementation", withExtras(), REQUIREMENTS);
+    assert.equal(roomy.kind, "ordinary");
     assert.ok(
       [roomy.primary, ...roomy.fallbacks].every((choice) => choice.logicalModelId !== "claude-opus-4-6"),
       "a roomy, token-billed route has no reason to use the frugal candidate",
@@ -825,12 +884,12 @@ describe("balanced tier and scoped frugal candidate", () => {
 });
 
 describe("consequence gating invariants", () => {
-  const IRREVERSIBLE = { ...FEATURES, actionMode: "external_side_effect" };
+  const IRREVERSIBLE: RoutingFeatures = { ...FEATURES, actionMode: "external_side_effect" };
 
   it("keeps every archetype routable for irreversible work", () => {
     // Regression guard: both non-agentic pools were once entirely ability band 1, which made an
     // irreversible task in those archetypes unroutable rather than merely expensive.
-    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+    for (const archetype of ALL_ARCHETYPES) {
       if (archetype === "code_review") continue;
       const decision = selectOrdinaryRoute(
         archetype,
@@ -839,14 +898,14 @@ describe("consequence gating invariants", () => {
         [],
         undefined,
         undefined,
-        deriveRoutingContext(IRREVERSIBLE, []),
+        routingContext(IRREVERSIBLE, []),
       );
       assert.equal(decision.kind, "ordinary", `${archetype} became unroutable for irreversible work`);
     }
   });
 
   it("bars the lowest ability band from irreversible work in every archetype", () => {
-    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+    for (const archetype of ALL_ARCHETYPES) {
       if (archetype === "code_review") continue;
       const decision = selectOrdinaryRoute(
         archetype,
@@ -855,8 +914,9 @@ describe("consequence gating invariants", () => {
         [],
         undefined,
         undefined,
-        deriveRoutingContext(IRREVERSIBLE, []),
+        routingContext(IRREVERSIBLE, []),
       );
+      assert.equal(decision.kind, "ordinary");
       for (const choice of [decision.primary, ...decision.fallbacks]) {
         assert.ok(choice.ability >= 2, `${archetype} allowed ability ${String(choice.ability)} on irreversible work`);
       }
@@ -864,26 +924,23 @@ describe("consequence gating invariants", () => {
   });
 
   it("escalates critical risk to the irreversible tier even for a read-only action mode", () => {
-    const context = deriveRoutingContext({ ...FEATURES, actionMode: "local_read", risk: "critical" }, []);
+    const context = routingContext({ ...FEATURES, actionMode: "local_read", risk: "critical" }, []);
     assert.equal(context.consequence, "irreversible");
-    const benign = deriveRoutingContext({ ...FEATURES, actionMode: "local_read", risk: "medium" }, []);
+    const benign = routingContext({ ...FEATURES, actionMode: "local_read", risk: "medium" }, []);
     assert.equal(benign.consequence, "read_only");
   });
 
   it("discounts the regression term when the task runs the tests that would catch it", () => {
-    const none = deriveRoutingContext({ ...FEATURES, verificationStrength: "none" }, []);
-    const unit = deriveRoutingContext({ ...FEATURES, verificationStrength: "unit_tests" }, []);
-    const integration = deriveRoutingContext({ ...FEATURES, verificationStrength: "integration_tests" }, []);
+    const none = routingContext({ ...FEATURES, verificationStrength: "none" }, []);
+    const unit = routingContext({ ...FEATURES, verificationStrength: "unit_tests" }, []);
+    const integration = routingContext({ ...FEATURES, verificationStrength: "integration_tests" }, []);
     // Pin the actual values rather than only their ordering, so a silent reweighting fails the test.
     assert.equal(none.verificationDiscount, 1);
-    assert.equal(
-      deriveRoutingContext({ ...FEATURES, verificationStrength: "self_check" }, []).verificationDiscount,
-      0.85,
-    );
+    assert.equal(routingContext({ ...FEATURES, verificationStrength: "self_check" }, []).verificationDiscount, 0.85);
     assert.equal(unit.verificationDiscount, 0.5);
     assert.equal(integration.verificationDiscount, 0.25);
     assert.equal(
-      deriveRoutingContext({ ...FEATURES, verificationStrength: "security_and_policy" }, []).verificationDiscount,
+      routingContext({ ...FEATURES, verificationStrength: "security_and_policy" }, []).verificationDiscount,
       0.25,
     );
   });
@@ -891,6 +948,7 @@ describe("consequence gating invariants", () => {
   it("keeps tracked review independent even when the builder is a low tier", () => {
     const models = registry();
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
+    assert.ok(builder);
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
     assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
@@ -898,12 +956,10 @@ describe("consequence gating invariants", () => {
 });
 
 describe("escalation-only candidates can never be a first attempt", () => {
-  const HARD = {
+  const HARD: RoutingFeatures = {
+    ...ROUTING_FEATURE_DEFAULTS,
     ambiguity: "high",
-    interactivity: "single_response",
     actionMode: "reversible_mutation",
-    risk: "medium",
-    verificationStrength: "none",
   };
 
   it("never takes the primary slot in any archetype, even when it is the only eligible model", () => {
@@ -911,10 +967,10 @@ describe("escalation-only candidates can never be a first attempt", () => {
     // Previously the demotion lived inside one ranking branch and used `findIndex(...) > 0`, so it
     // failed open here and handed every archetype its least reliable configuration as a first attempt.
     const only = [model("openai-codex", "gpt-5.6-luna", "openai"), model("openai", "gpt-5.6-luna", "openai")].map(
-      (candidate) => ({ ...candidate, supportedEfforts: ["max"] }),
+      (candidate) => ({ ...candidate, supportedEfforts: ["max"] as const }),
     );
-    const context = deriveRoutingContext(HARD, []);
-    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+    const context = routingContext(HARD, []);
+    for (const archetype of ALL_ARCHETYPES) {
       if (archetype === "code_review") continue;
       const decision = selectOrdinaryRoute(archetype, only, REQUIREMENTS, [], undefined, undefined, context);
       if (decision.kind === "ordinary") {
@@ -934,7 +990,7 @@ describe("escalation-only candidates can never be a first attempt", () => {
   it("applies the rule to archetypes that are not evidence ranked", () => {
     // fast_classification and exact_extraction return early from ranking, so the invariant has to be
     // enforced outside that branch.
-    for (const archetype of ["fast_classification", "exact_extraction"]) {
+    for (const archetype of ["fast_classification", "exact_extraction"] as const) {
       const decision = selectOrdinaryRoute(
         archetype,
         registry(),
@@ -942,7 +998,7 @@ describe("escalation-only candidates can never be a first attempt", () => {
         [],
         undefined,
         undefined,
-        deriveRoutingContext({ ...HARD, actionMode: "information_only" }, []),
+        routingContext({ ...HARD, actionMode: "information_only" }, []),
       );
       assert.equal(decision.kind, "ordinary");
       assert.notEqual(decision.primary.escalationOnly, true);
@@ -965,7 +1021,7 @@ describe("escalation-only candidates can never be a first attempt", () => {
       [],
       undefined,
       undefined,
-      deriveRoutingContext(HARD, []),
+      routingContext(HARD, []),
     );
     assert.equal(decision.kind, "ordinary");
     const escalation = decision.fallbacks.find((choice) => choice.escalationOnly === true);
@@ -973,12 +1029,19 @@ describe("escalation-only candidates can never be a first attempt", () => {
     assert.equal(escalation.modelId, "gpt-5.6-luna");
     assert.equal(escalation.effort, "max");
     // It is last in the chain, after every ordinary candidate.
-    assert.equal(decision.fallbacks.at(-1).escalationOnly, true);
+    const finalFallback = decision.fallbacks.at(-1);
+    assert.ok(finalFallback);
+    assert.equal(finalFallback.escalationOnly, true);
   });
 });
 
 describe("scope and health drive the candidate pool", () => {
-  function endpoint(provider, modelId, vendor, extra = {}) {
+  function endpoint(
+    provider: string,
+    modelId: string,
+    vendor: ModelVendor,
+    extra: Partial<RegistryModelSnapshot> = {},
+  ): RegistryModelSnapshot {
     return { ...model(provider, modelId, vendor), ...extra };
   }
 
@@ -995,7 +1058,9 @@ describe("scope and health drive the candidate pool", () => {
     assert.equal(decision.primary.provider, "amazon-bedrock");
     // The bare-ish global profile is preferred over the regional one.
     assert.equal(decision.primary.modelId, "global.anthropic.claude-opus-5");
-    assert.equal(decision.fallbacks[0].modelId, "us.anthropic.claude-opus-5");
+    const firstFallback = decision.fallbacks[0];
+    assert.ok(firstFallback);
+    assert.equal(firstFallback.modelId, "us.anthropic.claude-opus-5");
   });
 
   it("still prefers the manufacturer route when both exist", () => {
@@ -1005,9 +1070,12 @@ describe("scope and health drive the candidate pool", () => {
       endpoint("openai-codex", "gpt-5.6-sol", "openai"),
     ];
     const decision = selectOrdinaryRoute("implementation_planning", both, REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
     assert.equal(decision.primary.provider, "anthropic");
     assert.equal(decision.primary.endpointTier, "manufacturer");
-    assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
+    const firstFallback = decision.fallbacks[0];
+    assert.ok(firstFallback);
+    assert.equal(firstFallback.provider, "amazon-bedrock");
   });
 
   it("reports a model that is not in scope rather than pretending it was unavailable", () => {
@@ -1050,6 +1118,7 @@ describe("scope and health drive the candidate pool", () => {
       endpoint("google-vertex", "gemini-2.5-pro", "google"),
     ];
     const builder = olderGemini.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    assert.ok(builder);
     const decision = selectReviewRoute(olderGemini, REQUIREMENTS, builder, "high", 3);
     assert.equal(decision.kind, "review");
     const vendors = new Set([decision.primary.vendor, decision.fallback.vendor]);
@@ -1063,6 +1132,7 @@ describe("scope and health drive the candidate pool", () => {
       endpoint("github-copilot", "gemini-3.5-flash", "google"),
     ];
     const builder = disqualifiedOnly.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    assert.ok(builder);
     const decision = selectReviewRoute(disqualifiedOnly, REQUIREMENTS, builder, "high", 3);
     // Two independent vendors are required, and a measured-overflow model is not an acceptable one.
     assert.equal(decision.kind, "unroutable");
@@ -1070,12 +1140,12 @@ describe("scope and health drive the candidate pool", () => {
 });
 
 describe("Opus generation chain", () => {
-  const PLANNING = ["implementation_planning", "large_program_planning", "highest_risk_advisory"];
-  const readOnly = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
+  const PLANNING: OrdinaryArchetype[] = ["implementation_planning", "large_program_planning", "highest_risk_advisory"];
+  const readOnly = routingContext({ ...FEATURES, actionMode: "information_only" }, []);
 
-  function chainFor(archetype, models) {
+  function chainFor(archetype: OrdinaryArchetype, models: RegistryModelSnapshot[]) {
     const decision = selectOrdinaryRoute(archetype, models, REQUIREMENTS, [], undefined, undefined, readOnly);
-    assert.equal(decision.kind, "ordinary", decision.reason);
+    assert.equal(decision.kind, "ordinary", "expected an ordinary route");
     return [decision.primary, ...decision.fallbacks];
   }
 
@@ -1121,7 +1191,7 @@ describe("Opus generation chain", () => {
     ];
     // large_program_planning and highest_risk_advisory set allowSuperSaturation, so this proves the
     // degraded rung is not silently promoted to the expensive flat end of its curve.
-    for (const archetype of ["large_program_planning", "highest_risk_advisory"]) {
+    for (const archetype of ["large_program_planning", "highest_risk_advisory"] as const) {
       for (const choice of chainFor(archetype, noOpus5)) {
         if (choice.logicalModelId !== "claude-opus-4-8") continue;
         assert.equal(choice.effort, "high");

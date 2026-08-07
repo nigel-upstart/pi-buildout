@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { aggregateRouteSamples, JsonlTelemetryStore, percentile, withRouterSpan } from "./telemetry.ts";
+import type { AttemptOutcome, RouterTelemetryEvent } from "./telemetry.ts";
 
-const temporaryDirectories = [];
+const temporaryDirectories: string[] = [];
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-function event(id) {
+function event(id: string): RouterTelemetryEvent {
   return {
     version: 1,
     eventId: id,
@@ -41,7 +42,7 @@ describe("JsonlTelemetryStore", () => {
 describe("telemetry aggregates", () => {
   it("computes nearest-rank percentiles and comparable route samples", () => {
     assert.equal(percentile([1, 2, 3, 100], 0.75), 3);
-    const outcomes = Array.from({ length: 30 }, (_, index) => ({
+    const outcomes: AttemptOutcome[] = Array.from({ length: 30 }, (_, index) => ({
       provider: "openai-codex",
       modelId: "gpt-5.6-terra",
       archetype: "median_repository_implementation",
@@ -55,10 +56,13 @@ describe("telemetry aggregates", () => {
       humanIntervention: index === 29,
       retried: index >= 28,
     }));
-    outcomes.push({ ...outcomes[0], contextBucket: "long_repository" });
+    const firstOutcome = outcomes[0];
+    assert.ok(firstOutcome);
+    outcomes.push({ ...firstOutcome, contextBucket: "long_repository" });
     const samples = aggregateRouteSamples(outcomes);
     assert.equal(samples.length, 2);
     const sample = samples.find((candidate) => candidate.contextBucket === "multi_file_repository");
+    assert.ok(sample);
     assert.equal(sample.comparableSamples, 30);
     assert.equal(sample.p50ModelAndToolCost, 15);
     assert.equal(sample.p75ModelAndToolCost, 23);
@@ -75,7 +79,8 @@ describe("withRouterSpan", () => {
     const runtimeSymbol = Symbol.for("pi.telemetry-otel.runtimeRegistry.v1");
     const activeSymbol = Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1");
     const apiSymbol = Symbol.for("opentelemetry.js.api.1");
-    const calls = [];
+    const globals = globalThis as Record<symbol, unknown>;
+    const calls: ("end" | { name: string; options: unknown; context: unknown })[] = [];
     const span = {
       setAttribute: () => span,
       addEvent: () => span,
@@ -83,12 +88,12 @@ describe("withRouterSpan", () => {
       setStatus: () => span,
       end: () => calls.push("end"),
     };
-    globalThis[runtimeSymbol] = new Map([
+    globals[runtimeSymbol] = new Map([
       [
         "session",
         {
           tracer: {
-            startSpan: (name, options, context) => {
+            startSpan: (name: string, options: unknown, context: unknown) => {
               calls.push({ name, options, context });
               return span;
             },
@@ -96,10 +101,10 @@ describe("withRouterSpan", () => {
         },
       ],
     ]);
-    globalThis[activeSymbol] = new Map([["session", { traceId: "a".repeat(32), spanId: "b".repeat(16) }]]);
-    globalThis[apiSymbol] = {
+    globals[activeSymbol] = new Map([["session", { traceId: "a".repeat(32), spanId: "b".repeat(16) }]]);
+    globals[apiSymbol] = {
       context: {
-        active: () => ({ setValue: (key, value) => ({ key, value }) }),
+        active: () => ({ setValue: (key: symbol, value: unknown) => ({ key, value }) }),
       },
     };
     try {
@@ -108,13 +113,16 @@ describe("withRouterSpan", () => {
         return 42;
       });
       assert.equal(result, 42);
-      assert.equal(calls[0].name, "router.route");
-      assert.ok(calls[0].context);
+      const firstCall = calls[0];
+      assert.ok(firstCall);
+      if (firstCall === "end") assert.fail("expected a span-start call before end");
+      assert.equal(firstCall.name, "router.route");
+      assert.ok(firstCall.context);
       assert.equal(calls.at(-1), "end");
     } finally {
-      delete globalThis[runtimeSymbol];
-      delete globalThis[activeSymbol];
-      delete globalThis[apiSymbol];
+      Reflect.deleteProperty(globals, runtimeSymbol);
+      Reflect.deleteProperty(globals, activeSymbol);
+      Reflect.deleteProperty(globals, apiSymbol);
     }
   });
 

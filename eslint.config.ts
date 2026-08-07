@@ -6,7 +6,7 @@ import sonarjs from "eslint-plugin-sonarjs";
 import unicorn from "eslint-plugin-unicorn";
 import tseslint from "typescript-eslint";
 
-const typedFiles = ["extensions/**/*.ts"];
+const typedFiles = ["extensions/**/*.ts", "scripts/**/*.ts", "types/**/*.d.ts"];
 
 export default tseslint.config(
   {
@@ -14,7 +14,7 @@ export default tseslint.config(
   },
   eslint.configs.recommended,
   {
-    files: ["**/*.{js,mjs,cjs,ts,mts,cts}"],
+    files: ["**/*.ts"],
     languageOptions: {
       globals: {
         console: "readonly",
@@ -28,7 +28,7 @@ export default tseslint.config(
   ...tseslint.configs.strictTypeChecked.map((config) => ({ ...config, files: typedFiles })),
   ...tseslint.configs.stylisticTypeChecked.map((config) => ({ ...config, files: typedFiles })),
   {
-    files: ["extensions/**/*.{ts,mjs}"],
+    files: typedFiles,
     languageOptions: {
       globals: globals.node,
       parserOptions: {
@@ -77,7 +77,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["extensions/router/**/*.{ts,mjs}"],
+    files: ["extensions/router/**/*.ts"],
     rules: {
       "max-len": "off",
       "sonarjs/cognitive-complexity": ["error", 60],
@@ -85,9 +85,21 @@ export default tseslint.config(
     },
   },
   {
-    files: ["extensions/**/*.test.mjs"],
+    files: ["extensions/**/*.test.ts", "scripts/**/*.test.ts"],
     rules: {
+      "@typescript-eslint/no-base-to-string": "off",
+      "@typescript-eslint/no-empty-function": "off",
+      "@typescript-eslint/no-floating-promises": "off",
+      "@typescript-eslint/no-unnecessary-condition": "off",
+      "@typescript-eslint/require-await": "off",
+      "@typescript-eslint/restrict-template-expressions": "off",
       "sonarjs/no-duplicate-string": "off",
+    },
+  },
+  {
+    files: ["scripts/**/*.ts"],
+    rules: {
+      "sonarjs/cognitive-complexity": ["error", 30],
     },
   },
 );

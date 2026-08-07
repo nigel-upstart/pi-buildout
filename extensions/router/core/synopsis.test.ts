@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildSessionSynopsis, synopsisByteLength } from "./synopsis.ts";
+import type { SynopsisEntry, SynopsisInput } from "./synopsis.ts";
 
-function input(entries) {
+function assertDefined<T>(value: T | undefined, message = "expected value to be defined"): asserts value is T {
+  assert.ok(value !== undefined, message);
+}
+
+function input(entries: readonly SynopsisEntry[]): SynopsisInput {
   return {
     sessionId: "session-1",
     cwd: "/repo",
@@ -24,7 +29,7 @@ function input(entries) {
 
 describe("buildSessionSynopsis", () => {
   it("builds a bounded deterministic synopsis instead of copying the raw session", () => {
-    const entries = [
+    const entries: SynopsisEntry[] = [
       { kind: "user", text: `Implement routing ${"detail ".repeat(2_000)}` },
       { kind: "tool", toolName: "read", path: "src/a.ts" },
       { kind: "tool", toolName: "edit", path: "src/a.ts" },
@@ -42,7 +47,9 @@ describe("buildSessionSynopsis", () => {
     assert.deepEqual(first, second);
     assert.ok(synopsisByteLength(first) <= 8_000);
     assert.equal(first.recentGoals.length, 1);
-    assert.ok(first.recentGoals[0].length <= 360);
+    const firstGoal = first.recentGoals[0];
+    assertDefined(firstGoal);
+    assert.ok(firstGoal.length <= 360);
     assert.deepEqual(first.activeTools, ["bash", "read", "write"]);
     assert.deepEqual(first.artifactState.readFiles, ["src/old.ts", "src/a.ts"]);
     assert.deepEqual(first.artifactState.modifiedFiles, ["src/changed.ts", "src/a.ts"]);
@@ -59,9 +66,15 @@ describe("buildSessionSynopsis", () => {
   });
 
   it("round-robins recent history categories before trimming metadata", () => {
-    const entries = [
-      ...Array.from({ length: 3 }, (_, index) => ({ kind: "user", text: `goal ${index} ${"g".repeat(350)}` })),
-      ...Array.from({ length: 2 }, (_, index) => ({ kind: "assistant", text: `outcome ${index} ${"o".repeat(350)}` })),
+    const entries: SynopsisEntry[] = [
+      ...Array.from({ length: 3 }, (_, index): SynopsisEntry => ({
+        kind: "user",
+        text: `goal ${index} ${"g".repeat(350)}`,
+      })),
+      ...Array.from({ length: 2 }, (_, index): SynopsisEntry => ({
+        kind: "assistant",
+        text: `outcome ${index} ${"o".repeat(350)}`,
+      })),
       {
         kind: "compaction",
         text: Array.from({ length: 8 }, (_, index) => `Decision ${index}: ${"d".repeat(220)}`).join("\n"),
@@ -76,7 +89,7 @@ describe("buildSessionSynopsis", () => {
   });
 
   it("trims modified-file metadata to the synopsis byte budget", () => {
-    const entries = Array.from({ length: 40 }, (_, index) => ({
+    const entries: SynopsisEntry[] = Array.from({ length: 40 }, (_, index) => ({
       kind: "tool",
       toolName: "edit",
       path: `modified/${index}-${"m".repeat(220)}.ts`,
@@ -86,7 +99,13 @@ describe("buildSessionSynopsis", () => {
     assert.ok(synopsisByteLength(synopsis) <= 8_000);
     assert.ok(synopsis.artifactState.modifiedFiles.length < entries.length);
     assert.ok(synopsis.artifactState.modifiedFiles.length >= 5);
-    assert.equal(synopsis.artifactState.modifiedFiles[0], entries.at(-1).path);
-    assert.ok(!synopsis.artifactState.modifiedFiles.includes(entries[0].path));
+    const lastEntry = entries.at(-1);
+    assertDefined(lastEntry);
+    assert.equal(synopsis.artifactState.modifiedFiles[0], lastEntry.path);
+    const firstEntry = entries[0];
+    assertDefined(firstEntry);
+    const firstEntryPath = firstEntry.path;
+    assertDefined(firstEntryPath);
+    assert.ok(!synopsis.artifactState.modifiedFiles.includes(firstEntryPath));
   });
 });

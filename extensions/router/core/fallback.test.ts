@@ -3,21 +3,43 @@ import { describe, it } from "node:test";
 import { resolveFallback, validateFallbackTopology } from "./fallback.ts";
 import { conservativeFeatures } from "./features.ts";
 import { createTaskLease } from "./lease.ts";
+import type { Archetype } from "./archetype.ts";
+import type { RouteChoice } from "./routing.ts";
+import type { ModelVendor } from "./profiles.ts";
 
-function choice(vendor, modelId, profileId = `${vendor}-profile`) {
+// Every test provider used below is mapped to its real manufacturer vendor, so the fixture
+// satisfies RouteChoice's ModelVendor constraint without changing any call site or assertion.
+const PROVIDER_VENDORS: Readonly<Record<string, ModelVendor>> = {
+  "openai-codex": "openai",
+  openai: "openai",
+  anthropic: "anthropic",
+  bifrost: "anthropic",
+  "google-vertex": "google",
+  google: "google",
+};
+
+function vendorForProvider(provider: string): ModelVendor {
+  const vendor = PROVIDER_VENDORS[provider];
+  if (!vendor) throw new Error(`no test vendor mapping exists for provider ${provider}`);
+  return vendor;
+}
+
+function choice(provider: string, modelId: string, profileId = `${provider}-profile`): RouteChoice {
   return {
-    provider: vendor,
+    provider,
     modelId,
-    vendor,
+    logicalModelId: modelId,
+    vendor: vendorForProvider(provider),
     effort: "high",
     ability: 3,
     profileId,
     contextWindow: 1_000_000,
+    endpointTier: "manufacturer",
     rankReason: "bootstrap",
   };
 }
 
-function taskLease(archetype, selected, fallbacks) {
+function taskLease(archetype: Archetype, selected: RouteChoice, fallbacks: RouteChoice[]) {
   return createTaskLease({
     taskId: "task",
     startedAt: "2026-07-17T00:00:00.000Z",
@@ -46,12 +68,15 @@ describe("ordinary fallback", () => {
     assert.deepEqual(validateFallbackTopology(lease), []);
     const openai = resolveFallback(lease, "availability", "2026-07-17T00:01:00.000Z");
     assert.equal(openai.action, "use_choice");
+    if (openai.action !== "use_choice") throw new Error("unreachable: asserted above");
     assert.equal(openai.choice.provider, "openai");
     const anthropic = resolveFallback(openai.lease, "availability", "2026-07-17T00:02:00.000Z");
     assert.equal(anthropic.action, "use_choice");
+    if (anthropic.action !== "use_choice") throw new Error("unreachable: asserted above");
     assert.equal(anthropic.choice.provider, "anthropic");
     const bifrost = resolveFallback(anthropic.lease, "availability", "2026-07-17T00:03:00.000Z");
     assert.equal(bifrost.action, "use_choice");
+    if (bifrost.action !== "use_choice") throw new Error("unreachable: asserted above");
     assert.equal(bifrost.choice.provider, "bifrost");
     const exhausted = resolveFallback(bifrost.lease, "availability", "2026-07-17T00:04:00.000Z");
     assert.equal(exhausted.action, "restore_previous");
@@ -69,6 +94,7 @@ describe("review fallback", () => {
     assert.deepEqual(validateFallbackTopology(standalone), []);
     const standaloneFallback = resolveFallback(standalone, "availability", "2026-07-17T00:01:00.000Z");
     assert.equal(standaloneFallback.action, "use_choice");
+    if (standaloneFallback.action !== "use_choice") throw new Error("unreachable: asserted above");
     const standaloneExhausted = resolveFallback(standaloneFallback.lease, "model_error", "2026-07-17T00:02:00.000Z");
     assert.equal(standaloneExhausted.action, "restore_previous");
     assert.match(standaloneExhausted.reason, /standalone review/);
@@ -102,6 +128,7 @@ describe("review fallback", () => {
     assert.deepEqual(validateFallbackTopology(tracked), []);
     const secondIndependent = resolveFallback(tracked, "availability", "2026-07-17T00:01:00.000Z");
     assert.equal(secondIndependent.action, "use_choice");
+    if (secondIndependent.action !== "use_choice") throw new Error("unreachable: asserted above");
     assert.equal(secondIndependent.reviewFellBackToBuilder, false);
     const exhausted = resolveFallback(secondIndependent.lease, "model_error", "2026-07-17T00:02:00.000Z");
     assert.equal(exhausted.action, "skip_review");

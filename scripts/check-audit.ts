@@ -8,10 +8,42 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const AUDIT_SEVERITIES = ["info", "low", "moderate", "high", "critical"];
-const BLOCKING_SEVERITIES = new Set(["high", "critical"]);
+const AUDIT_SEVERITIES = ["info", "low", "moderate", "high", "critical"] as const;
+type AuditSeverity = (typeof AUDIT_SEVERITIES)[number];
 
-const ALLOWLIST = [
+const BLOCKING_SEVERITIES = new Set<AuditSeverity>(["high", "critical"]);
+
+type Advisory = {
+  severity: AuditSeverity;
+  url: string;
+};
+
+type VulnerabilityEntry = {
+  name: string;
+  severity: AuditSeverity;
+  nodes: string[];
+  via: (string | Advisory)[];
+};
+
+type AuditTotals = Record<AuditSeverity, number> & { total: number };
+
+type AllowlistEntry = {
+  package: string;
+  advisoryUrl: string;
+  nodePaths: string[];
+  recordedAt: string;
+  reason: string;
+};
+
+type AuditResult = {
+  accepted: VulnerabilityEntry[];
+  acceptedAdvisories: AllowlistEntry[];
+  blocking: VulnerabilityEntry[];
+  total: number;
+  unexplained: VulnerabilityEntry[];
+};
+
+const ALLOWLIST: AllowlistEntry[] = [
   {
     package: "brace-expansion",
     advisoryUrl: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
@@ -46,7 +78,7 @@ const ALLOWLIST = [
   },
 ];
 
-function runAudit() {
+function runAudit(): string {
   try {
     return execFileSync("npm", ["audit", "--json", "--registry=https://registry.npmjs.org/"], {
       encoding: "utf8",
@@ -60,19 +92,34 @@ function runAudit() {
   }
 }
 
-const advisoryObjects = (entry) => (entry.via ?? []).filter((via) => typeof via === "object" && via !== null);
-const advisoryUrls = (entry) => advisoryObjects(entry).map((via) => via.url);
-const sortedNodes = (entry) => (Array.isArray(entry.nodes) ? [...entry.nodes].sort() : []);
-const sameStrings = (left, right) =>
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const isSeverity = (value: unknown): value is AuditSeverity =>
+  typeof value === "string" && AUDIT_SEVERITIES.includes(value as AuditSeverity);
+
+const advisoryObjects = (entry: VulnerabilityEntry): Advisory[] =>
+  entry.via.filter((via): via is Advisory => typeof via === "object");
+const advisoryUrls = (entry: VulnerabilityEntry): string[] => advisoryObjects(entry).map((via) => via.url);
+const sortedNodes = (entry: VulnerabilityEntry): string[] => [...entry.nodes].sort();
+const sameStrings = (left: string[], right: string[]): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 
-function isNonNegativeInteger(value) {
-  return Number.isSafeInteger(value) && value >= 0;
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && typeof value === "number" && value >= 0;
 }
 
-function isVulnerabilityEntry([key, entry]) {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-  if (key.length === 0 || entry.name !== key || !AUDIT_SEVERITIES.includes(entry.severity)) return false;
+function isAuditTotals(value: unknown): value is AuditTotals {
+  return (
+    isRecord(value) &&
+    AUDIT_SEVERITIES.every((severity) => isNonNegativeInteger(value[severity])) &&
+    isNonNegativeInteger(value.total)
+  );
+}
+
+function isVulnerabilityEntry(value: [string, unknown]): value is [string, VulnerabilityEntry] {
+  const [key, entry] = value;
+  if (!isRecord(entry) || key.length === 0 || entry.name !== key || !isSeverity(entry.severity)) return false;
   if (
     !Array.isArray(entry.nodes) ||
     entry.nodes.length === 0 ||
@@ -84,52 +131,39 @@ function isVulnerabilityEntry([key, entry]) {
   return entry.via.every(
     (via) =>
       (typeof via === "string" && via.length > 0) ||
-      (via !== null &&
-        typeof via === "object" &&
-        typeof via.url === "string" &&
-        via.url.length > 0 &&
-        AUDIT_SEVERITIES.includes(via.severity)),
+      (isRecord(via) && typeof via.url === "string" && via.url.length > 0 && isSeverity(via.severity)),
   );
 }
 
-export function evaluateAudit(report, allowlist = ALLOWLIST) {
-  const totals = report?.metadata?.vulnerabilities;
-  const entries =
-    report?.vulnerabilities && typeof report.vulnerabilities === "object" && !Array.isArray(report.vulnerabilities)
-      ? Object.entries(report.vulnerabilities)
-      : [];
-  const validTotals =
-    totals &&
-    typeof totals === "object" &&
-    AUDIT_SEVERITIES.every((severity) => isNonNegativeInteger(totals[severity])) &&
-    isNonNegativeInteger(totals.total);
-  const actualTotals = Object.fromEntries(
-    AUDIT_SEVERITIES.map((severity) => [severity, entries.filter(([, entry]) => entry?.severity === severity).length]),
-  );
-  const totalsReconcile =
-    validTotals &&
-    totals.total === entries.length &&
-    totals.total === AUDIT_SEVERITIES.reduce((sum, severity) => sum + totals[severity], 0) &&
-    AUDIT_SEVERITIES.every((severity) => totals[severity] === actualTotals[severity]);
-
-  if (
-    !report ||
-    typeof report !== "object" ||
-    Array.isArray(report) ||
-    report.error ||
-    !report.vulnerabilities ||
-    typeof report.vulnerabilities !== "object" ||
-    Array.isArray(report.vulnerabilities) ||
-    !entries.every(isVulnerabilityEntry) ||
-    !totalsReconcile
-  ) {
+export function evaluateAudit(report: unknown, allowlist: AllowlistEntry[] = ALLOWLIST): AuditResult {
+  if (!isRecord(report) || report.error || !isRecord(report.vulnerabilities)) {
     throw new Error("npm audit returned an invalid or unsuccessful report");
   }
 
-  const vulnerabilities = entries.map(([, entry]) => entry);
+  const entries = Object.entries(report.vulnerabilities);
+  const totals = isRecord(report.metadata) ? report.metadata.vulnerabilities : undefined;
+  if (!entries.every(isVulnerabilityEntry) || !isAuditTotals(totals)) {
+    throw new Error("npm audit returned an invalid or unsuccessful report");
+  }
+
+  const typedEntries = entries;
+  const actualTotals = Object.fromEntries(
+    AUDIT_SEVERITIES.map((severity) => [
+      severity,
+      typedEntries.filter(([, entry]) => entry.severity === severity).length,
+    ]),
+  ) as Record<AuditSeverity, number>;
+  const totalsReconcile =
+    totals.total === typedEntries.length &&
+    totals.total === AUDIT_SEVERITIES.reduce((sum, severity) => sum + totals[severity], 0) &&
+    AUDIT_SEVERITIES.every((severity) => totals[severity] === actualTotals[severity]);
+
+  if (!totalsReconcile) throw new Error("npm audit returned an invalid or unsuccessful report");
+
+  const vulnerabilities = typedEntries.map(([, entry]) => entry);
   const blocking = vulnerabilities.filter((entry) => BLOCKING_SEVERITIES.has(entry.severity));
-  const acceptedNames = new Set();
-  const acceptedAdvisories = new Map();
+  const acceptedNames = new Set<string>();
+  const acceptedAdvisories = new Map<string, AllowlistEntry>();
 
   let changed = true;
   while (changed) {
@@ -138,7 +172,7 @@ export function evaluateAudit(report, allowlist = ALLOWLIST) {
       if (acceptedNames.has(entry.name)) continue;
 
       const direct = advisoryObjects(entry).filter((via) => BLOCKING_SEVERITIES.has(via.severity));
-      const sources = (entry.via ?? []).filter((via) => typeof via === "string");
+      const sources = entry.via.filter((via): via is string => typeof via === "string");
       if (direct.length === 0 && sources.length === 0) continue;
 
       const nodes = sortedNodes(entry);
@@ -167,13 +201,13 @@ export function evaluateAudit(report, allowlist = ALLOWLIST) {
     accepted: blocking.filter((entry) => acceptedNames.has(entry.name)),
     acceptedAdvisories: [...acceptedAdvisories.values()],
     blocking,
-    total: report.metadata.vulnerabilities.total,
+    total: totals.total,
     unexplained: blocking.filter((entry) => !acceptedNames.has(entry.name)),
   };
 }
 
-function main() {
-  const result = evaluateAudit(JSON.parse(runAudit()));
+function main(): void {
+  const result = evaluateAudit(JSON.parse(runAudit()) as unknown);
 
   for (const match of result.acceptedAdvisories) {
     console.log(
@@ -185,7 +219,7 @@ function main() {
     console.error("npm audit found high/critical vulnerabilities that are not on the reviewed allowlist:");
     for (const entry of result.unexplained) {
       console.error(`- ${entry.name} (${entry.severity}): ${advisoryUrls(entry).join(", ") || "no advisory URL"}`);
-      console.error(`  nodes: ${(entry.nodes ?? []).join(", ")}`);
+      console.error(`  nodes: ${entry.nodes.join(", ")}`);
     }
     process.exitCode = 1;
     return;

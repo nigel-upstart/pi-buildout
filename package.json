@@ -26,12 +26,12 @@
     "lint:markdown": "markdownlint-cli2 \"**/*.md\"",
     "lint:shell": "shellcheck scripts/*.sh",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-skip-pattern='real Bifrost routing evaluation' 'extensions/**/*.test.mjs' 'scripts/*.test.mjs'",
-    "test:eval:real": "node --test extensions/router/eval/real.test.mjs",
+    "test": "node --test --test-skip-pattern='real Bifrost routing evaluation' 'extensions/**/*.test.ts' 'scripts/*.test.ts'",
+    "test:eval:real": "node --test extensions/router/eval/real.test.ts",
     "knip": "knip",
     "secrets": "secretlint \"**/*\"",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run secrets",
-    "audit": "node scripts/check-audit.mjs"
+    "audit": "node scripts/check-audit.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "0.80.7",
@@ -57,6 +57,7 @@
     "shlex": "3.0.0",
     "typebox": "1.1.38",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.64.0"
+    "typescript-eslint": "^8.64.0",
+    "yaml": "2.9.0"
   }
 }

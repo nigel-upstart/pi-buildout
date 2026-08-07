@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
 // than reading whatever the developer happens to have enabled.
@@ -12,7 +13,11 @@ process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH = "/nonexistent-router-health.json";
 // agent directory unless the test points it somewhere itself.
 process.env.PI_ROUTER_LAST_MODE_PATH = join(await mkdtemp(join(tmpdir(), "pi-router-last-mode-")), "last-mode.jsonl");
 import { POLICY_VERSION } from "./core/policy.ts";
+import type { TaskLease } from "./core/lease.ts";
+import type { RouteChoice } from "./core/routing.ts";
+import type { LeaseLifecycle } from "./core/safety.ts";
 import { conservativeFeatures } from "./core/features.ts";
+import type { TaskFeatures } from "./core/features.ts";
 import routerExtension, {
   activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
@@ -44,9 +49,72 @@ function irreversibleActionPlan() {
   };
 }
 
+type RouterApi = Parameters<typeof routerExtension>[0];
+type Hook = (...args: readonly unknown[]) => unknown;
+type Command = { description?: string; handler: (args: string, ctx: unknown) => Promise<void> | void };
+type Appended = { customType: string; data: Record<string, unknown> };
+type SafetyLease = Pick<TaskLease, "manualOverride" | "lifecycle">;
+type SafetyCheck = TaskLease["safetyEvidence"]["checks"][number];
+type EnvironmentSnapshot = {
+  previousAgentDir: string | undefined;
+  previousMode: string | undefined;
+  previousLastModePath: string | undefined;
+};
+type TestTool = {
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal: undefined,
+    onUpdate: undefined,
+    ctx: unknown,
+  ) => Promise<unknown>;
+};
+
+const asRouterApi = (value: Partial<RouterApi>): RouterApi => value as RouterApi;
+
+function hook(hooks: Map<string, Hook>, name: string): Hook {
+  const handler = hooks.get(name);
+  assert.ok(handler, `missing ${name}`);
+  return handler;
+}
+
+function routeCommand(commands: Map<string, Command>): Command {
+  const command = commands.get("route");
+  assert.ok(command, "missing route command");
+  return command;
+}
+
+function testTool(tools: Map<string, TestTool>, name: string): TestTool {
+  const tool = tools.get(name);
+  assert.ok(tool, `missing ${name} tool`);
+  return tool;
+}
+
+function latestRouterState(entries: readonly Appended[]): Record<string, unknown> | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const candidate = entries[index];
+    if (candidate?.customType === "model-router-state") return candidate.data;
+  }
+  return undefined;
+}
+
+function blockedBySafety(lease: SafetyLease, toolName: string, input: Record<string, unknown>): string {
+  const reason = safetyToolBlockReason(lease, toolName, input);
+  assert.ok(reason, `${toolName} should be blocked`);
+  return reason;
+}
+
+function hookBlockReason(hooks: Map<string, Hook>, input: Record<string, unknown>): string {
+  const result = hook(hooks, "tool_call")(input) as { reason?: unknown } | undefined;
+  assert.ok(result && typeof result.reason === "string", "tool call should be blocked");
+  return result.reason;
+}
+
 describe("automatic routing gate", () => {
   it("requires validated semantic evidence instead of promoting classifier failure to a premium route", () => {
-    assert.match(automaticRoutingBlockReason({ failedClosed: true }), /validated semantic evidence/);
+    const reason = automaticRoutingBlockReason({ failedClosed: true });
+    assert.ok(reason);
+    assert.match(reason, /validated semantic evidence/);
     assert.equal(automaticRoutingBlockReason({ failedClosed: false }), undefined);
   });
 });
@@ -63,17 +131,19 @@ describe("deterministicCheckCommand", () => {
 });
 
 /** Runs a startup `session_start` against a session with no router history and returns persisted state. */
-async function startupRouterState(overrides = {}) {
-  const hooks = new Map();
-  const appended = [];
-  routerExtension({
-    on: (event, handler) => hooks.set(event, handler),
-    registerCommand: () => {},
-    registerTool: () => {},
-    appendEntry: (customType, data) => appended.push({ customType, data }),
-    ...overrides,
-  });
-  await hooks.get("session_start")(
+async function startupRouterState(overrides: Partial<RouterApi> = {}): Promise<Appended[]> {
+  const hooks = new Map<string, Hook>();
+  const appended: Appended[] = [];
+  routerExtension(
+    asRouterApi({
+      on: (event, handler) => hooks.set(event, handler as Hook),
+      registerCommand: () => {},
+      registerTool: () => {},
+      appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
+      ...overrides,
+    }),
+  );
+  await hook(hooks, "session_start")(
     { type: "session_start", reason: "startup" },
     {
       cwd: "/repo",
@@ -81,13 +151,13 @@ async function startupRouterState(overrides = {}) {
       modelRegistry: { getAvailable: () => [], getAll: () => [] },
       model: undefined,
       getContextUsage: () => ({ tokens: 0, contextWindow: 128000 }),
-      ui: { setStatus: () => {}, notify: () => {}, theme: { fg: (_color, text) => text } },
+      ui: { setStatus: () => {}, notify: () => {}, theme: { fg: (_color: string, text: string) => text } },
     },
   );
   return appended.filter((entry) => entry.customType === "model-router-state");
 }
 
-function restoreEnv({ previousAgentDir, previousMode, previousLastModePath }) {
+function restoreEnv({ previousAgentDir, previousMode, previousLastModePath }: EnvironmentSnapshot): void {
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
@@ -103,7 +173,7 @@ describe("resumeCompletedLifecycle", () => {
       submittedAt: "2026-07-28T00:00:00.000Z",
       plan: irreversibleActionPlan(),
     };
-    const completed = {
+    const completed: Extract<LeaseLifecycle, { phase: "completed" }> = {
       phase: "completed",
       policy: "authorization_then_completion_review",
       taskFingerprint: "task",
@@ -126,8 +196,9 @@ describe("resumeCompletedLifecycle", () => {
     assert.equal(resumeCompletedLifecycle(completed, "approving-session").phase, "authorized_execution");
     const elsewhere = resumeCompletedLifecycle(completed, "another-session");
     assert.equal(elsewhere.phase, "preflight", "an approval must not cross a session boundary");
-    assert.equal(elsewhere.authorization, undefined);
-    assert.equal(elsewhere.plan.planFingerprint, plan.planFingerprint, "the submitted plan survives re-authorization");
+    if (elsewhere.phase !== "preflight") assert.fail("expected preflight lifecycle");
+    assert.equal("authorization" in elsewhere, false);
+    assert.equal(elsewhere.plan?.planFingerprint, plan.planFingerprint, "the submitted plan survives re-authorization");
   });
 });
 
@@ -158,7 +229,7 @@ describe("lease-scoped tool exposure", () => {
 
 describe("manual route selection at a new task boundary", () => {
   it("preserves the explicit model and effort while replacing the stale task lease", () => {
-    const current = {
+    const current: RouteChoice = {
       provider: "openai",
       modelId: "gpt-5.6-luna",
       logicalModelId: "gpt-5.6-luna",
@@ -170,13 +241,29 @@ describe("manual route selection at a new task boundary", () => {
       endpointTier: "manufacturer",
       rankReason: "bootstrap",
     };
-    const routed = { ...current, modelId: "gpt-5.6-sol", logicalModelId: "gpt-5.6-sol", effort: "high", ability: 3 };
-    const fallback = {
-      ...routed,
+    const routed: RouteChoice = {
+      provider: "openai",
+      modelId: "gpt-5.6-sol",
+      logicalModelId: "gpt-5.6-sol",
+      vendor: "openai",
+      effort: "high",
+      ability: 3,
+      profileId: "openai-gpt-5.6-agent-v1",
+      contextWindow: 272_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    };
+    const fallback: RouteChoice = {
       provider: "anthropic",
       modelId: "claude-opus-5",
       logicalModelId: "claude-opus-5",
       vendor: "anthropic",
+      effort: "high",
+      ability: 3,
+      profileId: "openai-gpt-5.6-agent-v1",
+      contextWindow: 272_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
     };
     const preserved = routeChoicesForNewLease(routed, [fallback], current, true);
     assert.equal(preserved.selected, current);
@@ -189,7 +276,7 @@ describe("manual route selection at a new task boundary", () => {
   });
 
   it("does not duplicate the explicit selection in fallback order", () => {
-    const selected = {
+    const selected: RouteChoice = {
       provider: "openai",
       modelId: "gpt-5.6-sol",
       logicalModelId: "gpt-5.6-sol",
@@ -207,7 +294,7 @@ describe("manual route selection at a new task boundary", () => {
 
 describe("safetyToolBlockReason", () => {
   it("restricts explicit lifecycle phases without treating standalone review as a child review", () => {
-    const standaloneReview = {
+    const standaloneReview: SafetyLease = {
       manualOverride: false,
       lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task" },
     };
@@ -217,7 +304,7 @@ describe("safetyToolBlockReason", () => {
       undefined,
     );
 
-    const independentReview = {
+    const independentReview: SafetyLease = {
       manualOverride: false,
       lifecycle: {
         phase: "review",
@@ -228,13 +315,13 @@ describe("safetyToolBlockReason", () => {
       },
     };
     assert.equal(safetyToolBlockReason(independentReview, "bash", { command: "git diff --stat" }), undefined);
-    assert.match(safetyToolBlockReason(independentReview, "subagent", { action: "create" }), /read-only/);
+    assert.match(blockedBySafety(independentReview, "subagent", { action: "create" }), /read-only/);
     assert.match(
-      safetyToolBlockReason(independentReview, "bash", { command: "gh pr comment 305 --body review" }),
+      blockedBySafety(independentReview, "bash", { command: "gh pr comment 305 --body review" }),
       /read-only/,
     );
     assert.match(
-      safetyToolBlockReason({ ...independentReview, manualOverride: true }, "submit_safety_review", {}),
+      blockedBySafety({ ...independentReview, manualOverride: true }, "submit_safety_review", {}),
       /Manual.*invalidated/,
     );
     assert.equal(
@@ -251,14 +338,16 @@ describe("safetyToolBlockReason", () => {
 
 describe("routerExtension", () => {
   it("registers the routing lifecycle and status command without starting background work", () => {
-    const hooks = new Map();
-    const commands = new Map();
-    const tools = new Map();
-    routerExtension({
-      on: (event, handler) => hooks.set(event, handler),
-      registerCommand: (name, command) => commands.set(name, command),
-      registerTool: (tool) => tools.set(tool.name, tool),
-    });
+    const hooks = new Map<string, Hook>();
+    const commands = new Map<string, Command>();
+    const tools = new Map<string, { name: string }>();
+    routerExtension(
+      asRouterApi({
+        on: (event, handler) => hooks.set(event, handler as Hook),
+        registerCommand: (name, command) => commands.set(name, command as Command),
+        registerTool: (tool) => tools.set(tool.name, tool),
+      }),
+    );
     for (const event of [
       "session_start",
       "session_shutdown",
@@ -278,36 +367,41 @@ describe("routerExtension", () => {
     ]) {
       assert.equal(hooks.has(event), true, `missing ${event}`);
     }
-    assert.match(commands.get("route").description, /model-router mode/);
+    assert.match(routeCommand(commands).description ?? "", /model-router mode/);
     assert.equal(tools.has("submit_implementation_plan"), true);
     assert.equal(tools.has("submit_action_plan"), true);
     assert.equal(tools.has("submit_safety_review"), true);
   });
 
   it("carries routing enablement mode through /clear (session_shutdown → session_start)", async () => {
-    const hooks = new Map();
-    const commands = new Map();
-    const appended = [];
-    routerExtension({
-      on: (event, handler) => hooks.set(event, handler),
-      registerCommand: (name, command) => commands.set(name, command),
-      registerTool: () => {},
-      appendEntry: (customType, data) => appended.push({ customType, data }),
-    });
+    const hooks = new Map<string, Hook>();
+    const commands = new Map<string, Command>();
+    const appended: Appended[] = [];
+    routerExtension(
+      asRouterApi({
+        on: (event, handler) => hooks.set(event, handler as Hook),
+        registerCommand: (name, command) => commands.set(name, command as Command),
+        registerTool: () => {},
+        appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
+      }),
+    );
 
     const lastModePath = join(await mkdtemp(join(tmpdir(), "pi-router-clear-")), "last-mode.jsonl");
     const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
     process.env.PI_ROUTER_LAST_MODE_PATH = lastModePath;
 
     // The operator enables routing before clearing.
-    await commands.get("route").handler("active", {
+    await routeCommand(commands).handler("active", {
       sessionManager: { getSessionId: () => "pre-clear" },
-      ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+      ui: { theme: { fg: (_color: string, text: string) => text }, setStatus: () => {}, notify: () => {} },
     });
-    assert.equal(appended.at(-1).data.mode, "active");
+    assert.equal(appended.at(-1)?.data.mode, "active");
 
     // Simulate session_shutdown when /clear creates a new session.
-    await hooks.get("session_shutdown")({
+    await hook(
+      hooks,
+      "session_shutdown",
+    )({
       type: "session_shutdown",
       reason: "new",
     });
@@ -316,7 +410,7 @@ describe("routerExtension", () => {
     // The new session has no prior entries (fresh branch).
     const beforeStartPersist = appended.filter((e) => e.customType === "model-router-state").length;
 
-    await hooks.get("session_start")(
+    await hook(hooks, "session_start")(
       {
         type: "session_start",
         reason: "new",
@@ -335,7 +429,7 @@ describe("routerExtension", () => {
         ui: {
           setStatus: () => {},
           notify: () => {},
-          theme: { fg: (_color, text) => text },
+          theme: { fg: (_color: string, text: string) => text },
         },
       },
     );
@@ -347,42 +441,44 @@ describe("routerExtension", () => {
       beforeStartPersist + 1,
       "session_start should persist the restored mode",
     );
-    assert.equal(persistedEntriesAfter.at(-1).data.mode, "active", "/clear must not disable active routing");
-    assert.equal(persistedEntriesAfter.at(-1).data.active, undefined, "/clear must still drop the task lease");
+    assert.equal(persistedEntriesAfter.at(-1)?.data.mode, "active", "/clear must not disable active routing");
+    assert.equal(persistedEntriesAfter.at(-1)?.data.active, undefined, "/clear must still drop the task lease");
     const recorded = (await readFile(lastModePath, "utf8"))
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line));
-    assert.equal(recorded.at(-1).mode, "active", "the mode in force must be recorded for the next start");
+      .map((line) => JSON.parse(line) as unknown as { mode?: unknown });
+    assert.equal(recorded.at(-1)?.mode, "active", "the mode in force must be recorded for the next start");
     process.env.PI_ROUTER_LAST_MODE_PATH = previousLastModePath;
   });
 
   it("keeps active routing through /compact while dropping the lease at the boundary", async () => {
-    const hooks = new Map();
-    const commands = new Map();
-    const appended = [];
+    const hooks = new Map<string, Hook>();
+    const commands = new Map<string, Command>();
+    const appended: Appended[] = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-compact-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
     process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
     process.env.PI_ROUTER_LAST_MODE_PATH = join(telemetryDirectory, "last-mode.jsonl");
     try {
-      routerExtension({
-        on: (event, handler) => hooks.set(event, handler),
-        registerCommand: (name, command) => commands.set(name, command),
-        registerTool: () => {},
-        appendEntry: (customType, data) => appended.push({ customType, data }),
-      });
+      routerExtension(
+        asRouterApi({
+          on: (event, handler) => hooks.set(event, handler as Hook),
+          registerCommand: (name, command) => commands.set(name, command as Command),
+          registerTool: () => {},
+          appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
+        }),
+      );
       const ctx = {
         sessionManager: { getSessionId: () => "compacting" },
-        ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+        ui: { theme: { fg: (_color: string, text: string) => text }, setStatus: () => {}, notify: () => {} },
       };
-      await commands.get("route").handler("active", ctx);
+      await routeCommand(commands).handler("active", ctx);
 
-      await hooks.get("session_compact")({ type: "session_compact" }, ctx);
+      await hook(hooks, "session_compact")({ type: "session_compact" }, ctx);
 
       const persisted = appended.filter((entry) => entry.customType === "model-router-state");
-      assert.equal(persisted.at(-1).data.mode, "active", "/compact must not disable active routing");
+      assert.equal(persisted.at(-1)?.data.mode, "active", "/compact must not disable active routing");
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
@@ -402,17 +498,19 @@ describe("routerExtension", () => {
       // Write config file with startMode = active
       await writeFile(join(tempDir, "router-config.json"), JSON.stringify({ startMode: "active" }));
 
-      const hooks = new Map();
-      const appended = [];
-      routerExtension({
-        on: (event, handler) => hooks.set(event, handler),
-        registerCommand: () => {},
-        registerTool: () => {},
-        appendEntry: (customType, data) => appended.push({ customType, data }),
-      });
+      const hooks = new Map<string, Hook>();
+      const appended: Appended[] = [];
+      routerExtension(
+        asRouterApi({
+          on: (event, handler) => hooks.set(event, handler as Hook),
+          registerCommand: () => {},
+          registerTool: () => {},
+          appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
+        }),
+      );
 
       // Simulate startup with no prior state — should load from config
-      await hooks.get("session_start")(
+      await hook(hooks, "session_start")(
         {
           type: "session_start",
           reason: "startup",
@@ -429,7 +527,7 @@ describe("routerExtension", () => {
           ui: {
             setStatus: () => {},
             notify: () => {},
-            theme: { fg: (_color, text) => text },
+            theme: { fg: (_color: string, text: string) => text },
           },
         },
       );
@@ -437,7 +535,9 @@ describe("routerExtension", () => {
       // Verify state was set to active from config
       const entries = appended.filter((e) => e.customType === "model-router-state");
       assert.ok(entries.length > 0, "should persist router state from config");
-      assert.equal(entries[entries.length - 1].data.mode, "active", "should use startMode from config file");
+      const latestEntry = entries.at(-1);
+      assert.ok(latestEntry);
+      assert.equal(latestEntry.data.mode, "active", "should use startMode from config file");
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -490,9 +590,14 @@ describe("routerExtension", () => {
         exec: (_command, args) => {
           const gitArgs = args.slice(2);
           if (gitArgs[0] === "remote" && gitArgs[1] === "get-url" && gitArgs[2] === "upstream") {
-            return Promise.resolve({ code: 0, stdout: "git@github.com:nigel-upstart/pi-buildout.git\n", stderr: "" });
+            return Promise.resolve({
+              code: 0,
+              stdout: "git@github.com:nigel-upstart/pi-buildout.git\n",
+              stderr: "",
+              killed: false,
+            });
           }
-          return Promise.resolve({ code: 1, stdout: "", stderr: "" });
+          return Promise.resolve({ code: 1, stdout: "", stderr: "", killed: false });
         },
       });
       assert.equal(entries.at(-1)?.data.mode, "active", "the repository entry should win over the global file");
@@ -502,30 +607,32 @@ describe("routerExtension", () => {
   });
 
   it("acknowledges input immediately and shows the routing spinner before repository I/O finishes", async () => {
-    const hooks = new Map();
-    const workingMessages = [];
-    const visibility = [];
-    const never = new Promise(() => {});
+    const hooks = new Map<string, Hook>();
+    const workingMessages: string[] = [];
+    const visibility: boolean[] = [];
     let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
-    routerExtension({
-      on: (event, handler) => hooks.set(event, handler),
-      registerCommand: () => {},
-      registerTool: () => {},
-      appendEntry: () => {},
-      exec: () => never,
-      getActiveTools: () => activeTools,
-      setActiveTools: (tools) => {
-        activeTools = tools;
-      },
-    });
-    const result = await hooks.get("input")(
+    const never = new Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>(() => {});
+    routerExtension(
+      asRouterApi({
+        on: (event, handler) => hooks.set(event, handler as Hook),
+        registerCommand: () => {},
+        registerTool: () => {},
+        appendEntry: () => {},
+        exec: () => never,
+        getActiveTools: () => activeTools,
+        setActiveTools: (tools) => {
+          activeTools = tools;
+        },
+      }),
+    );
+    const result = await hook(hooks, "input")(
       { text: "New task", source: "interactive" },
       {
         cwd: "/repo",
         sessionManager: { getBranch: () => [] },
         ui: {
-          setWorkingMessage: (message) => workingMessages.push(message),
-          setWorkingVisible: (visible) => visibility.push(visible),
+          setWorkingMessage: (message: string) => workingMessages.push(message),
+          setWorkingVisible: (visible: boolean) => visibility.push(visible),
         },
       },
     );
@@ -536,36 +643,45 @@ describe("routerExtension", () => {
   });
 
   it("fails active mode back to shadow when the audit log cannot append", async () => {
-    const hooks = new Map();
-    const commands = new Map();
-    const appended = [];
-    const notifications = [];
+    const hooks = new Map<string, Hook>();
+    const commands = new Map<string, Command>();
+    const appended: Appended[] = [];
+    const notifications: { message: string; type?: string }[] = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-telemetry-failure-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     const previousMode = process.env.PI_ROUTER_MODE;
     process.env.PI_ROUTER_TELEMETRY_PATH = telemetryDirectory;
     process.env.PI_ROUTER_MODE = "active";
-    const pi = {
-      on: (event, handler) => hooks.set(event, handler),
-      registerCommand: (name, command) => commands.set(name, command),
+    const pi: Partial<RouterApi> = {
+      on: (event, handler) => hooks.set(event, handler as Hook),
+      registerCommand: (name, command) => commands.set(name, command as Command),
       registerTool: () => {},
-      appendEntry: (customType, data) => appended.push({ customType, data }),
+      appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
     };
-    routerExtension(pi);
+    routerExtension(asRouterApi(pi));
     const ctx = {
       sessionManager: { getSessionId: () => "telemetry-failure" },
       ui: {
-        theme: { fg: (_color, text) => text },
+        theme: { fg: (_color: string, text: string) => text },
         setStatus: () => {},
-        notify: (message, type) => notifications.push({ message, type }),
+        notify: (message: string, type?: string) => notifications.push({ message, ...(type ? { type } : {}) }),
       },
     };
     try {
-      await hooks.get("model_select")({ source: "set", model: { provider: "openai-codex", id: "gpt-5.6-terra" } }, ctx);
-      assert.equal(appended.at(-1).data.mode, "shadow");
-      assert.match(notifications.at(-1).message, /telemetry failed/i);
-      await commands.get("route").handler("active", ctx);
-      assert.match(notifications.at(-1).message, /cannot enter active mode/i);
+      await hook(hooks, "model_select")(
+        { source: "set", model: { provider: "openai-codex", id: "gpt-5.6-terra" } },
+        ctx,
+      );
+      const latestAppended = appended.at(-1);
+      assert.ok(latestAppended);
+      assert.equal(latestAppended.data.mode, "shadow");
+      const telemetryFailureNotice = notifications.at(-1);
+      assert.ok(telemetryFailureNotice);
+      assert.match(telemetryFailureNotice.message, /telemetry failed/i);
+      await routeCommand(commands).handler("active", ctx);
+      const activeModeNotice = notifications.at(-1);
+      assert.ok(activeModeNotice);
+      assert.match(activeModeNotice.message, /cannot enter active mode/i);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
@@ -575,13 +691,13 @@ describe("routerExtension", () => {
   });
 
   it("retains one evidence entry per deterministic check command", async () => {
-    const hooks = new Map();
-    const appended = [];
+    const hooks = new Map<string, Hook>();
+    const appended: Appended[] = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-check-evidence-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
     const now = new Date().toISOString();
-    const choice = {
+    const choice: RouteChoice = {
       provider: "openai",
       modelId: "gpt-5.6-terra",
       logicalModelId: "gpt-5.6-terra",
@@ -593,7 +709,7 @@ describe("routerExtension", () => {
       endpointTier: "manufacturer",
       rankReason: "bootstrap",
     };
-    const lease = {
+    const lease: TaskLease = {
       version: 2,
       taskId: "check-evidence-task",
       startedAt: now,
@@ -618,34 +734,37 @@ describe("routerExtension", () => {
         data: { mode: "active", manualOverride: false, active: lease },
       },
     ];
-    const pi = {
-      on: (event, handler) => hooks.set(event, handler),
+    const pi: Partial<RouterApi> = {
+      on: (event, handler) => hooks.set(event, handler as Hook),
       registerCommand: () => {},
       registerTool: () => {},
-      appendEntry: (customType, data) => appended.push({ customType, data }),
+      appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
       sendMessage: () => {},
       setModel: async () => true,
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
       exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
     };
-    routerExtension(pi);
+    routerExtension(asRouterApi(pi));
     const ctx = {
       cwd: telemetryDirectory,
       model: undefined,
       modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
       sessionManager: { getBranch: () => branch, getSessionId: () => "check-evidence-session" },
       getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
-      ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+      ui: { theme: { fg: (_color: string, text: string) => text }, setStatus: () => {}, notify: () => {} },
     };
-    const latestChecks = () =>
-      appended.findLast((entry) => entry.customType === "model-router-state")?.data.active.safetyEvidence.checks;
-    const runCheck = (toolCallId, command, isError) => {
-      hooks.get("tool_call")({ toolCallId, toolName: "bash", input: { command } });
-      hooks.get("tool_execution_end")({ toolCallId, toolName: "bash", isError });
+    const latestChecks = (): SafetyCheck[] => {
+      const state = latestRouterState(appended) as
+        { active?: { safetyEvidence?: { checks?: SafetyCheck[] } } } | undefined;
+      return state?.active?.safetyEvidence?.checks ?? [];
+    };
+    const runCheck = (toolCallId: string, command: string, isError: boolean): void => {
+      hook(hooks, "tool_call")({ toolCallId, toolName: "bash", input: { command } });
+      hook(hooks, "tool_execution_end")({ toolCallId, toolName: "bash", isError });
     };
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hook(hooks, "session_start")({ reason: "reload" }, ctx);
       runCheck("call-1", "npm test", true);
       runCheck("call-2", "npm run lint", false);
       runCheck("call-3", "npm test", false);
@@ -677,12 +796,12 @@ describe("routerExtension", () => {
   });
 
   it("repairs one missing planning validation before fallback and reports exhaustion once", async () => {
-    const hooks = new Map();
-    const commands = new Map();
-    const appended = [];
-    const sent = [];
-    const selectedModels = [];
-    const notifications = [];
+    const hooks = new Map<string, Hook>();
+    const commands = new Map<string, Command>();
+    const appended: Appended[] = [];
+    const sent: { message: Record<string, unknown>; options?: Record<string, unknown> }[] = [];
+    const selectedModels: Model<Api>[] = [];
+    const notifications: { message: string; type?: string }[] = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-plan-repair-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
@@ -698,7 +817,7 @@ describe("routerExtension", () => {
       contextWindow: 1_000_000,
       endpointTier: "manufacturer",
       rankReason: "evidence_prior",
-    };
+    } as const;
     const fallbackChoice = {
       provider: "openai-codex",
       modelId: "gpt-5.6-sol",
@@ -710,7 +829,7 @@ describe("routerExtension", () => {
       contextWindow: 1_000_000,
       endpointTier: "manufacturer",
       rankReason: "evidence_prior",
-    };
+    } as const;
     const lease = {
       version: 2,
       taskId: "planning-task",
@@ -729,7 +848,7 @@ describe("routerExtension", () => {
       safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
       manualOverride: false,
     };
-    const makeModel = (choice) => ({
+    const makeModel = (choice: typeof primaryChoice | typeof fallbackChoice): Model<Api> => ({
       provider: choice.provider,
       id: choice.modelId,
       name: choice.modelId,
@@ -742,6 +861,10 @@ describe("routerExtension", () => {
       maxTokens: 128_000,
     });
     const models = [makeModel(primaryChoice), makeModel(fallbackChoice)];
+    const firstModel = models[0];
+    const secondModel = models[1];
+    assert.ok(firstModel);
+    assert.ok(secondModel);
     const branch = [
       {
         type: "custom",
@@ -749,28 +872,32 @@ describe("routerExtension", () => {
         data: { mode: "active", manualOverride: false, active: lease },
       },
     ];
-    const pi = {
-      on: (event, handler) => hooks.set(event, handler),
-      registerCommand: (name, command) => commands.set(name, command),
+    const pi: Partial<RouterApi> = {
+      on: (event, handler) => hooks.set(event, handler as Hook),
+      registerCommand: (name, command) => commands.set(name, command as Command),
       registerTool: () => {},
-      appendEntry: (customType, data) => appended.push({ customType, data }),
-      sendMessage: (message, options) => sent.push({ message, options }),
+      appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
+      sendMessage: (message, options) =>
+        sent.push({
+          message: message,
+          ...(options ? { options: options } : {}),
+        }),
       setModel: async (model) => {
-        selectedModels.push(model);
+        selectedModels.push(model as Model<Api>);
         return true;
       },
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
       exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
     };
-    routerExtension(pi);
+    routerExtension(asRouterApi(pi));
     const ctx = {
       cwd: telemetryDirectory,
-      model: models[0],
+      model: firstModel,
       modelRegistry: {
         getAll: () => models,
         getAvailable: () => models,
-        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+        find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
       },
       sessionManager: {
         getBranch: () => branch,
@@ -778,16 +905,24 @@ describe("routerExtension", () => {
       },
       getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
       ui: {
-        theme: { fg: (_color, text) => text },
+        theme: { fg: (_color: string, text: string) => text },
         setStatus: () => {},
-        notify: (message, type) => notifications.push({ message, type }),
+        notify: (message: string, type?: string) => notifications.push({ message, ...(type ? { type } : {}) }),
       },
     };
-    const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
-    const completeRun = async (model) => {
+    const latestLease = () =>
+      latestRouterState(appended)?.active as
+        | {
+            attemptIndex?: number;
+            planValidationRepairAttempted?: boolean;
+            selected?: { modelId?: string };
+            executionFailed?: boolean;
+          }
+        | undefined;
+    const completeRun = async (model: Model<Api>) => {
       ctx.model = model;
-      hooks.get("agent_start")();
-      await hooks.get("agent_end")(
+      hook(hooks, "agent_start")();
+      await hook(hooks, "agent_end")(
         {
           messages: [
             {
@@ -803,28 +938,31 @@ describe("routerExtension", () => {
       );
     };
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hook(hooks, "session_start")({ reason: "reload" }, ctx);
 
-      await completeRun(models[0]);
-      assert.equal(latestLease().attemptIndex, 0, "contract repair must not consume the fallback");
-      assert.equal(latestLease().planValidationRepairAttempted, true);
-      assert.match(sent[0].message.content, /submit_implementation_plan/);
-      assert.equal(sent[0].message.details.repairReason, "missing_plan_validation");
+      await completeRun(firstModel);
+      assert.equal(latestLease()?.attemptIndex, 0, "contract repair must not consume the fallback");
+      assert.equal(latestLease()?.planValidationRepairAttempted, true);
+      assert.match(String(sent[0]?.message.content ?? ""), /submit_implementation_plan/);
+      assert.equal(
+        (sent[0]?.message.details as { repairReason?: string } | undefined)?.repairReason,
+        "missing_plan_validation",
+      );
       assert.equal(selectedModels.length, 0);
 
-      await completeRun(models[0]);
-      assert.equal(latestLease().attemptIndex, 1, "a repeated omission must use the existing fallback");
-      assert.equal(latestLease().selected.modelId, fallbackChoice.modelId);
-      assert.equal(selectedModels[0].id, fallbackChoice.modelId);
-      assert.match(sent[1].message.content, /previous routed attempt failed/i);
+      await completeRun(firstModel);
+      assert.equal(latestLease()?.attemptIndex, 1, "a repeated omission must use the existing fallback");
+      assert.equal(latestLease()?.selected?.modelId, fallbackChoice.modelId);
+      assert.equal(selectedModels[0]?.id, fallbackChoice.modelId);
+      assert.match(String(sent[1]?.message.content ?? ""), /previous routed attempt failed/i);
 
-      await completeRun(models[1]);
-      assert.equal(latestLease().executionFailed, true);
+      await completeRun(secondModel);
+      assert.equal(latestLease()?.executionFailed, true);
       assert.equal(notifications.length, 1);
-      assert.match(notifications[0].message, /all authorized ordinary provider choices exhausted/);
+      assert.match(notifications[0]?.message ?? "", /all authorized ordinary provider choices exhausted/);
 
-      await completeRun(models[1]);
-      await commands.get("route").handler("fail deterministic_verification", ctx);
+      await completeRun(secondModel);
+      await routeCommand(commands).handler("fail deterministic_verification", ctx);
       assert.equal(notifications.length, 1, "an exhausted lease must not repeat its error notification");
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
@@ -833,10 +971,10 @@ describe("routerExtension", () => {
   });
 
   it("tries every leased provider after an invalidated OpenAI Codex token", async () => {
-    const hooks = new Map();
-    const appended = [];
-    const selectedModels = [];
-    const notifications = [];
+    const hooks = new Map<string, Hook>();
+    const appended: Appended[] = [];
+    const selectedModels: Model<Api>[] = [];
+    const notifications: { message: string; type?: string }[] = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-auth-failover-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
@@ -878,7 +1016,7 @@ describe("routerExtension", () => {
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
-    ];
+    ] as const;
     const lease = {
       version: 2,
       taskId: "auth-failover-task",
@@ -897,7 +1035,7 @@ describe("routerExtension", () => {
       safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
       manualOverride: false,
     };
-    const makeModel = (choice) => ({
+    const makeModel = (choice: (typeof choices)[number]): Model<Api> => ({
       provider: choice.provider,
       id: choice.modelId,
       name: choice.modelId,
@@ -910,6 +1048,12 @@ describe("routerExtension", () => {
       maxTokens: 128_000,
     });
     const models = choices.map(makeModel);
+    const firstModel = models[0];
+    const secondModel = models[1];
+    const thirdModel = models[2];
+    assert.ok(firstModel);
+    assert.ok(secondModel);
+    assert.ok(thirdModel);
     const branch = [
       {
         type: "custom",
@@ -917,28 +1061,28 @@ describe("routerExtension", () => {
         data: { mode: "active", manualOverride: false, active: lease },
       },
     ];
-    const pi = {
-      on: (event, handler) => hooks.set(event, handler),
+    const pi: Partial<RouterApi> = {
+      on: (event, handler) => hooks.set(event, handler as Hook),
       registerCommand: () => {},
       registerTool: () => {},
-      appendEntry: (customType, data) => appended.push({ customType, data }),
+      appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
       sendMessage: () => {},
       setModel: async (model) => {
-        selectedModels.push(model);
+        selectedModels.push(model as Model<Api>);
         return true;
       },
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
       exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
     };
-    routerExtension(pi);
+    routerExtension(asRouterApi(pi));
     const ctx = {
       cwd: telemetryDirectory,
-      model: models[0],
+      model: firstModel,
       modelRegistry: {
         getAll: () => models,
         getAvailable: () => models,
-        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+        find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
       },
       sessionManager: {
         getBranch: () => branch,
@@ -946,17 +1090,19 @@ describe("routerExtension", () => {
       },
       getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
       ui: {
-        theme: { fg: (_color, text) => text },
+        theme: { fg: (_color: string, text: string) => text },
         setStatus: () => {},
-        notify: (message, type) => notifications.push({ message, type }),
+        notify: (message: string, type?: string) => notifications.push({ message, ...(type ? { type } : {}) }),
       },
     };
-    const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
-    const failForInvalidToken = async (model) => {
+    const latestLease = () =>
+      latestRouterState(appended)?.active as
+        { selected?: { provider?: string }; attemptIndex?: number; executionFailed?: boolean } | undefined;
+    const failForInvalidToken = async (model: Model<Api>) => {
       ctx.model = model;
-      hooks.get("agent_start")();
-      hooks.get("after_provider_response")({ status: 401 });
-      await hooks.get("agent_end")(
+      hook(hooks, "agent_start")();
+      hook(hooks, "after_provider_response")({ status: 401 });
+      await hook(hooks, "agent_end")(
         {
           messages: [
             {
@@ -972,20 +1118,20 @@ describe("routerExtension", () => {
       );
     };
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      await failForInvalidToken(models[0]);
-      assert.equal(latestLease().selected.provider, "openai");
-      assert.equal(latestLease().attemptIndex, 1);
-      await failForInvalidToken(models[1]);
-      assert.equal(latestLease().selected.provider, "anthropic");
-      assert.equal(latestLease().attemptIndex, 2);
-      await failForInvalidToken(models[2]);
-      assert.equal(latestLease().executionFailed, true);
+      await hook(hooks, "session_start")({ reason: "reload" }, ctx);
+      await failForInvalidToken(firstModel);
+      assert.equal(latestLease()?.selected?.provider, "openai");
+      assert.equal(latestLease()?.attemptIndex, 1);
+      await failForInvalidToken(secondModel);
+      assert.equal(latestLease()?.selected?.provider, "anthropic");
+      assert.equal(latestLease()?.attemptIndex, 2);
+      await failForInvalidToken(thirdModel);
+      assert.equal(latestLease()?.executionFailed, true);
       assert.deepEqual(
         selectedModels.map((model) => model.provider),
         ["openai", "anthropic"],
       );
-      assert.match(notifications[0].message, /all authorized ordinary provider choices exhausted/);
+      assert.match(notifications[0]?.message ?? "", /all authorized ordinary provider choices exhausted/);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
@@ -993,16 +1139,16 @@ describe("routerExtension", () => {
   });
 
   it("authorizes only an approved exact irreversible-action plan and invalidates it on user input", async () => {
-    const hooks = new Map();
-    const tools = new Map();
-    const appended = [];
-    const sent = [];
-    const selectedModels = [];
+    const hooks = new Map<string, Hook>();
+    const tools = new Map<string, TestTool>();
+    const appended: Appended[] = [];
+    const sent: { message: Record<string, unknown>; options?: Record<string, unknown> }[] = [];
+    const selectedModels: Model<Api>[] = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-authorization-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
     const now = new Date().toISOString();
-    const features = {
+    const features: TaskFeatures = {
       ...conservativeFeatures("authorization lifecycle test"),
       intent: "operate",
       workflowType: "incident_or_operations",
@@ -1010,7 +1156,7 @@ describe("routerExtension", () => {
       risk: "critical",
       confidence: 0.99,
     };
-    const parent = {
+    const parent: TaskLease = {
       version: 2,
       taskId: "irreversible-parent",
       startedAt: now,
@@ -1057,7 +1203,7 @@ describe("routerExtension", () => {
       manualOverride: false,
     };
     let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
-    const makeModel = (provider, id, api) => ({
+    const makeModel = (provider: string, id: string, api: Api): Model<Api> => ({
       provider,
       id,
       name: id,
@@ -1081,14 +1227,14 @@ describe("routerExtension", () => {
         data: { mode: "active", manualOverride: false, active: parent },
       },
     ];
-    const pi = {
-      on: (event, handler) => hooks.set(event, handler),
+    const pi: Partial<RouterApi> = {
+      on: (event, handler) => hooks.set(event, handler as Hook),
       registerCommand: () => {},
-      registerTool: (tool) => tools.set(tool.name, tool),
-      appendEntry: (customType, data) => appended.push({ customType, data }),
-      sendMessage: (message, options) => sent.push({ message, options }),
+      registerTool: (tool) => tools.set(tool.name, tool as unknown as TestTool),
+      appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
+      sendMessage: (message, options) => sent.push({ message, ...(options ? { options: options } : {}) }),
       setModel: async (model) => {
-        selectedModels.push(model);
+        selectedModels.push(model as Model<Api>);
         return true;
       },
       setThinkingLevel: () => {},
@@ -1099,14 +1245,14 @@ describe("routerExtension", () => {
       },
       exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
     };
-    routerExtension(pi);
+    routerExtension(asRouterApi(pi));
     const ctx = {
       cwd: telemetryDirectory,
       model: models[0],
       modelRegistry: {
         getAll: () => models,
         getAvailable: () => models,
-        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+        find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
       },
       sessionManager: {
         getBranch: () => branch,
@@ -1114,26 +1260,32 @@ describe("routerExtension", () => {
       },
       getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
       ui: {
-        theme: { fg: (_color, text) => text },
+        theme: { fg: (_color: string, text: string) => text },
         setStatus: () => {},
         setWorkingMessage: () => {},
         setWorkingVisible: () => {},
         notify: () => {},
       },
     };
-    const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
-    const completeReview = async (child, verdict) => {
+    const latestLease = (): TaskLease => {
+      const active = latestRouterState(appended)?.active;
+      assert.ok(active, "missing active lease");
+      return active as TaskLease;
+    };
+    const completeReview = async (child: TaskLease, verdict: "approve" | "reject"): Promise<void> => {
+      assert.equal(child.lifecycle.phase, "review");
+      if (child.lifecycle.phase !== "review") assert.fail("expected review lifecycle");
       ctx.model = models.find(
         (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
       );
-      const reviewStart = await hooks.get("before_agent_start")(
+      const reviewStart = (await hook(hooks, "before_agent_start")(
         { prompt: "Perform the generated review", systemPrompt: "base" },
         ctx,
-      );
+      )) as { systemPrompt: string };
       assert.match(reviewStart.systemPrompt, /read-only authorization review/);
       assert.deepEqual(activeTools, ["read", "bash", "submit_safety_review"]);
-      hooks.get("agent_start")();
-      await tools.get("submit_safety_review").execute(
+      hook(hooks, "agent_start")();
+      await testTool(tools, "submit_safety_review").execute(
         `review-${verdict}`,
         {
           reviewKind: "authorization",
@@ -1147,7 +1299,7 @@ describe("routerExtension", () => {
         undefined,
         ctx,
       );
-      await hooks.get("agent_end")(
+      await hook(hooks, "agent_end")(
         {
           messages: [
             {
@@ -1161,30 +1313,29 @@ describe("routerExtension", () => {
         },
         ctx,
       );
-      await hooks.get("agent_settled")({}, ctx);
+      await hook(hooks, "agent_settled")({}, ctx);
     };
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      const preflightStart = await hooks.get("before_agent_start")(
+      await hook(hooks, "session_start")({ reason: "reload" }, ctx);
+      const preflightStart = (await hook(hooks, "before_agent_start")(
         { prompt: "Inspect and plan the production change", systemPrompt: "base" },
         ctx,
-      );
+      )) as { systemPrompt: string };
       assert.match(preflightStart.systemPrompt, /Safety lifecycle: remain non-mutating/);
       assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan"]);
-      assert.match(
-        hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
-        /preflight/,
-      );
-      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-      await hooks.get("agent_settled")({}, ctx);
+      assert.match(hookBlockReason(hooks, { toolName: "bash", input: { command: "deploy production" } }), /preflight/);
+      await testTool(tools, "submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hook(hooks, "agent_settled")({}, ctx);
       const rejectedChild = latestLease();
+      assert.equal(rejectedChild.lifecycle.phase, "review");
+      if (rejectedChild.lifecycle.phase !== "review") assert.fail("expected authorization review");
       assert.equal(rejectedChild.lifecycle.reviewKind, "authorization");
       await completeReview(rejectedChild, "reject");
       assert.equal(latestLease().lifecycle.phase, "preflight");
       assert.equal(sent.length, 1, "rejection must not send an execution continuation");
 
       ctx.model = models[0];
-      await hooks.get("agent_settled")({}, ctx);
+      await hook(hooks, "agent_settled")({}, ctx);
       const approvedChild = latestLease();
       assert.notEqual(
         approvedChild.selected.vendor,
@@ -1192,25 +1343,24 @@ describe("routerExtension", () => {
         "an authorization review must not be routed to the builder's vendor",
       );
       await completeReview(approvedChild, "approve");
-      assert.equal(latestLease().lifecycle.phase, "authorized_execution");
-      assert.equal(latestLease().lifecycle.authorization.planFingerprint, latestLease().lifecycle.plan.planFingerprint);
-      assert.equal(latestLease().lifecycle.authorization.reviewerVendor, approvedChild.selected.vendor);
+      const authorized = latestLease().lifecycle;
+      assert.equal(authorized.phase, "authorized_execution");
+      if (authorized.phase !== "authorized_execution") assert.fail("expected authorized execution");
+      assert.equal(authorized.authorization.planFingerprint, authorized.plan.planFingerprint);
+      assert.equal(authorized.authorization.reviewerVendor, approvedChild.selected.vendor);
       assert.notEqual(
-        latestLease().lifecycle.authorization.reviewerVendor,
+        authorized.authorization.reviewerVendor,
         parent.selected.vendor,
         "the recorded authorization must name an independent reviewer vendor",
       );
       assert.equal(sent.length, 3, "approval adds the second review request and one execution continuation");
-      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
-      assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
+      assert.equal(hook(hooks, "tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
+      assert.match(hookBlockReason(hooks, { toolName: "custom_mutator", input: {} }), /outside/);
 
-      await hooks.get("input")({ text: "Change the target and continue", source: "interactive" }, ctx);
+      await hook(hooks, "input")({ text: "Change the target and continue", source: "interactive" }, ctx);
       assert.deepEqual(activeTools, ["read", "bash"]);
       assert.equal(latestLease().lifecycle.phase, "preflight");
-      assert.match(
-        hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
-        /preflight/,
-      );
+      assert.match(hookBlockReason(hooks, { toolName: "bash", input: { command: "deploy production" } }), /preflight/);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
@@ -1218,11 +1368,11 @@ describe("routerExtension", () => {
   });
 
   it("runs a required completion review as a read-only child lease and restores the builder", async () => {
-    const hooks = new Map();
-    const appended = [];
-    const sent = [];
-    const selectedModels = [];
-    const tools = new Map();
+    const hooks = new Map<string, Hook>();
+    const appended: Appended[] = [];
+    const sent: { message: Record<string, unknown>; options?: Record<string, unknown> }[] = [];
+    const selectedModels: Model<Api>[] = [];
+    const tools = new Map<string, TestTool>();
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-adapter-"));
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
@@ -1282,7 +1432,7 @@ describe("routerExtension", () => {
       },
       manualOverride: false,
     };
-    const makeModel = (provider, id, api) => ({
+    const makeModel = (provider: string, id: string, api: Api): Model<Api> => ({
       provider,
       id,
       name: id,
@@ -1306,13 +1456,20 @@ describe("routerExtension", () => {
         data: { mode: "active", manualOverride: false, active: parent },
       },
     ];
-    const pi = {
-      on: (event, handler) => hooks.set(event, handler),
+    const pi: Partial<RouterApi> = {
+      on: (event, handler) => hooks.set(event, handler as Hook),
       registerCommand: () => {},
-      registerTool: (tool) => tools.set(tool.name, tool),
-      appendEntry: (customType, data) => appended.push({ customType, data }),
-      sendMessage: (message, options) => sent.push({ message, options }),
-      setModel: async (model) => selectedModels.push(model),
+      registerTool: (tool) => tools.set(tool.name, tool as unknown as TestTool),
+      appendEntry: (customType, data) => appended.push({ customType, data: data ?? {} }),
+      sendMessage: (message, options) =>
+        sent.push({
+          message: message,
+          ...(options ? { options: options } : {}),
+        }),
+      setModel: async (model) => {
+        selectedModels.push(model as Model<Api>);
+        return true;
+      },
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
       exec: async (command, args) => {
@@ -1335,14 +1492,14 @@ describe("routerExtension", () => {
         return { stdout: "", stderr: "", code: 1, killed: false };
       },
     };
-    routerExtension(pi);
+    routerExtension(asRouterApi(pi));
     const ctx = {
       cwd: telemetryDirectory,
       model: models[0],
       modelRegistry: {
         getAll: () => models,
         getAvailable: () => models,
-        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+        find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
       },
       sessionManager: {
         getBranch: () => branch,
@@ -1350,39 +1507,50 @@ describe("routerExtension", () => {
       },
       getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
       ui: {
-        theme: { fg: (_color, text) => text },
+        theme: { fg: (_color: string, text: string) => text },
         setStatus: () => {},
         notify: () => {},
       },
     };
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      await hooks.get("agent_settled")({}, ctx);
+      await hook(hooks, "session_start")({ reason: "reload" }, ctx);
+      await hook(hooks, "agent_settled")({}, ctx);
       assert.equal(sent.length, 1);
-      assert.equal(sent[0].options.triggerTurn, true);
-      const child = appended.at(-1).data.active;
+      assert.equal((sent[0]?.options as { triggerTurn?: boolean } | undefined)?.triggerTurn, true);
+      const child = latestRouterState(appended)?.active as
+        | {
+            taskId?: string;
+            parentTaskId?: string;
+            archetype?: string;
+            selected?: { vendor?: string; provider?: string; modelId?: string };
+            lifecycle?: { phase?: string; reviewKind?: string; scopeFingerprint?: string };
+          }
+        | undefined;
+      assert.ok(child);
+      assert.ok(child.lifecycle);
       assert.equal(child.parentTaskId, parent.taskId);
       assert.equal(child.lifecycle.phase, "review");
       assert.equal(child.lifecycle.reviewKind, "completion");
       assert.equal(child.archetype, "code_review");
-      assert.notEqual(child.selected.vendor, "openai");
-      assert.match(hooks.get("tool_call")({ toolName: "edit", input: {} }).reason, /read-only/);
-      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff --stat" } }), undefined);
-      assert.match(
-        hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff | sh" } }).reason,
-        /read-only/,
+      assert.notEqual(child.selected?.vendor, "openai");
+      assert.match(hookBlockReason(hooks, { toolName: "edit", input: {} }), /read-only/);
+      assert.equal(hook(hooks, "tool_call")({ toolName: "bash", input: { command: "git diff --stat" } }), undefined);
+      assert.match(hookBlockReason(hooks, { toolName: "bash", input: { command: "git diff | sh" } }), /read-only/);
+      assert.match(hookBlockReason(hooks, { toolName: "custom_mutator", input: {} }), /read-only/);
+      await hook(hooks, "agent_settled")({}, ctx);
+      assert.equal(
+        (latestRouterState(appended)?.active as { taskId?: string } | undefined)?.taskId,
+        child.taskId,
+        "pending review must not restore its parent",
       );
-      assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /read-only/);
-      await hooks.get("agent_settled")({}, ctx);
-      assert.equal(appended.at(-1).data.active.taskId, child.taskId, "pending review must not restore its parent");
-      ctx.model = selectedModels[0];
-      hooks.get("agent_start")();
-      hooks.get("turn_start")();
-      await tools.get("submit_safety_review").execute(
+      ctx.model = selectedModels[0] ?? ctx.model;
+      hook(hooks, "agent_start")();
+      hook(hooks, "turn_start")();
+      await testTool(tools, "submit_safety_review").execute(
         "review-tool-call",
         {
           reviewKind: "completion",
-          scopeFingerprint: child.lifecycle.scopeFingerprint,
+          scopeFingerprint: child.lifecycle?.scopeFingerprint,
           verdict: "pass",
           summary: "The implementation and passing check match the tracked task.",
           evidence: ["Inspected the baseline-to-working-tree diff and npm test evidence."],
@@ -1392,13 +1560,13 @@ describe("routerExtension", () => {
         undefined,
         ctx,
       );
-      await hooks.get("agent_end")(
+      await hook(hooks, "agent_end")(
         {
           messages: [
             {
               role: "assistant",
-              provider: child.selected.provider,
-              model: child.selected.modelId,
+              provider: child.selected?.provider,
+              model: child.selected?.modelId,
               stopReason: "stop",
               usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
             },
@@ -1406,14 +1574,20 @@ describe("routerExtension", () => {
         },
         ctx,
       );
-      await hooks.get("agent_settled")({}, ctx);
-      const restored = appended.at(-1).data.active;
-      assert.equal(restored.taskId, parent.taskId);
-      assert.equal(restored.lifecycle.phase, "completed");
-      assert.equal(restored.lifecycle.completionReview.verdict, "pass");
-      assert.equal(restored.selected.modelId, "gpt-5.6-sol");
+      await hook(hooks, "agent_settled")({}, ctx);
+      const restored = latestRouterState(appended)?.active as
+        | {
+            taskId?: string;
+            lifecycle?: { phase?: string; completionReview?: { verdict?: string } };
+            selected?: { modelId?: string };
+          }
+        | undefined;
+      assert.equal(restored?.taskId, parent.taskId);
+      assert.equal(restored?.lifecycle?.phase, "completed");
+      assert.equal(restored?.lifecycle?.completionReview?.verdict, "pass");
+      assert.equal(restored?.selected?.modelId, "gpt-5.6-sol");
       // The reviewer is the Anthropic rung at or above the builder's evidence band.
-      assert.equal(selectedModels[0].id, "claude-opus-5");
+      assert.equal(selectedModels[0]?.id, "claude-opus-5");
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;

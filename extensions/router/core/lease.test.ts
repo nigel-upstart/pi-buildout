@@ -11,8 +11,9 @@ import {
   resolveContinuity,
   setHardBoundary,
 } from "./lease.ts";
+import type { BoundaryInput, HardBoundary, TaskLease } from "./lease.ts";
 
-function lease() {
+function lease(): TaskLease {
   return createTaskLease({
     taskId: "task-1",
     startedAt: "2026-07-17T00:00:00.000Z",
@@ -29,11 +30,13 @@ function lease() {
     selected: {
       provider: "openai-codex",
       modelId: "gpt-5.6-terra",
+      logicalModelId: "gpt-5.6-terra",
       vendor: "openai",
       effort: "medium",
       ability: 2,
       profileId: "openai-gpt-5.6-agent-v1",
       contextWindow: 372_000,
+      endpointTier: "manufacturer",
       rankReason: "bootstrap",
     },
     fallbacks: [],
@@ -63,7 +66,8 @@ describe("task boundary gate", () => {
 
   it("forces the first user turn after every hard boundary to a new task", () => {
     const active = lease();
-    for (const boundary of ["new_session", "post_compaction", "post_push", "subagent"]) {
+    const boundaries: HardBoundary[] = ["new_session", "post_compaction", "post_push", "subagent"];
+    for (const boundary of boundaries) {
       const state = setHardBoundary({ mode: "active", active, manualOverride: false }, boundary);
       const result = deterministicBoundaryGate(state, {
         isUserInput: true,
@@ -73,16 +77,20 @@ describe("task boundary gate", () => {
         expectedReuseRatio: 1,
       });
       assert.equal(result.action, "new_task");
+      if (result.action !== "new_task") throw new Error("unreachable: asserted above");
       assert.equal(result.hardBoundary, boundary);
     }
   });
 
   it("keeps extension and queued follow-up messages in the existing lease", () => {
     const active = lease();
-    for (const input of [
-      { source: "extension", streamingBehavior: undefined },
+    type PartialBoundarySource =
+      Pick<BoundaryInput, "source"> | (Pick<BoundaryInput, "source"> & Pick<BoundaryInput, "streamingBehavior">);
+    const inputs: PartialBoundarySource[] = [
+      { source: "extension" },
       { source: "interactive", streamingBehavior: "followUp" },
-    ]) {
+    ];
+    for (const input of inputs) {
       const result = deterministicBoundaryGate(
         { mode: "active", active, manualOverride: false },
         {
@@ -94,6 +102,7 @@ describe("task boundary gate", () => {
         },
       );
       assert.equal(result.action, "continue");
+      if (result.action !== "continue") throw new Error("unreachable: asserted above");
       assert.equal(result.lease.taskId, active.taskId);
     }
   });
@@ -121,10 +130,11 @@ describe("task boundary gate", () => {
   });
 
   it("starts implementation under a lease separate from planning", () => {
-    const active = {
-      ...lease(),
+    const baseline = lease();
+    const active: TaskLease = {
+      ...baseline,
       archetype: "implementation_planning",
-      features: { ...lease().features, intent: "plan", workflowType: "implementation_planning" },
+      features: { ...baseline.features, intent: "plan", workflowType: "implementation_planning" },
     };
     for (const prompt of ["Implement the plan.", "Start building PR one", "Now execute it"]) {
       const result = deterministicBoundaryGate(
@@ -176,6 +186,7 @@ describe("effort changes", () => {
     const active = lease();
     const changed = changeEffortWithinLease(active, "high", "2026-07-17T00:01:00.000Z");
     assert.equal(changed.success, true);
+    if (!changed.success) throw new Error("unreachable: asserted above");
     assert.equal(changed.lease.taskId, active.taskId);
     assert.equal(changed.lease.selected.modelId, active.selected.modelId);
     assert.equal(changed.lease.promptProfileId, active.promptProfileId);

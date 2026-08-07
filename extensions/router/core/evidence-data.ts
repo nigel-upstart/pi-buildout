@@ -2,7 +2,7 @@
 //
 // Source of truth: specs/routing-layer/model-evidence-2026-07-25.json, whose provenance,
 // construct limits, and caveats are documented in specs/routing-layer/model-evidence-2026-07-25.md.
-// evidence-data.test.mjs asserts this module and that JSON agree, so drift fails the build.
+// evidence.test.ts asserts this module and that JSON agree, so drift fails the build.
 //
 // These are pre-telemetry ordering priors measured on the DeepSWE `mini-swe-agent` harness.
 // `passRate` is a deterministic verifier outcome and is never the router's acceptance signal.

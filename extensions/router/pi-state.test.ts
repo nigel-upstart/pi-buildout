@@ -3,10 +3,13 @@ import { appendFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { POLICY_VERSION } from "./core/policy.ts";
+import { EFFORT_LEVELS } from "./core/profiles.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import { createTaskLease } from "./core/lease.ts";
 import { selectReviewRoute } from "./core/routing.ts";
+import type { RegistryModelSnapshot } from "./core/routing.ts";
 import {
   cacheEstimate,
   estimateFinishedTokens,
@@ -20,8 +23,12 @@ import {
   writeLastKnownMode,
 } from "./pi-state.ts";
 
+type RepositoryApi = Pick<ExtensionAPI, "exec">;
+
+const asRepositoryApi = (api: RepositoryApi): ExtensionAPI => api as ExtensionAPI;
+
 /** The mode `startMode: "last"` would restore for a repository, with no configuration present. */
-async function readStartModeMode(agentDir, repoKey) {
+async function readStartModeMode(agentDir: string, repoKey: string | undefined) {
   return (await readStartModeResolution({ agentDir, repoKey })).lastKnownMode;
 }
 
@@ -51,7 +58,11 @@ describe("modelAbility", () => {
   it("selects reviewers at or above the builder band end to end", () => {
     // Regression for reviewer skew: reviewers must be chosen from the evidence-derived ladder rather
     // than from a name heuristic, and no ladder rung may sit below the builder's measured band.
-    const registryModel = (provider, modelId, vendor) => ({
+    const registryModel = (
+      provider: string,
+      modelId: string,
+      vendor: "openai" | "anthropic" | "google",
+    ): RegistryModelSnapshot => ({
       provider,
       modelId,
       name: modelId,
@@ -60,18 +71,19 @@ describe("modelAbility", () => {
       maxOutputTokens: 128_000,
       available: true,
       reasoning: true,
-      supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      supportedEfforts: EFFORT_LEVELS,
       inputTypes: ["text", "image"],
       toolCapable: true,
       costPerMillion: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
     });
-    const registry = [
+    const registry: RegistryModelSnapshot[] = [
       registryModel("openai-codex", "gpt-5.6-terra", "openai"),
       registryModel("openai-codex", "gpt-5.6-sol", "openai"),
       registryModel("anthropic", "claude-opus-5", "anthropic"),
       registryModel("google-vertex", "gemini-3.6-flash", "google"),
     ];
     const builder = registry.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    assert.ok(builder);
     const decision = selectReviewRoute(
       registry,
       { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true },
@@ -83,9 +95,9 @@ describe("modelAbility", () => {
     const reviewers = new Map([decision.primary, decision.fallback].map((choice) => [choice.vendor, choice]));
     // An ability-3 builder draws the Anthropic rung at or above its band and Google's only rung,
     // which sits below it and is therefore recorded as a ceiling mismatch instead of passing silently.
-    assert.equal(reviewers.get("anthropic").modelId, "claude-opus-5");
-    assert.equal(reviewers.get("anthropic").ability, 3);
-    assert.equal(reviewers.get("google").modelId, "gemini-3.6-flash");
+    assert.equal(reviewers.get("anthropic")?.modelId, "claude-opus-5");
+    assert.equal(reviewers.get("anthropic")?.ability, 3);
+    assert.equal(reviewers.get("google")?.modelId, "gemini-3.6-flash");
     assert.deepEqual(decision.ceilingMismatchVendors, ["google"]);
     assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
@@ -115,7 +127,7 @@ describe("normalizeSessionEntries", () => {
     ]);
     assert.deepEqual(entries[0], { kind: "user", text: "Implement it" });
     assert.deepEqual(entries[2], { kind: "tool", toolName: "edit", path: "src/a.ts", isError: false });
-    assert.deepEqual(entries[3].modifiedFiles, ["src/a.ts"]);
+    assert.deepEqual(entries[3]?.modifiedFiles, ["src/a.ts"]);
   });
 });
 
@@ -171,13 +183,21 @@ describe("lease restoration and context estimates", () => {
       [{ type: "custom", customType: "model-router-state", data: { mode: "active", active } }],
       "shadow",
     );
+    assert.ok(restored.active);
     assert.equal(restored.active.taskId, "task");
     assert.equal(restored.active.planValidationRepairAttempted, true);
-    const malformedRepair = structuredClone(active);
+
+    const malformedRepair = structuredClone(active) as unknown as Record<string, unknown>;
     malformedRepair.planValidationRepairAttempted = "yes";
     assert.equal(
       restoreLeaseState(
-        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: malformedRepair } }],
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { mode: "active", active: malformedRepair },
+          },
+        ],
         "shadow",
       ).active,
       undefined,
@@ -215,7 +235,7 @@ describe("lease restoration and context estimates", () => {
       undefined,
       "the generated review lifecycle requires a code-review child and explicit parent lease",
     );
-    const legacyVersion = structuredClone(active);
+    const legacyVersion = structuredClone(active) as unknown as Record<string, unknown>;
     legacyVersion.version = 1;
     assert.equal(
       restoreLeaseState(
@@ -238,6 +258,7 @@ describe("lease restoration and context estimates", () => {
 
   it("adds deterministic tool, response, change, and compaction reserves", () => {
     const estimate = estimateFinishedTokens(10_000, {
+      ...conservativeFeatures(),
       expectedToolOutputTokens: 20_000,
       expectedAgentTurns: 4,
       expectedFilesChanged: 2,
@@ -261,9 +282,9 @@ describe("lease restoration and context estimates", () => {
 
 describe("readRepositoryMetadata", () => {
   it("inspects a standalone review delta without mutating it", async () => {
-    const calls = [];
+    const calls: string[][] = [];
     const metadata = await readRepositoryMetadata(
-      {
+      asRepositoryApi({
         exec: async (command, args) => {
           calls.push([command, ...args]);
           if (command === "gh") {
@@ -276,22 +297,24 @@ describe("readRepositoryMetadata", () => {
           }
           return { code: 0, stdout: "", stderr: "", killed: false };
         },
-      },
+      }),
       "/repo",
       "Review PR #305 for correctness and risk",
     );
-    assert.equal(metadata.reviewDelta.source, "pull_request");
-    assert.equal(metadata.reviewDelta.reference, "PR #305");
-    assert.deepEqual(metadata.reviewDelta.files, ["src/a.ts"]);
-    assert.deepEqual(metadata.reviewDelta.languageBuckets, ["typescript"]);
+    const reviewDelta = metadata.reviewDelta;
+    assert.ok(reviewDelta);
+    assert.equal(reviewDelta.source, "pull_request");
+    assert.equal(reviewDelta.reference, "PR #305");
+    assert.deepEqual(reviewDelta.files, ["src/a.ts"]);
+    assert.deepEqual(reviewDelta.languageBuckets, ["typescript"]);
     assert.ok(calls.some((call) => call.join(" ") === "gh pr diff 305 --patch"));
     assert.ok(calls.every((call) => !call.includes("checkout") && !call.includes("fetch")));
   });
 
   it("falls back to the working-tree diff when no pull request is referenced", async () => {
-    const calls = [];
+    const calls: string[][] = [];
     const metadata = await readRepositoryMetadata(
-      {
+      asRepositoryApi({
         exec: async (command, args) => {
           calls.push([command, ...args]);
           if (command === "git" && args.includes("diff")) {
@@ -313,14 +336,16 @@ describe("readRepositoryMetadata", () => {
           }
           return { code: 0, stdout: "", stderr: "", killed: false };
         },
-      },
+      }),
       "/repo",
       "Review my uncommitted work for correctness",
     );
-    assert.equal(metadata.reviewDelta.source, "working_tree");
-    assert.equal(metadata.reviewDelta.reference, "HEAD to working tree/index");
-    assert.deepEqual(metadata.reviewDelta.files, ["src/a.ts", "scripts/run.sh"]);
-    assert.deepEqual(metadata.reviewDelta.languageBuckets, ["shell", "typescript"]);
+    const reviewDelta = metadata.reviewDelta;
+    assert.ok(reviewDelta);
+    assert.equal(reviewDelta.source, "working_tree");
+    assert.equal(reviewDelta.reference, "HEAD to working tree/index");
+    assert.deepEqual(reviewDelta.files, ["src/a.ts", "scripts/run.sh"]);
+    assert.deepEqual(reviewDelta.languageBuckets, ["shell", "typescript"]);
     assert.ok(
       calls.some((call) => call.join(" ") === "git -C /repo diff --no-ext-diff --unified=1 HEAD --"),
       "the working-tree delta is read with a bounded diff",
@@ -330,7 +355,7 @@ describe("readRepositoryMetadata", () => {
   });
 
   it("uses git state and deterministic language buckets", async () => {
-    const outputs = new Map([
+    const outputs = new Map<string, string>([
       ["rev-parse --show-toplevel", "/repo"],
       ["rev-parse HEAD", "abc"],
       ["rev-parse --verify @{upstream}", "def"],
@@ -339,11 +364,11 @@ describe("readRepositoryMetadata", () => {
     ]);
     const metadata = await readRepositoryMetadata(
       {
-        exec: async (_command, args) => {
+        exec: async (_command: string, args: string[]) => {
           const key = args.slice(2).join(" ");
           return { code: 0, stdout: outputs.get(key) ?? "", stderr: "", killed: false };
         },
-      },
+      } as unknown as ExtensionAPI,
       "/repo",
     );
     assert.equal(metadata.upstream, "def");
@@ -367,7 +392,9 @@ describe("last known router mode", () => {
       assert.equal(await readStartModeMode(directory, "github.com:org/first"), "active");
       assert.equal(await readStartModeMode(directory, "github.com:org/second"), "off");
       // An unknown repository falls back to the most recent machine-wide record.
-      assert.ok(["active", "off", "shadow"].includes(await readStartModeMode(directory, "github.com:org/third")));
+      const fallbackMode = await readStartModeMode(directory, "github.com:org/third");
+      assert.ok(fallbackMode);
+      assert.ok(["active", "off", "shadow"].includes(fallbackMode));
     } finally {
       if (previousPath === undefined) delete process.env.PI_ROUTER_LAST_MODE_PATH;
       else process.env.PI_ROUTER_LAST_MODE_PATH = previousPath;

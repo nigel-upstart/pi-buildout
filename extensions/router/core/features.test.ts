@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { Check } from "typebox/value";
 import { conservativeFeatures, TaskFeaturesSchema, validateTaskFeatures } from "./features.ts";
 
-function validFeatures(overrides = {}) {
+function validFeatures(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     intent: "implement",
     workflowType: "coding_implementation",

@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildFreshContextDisclosure } from "./helpers.ts";
 import clearExtension from "./index.ts";
 
 describe("clearExtension", () => {
   it("loads and registers the clear command", () => {
-    const commands = new Map();
-    // @ts-expect-error Only command registration is exercised by this test.
-    clearExtension({ registerCommand: (name, command) => commands.set(name, command) });
+    type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
+    const commands = new Map<string, Command>();
+    const api = {
+      registerCommand: (name: string, command: Command): void => {
+        commands.set(name, command);
+      },
+    };
+    clearExtension(api as ExtensionAPI);
 
     assert.equal(
       commands.get("clear")?.description,

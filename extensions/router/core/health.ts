@@ -6,7 +6,7 @@
  * router should learn that from observation rather than rediscover it mid-task, so probe results and
  * live failures are recorded per endpoint and consulted during eligibility.
  *
- * Populate it with `node scripts/probe-scoped-models.mjs`.
+ * Populate it with `node scripts/probe-scoped-models.ts`.
  */
 
 const ENDPOINT_HEALTH_STATUSES = [

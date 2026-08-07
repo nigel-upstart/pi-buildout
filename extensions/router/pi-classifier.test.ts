@@ -1,27 +1,44 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { ClassifierRequest } from "./classifier.ts";
+import { TaskFeaturesSchema } from "./core/features.ts";
+import type { ModelVendor } from "./core/profiles.ts";
 import { selectClassifierModels, transportFromCandidates } from "./pi-classifier.ts";
 
-function model(provider, id) {
-  return { provider, id };
+type ClassifierCandidate = Parameters<typeof transportFromCandidates>[0][number];
+
+function model(provider: string, id: string): Model<Api> {
+  return {
+    provider,
+    id,
+    name: id,
+    api: "openai-completions",
+    baseUrl: "https://models.invalid",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  };
 }
 
-function candidate(provider, id, vendor) {
+function candidate(provider: string, id: string, vendor: ModelVendor): ClassifierCandidate {
   return { model: model(provider, id), vendor };
 }
 
-function request(stage = "primary") {
+function request(stage: ClassifierRequest["stage"] = "primary"): ClassifierRequest {
   return {
     stage,
     systemPrompt: "system",
     userPrompt: "user",
     toolName: "report_task_features",
-    toolSchema: {},
+    toolSchema: TaskFeaturesSchema,
   };
 }
 
-function rateLimitError(provider) {
-  const error = new Error(`${provider}: 429 Too Many Requests - rate limit exceeded`);
+function rateLimitError(provider: string): Error & { status: number } {
+  const error = new Error(`${provider}: 429 Too Many Requests - rate limit exceeded`) as Error & { status: number };
   error.status = 429;
   return error;
 }
@@ -32,10 +49,10 @@ describe("selectClassifierModels", () => {
       model("openai-codex", "gpt-5.6-luna"),
       model("anthropic", "claude-sonnet-5"),
     ]);
-    assert.equal(selected.primary[0].model.id, "gpt-5.6-luna");
-    assert.equal(selected.primary[0].vendor, "openai");
-    assert.equal(selected.secondary[0].model.id, "claude-sonnet-5");
-    assert.equal(selected.secondary[0].vendor, "anthropic");
+    assert.equal(selected.primary[0]?.model.id, "gpt-5.6-luna");
+    assert.equal(selected.primary[0]?.vendor, "openai");
+    assert.equal(selected.secondary[0]?.model.id, "claude-sonnet-5");
+    assert.equal(selected.secondary[0]?.vendor, "anthropic");
   });
 
   it("does not downgrade the independent secondary from validated Sonnet to Haiku", () => {
@@ -43,7 +60,7 @@ describe("selectClassifierModels", () => {
       model("openai-codex", "gpt-5.6-luna"),
       model("anthropic", "claude-haiku-4-5"),
     ]);
-    assert.equal(selected.primary[0].model.id, "gpt-5.6-luna");
+    assert.equal(selected.primary[0]?.model.id, "gpt-5.6-luna");
     assert.equal(selected.secondary.length, 0);
   });
 
@@ -75,7 +92,7 @@ describe("selectClassifierModels", () => {
     );
     // The vendor guess for secondary selection follows the highest-priority tier (Luna/openai),
     // even though multiple endpoints across two vendors were configured.
-    assert.equal(selected.primary[0].vendor, "openai");
+    assert.equal(selected.primary[0]?.vendor, "openai");
   });
 
   it("offers Amazon Bedrock as a secondary endpoint alternative for Sonnet and Terra", () => {
@@ -97,7 +114,7 @@ describe("selectClassifierModels", () => {
 
 describe("transportFromCandidates", () => {
   it("falls back to the next configured endpoint when the first is rate limited", async () => {
-    const attempted = [];
+    const attempted: string[] = [];
     const transport = transportFromCandidates(
       [candidate("openai-codex", "gpt-5.6-luna", "openai"), candidate("openai", "gpt-5.6-luna", "openai")],
       async (candidateEntry) => {
@@ -119,8 +136,8 @@ describe("transportFromCandidates", () => {
   });
 
   it("tries every Luna endpoint before falling through to the Haiku tier", async () => {
-    const attempted = [];
-    const candidates = [
+    const attempted: string[] = [];
+    const candidates: ClassifierCandidate[] = [
       candidate("openai-codex", "gpt-5.6-luna", "openai"),
       candidate("openai", "gpt-5.6-luna", "openai"),
       candidate("amazon-bedrock", "openai.gpt-5.6-luna", "openai"),
@@ -146,7 +163,7 @@ describe("transportFromCandidates", () => {
   });
 
   it("throws an aggregated error naming every failed endpoint when the whole tier list is exhausted", async () => {
-    const candidates = [
+    const candidates: ClassifierCandidate[] = [
       candidate("openai-codex", "gpt-5.6-luna", "openai"),
       candidate("openai", "gpt-5.6-luna", "openai"),
     ];
@@ -154,7 +171,8 @@ describe("transportFromCandidates", () => {
       throw rateLimitError(candidateEntry.model.provider);
     });
 
-    await assert.rejects(transport(request()), (error) => {
+    await assert.rejects(transport(request()), (error: unknown) => {
+      assert.ok(error instanceof Error);
       assert.match(error.message, /openai-codex\/gpt-5\.6-luna/);
       assert.match(error.message, /openai\/gpt-5\.6-luna/);
       assert.match(error.message, /rate limit/);
@@ -163,8 +181,8 @@ describe("transportFromCandidates", () => {
   });
 
   it("does not retry another endpoint after the caller aborts the request", async () => {
-    const attempted = [];
-    const candidates = [
+    const attempted: string[] = [];
+    const candidates: ClassifierCandidate[] = [
       candidate("openai-codex", "gpt-5.6-luna", "openai"),
       candidate("openai", "gpt-5.6-luna", "openai"),
     ];

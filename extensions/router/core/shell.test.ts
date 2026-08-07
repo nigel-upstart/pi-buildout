@@ -2,16 +2,22 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { isReadOnlyShellCommand, readOnlyShellCommandRejection, tokenizeShellCommand } from "./shell.ts";
 
-function reason(command) {
+function reason(command: string): string {
   const result = tokenizeShellCommand(command);
-  assert.equal(result.ok, false, `expected ${JSON.stringify(command)} to be rejected`);
+  if (result.ok) assert.fail(`expected ${JSON.stringify(command)} to be rejected`);
   return result.reason;
 }
 
-function argv(command) {
+function argv(command: string): readonly string[] {
   const result = tokenizeShellCommand(command);
-  assert.equal(result.ok, true, `expected ${JSON.stringify(command)} to tokenize`);
+  if (!result.ok) assert.fail(`expected ${JSON.stringify(command)} to tokenize: ${result.reason}`);
   return result.argv;
+}
+
+function rejection(command: string): string {
+  const result = readOnlyShellCommandRejection(command);
+  assert.ok(result, `${JSON.stringify(command)} should be rejected`);
+  return result;
 }
 
 describe("tokenizeShellCommand", () => {
@@ -161,15 +167,15 @@ describe("isReadOnlyShellCommand", () => {
   });
 
   it("refuses any binary, subcommand, or environment prefix outside the allowlist", () => {
-    assert.match(readOnlyShellCommandRejection("cat file"), /cat is not a read-only command/);
-    assert.match(readOnlyShellCommandRejection("npm test"), /npm is not a read-only command/);
-    assert.match(readOnlyShellCommandRejection("FOO=bar ls"), /FOO=bar is not a read-only command/);
-    assert.match(readOnlyShellCommandRejection("git commit -m x"), /git commit is not a read-only subcommand/);
-    assert.match(readOnlyShellCommandRejection("git checkout main"), /git checkout is not a read-only subcommand/);
-    assert.match(readOnlyShellCommandRejection("git"), /git requires a read-only subcommand/);
+    assert.match(rejection("cat file"), /cat is not a read-only command/);
+    assert.match(rejection("npm test"), /npm is not a read-only command/);
+    assert.match(rejection("FOO=bar ls"), /FOO=bar is not a read-only command/);
+    assert.match(rejection("git commit -m x"), /git commit is not a read-only subcommand/);
+    assert.match(rejection("git checkout main"), /git checkout is not a read-only subcommand/);
+    assert.match(rejection("git"), /git requires a read-only subcommand/);
     // Top-level git options run before the subcommand is known, so none of them are permitted.
-    assert.match(readOnlyShellCommandRejection("git -c core.pager=/tmp/x log"), /not a read-only subcommand/);
-    assert.match(readOnlyShellCommandRejection("git -C /tmp diff"), /not a read-only subcommand/);
+    assert.match(rejection("git -c core.pager=/tmp/x log"), /not a read-only subcommand/);
+    assert.match(rejection("git -C /tmp diff"), /not a read-only subcommand/);
   });
 
   it("treats an option value as data rather than as another option", () => {

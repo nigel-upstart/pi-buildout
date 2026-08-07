@@ -81,7 +81,7 @@ of first resort.
 - License: not verified in this repository; see the upstream repository for its declared license
 
 Use: Bifrost is the required real-provider transport for the opt-in explicit-provider evaluation harness
-(`extensions/router/eval/real.test.mjs`, `npm run test:eval:real`) and an optional production gateway when a deployment
+(`extensions/router/eval/real.test.ts`, `npm run test:eval:real`) and an optional production gateway when a deployment
 configures models through it. No Bifrost source was copied; the router only depends on its OpenAI-compatible request
 contract and its Bedrock model-path naming, documented in
 [`specs/routing-layer/decisions.md`](specs/routing-layer/decisions.md).
@@ -151,7 +151,7 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.82.0`, `0.82.1`, and `0.83.0`
+- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, and `0.83.0`
 - License declared by the package: MIT
 
 Ideas and API patterns used:
@@ -170,6 +170,9 @@ Ideas and API patterns used:
   levels is intentionally not adopted.
 - Pi's bundled subagent and custom-compaction examples as reference implementations for process invocation, output
   bounds, and compaction setup.
+- Pi 0.80.7's published `ExtensionAPI`, extension-context, model, and API declaration shapes were used to type local
+  test fixtures during the JavaScript-to-TypeScript migration. Only public type contracts were referenced; no
+  implementation code was copied or modified.
 
 Major pieces intentionally not adopted include Pi's full interactive mode, session-replacement runtime, prompt-template
 workflows, custom provider implementations, and bundled role-based subagent profiles. No Pi source file or example was
@@ -217,3 +220,14 @@ Behavior of both libraries that this repository deliberately compensates for, ra
 
 The argv policy itself — the allowed binaries, git subcommands, and per-binary flag allowlists — is original code in
 this repository and is not derived from either package.
+
+## Node.js type declarations
+
+- Source: `@types/node`
+- Canonical repository: <https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/node>
+- Package revision reviewed: `24.13.3`
+- License declared by the package: MIT
+
+Use: the published `node:assert` declaration was consulted to confirm its control-flow narrowing contract while typing
+local test fixtures. No declaration or implementation code was copied or modified, and no Node runtime internals or
+unrelated DefinitelyTyped patterns were adopted.

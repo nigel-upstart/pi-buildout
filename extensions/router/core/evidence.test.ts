@@ -5,20 +5,40 @@ import { describe, it } from "node:test";
 import {
   abilityFromConsensus,
   LANGUAGE_EVIDENCE,
-  languageEvidence,
+  languageEvidence as lookupLanguageEvidence,
   authorizeEffort,
   disqualificationReason,
   EFFORT_POLICIES,
   evidenceAbility,
-  findEvidencePrior,
+  findEvidencePrior as lookupEvidencePrior,
   HARD_TASK_ESCALATION,
   resolveEvidenceLanguage,
   scoreEvidencePrior,
 } from "./evidence.ts";
+import type {
+  EffortContext,
+  EvidenceCostWeights,
+  EvidenceScoreContext,
+  LanguageEvidencePolicy,
+  RoutableLanguage,
+} from "./evidence.ts";
 import { EVIDENCE_CAPTURE, EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
+import type { EvidencePriorRow } from "./evidence-data.ts";
+import type { EffortLevel } from "./profiles.ts";
 
 const specPath = fileURLToPath(new URL("../../../specs/routing-layer/model-evidence-2026-07-25.json", import.meta.url));
-const spec = JSON.parse(readFileSync(specPath, "utf8"));
+type EvidenceSpec = {
+  generatedAt: string;
+  rows: {
+    modelId: string;
+    effort: EffortLevel;
+    deepswe: Omit<EvidencePriorRow, "modelId" | "effort" | "consensusBest" | "byLanguage">;
+    consensus?: { performanceBest?: number };
+    byLanguage: EvidencePriorRow["byLanguage"];
+  }[];
+};
+
+const spec = JSON.parse(readFileSync(specPath, "utf8")) as EvidenceSpec;
 
 const WEIGHTS = {
   developerWaitValuePerMs: 0.000_001,
@@ -26,9 +46,9 @@ const WEIGHTS = {
   retryCost: 10,
   regressionBreakCost: 40,
   nondeterminismCost: 15,
-};
+} satisfies EvidenceCostWeights;
 
-const ORDINARY = {
+const ORDINARY: EvidenceScoreContext = {
   language: undefined,
   consequence: "read_only",
   verificationDiscount: 1,
@@ -37,10 +57,20 @@ const ORDINARY = {
   hardTask: false,
 };
 
-function score(modelId, effort, context = ORDINARY) {
-  const row = findEvidencePrior(modelId, effort);
+function findEvidencePrior(modelId: string, effort: EffortLevel): EvidencePriorRow {
+  const row = lookupEvidencePrior(modelId, effort);
   assert.ok(row, `missing evidence row for ${modelId}@${effort}`);
-  return scoreEvidencePrior(row, WEIGHTS, context).score;
+  return row;
+}
+
+function languageEvidence(language: RoutableLanguage): LanguageEvidencePolicy {
+  const policy = lookupLanguageEvidence(language);
+  assert.ok(policy, `missing language policy for ${language}`);
+  return policy;
+}
+
+function score(modelId: string, effort: EffortLevel, context: EvidenceScoreContext = ORDINARY): number {
+  return scoreEvidencePrior(findEvidencePrior(modelId, effort), WEIGHTS, context).score;
 }
 
 describe("evidence data agrees with the checked-in spec artifact", () => {
@@ -66,7 +96,7 @@ describe("evidence data agrees with the checked-in spec artifact", () => {
       assert.equal(row.p90PeakContextTokens, specRow.deepswe.p90PeakContextTokens);
       assert.equal(row.costPerPassUsd, specRow.deepswe.costPerPassUsd);
       assert.equal(row.consensusBest, specRow.consensus?.performanceBest);
-      for (const bucket of ["go", "python", "typescript"]) {
+      for (const bucket of ["go", "python", "typescript"] as const) {
         assert.deepEqual(
           row.byLanguage[bucket] === undefined
             ? undefined
@@ -97,7 +127,7 @@ describe("evidence data agrees with the checked-in spec artifact", () => {
         "repeatAllPassRate",
         "repeatFlakyRate",
         "contextOverflowRate",
-      ]) {
+      ] as const) {
         assert.ok(row[field] >= 0 && row[field] <= 1, `${row.modelId}@${row.effort} ${field} out of range`);
       }
       assert.ok(row.p90PeakContextTokens > 0);
@@ -183,7 +213,7 @@ describe("per-language evidence policy", () => {
 });
 
 describe("effort authorization", () => {
-  const base = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
+  const base: EffortContext = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
 
   it("caps ordinary archetypes at the measured saturation tier", () => {
     assert.equal(authorizeEffort("claude-opus-5", "high", base).authorized, true);
@@ -227,7 +257,7 @@ describe("effort authorization", () => {
       ["gpt-5.6-luna", "medium"],
       ["gpt-5.6-terra", "low"],
       ["gpt-5.6-terra", "medium"],
-    ]) {
+    ] as const) {
       const mutating = authorizeEffort(modelId, effort, base);
       assert.equal(mutating.authorized, false, `${modelId}@${effort} must not mutate a repository`);
       assert.match(mutating.reason, /agentic minimum/);
@@ -283,7 +313,7 @@ describe("prior-seeded cost to done", () => {
       ["gpt-5.6-luna", "low"],
       ["gpt-5.6-luna", "medium"],
       ["claude-sonnet-5", "low"],
-    ]) {
+    ] as const) {
       assert.ok(
         score(modelId, effort) > strong,
         `${modelId}@${effort} must not outrank claude-opus-5@medium despite lower token cost`,
@@ -297,7 +327,7 @@ describe("prior-seeded cost to done", () => {
   });
 
   it("reproduces the measured language split on routine work", () => {
-    const typescript = { ...ORDINARY, language: "typescript" };
+    const typescript: EvidenceScoreContext = { ...ORDINARY, language: "typescript" };
     assert.ok(
       score("gpt-5.6-sol", "high", typescript) < score("claude-opus-5", "high", typescript),
       "routine TypeScript favors gpt-5.6-sol at high effort",
@@ -332,7 +362,7 @@ describe("prior-seeded cost to done", () => {
   it("leaves Ruby and Kotlin scoring on the corpus-wide priors", () => {
     const row = findEvidencePrior("claude-opus-5", "medium");
     const corpus = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
-    for (const language of ["ruby", "kotlin"]) {
+    for (const language of ["ruby", "kotlin"] as const) {
       const scoped = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language });
       assert.equal(scoped.score, corpus.score, `${language} must not change the score`);
       assert.equal(scoped.languageUsed, undefined);
@@ -340,7 +370,7 @@ describe("prior-seeded cost to done", () => {
   });
 
   it("reproduces the measured Anthropic advantage on the hard tail", () => {
-    const goHard = { ...ORDINARY, language: "go", hardTask: true };
+    const goHard: EvidenceScoreContext = { ...ORDINARY, language: "go", hardTask: true };
     assert.ok(
       score("claude-opus-5", "high", goHard) < score("gpt-5.6-sol", "high", goHard),
       "hard Go tasks favor claude-opus-5 at high effort",
@@ -352,7 +382,7 @@ describe("prior-seeded cost to done", () => {
     // On TypeScript, Opus 5's hard-tail advantage (30.6% vs 22.2%) is real but smaller than its
     // cost and latency penalty, so at default weights Sol still wins the first attempt and the
     // Anthropic escalation is expressed through the retry path rather than through primary scoring.
-    const typescript = { ...ORDINARY, language: "typescript" };
+    const typescript: EvidenceScoreContext = { ...ORDINARY, language: "typescript" };
     const typescriptHard = { ...typescript, hardTask: true };
     const routineGap = score("claude-opus-5", "high", typescript) - score("gpt-5.6-sol", "high", typescript);
     const hardGap = score("claude-opus-5", "high", typescriptHard) - score("gpt-5.6-sol", "high", typescriptHard);
@@ -415,7 +445,7 @@ describe("hard-task escalation prior", () => {
 
 describe("effort authorization corrections", () => {
   it("permits gpt-5.6-luna at high effort on mutating work after the cliff correction", () => {
-    const mutating = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
+    const mutating: EffortContext = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
     assert.equal(authorizeEffort("gpt-5.6-luna", "high", mutating).authorized, true);
     assert.equal(authorizeEffort("gpt-5.6-luna", "medium", mutating).authorized, false);
     assert.equal(authorizeEffort("gpt-5.6-luna", "low", mutating).authorized, false);
@@ -429,10 +459,14 @@ describe("effort authorization corrections", () => {
 
   it("refuses a non-finite score instead of ranking arbitrarily", () => {
     const row = findEvidencePrior("claude-opus-5", "medium");
-    const incomplete = { ...WEIGHTS };
+    const incomplete: Partial<EvidenceCostWeights> = { ...WEIGHTS };
     delete incomplete.regressionBreakCost;
     assert.throws(
-      () => scoreEvidencePrior(row, incomplete, { ...ORDINARY, consequence: "reversible" }),
+      () =>
+        scoreEvidencePrior(row, incomplete as EvidenceCostWeights, {
+          ...ORDINARY,
+          consequence: "reversible",
+        }),
       /is not finite/,
     );
   });

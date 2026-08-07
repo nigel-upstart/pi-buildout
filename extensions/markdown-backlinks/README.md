@@ -14,5 +14,5 @@ Run `scripts/install-extensions.sh` from the repository root, then use `/reload`
 ## Test
 
 ```bash
-node --test extensions/markdown-backlinks/index.test.mjs
+node --test extensions/markdown-backlinks/index.test.ts
 ```

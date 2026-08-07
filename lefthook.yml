@@ -1,6 +1,7 @@
 pre-commit:
-  parallel: true
   commands:
+    staged-safety:
+      run: node scripts/check-staged-files.ts
     format:
       glob: "*.{js,mjs,cjs,ts,mts,cts,json,jsonc,md,yaml,yml,sh}"
       run: npx prettier --write --ignore-unknown {staged_files}
@@ -14,6 +15,9 @@ pre-commit:
       exclude: "^patches/"
       run: npx markdownlint-cli2 --fix {staged_files}
       stage_fixed: true
+    typecheck:
+      glob: "*.{ts,mts,cts}"
+      run: npm run typecheck
 
 pre-push:
   commands:

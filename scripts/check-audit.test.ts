@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { evaluateAudit } from "./check-audit.mjs";
+import { evaluateAudit } from "./check-audit.ts";
 
 const braceNodes = ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"];
 

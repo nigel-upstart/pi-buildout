@@ -140,8 +140,8 @@ Set `PI_ROUTER_MODEL_SCOPE` to a comma-separated pattern list to pin the scope f
 Probe which scoped endpoints actually work on this machine, then let routing exclude the broken ones:
 
 ```sh
-node scripts/probe-scoped-models.mjs           # writes ~/.pi/agent/router-endpoint-health.json
-node scripts/probe-scoped-models.mjs --dry-run # list the scope without calling anything
+node scripts/probe-scoped-models.ts           # writes ~/.pi/agent/router-endpoint-health.json
+node scripts/probe-scoped-models.ts --dry-run # list the scope without calling anything
 ```
 
 Recurring failures (4xx and unusable responses) are excluded until re-probed. Transient failures (5xx, timeouts) and

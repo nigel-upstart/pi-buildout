@@ -12,18 +12,18 @@ const SECRET_PATTERNS = [
   { label: "AWS access key", pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/ },
 ];
 
-function stagedPaths() {
+function stagedPaths(): string[] {
   const output = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"]);
   return output.toString("utf8").split("\0").filter(Boolean);
 }
 
-function stagedContent(path) {
+function stagedContent(path: string): Buffer {
   return execFileSync("git", ["show", `:${path}`], { maxBuffer: MAX_BYTES * 2 });
 }
 
-const errors = [];
+const errors: string[] = [];
 const paths = stagedPaths();
-const caseFolded = new Map();
+const caseFolded = new Map<string, string>();
 
 for (const path of paths) {
   const collision = caseFolded.get(path.toLowerCase());
@@ -47,7 +47,7 @@ for (const path of paths) {
     continue;
   }
 
-  let content;
+  let content: Buffer;
   try {
     content = stagedContent(path);
   } catch (error) {
@@ -58,7 +58,7 @@ for (const path of paths) {
   }
 
   if (content.byteLength > MAX_BYTES) {
-    errors.push(`${path}: ${content.byteLength} bytes exceeds the ${MAX_BYTES}-byte limit`);
+    errors.push(`${path}: ${String(content.byteLength)} bytes exceeds the ${String(MAX_BYTES)}-byte limit`);
     continue;
   }
 
@@ -90,4 +90,4 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log(`staged-file safety checks passed (${paths.length} files)`);
+console.log(`staged-file safety checks passed (${String(paths.length)} files)`);

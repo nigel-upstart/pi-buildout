@@ -2,15 +2,39 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { deriveArchetype } from "../core/archetype.ts";
+import type { Archetype } from "../core/archetype.ts";
 import { conservativeFeatures, validateTaskFeatures } from "../core/features.ts";
+import type { TaskFeatures } from "../core/features.ts";
 import { BOOTSTRAP_ROUTE_POLICIES, reviewerRefs } from "../core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "../core/profiles.ts";
+import type { ModelVendor } from "../core/profiles.ts";
 import { deriveRoutingContext, selectOrdinaryRoute, selectStandaloneReviewRoute } from "../core/routing.ts";
+import type { RegistryModelSnapshot, RouteChoice, RouteDecision } from "../core/routing.ts";
 import { scoreFeatureAxes } from "./score.ts";
+import type { ExpectedFeatureAxes } from "./score.ts";
 
-const fixtures = JSON.parse(await readFile(new URL("./corpus/routes.json", import.meta.url), "utf8"));
+type GoldenFeatureOverrides = Partial<TaskFeatures> & ExpectedFeatureAxes;
 
-function baseFeatures() {
+type GoldenFixture = {
+  id: string;
+  featureOverrides: GoldenFeatureOverrides;
+  expected: {
+    archetype: Archetype;
+    primaryModel?: string;
+    primaryEffort?: string;
+    fallbackModel?: string;
+    fallbackEffort?: string;
+    allowedModels?: string[];
+    primaryVendor?: ModelVendor;
+    fallbackVendor?: ModelVendor;
+  };
+};
+
+const fixtures = JSON.parse(
+  await readFile(new URL("./corpus/routes.json", import.meta.url), "utf8"),
+) as GoldenFixture[];
+
+function baseFeatures(): TaskFeatures {
   return {
     ...conservativeFeatures("golden corpus fixture"),
     intent: "answer",
@@ -40,16 +64,20 @@ function baseFeatures() {
   };
 }
 
-function registry() {
+function registry(): RegistryModelSnapshot[] {
   const refs = [];
   for (const policy of Object.values(BOOTSTRAP_ROUTE_POLICIES)) refs.push(...policy.primary, ...policy.fallback);
-  for (const vendor of ["openai", "anthropic", "google"]) {
+  for (const vendor of ["openai", "anthropic", "google"] as const) {
     for (const ability of [1, 2, 3, 4]) refs.push(...reviewerRefs(vendor, ability));
   }
   // Policy names logical models, so the corpus synthesizes one manufacturer endpoint per model. This
   // is what a machine with everything scoped in looks like.
-  const providerFor = { openai: "openai-codex", anthropic: "anthropic", google: "google-vertex" };
-  const unique = new Map();
+  const providerFor: Record<ModelVendor, string> = {
+    openai: "openai-codex",
+    anthropic: "anthropic",
+    google: "google-vertex",
+  };
+  const unique = new Map<string, RegistryModelSnapshot>();
   for (const ref of refs) {
     const key = `${providerFor[ref.vendor]}/${ref.logicalModelId}`;
     if (unique.has(key)) continue;
@@ -73,11 +101,11 @@ function registry() {
 
 const models = registry();
 const requirements = { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true };
-const PREMIUM_ARCHETYPES = new Set(["large_program_planning", "highest_risk_advisory"]);
+const PREMIUM_ARCHETYPES = new Set<Archetype>(["large_program_planning", "highest_risk_advisory"]);
 
 // Premium choices are the super-saturation and highest-cost-per-pass configurations. Only the
 // premium archetypes may take one as a primary; every other archetype must stay on a saturated tier.
-function isPremiumChoice(choice) {
+function isPremiumChoice(choice: RouteChoice): boolean {
   const logical = choice.logicalModelId ?? choice.modelId;
   return (
     (logical === "gpt-5.6-sol" && choice.effort === "max") ||
@@ -86,16 +114,21 @@ function isPremiumChoice(choice) {
   );
 }
 
+function ensureRoutable(decision: RouteDecision): Exclude<RouteDecision, { kind: "unroutable" }> {
+  if (decision.kind === "unroutable") assert.fail(decision.reason);
+  return decision;
+}
+
 describe("routing golden corpus", () => {
   for (const fixture of fixtures) {
     it(fixture.id, () => {
-      const features = { ...baseFeatures(), ...fixture.featureOverrides };
+      const features: TaskFeatures = { ...baseFeatures(), ...fixture.featureOverrides };
       const validation = validateTaskFeatures(features);
       assert.equal(validation.success, true, validation.errors?.join("\n"));
       assert.equal(scoreFeatureAxes(features, fixture.featureOverrides).accuracy, 1);
       const archetype = deriveArchetype(features).archetype;
       assert.equal(archetype, fixture.expected.archetype);
-      const decision =
+      const rawDecision =
         archetype === "code_review"
           ? selectStandaloneReviewRoute(
               models,
@@ -116,7 +149,7 @@ describe("routing golden corpus", () => {
               // features, so the corpus exercises the real derivation rather than a default.
               deriveRoutingContext(features, []),
             );
-      assert.notEqual(decision.kind, "unroutable", decision.reason);
+      const decision = ensureRoutable(rawDecision);
       const fallbacks = decision.kind === "review" ? [decision.fallback] : decision.fallbacks;
       if (fixture.expected.primaryModel) assert.equal(decision.primary.modelId, fixture.expected.primaryModel);
       if (fixture.expected.primaryEffort) assert.equal(decision.primary.effort, fixture.expected.primaryEffort);

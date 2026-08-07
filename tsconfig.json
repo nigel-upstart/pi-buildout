@@ -1,8 +1,6 @@
 {
   "compilerOptions": {
     "allowImportingTsExtensions": true,
-    "allowJs": true,
-    "checkJs": true,
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,
     "module": "NodeNext",
@@ -18,6 +16,6 @@
     "target": "ES2022",
     "types": ["node"]
   },
-  "include": ["extensions/**/*.ts", "extensions/**/*.mjs"],
-  "exclude": ["node_modules", "patches", "extensions/router/**/*.test.mjs"]
+  "include": ["extensions/**/*.ts", "scripts/**/*.ts", "types/**/*.d.ts", "eslint.config.ts"],
+  "exclude": ["node_modules", "patches"]
 }

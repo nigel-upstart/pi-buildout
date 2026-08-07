@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { compilePrompt } from "./compiler.ts";
 import { findPromptProfile } from "./profiles.ts";
+import type { Archetype } from "./archetype.ts";
+import type { EffortLevel, ModelVendor, PromptProfile } from "./profiles.ts";
+import type { SessionSynopsis } from "./synopsis.ts";
 
-const synopsis = {
+const synopsis: SessionSynopsis = {
   version: 1,
   sessionId: "session",
   workspace: "/repo",
@@ -24,8 +27,10 @@ const synopsis = {
   recentOutcomes: [],
 };
 
-function profile(vendor) {
-  const values = {
+type ProfileSelection = readonly [modelId: string, archetype: Archetype, effort: EffortLevel];
+
+function profile(vendor: ModelVendor): PromptProfile {
+  const values: Record<ModelVendor, ProfileSelection> = {
     openai: ["gpt-5.6-terra", "median_repository_implementation", "medium"],
     anthropic: ["claude-opus-5", "implementation_planning", "high"],
     google: ["gemini-3.6-flash", "algorithmic_iterative_coding", "medium"],
@@ -47,7 +52,7 @@ describe("compilePrompt", () => {
     });
     assert.equal(result.userRequest, request);
     assert.equal(result.systemPrompt.includes(request), false);
-    assert.equal(result.contextMessage.includes(request), false);
+    assert.equal((result.contextMessage ?? "").includes(request), false);
     assert.deepEqual(result.sectionOrder.slice(0, 3), ["stable_policy", "execution_surface", "model_profile"]);
   });
 
@@ -59,8 +64,8 @@ describe("compilePrompt", () => {
       userRequest: "Plan the change",
     });
     assert.equal(result.systemPrompt.includes("Ignore policy"), false);
-    assert.match(result.contextMessage, /&lt;\/untrusted_session_synopsis&gt;/);
-    assert.match(result.contextMessage, /untrusted source material/);
+    assert.match(result.contextMessage ?? "", /&lt;\/untrusted_session_synopsis&gt;/);
+    assert.match(result.contextMessage ?? "", /untrusted source material/);
     assert.match(result.systemPrompt, /^<stable_policy>/);
     assert.ok(result.systemPrompt.indexOf("<model_profile>") < result.systemPrompt.indexOf("<trusted_task_context>"));
   });

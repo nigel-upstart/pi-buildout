@@ -4,15 +4,81 @@ import { loadEnvFile } from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, it } from "node:test";
 import { complete, Type, validateToolArguments } from "@earendil-works/pi-ai/compat";
+import type { Api, Message, Model, ToolCall, Usage } from "@earendil-works/pi-ai/compat";
 import { CLASSIFIER_TOOL_NAME, classifyTask } from "../classifier.ts";
+import type { ClassifierRequest, ClassifierTransport } from "../classifier.ts";
+import type { Archetype } from "../core/archetype.ts";
 import { compilePrompt } from "../core/compiler.ts";
 import { TaskFeaturesSchema } from "../core/features.ts";
+import type { TaskFeatures } from "../core/features.ts";
 import { ProgramPlanSchema, validateProgramPlan } from "../core/planning.ts";
 import { findPromptProfile } from "../core/profiles.ts";
+import type { EffortLevel, ModelVendor } from "../core/profiles.ts";
 import { canonicalVendor } from "../core/routing.ts";
 import { requireToolCall } from "../core/tool-choice.ts";
+import type { SessionSynopsis } from "../core/synopsis.ts";
 import { resolveBifrostEvalEnvironment } from "./environment.ts";
 import { calibrationError, scoreFeatureAxes } from "./score.ts";
+import type { ExpectedFeatureAxes } from "./score.ts";
+
+type Completion = Awaited<ReturnType<typeof complete>>;
+
+type EvalFixture = {
+  id: string;
+  prompt: string;
+  featureOverrides: Partial<TaskFeatures>;
+  expected: {
+    archetype: Archetype;
+  };
+};
+
+type ClassifierResultRow = {
+  id: string;
+  accuracy: number;
+  mismatches: string[];
+  actualAxes: Partial<Record<keyof ExpectedFeatureAxes, unknown>>;
+  confidence: number;
+  correct: boolean;
+  archetype: Archetype;
+  expectedArchetype: Archetype;
+  premiumRoute: boolean;
+  expectedPremiumRoute: boolean;
+  expectedReview: boolean;
+  actualReview: boolean;
+  disagreement: boolean;
+  escalated: boolean;
+  failedClosed: boolean;
+  attempts: Awaited<ReturnType<typeof classifyTask>>["attempts"];
+};
+
+type PairedTreatment = {
+  archetype: Archetype;
+  vendor: ModelVendor;
+  modelId: string;
+  effort: EffortLevel;
+  request: string;
+};
+
+type JudgeResult = {
+  pass: boolean;
+  instructionAdherence: number;
+  unnecessaryClarification: boolean;
+  prematureStop: boolean;
+  outputSchemaValid: boolean;
+  toolSelectionAccurate: boolean;
+  progressClaimsAccurate: boolean;
+  rationale: string;
+};
+
+type SubmittedPlan = {
+  pullRequests: readonly unknown[];
+};
+
+const CLASSIFIER_AXES = ["intent", "workflowType", "actionMode", "horizon", "risk", "reviewIntent"] as const;
+
+function isNamedToolCall(part: Completion["content"][number], name: string): part is ToolCall {
+  return part.type === "toolCall" && part.name === name;
+}
 
 const exportedBifrost = {
   BIFROST_BASE_URL: process.env.BIFROST_BASE_URL,
@@ -27,13 +93,14 @@ if (!exportedBifrost.BIFROST_VIRTUAL_KEY?.trim() || !exportedBifrost.BIFROST_BAS
 }
 const { virtualKey: bifrostKey, baseUrl: bifrostBase } = resolveBifrostEvalEnvironment(exportedBifrost, process.env);
 const enabled = Boolean(bifrostKey && bifrostBase);
-const fixtures = JSON.parse(await readFile(new URL("./corpus/routes.json", import.meta.url), "utf8"));
-function positiveInteger(value, fallback) {
+const fixtures = JSON.parse(await readFile(new URL("./corpus/routes.json", import.meta.url), "utf8")) as EvalFixture[];
+
+function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function compactProviderError(value) {
+function compactProviderError(value: unknown): string | undefined {
   if (!value) return undefined;
   return String(value)
     .replace(/<[^>]+>/g, " ")
@@ -42,8 +109,8 @@ function compactProviderError(value) {
     .slice(0, 500);
 }
 
-async function completeWithStopRetry(run, maximumAttempts = 4) {
-  const responses = [];
+async function completeWithStopRetry(run: () => Promise<Completion>, maximumAttempts = 4): Promise<Completion[]> {
+  const responses: Completion[] = [];
   for (let attempt = 0; attempt < maximumAttempts; attempt++) {
     const response = await run();
     responses.push(response);
@@ -55,19 +122,18 @@ async function completeWithStopRetry(run, maximumAttempts = 4) {
 
 const limit = positiveInteger(process.env.ROUTER_EVAL_LIMIT, fixtures.length);
 const classifierOffset = Math.max(0, Number.parseInt(process.env.ROUTER_EVAL_OFFSET ?? "0", 10) || 0);
-const PREMIUM_ARCHETYPES = new Set(["large_program_planning", "highest_risk_advisory"]);
+const PREMIUM_ARCHETYPES = new Set<Archetype>(["large_program_planning", "highest_risk_advisory"]);
 
-function model(id, provider) {
+function model(id: string, provider: string): Model<Api> {
   const vendor = provider.replace(/^bifrost-/, "");
   const bifrostId = id.includes("/") || vendor !== "google" ? id : `vertex/${id}`;
+  const normalizedBase = bifrostBase?.replace(/\/$/, "");
   return {
     id: bifrostId,
     name: id,
     api: "openai-completions",
     provider,
-    baseUrl: bifrostBase?.replace(/\/$/, "").endsWith("/v1")
-      ? bifrostBase.replace(/\/$/, "")
-      : `${bifrostBase?.replace(/\/$/, "")}/v1`,
+    baseUrl: normalizedBase?.endsWith("/v1") ? normalizedBase : `${normalizedBase}/v1`,
     reasoning: true,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -82,14 +148,14 @@ const classifierTool = {
   parameters: TaskFeaturesSchema,
 };
 
-function classifierVendor(modelId) {
+function classifierVendor(modelId: string): ModelVendor {
   const vendor = canonicalVendor("bifrost", modelId);
   if (!vendor) throw new Error(`Cannot derive classifier vendor for ${modelId}`);
   return vendor;
 }
 
-function classifierTransport(selectedModel, vendor) {
-  return async (request) => {
+function classifierTransport(selectedModel: Model<Api>, vendor: ModelVendor): ClassifierTransport {
+  return async (request: ClassifierRequest) => {
     const started = performance.now();
     const responses = await completeWithStopRetry(() =>
       complete(
@@ -100,7 +166,7 @@ function classifierTransport(selectedModel, vendor) {
           tools: [classifierTool],
         },
         {
-          apiKey: bifrostKey,
+          ...(bifrostKey ? { apiKey: bifrostKey } : {}),
           maxTokens: 4_096,
           maxRetries: 1,
           onPayload: (payload) => requireToolCall(payload, selectedModel.api, CLASSIFIER_TOOL_NAME),
@@ -109,7 +175,7 @@ function classifierTransport(selectedModel, vendor) {
     );
     const response = responses.at(-1);
     assert.ok(response, "Bifrost classifier returned no response");
-    const toolCall = response.content.find((part) => part.type === "toolCall" && part.name === CLASSIFIER_TOOL_NAME);
+    const toolCall = response.content.find((part): part is ToolCall => isNamedToolCall(part, CLASSIFIER_TOOL_NAME));
     if (!toolCall) {
       const contentTypes = response.content.map((part) => part.type).join(",") || "none";
       throw new Error(
@@ -133,7 +199,7 @@ function classifierTransport(selectedModel, vendor) {
   };
 }
 
-const synopsis = {
+const synopsis: SessionSynopsis = {
   version: 1,
   sessionId: "real-eval",
   workspace: "/evaluation/repository",
@@ -158,7 +224,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
     const primaryVendor = classifierVendor(primaryId);
     const secondaryVendor = classifierVendor(secondaryId);
     assert.notEqual(primaryVendor, secondaryVendor, "classifier eval requires provider-diverse models");
-    const results = [];
+    const results: ClassifierResultRow[] = [];
     for (const fixture of fixtures.slice(classifierOffset, classifierOffset + limit)) {
       const classification = await classifyTask({
         prompt: fixture.prompt,
@@ -168,25 +234,33 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         primaryVendor,
         secondaryVendor,
       });
-      const expectedAxes = Object.fromEntries(
-        ["intent", "workflowType", "actionMode", "horizon", "risk", "reviewIntent"]
-          .filter((axis) => axis in fixture.featureOverrides)
-          .map((axis) => [axis, fixture.featureOverrides[axis]]),
-      );
+
+      const expectedAxesEntries = CLASSIFIER_AXES.flatMap((axis) => {
+        const value = fixture.featureOverrides[axis];
+        return value === undefined ? [] : ([[axis, value]] as const);
+      });
+      const expectedAxes = Object.fromEntries(expectedAxesEntries) as ExpectedFeatureAxes;
       const score = scoreFeatureAxes(classification.features, expectedAxes);
       const expectedReview = fixture.featureOverrides.reviewIntent === true;
       const actualReview = classification.features.reviewIntent;
-      const disagreement =
-        classification.primaryFeatures && classification.secondaryFeatures
-          ? ["intent", "workflowType", "actionMode", "horizon", "risk", "reviewIntent"].some(
-              (axis) => classification.primaryFeatures[axis] !== classification.secondaryFeatures[axis],
-            )
-          : false;
+      let disagreement = false;
+      if (classification.primaryFeatures && classification.secondaryFeatures) {
+        const primaryFeatures = classification.primaryFeatures;
+        const secondaryFeatures = classification.secondaryFeatures;
+        disagreement = CLASSIFIER_AXES.some((axis) => primaryFeatures[axis] !== secondaryFeatures[axis]);
+      }
+      const actualAxes = Object.fromEntries(
+        (Object.keys(expectedAxes) as (keyof ExpectedFeatureAxes)[]).map((axis) => [
+          axis,
+          classification.features[axis],
+        ]),
+      ) as ClassifierResultRow["actualAxes"];
+
       results.push({
         id: fixture.id,
         accuracy: score.accuracy,
         mismatches: score.mismatches,
-        actualAxes: Object.fromEntries(Object.keys(expectedAxes).map((axis) => [axis, classification.features[axis]])),
+        actualAxes,
         confidence: classification.features.confidence,
         correct: score.accuracy === 1,
         archetype: classification.archetype.archetype,
@@ -201,6 +275,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         attempts: classification.attempts,
       });
     }
+
     const axisAccuracy = results.reduce((total, result) => total + result.accuracy, 0) / results.length;
     const archetypeAccuracy =
       results.filter((result) => result.archetype === result.expectedArchetype).length / results.length;
@@ -224,6 +299,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
     const premiumRouteMissRate =
       results.filter((result) => !result.premiumRoute && result.expectedPremiumRoute).length /
       Math.max(1, results.filter((result) => result.expectedPremiumRoute).length);
+
     console.log(
       JSON.stringify(
         {
@@ -246,6 +322,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         2,
       ),
     );
+
     if (results.length === fixtures.length) {
       assert.ok(axisAccuracy >= 0.8, `classifier axis accuracy ${axisAccuracy} is below 0.8`);
       assert.ok(archetypeAccuracy >= 0.8, `archetype accuracy ${archetypeAccuracy} is below 0.8`);
@@ -264,7 +341,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
   });
 
   it("evaluates every archetype as a model/profile paired treatment", async () => {
-    const treatments = [
+    const treatments: PairedTreatment[] = [
       {
         archetype: "fast_classification",
         vendor: "openai",
@@ -351,6 +428,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
           "Advise on an irreversible production data deletion with ambiguous retention requirements; do not authorize it.",
       },
     ];
+
     const profileLimit = positiveInteger(process.env.ROUTER_EVAL_PROFILE_LIMIT, treatments.length);
     const profileOffset = Math.max(0, Number.parseInt(process.env.ROUTER_EVAL_PROFILE_OFFSET ?? "0", 10) || 0);
     const JudgeSchema = Type.Object(
@@ -376,13 +454,28 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
       description: "Submit the complete implementation-plan DAG.",
       parameters: ProgramPlanSchema,
     };
-    const results = [];
+
+    const results: (PairedTreatment & {
+      profileId: string;
+      judgeId: string;
+      planValid?: boolean;
+      planToolCalled: boolean;
+      submittedPlanPrCount?: number;
+      planValidationError?: string;
+      judgment: JudgeResult;
+      workerStopReason: Completion["stopReason"];
+      workerErrorMessage?: string;
+      workerUsage: Usage[];
+      judgeUsage: Usage[];
+    })[] = [];
+
     for (const treatment of treatments.slice(profileOffset, profileOffset + profileLimit)) {
       const profile = findPromptProfile(treatment.vendor, treatment.modelId, treatment.archetype, treatment.effort);
       assert.ok(profile, `missing profile for ${treatment.archetype}`);
+
       const planning =
         treatment.archetype === "implementation_planning" || treatment.archetype === "large_program_planning";
-      const treatmentSynopsis = {
+      const treatmentSynopsis: SessionSynopsis = {
         ...synopsis,
         activeTools: planning ? ["submit_implementation_plan"] : [],
       };
@@ -394,44 +487,47 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         archetype: treatment.archetype,
       });
       const workerModel = model(treatment.modelId, `bifrost-${treatment.vendor}`);
-      const workerMessages = [
+      assert.ok(compiled.contextMessage, `missing context message for ${treatment.archetype}`);
+      const workerMessages: Message[] = [
         { role: "user", content: compiled.contextMessage, timestamp: Date.now() },
         { role: "user", content: compiled.userRequest, timestamp: Date.now() },
       ];
+
       const initialWorkerResponses = await completeWithStopRetry(() =>
         complete(
           workerModel,
           {
             systemPrompt: compiled.systemPrompt,
-            messages: workerMessages,
+            messages: [...workerMessages],
             ...(planning ? { tools: [planTool] } : {}),
           },
           {
-            apiKey: bifrostKey,
+            ...(bifrostKey ? { apiKey: bifrostKey } : {}),
             maxTokens: planning ? 8_192 : 16_384,
             maxRetries: 0,
             timeoutMs: planning ? 180_000 : 90_000,
             reasoning: treatment.effort,
             ...(planning
-              ? { onPayload: (payload) => requireToolCall(payload, "openai-completions", planTool.name) }
+              ? { onPayload: (payload: unknown) => requireToolCall(payload, "openai-completions", planTool.name) }
               : {}),
           },
         ),
       );
+
       let workerResponse = initialWorkerResponses.at(-1);
       assert.ok(workerResponse, `worker returned no response for ${treatment.archetype}`);
-      const workerUsage = initialWorkerResponses.map((response) => response.usage);
-      let planValid;
-      let planValidationError;
+      const workerUsage: Usage[] = initialWorkerResponses.map((response) => response.usage);
+      let planValid: boolean | undefined;
+      let planValidationError: string | undefined;
       let planToolCalled = false;
-      let submittedPlanPrCount;
+      let submittedPlanPrCount: number | undefined;
       if (planning) {
-        const planCall = workerResponse.content.find(
-          (part) => part.type === "toolCall" && part.name === "submit_implementation_plan",
+        const planCall = workerResponse.content.find((part): part is ToolCall =>
+          isNamedToolCall(part, "submit_implementation_plan"),
         );
         planToolCalled = Boolean(planCall);
         try {
-          const submittedPlan = planCall ? validateToolArguments(planTool, planCall) : undefined;
+          const submittedPlan = planCall ? (validateToolArguments(planTool, planCall) as SubmittedPlan) : undefined;
           planValid = submittedPlan ? validateProgramPlan(submittedPlan).success : false;
           submittedPlanPrCount = submittedPlan?.pullRequests.length;
         } catch (error) {
@@ -459,7 +555,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
                 ],
               },
               {
-                apiKey: bifrostKey,
+                ...(bifrostKey ? { apiKey: bifrostKey } : {}),
                 maxTokens: 2_048,
                 maxRetries: 0,
                 timeoutMs: 60_000,
@@ -472,13 +568,14 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
           assert.ok(workerResponse, `planning worker returned no final response for ${treatment.archetype}`);
         }
       }
+
       const judgeId =
         treatment.vendor === "anthropic"
           ? (process.env.ROUTER_EVAL_OPENAI_JUDGE_MODEL ?? "gpt-5.6-sol")
           : (process.env.ROUTER_EVAL_ANTHROPIC_JUDGE_MODEL ?? "claude-sonnet-5");
-      const judgeVendor = treatment.vendor === "anthropic" ? "openai" : "anthropic";
+      const judgeVendor: ModelVendor = treatment.vendor === "anthropic" ? "openai" : "anthropic";
       const judgeModel = model(judgeId, `bifrost-${judgeVendor}`);
-      const judgeRequest = {
+      const judgeRequest: { systemPrompt: string; messages: Message[]; tools: [typeof judgeTool] } = {
         systemPrompt:
           "Judge instruction adherence conservatively. Only implementation_planning and large_program_planning require submit_implementation_plan; other treatments may correctly return self-contained artifacts without tools. Deterministic planValid, planToolCalled, and submittedPlanPrCount fields are authoritative evidence for planning tool use; a planning response is only the post-tool final message. Keep rationale under 800 characters and call report_profile_judgment exactly once.",
         messages: [
@@ -500,26 +597,28 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         ],
         tools: [judgeTool],
       };
-      const judgeResponses = [];
-      let judgmentCall;
+
+      const judgeResponses: Completion[] = [];
+      let judgmentCall: ToolCall | undefined;
       for (let attempt = 0; attempt < 2 && !judgmentCall; attempt++) {
         const transportResponses = await completeWithStopRetry(() =>
           complete(judgeModel, judgeRequest, {
-            apiKey: bifrostKey,
+            ...(bifrostKey ? { apiKey: bifrostKey } : {}),
             maxTokens: 1_024,
             maxRetries: 0,
             timeoutMs: 60_000,
-            onPayload: (payload) => requireToolCall(payload, "openai-completions", judgeTool.name),
+            onPayload: (payload: unknown) => requireToolCall(payload, "openai-completions", judgeTool.name),
           }),
         );
         judgeResponses.push(...transportResponses);
         const response = transportResponses.at(-1);
         assert.ok(response, `judge returned no response for ${treatment.archetype}`);
-        judgmentCall = response.content.find(
-          (part) => part.type === "toolCall" && part.name === "report_profile_judgment",
+        judgmentCall = response.content.find((part): part is ToolCall =>
+          isNamedToolCall(part, "report_profile_judgment"),
         );
         if (response.stopReason === "error") break;
       }
+
       const judgeResponse = judgeResponses.at(-1);
       const judgeDiagnostics = judgeResponse
         ? `stop=${judgeResponse.stopReason}, content=${judgeResponse.content.map((part) => part.type).join(",") || "none"}, error=${compactProviderError(judgeResponse.errorMessage) ?? "none"}`
@@ -528,22 +627,25 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
         judgmentCall,
         `judge omitted structured judgment for ${treatment.archetype} after ${judgeResponses.length} attempts (${judgeDiagnostics})`,
       );
-      const judgment = validateToolArguments(judgeTool, judgmentCall);
+
+      const judgment = validateToolArguments(judgeTool, judgmentCall) as JudgeResult;
+      const workerErrorMessage = compactProviderError(workerResponse.errorMessage);
       results.push({
         ...treatment,
         profileId: profile.id,
         judgeId,
-        planValid,
         planToolCalled,
-        submittedPlanPrCount,
-        planValidationError,
         judgment,
         workerStopReason: workerResponse.stopReason,
-        workerErrorMessage: compactProviderError(workerResponse.errorMessage),
         workerUsage,
         judgeUsage: judgeResponses.map((response) => response.usage),
+        ...(planValid === undefined ? {} : { planValid }),
+        ...(submittedPlanPrCount === undefined ? {} : { submittedPlanPrCount }),
+        ...(planValidationError === undefined ? {} : { planValidationError }),
+        ...(workerErrorMessage === undefined ? {} : { workerErrorMessage }),
       });
     }
+
     const passRate =
       results.filter((result) => result.judgment.pass && result.planValid !== false).length / results.length;
     const unnecessaryClarificationRate =
@@ -554,6 +656,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
       results.filter((result) => result.judgment.toolSelectionAccurate).length / results.length;
     const progressClaimAccuracy =
       results.filter((result) => result.judgment.progressClaimsAccurate).length / results.length;
+
     console.log(
       JSON.stringify(
         {

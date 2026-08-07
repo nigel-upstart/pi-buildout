@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildClassifierRequest, classifyTask, reconcileFeatures } from "./classifier.ts";
+import type { ClassifierTransport } from "./classifier.ts";
 import { conservativeFeatures } from "./core/features.ts";
+import type { TaskFeatures } from "./core/features.ts";
+import type { SessionSynopsis } from "./core/synopsis.ts";
 
-const synopsis = {
+const synopsis: SessionSynopsis = {
   version: 1,
   sessionId: "s",
   workspace: "/repo",
@@ -16,7 +19,7 @@ const synopsis = {
   recentOutcomes: [],
 };
 
-function features(overrides = {}) {
+function features(overrides: Partial<TaskFeatures> = {}): TaskFeatures {
   return {
     ...conservativeFeatures("fixture"),
     intent: "implement",
@@ -43,7 +46,11 @@ function features(overrides = {}) {
   };
 }
 
-function transport(argumentsValue, vendor, modelId = `${vendor}-classifier`) {
+function transport(
+  argumentsValue: unknown,
+  vendor: "openai" | "anthropic" | "google",
+  modelId = `${vendor}-classifier`,
+): ClassifierTransport {
   return async () => ({
     arguments: argumentsValue,
     provider: vendor,
@@ -79,9 +86,9 @@ describe("classifyTask", () => {
       prompt: "Implement it",
       synopsis,
       primary: transport(features(), "openai"),
-      secondary: async () => {
+      secondary: async (request) => {
         secondaryCalls++;
-        return transport(features(), "anthropic")();
+        return transport(features(), "anthropic")(request);
       },
     });
     assert.equal(result.escalated, false);
@@ -170,7 +177,7 @@ describe("classifyTask", () => {
       secondaryVendor: "openai",
     });
     assert.equal(result.failedClosed, true);
-    assert.match(result.features.evidence[0], /same vendor/);
+    assert.match(result.features.evidence[0] ?? "", /same vendor/);
   });
 
   it("retries malformed output and fails closed when validation never succeeds", async () => {
@@ -179,13 +186,13 @@ describe("classifyTask", () => {
     const result = await classifyTask({
       prompt: "Do something",
       synopsis,
-      primary: async () => {
+      primary: async (request) => {
         primaryCalls++;
-        return transport({ model: "gpt" }, "openai")();
+        return transport({ model: "gpt" }, "openai")(request);
       },
-      secondary: async () => {
+      secondary: async (request) => {
         secondaryCalls++;
-        return transport({ risk: "banana" }, "anthropic")();
+        return transport({ risk: "banana" }, "anthropic")(request);
       },
     });
     assert.equal(primaryCalls, 2);
@@ -204,7 +211,7 @@ describe("classifyTask", () => {
       secondary: transport(features({ risk: "high" }), "openai"),
     });
     assert.equal(result.failedClosed, true);
-    assert.match(result.features.evidence[0], /same vendor/);
+    assert.match(result.features.evidence[0] ?? "", /same vendor/);
   });
 });
 

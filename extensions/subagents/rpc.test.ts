@@ -3,9 +3,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { buildKickoffPrompt, ManagedSubagent, parseSessionStats } from "./rpc.ts";
 
-const mockPath = fileURLToPath(new URL("./mock-rpc-child.mjs", import.meta.url));
-/** @param {number} ms */
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const mockPath = fileURLToPath(new URL("./mock-rpc-child.ts", import.meta.url));
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("fresh kickoff omits the context wrapper when compaction is unavailable", () => {
   assert.equal(buildKickoffPrompt("Do the task", ""), "Task:\nDo the task");
@@ -55,8 +54,12 @@ test("managed child starts, streams a bounded transcript, accepts more work, and
   assert.equal(snapshot.lastAssistantText, "answer-1");
   assert.match(snapshot.transcriptTail, /answer-1/);
   assert.equal(snapshot.compactions, 1);
-  assert.equal(snapshot.stats?.tokens.total, 175);
-  assert.equal(snapshot.stats?.contextUsage?.percent, 2);
+  const stats = snapshot.stats;
+  assert.ok(stats);
+  assert.equal(stats.tokens.total, 175);
+  const contextUsage = stats.contextUsage;
+  assert.ok(contextUsage);
+  assert.equal(contextUsage.percent, 2);
 
   await child.followUp("do one more thing");
   await sleep(40);
@@ -183,9 +186,9 @@ test("stop terminates descendant processes, not only the Pi child", async (t) =>
   t.after(async () => child.stop());
   await child.start();
   await sleep(60);
-  const match = child.snapshot().transcriptTail.match(/descendant:(\d+)/);
+  const match = /descendant:(\d+)/.exec(child.snapshot().transcriptTail);
   assert.ok(match);
-  const descendantPid = Number(match[1]);
+  const descendantPid = Number(match[1] ?? "");
   process.kill(descendantPid, 0);
   await sleep(300); // let the descendant install its SIGTERM handler
   await child.stop();
@@ -199,7 +202,7 @@ test("stop terminates descendant processes, not only the Pi child", async (t) =>
       return;
     }
   }
-  assert.fail(`descendant process ${descendantPid} survived stop`);
+  assert.fail(`descendant process ${String(descendantPid)} survived stop`);
 });
 
 test("managed child preserves terminal model failures after agent_settled", async (t) => {

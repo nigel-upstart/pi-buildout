@@ -6,14 +6,19 @@ let prompts = 0;
 let activeOperation = 0;
 let abortFails = false;
 
-/** @param {unknown} value */
-function send(value) {
+type MockCommand = {
+  id?: string;
+  message?: unknown;
+  type: string;
+};
+
+function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
-  const command = JSON.parse(line);
+  const command = JSON.parse(line) as MockCommand;
   if (command.type === "extension_ui_response") return;
   if (command.type === "get_state") {
     send({
@@ -80,7 +85,7 @@ input.on("line", (line) => {
             ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
             { stdio: "ignore" },
           );
-          const text = `descendant:${descendant.pid}`;
+          const text = `descendant:${String(descendant.pid)}`;
           send({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
           send({
             type: "message_end",
@@ -95,13 +100,13 @@ input.on("line", (line) => {
         } else {
           send({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: `answer-${promptNumber}` },
+            assistantMessageEvent: { type: "text_delta", delta: `answer-${String(promptNumber)}` },
           });
           send({
             type: "message_end",
             message: {
               role: "assistant",
-              content: [{ type: "text", text: `answer-${promptNumber}` }],
+              content: [{ type: "text", text: `answer-${String(promptNumber)}` }],
               stopReason: "stop",
             },
           });

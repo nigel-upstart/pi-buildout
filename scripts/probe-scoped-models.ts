@@ -12,8 +12,8 @@
  * failure.
  *
  * Usage:
- *   node scripts/probe-scoped-models.mjs [--out <path>] [--concurrency <n>] [--timeout <seconds>]
- *   node scripts/probe-scoped-models.mjs --dry-run    # list the scope without calling anything
+ *   node scripts/probe-scoped-models.ts [--out <path>] [--concurrency <n>] [--timeout <seconds>]
+ *   node scripts/probe-scoped-models.ts --dry-run    # list the scope without calling anything
  */
 
 import { spawn } from "node:child_process";
@@ -25,6 +25,23 @@ import { parseArgs } from "node:util";
 
 const PROMPT = "Reply with exactly: PROBE_OK";
 const EXPECTED = "PROBE_OK";
+
+type Settings = {
+  enabledModels?: string[];
+};
+
+type ProbeStatus = "ok" | "timeout" | "server_error" | "client_error" | "failed";
+
+type ProbeClassification = {
+  status: ProbeStatus;
+  httpStatus?: number;
+  detail?: string;
+};
+
+type ProbeResult = ProbeClassification & {
+  reference: string;
+  latencyMs: number;
+};
 
 const { values } = parseArgs({
   options: {
@@ -39,34 +56,35 @@ const outPath = values.out ?? join(homedir(), ".pi", "agent", "router-endpoint-h
 const concurrency = Math.max(1, Number.parseInt(values.concurrency, 10) || 4);
 const timeoutMs = (Number.parseInt(values.timeout, 10) || 120) * 1000;
 
-async function readSettings(path) {
+async function readSettings(path: string): Promise<Settings> {
   try {
-    return JSON.parse(await readFile(path, "utf8"));
+    return JSON.parse(await readFile(path, "utf8")) as Settings;
   } catch {
     return {};
   }
 }
 
 /** Scope patterns, project settings first so a project can narrow the probe. */
-async function scopePatterns() {
+async function scopePatterns(): Promise<string[]> {
   const project = await readSettings(join(process.cwd(), ".pi", "settings.json"));
   const user = await readSettings(join(homedir(), ".pi", "agent", "settings.json"));
   return project.enabledModels ?? user.enabledModels ?? [];
 }
 
-function listModels() {
+function listModels(): Promise<Set<string>> {
   return new Promise((resolve, reject) => {
     const child = spawn("pi", ["--list-models"], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
+    child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf8")));
     child.on("error", reject);
     child.on("close", () => {
       const rows = out
         .split("\n")
         .slice(1)
         .map((line) => line.trim().split(/\s+/))
-        .filter((parts) => parts.length >= 2)
-        .map(([provider, modelId]) => `${provider}/${modelId}`);
+        .flatMap(([provider, modelId]) =>
+          provider === undefined || modelId === undefined ? [] : [`${provider}/${modelId}`],
+        );
       resolve(new Set(rows));
     });
   });
@@ -76,10 +94,10 @@ function listModels() {
  * Classify a failure into something actionable. A 4xx is a configuration or capability problem that
  * will recur; a 5xx or timeout may be transient. The router treats them differently.
  */
-function classify(stdout, stderr, code, timedOut) {
+function classify(stdout: string, stderr: string, code: number | null, timedOut: boolean): ProbeClassification {
   const text = `${stdout}\n${stderr}`;
   if (stdout.includes(EXPECTED)) return { status: "ok" };
-  if (timedOut) return { status: "timeout", detail: `no response within ${timeoutMs / 1000}s` };
+  if (timedOut) return { status: "timeout", detail: `no response within ${String(timeoutMs / 1000)}s` };
   const httpStatus = /\b(4\d{2}|5\d{2})\b/.exec(text)?.[1];
   if (httpStatus) {
     const numeric = Number.parseInt(httpStatus, 10);
@@ -98,7 +116,7 @@ function classify(stdout, stderr, code, timedOut) {
   return { status: "failed", detail: firstMeaningfulLine(text) || `exit code ${String(code)}` };
 }
 
-function firstMeaningfulLine(text) {
+function firstMeaningfulLine(text: string): string {
   return (
     text
       .split("\n")
@@ -108,7 +126,7 @@ function firstMeaningfulLine(text) {
   );
 }
 
-function probe(reference) {
+function probe(reference: string): Promise<ProbeResult> {
   return new Promise((resolve) => {
     const started = Date.now();
     const child = spawn("pi", ["--no-session", "--no-tools", "--no-extensions", "--model", reference, "-p", PROMPT], {
@@ -121,8 +139,8 @@ function probe(reference) {
       timedOut = true;
       child.kill("SIGKILL");
     }, timeoutMs);
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf8")));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
     child.on("error", (error) => {
       clearTimeout(timer);
       resolve({ reference, status: "failed", detail: error.message, latencyMs: Date.now() - started });
@@ -158,7 +176,7 @@ async function main() {
   }
   if (values["dry-run"]) return;
 
-  const results = [];
+  const results: ProbeResult[] = [];
   const queue = [...exact];
   await Promise.all(
     Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
@@ -179,7 +197,7 @@ async function main() {
     probedAt: new Date().toISOString(),
     prompt: PROMPT,
     endpoints: results.map((result) => {
-      const [provider, ...rest] = result.reference.split("/");
+      const [provider = "", ...rest] = result.reference.split("/");
       return {
         provider,
         modelId: rest.join("/"),

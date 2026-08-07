@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import effortExtension from "./index.ts";
 import {
   cycleApplyMode,
@@ -89,41 +90,43 @@ describe("parseThinkingLevelArgument", () => {
 });
 
 function createCommandHarness() {
-  /** @type {any} */
-  let command;
-  /** @type {string[]} */
-  const levels = [];
-  /** @type {{message: string, level: string}[]} */
-  const notifications = [];
+  type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
+  type CommandHandler = Command["handler"];
+  type CommandContext = Parameters<CommandHandler>[1];
+  type ThinkingLevel = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
+
+  let command: Command | undefined;
+  const levels: ThinkingLevel[] = [];
+  const notifications: { message: string; level: string }[] = [];
   let customCalls = 0;
 
-  effortExtension(
-    /** @type {any} */ ({
-      registerCommand(/** @type {string} */ _name, /** @type {any} */ options) {
-        command = options;
-      },
-      getThinkingLevel() {
-        return "low";
-      },
-      setThinkingLevel(/** @type {string} */ level) {
-        levels.push(level);
-      },
-    }),
-  );
+  const api = {
+    registerCommand(_name: string, options: Command): void {
+      command = options;
+    },
+    getThinkingLevel(): ThinkingLevel {
+      return "low";
+    },
+    setThinkingLevel(level: ThinkingLevel): void {
+      levels.push(level);
+    },
+  };
+  effortExtension(api as ExtensionAPI);
 
   const ctx = {
     mode: "tui",
     ui: {
-      notify(/** @type {string} */ message, /** @type {string} */ level) {
+      notify(message: string, level: string): void {
         notifications.push({ message, level });
       },
-      async custom() {
+      custom(): Promise<null> {
         customCalls += 1;
-        return null;
+        return Promise.resolve(null);
       },
     },
-  };
+  } as unknown as CommandContext;
 
+  if (!command) throw new Error("effort extension did not register its command");
   return { command, ctx, customCalls: () => customCalls, levels, notifications };
 }
 
@@ -147,8 +150,10 @@ describe("effort command arguments", () => {
 
     assert.equal(harness.customCalls(), 1);
     assert.equal(harness.levels.length, 0);
-    assert.equal(harness.notifications[0]?.level, "warning");
-    assert.match(harness.notifications[0]?.message ?? "", /Unknown thinking effort "med"/);
+    const notification = harness.notifications[0];
+    assert.ok(notification);
+    assert.equal(notification.level, "warning");
+    assert.match(notification.message, /Unknown thinking effort "med"/);
   });
 
   it("opens the dialog without warning when the argument is missing", async () => {

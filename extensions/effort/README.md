@@ -16,5 +16,5 @@ Run `scripts/install-extensions.sh` from the repository root, then use `/reload`
 ## Test
 
 ```bash
-node --test extensions/effort/index.test.mjs
+node --test extensions/effort/index.test.ts
 ```

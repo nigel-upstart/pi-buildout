@@ -9,12 +9,12 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const temporaryDirectories = [];
+const temporaryDirectories: string[] = [];
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-async function exists(path) {
+async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
@@ -38,7 +38,7 @@ describe("extension installer", () => {
     assert.equal(await exists(stale), false);
     assert.equal(await exists(join(router, "index.ts")), true);
     assert.equal(await exists(join(router, "core", "planning.ts")), true);
-    assert.equal(await exists(join(router, "core", "planning.test.mjs")), false);
+    assert.equal(await exists(join(router, "core", "planning.test.ts")), false);
     assert.match(await readFile(join(router, "index.ts"), "utf8"), /submit_implementation_plan/);
   });
 });

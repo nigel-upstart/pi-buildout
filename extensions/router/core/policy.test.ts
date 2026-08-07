@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { BOOTSTRAP_ROUTE_POLICIES, PEER_ARCHETYPES, reviewerRefs } from "./policy.ts";
+import type { CandidateRef } from "./policy.ts";
 import { disqualificationReason } from "./evidence.ts";
+import type { AbilityTier } from "./evidence.ts";
 import { MODEL_VENDORS } from "./profiles.ts";
 
-function reachableRefs() {
+function reachableRefs(): readonly CandidateRef[] {
   return [
     ...Object.values(BOOTSTRAP_ROUTE_POLICIES).flatMap((policy) => [...policy.primary, ...policy.fallback]),
     // minimumAbility 1 makes every reviewer tier eligible, so this covers all of them.
@@ -14,7 +16,7 @@ function reachableRefs() {
 
 describe("policy ability table invariants", () => {
   it("never maps one (modelId, effort) pair to conflicting abilities", () => {
-    const seen = new Map();
+    const seen = new Map<string, AbilityTier>();
     for (const ref of reachableRefs()) {
       const key = `${ref.logicalModelId}@${ref.effort}`;
       const known = seen.get(key);
@@ -31,7 +33,7 @@ describe("policy ability table invariants", () => {
     for (const [archetype, policy] of Object.entries(BOOTSTRAP_ROUTE_POLICIES)) {
       for (const ref of [...policy.primary, ...policy.fallback]) {
         if (ref.unmeasuredPeer !== true) continue;
-        assert.ok(allowed.has(archetype), `${ref.logicalModelId} is an unmeasured peer in ${archetype}`);
+        assert.ok(allowed.has(policy.archetype), `${ref.logicalModelId} is an unmeasured peer in ${archetype}`);
         assert.equal(ref.ability, 1, `${ref.logicalModelId} must stay in the lowest band`);
         // A peer is an availability and price alternative, never the declared first attempt.
         assert.ok(!policy.primary.includes(ref), `${ref.logicalModelId} must not be the primary of ${archetype}`);

@@ -94,8 +94,8 @@ is the checked-in corpus rather than a historical design example.
 ```text
 extensions/router/eval/
   corpus/routes.json     # golden fixtures (see above)
-  golden.test.mjs        # offline archetype/route/profile regression entry point
-  real.test.mjs          # real Bifrost classifier and paired-treatment judge calls
+  golden.test.ts         # offline archetype/route/profile regression entry point
+  real.test.ts           # real Bifrost classifier and paired-treatment judge calls
   score.ts               # per-axis accuracy and confidence-calibration scoring
 ```
 
