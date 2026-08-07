@@ -1,0 +1,11 @@
+{
+  "name": "pi-router-extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime dependency manifest for the pi router extension. Installed alongside the extension so its imports resolve outside this repository.",
+  "dependencies": {
+    "shell-quote": "1.10.0",
+    "shlex": "3.0.0"
+  }
+}
