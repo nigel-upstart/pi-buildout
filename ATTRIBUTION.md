@@ -157,6 +157,8 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
+- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
+  during the lease phases that can accept them.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
@@ -191,3 +193,27 @@ version-pinned pi skills patch ([`patches/pi-0.83.0/skills.patch`](patches/pi-0.
 - **Intentionally not adopted**: the skills catalog/activation model, session-scoped (`--session`) entries, the
   `/skills` command surface, and the enabled-entry list shape. Router start mode is a single scalar preference per
   scope, not a list, and it is not settable from a slash command.
+
+## `shell-quote` and `shlex` (router shell tokenizer dependencies)
+
+- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.10.0`, MIT) and `shlex`
+  (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
+- Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
+  copied or modified, and both ship their own type declarations.
+
+What each is used for, and why both:
+
+- `shell-quote`'s `parse` supplies the token structure the read-only gate needs, classifying control operators, glob
+  patterns, and comments as distinct entries rather than as text.
+- `shlex`'s `split` supplies malformed-quoting detection, which `shell-quote` does not report: it accepts an unbalanced
+  quote silently.
+
+Behavior of both libraries that this repository deliberately compensates for, rather than relying on:
+
+- Both treat newlines and carriage returns as ordinary whitespace, so a two-line command lexes into one argument list.
+  Control characters are therefore rejected on the raw string before either lexer runs.
+- `shell-quote` performs parameter expansion during parsing and yields an empty token for an unset variable, so `$` and
+  backticks are rejected before parsing rather than interpreted.
+
+The argv policy itself — the allowed binaries, git subcommands, and per-binary flag allowlists — is original code in
+this repository and is not derived from either package.

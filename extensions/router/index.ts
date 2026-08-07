@@ -6,6 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
+import { isCodeBuilder } from "./core/features.ts";
 import { resolveFallback } from "./core/fallback.ts";
 import type { FailureKind } from "./core/fallback.ts";
 import {
@@ -19,10 +20,31 @@ import {
 } from "./core/lease.ts";
 import type { BoundaryGateResult, LeaseState, RouterMode, TaskLease } from "./core/lease.ts";
 import { ProgramPlanSchema, validateProgramPlan } from "./core/planning.ts";
+import {
+  ActionPlanSchema,
+  SafetyReviewSchema,
+  deriveSafetyPolicy,
+  initialLifecycle,
+  isPotentiallyMutatingTool,
+  lifecycleRequiresCompletionReview,
+  lifecycleToolBlockReason,
+  safetyContextForLifecycle,
+  safetyFingerprint,
+  validateActionPlan,
+  validateSafetyReview,
+} from "./core/safety.ts";
+import type { CompletionEvidence, LeaseLifecycle, ReviewOutcome, SafetyReviewKind } from "./core/safety.ts";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
-import { deriveRoutingContext, registrySnapshotId, selectOrdinaryRoute, selectReviewRoute } from "./core/routing.ts";
+import {
+  deriveRoutingContext,
+  isStandaloneReviewRequest,
+  registrySnapshotId,
+  selectOrdinaryRoute,
+  selectReviewRoute,
+  selectStandaloneReviewRoute,
+} from "./core/routing.ts";
 import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
@@ -94,6 +116,63 @@ export function deterministicCheckCommand(command: string): string | undefined {
   return normalized.slice(0, 500);
 }
 
+const SAFETY_LIFECYCLE_TOOL_NAMES = new Set(["submit_action_plan", "submit_safety_review"]);
+
+/** Keep lifecycle validators out of the model's tool surface unless the active phase can accept them. */
+export function activeToolsForSafetyLifecycle(
+  activeTools: readonly string[],
+  lifecycle: LeaseLifecycle | undefined,
+): string[] {
+  const next = activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name));
+  if (lifecycle?.phase === "preflight") next.push("submit_action_plan");
+  if (lifecycle?.phase === "review") next.push("submit_safety_review");
+  return next;
+}
+
+function sameRouteChoice(left: RouteChoice, right: RouteChoice): boolean {
+  return (
+    left.provider === right.provider &&
+    left.modelId === right.modelId &&
+    left.effort === right.effort &&
+    left.profileId === right.profileId
+  );
+}
+
+/** Carry an explicit model/effort choice across a semantic task boundary without carrying the old lease. */
+export function routeChoicesForNewLease(
+  routedSelection: RouteChoice,
+  routedFallbacks: readonly RouteChoice[],
+  previousSelection: RouteChoice | undefined,
+  preservePreviousSelection: boolean,
+): { selected: RouteChoice; previousSelection?: RouteChoice; fallbacks: RouteChoice[] } {
+  const selected = preservePreviousSelection && previousSelection ? previousSelection : routedSelection;
+  const fallbackCandidates =
+    preservePreviousSelection && previousSelection ? [routedSelection, ...routedFallbacks] : [...routedFallbacks];
+  const fallbacks: RouteChoice[] = [];
+  for (const candidate of fallbackCandidates) {
+    if (sameRouteChoice(candidate, selected) || fallbacks.some((existing) => sameRouteChoice(existing, candidate))) {
+      continue;
+    }
+    fallbacks.push(candidate);
+  }
+  return {
+    selected,
+    ...(previousSelection ? { previousSelection } : {}),
+    fallbacks,
+  };
+}
+
+export function safetyToolBlockReason(
+  lease: Pick<TaskLease, "lifecycle" | "manualOverride"> | undefined,
+  toolName: string,
+  input: Record<string, unknown>,
+): string | undefined {
+  if (lease?.manualOverride && (lease.lifecycle.policy !== "ordinary" || lease.lifecycle.phase === "review")) {
+    return "Manual model/effort override invalidated the active safety lifecycle; re-enable active routing or start a new task";
+  }
+  return lifecycleToolBlockReason(lease?.lifecycle, toolName, input);
+}
+
 // A hung classifier/selection call must never block the agent turn indefinitely. Ten seconds is
 // generous for the cheap classifier models this extension targets; past that we abort the
 // in-flight request (via the shared AbortSignal, so the underlying network call is actually
@@ -150,7 +229,43 @@ function contextSizeBucket(ctx: ExtensionContext, features: TaskLease["features"
 function statusLabel(state: LeaseState): string {
   const lease = state.active;
   if (!lease) return `route:${state.mode}`;
-  return `route:${state.mode}${lease.executionFailed ? ":failed" : ""} ${lease.selected.vendor}/${lease.selected.modelId} ${lease.selected.effort}`;
+  return `route:${state.mode}${lease.executionFailed ? ":failed" : ""}:${lease.lifecycle.phase} ${lease.selected.vendor}/${lease.selected.modelId} ${lease.selected.effort}`;
+}
+
+export function resumeCompletedLifecycle(
+  completed: Extract<LeaseLifecycle, { phase: "completed" }>,
+  sessionId: string,
+): LeaseLifecycle {
+  if (completed.policy === "completion_review") {
+    return { phase: "building", policy: completed.policy, taskFingerprint: completed.taskFingerprint };
+  }
+  if (completed.policy === "advisory_then_completion_review" && completed.advisory) {
+    return {
+      phase: "ready_after_advisory",
+      policy: completed.policy,
+      taskFingerprint: completed.taskFingerprint,
+      advisory: completed.advisory,
+    };
+  }
+  if (completed.policy === "authorization_then_completion_review" && completed.plan && completed.authorization) {
+    // An approval is scoped to the session that obtained it, exactly as the restore-time check in
+    // session_start enforces. Resuming completed work elsewhere must re-earn authorization.
+    return completed.authorization.sessionId === sessionId
+      ? {
+          phase: "authorized_execution",
+          policy: completed.policy,
+          taskFingerprint: completed.taskFingerprint,
+          plan: completed.plan,
+          authorization: completed.authorization,
+        }
+      : {
+          phase: "preflight",
+          policy: completed.policy,
+          taskFingerprint: completed.taskFingerprint,
+          plan: completed.plan,
+        };
+  }
+  return { phase: "ordinary", policy: "ordinary", taskFingerprint: completed.taskFingerprint };
 }
 
 function previousChoice(
@@ -230,6 +345,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
   let agentRunSequence = 0;
   const deterministicCheckCalls = new Map<string, string>();
   const deterministicCheckResults = new Map<string, boolean>();
+  const potentiallyMutatingCalls = new Map<string, { toolName: string; inputFingerprint: string }>();
   const validatedPlanAttempts = new Set<string>();
   let lastAttemptMetrics: AttemptMetrics | undefined;
   let reviewParentAttemptMetrics: AttemptMetrics | undefined;
@@ -237,6 +353,42 @@ export default function routerExtension(pi: ExtensionAPI): void {
   const taskStartedAt = new Map<string, number>();
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
+
+  function syncSafetyLifecycleTools(lifecycle: LeaseLifecycle | undefined): void {
+    const current = pi.getActiveTools();
+    const next = activeToolsForSafetyLifecycle(current, lifecycle);
+    if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
+      pi.setActiveTools(next);
+    }
+  }
+
+  function invalidateAuthorization(lease: TaskLease, reason: string): TaskLease {
+    const authorizationLifecycle =
+      lease.lifecycle.phase === "authorized_execution"
+        ? lease.lifecycle
+        : lease.lifecycle.phase === "completed" &&
+            lease.lifecycle.policy === "authorization_then_completion_review" &&
+            lease.lifecycle.plan
+          ? lease.lifecycle
+          : undefined;
+    if (!authorizationLifecycle?.plan) return lease;
+    const now = new Date().toISOString();
+    return {
+      ...lease,
+      updatedAt: now,
+      lifecycle: {
+        phase: "preflight",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: authorizationLifecycle.taskFingerprint,
+        plan: authorizationLifecycle.plan,
+        lastAuthorizationReview: {
+          kind: "authorization",
+          summary: `Authorization invalidated at ${reason}; the exact plan requires a fresh independent review.`,
+          completedAt: now,
+        },
+      },
+    };
+  }
 
   function persistState(): void {
     pi.appendEntry(STATE_ENTRY, {
@@ -305,14 +457,18 @@ export default function routerExtension(pi: ExtensionAPI): void {
     }
   }
 
-  function synopsis(ctx: ExtensionContext, repository: RepositoryMetadata): SessionSynopsis {
+  function synopsis(
+    ctx: ExtensionContext,
+    repository: RepositoryMetadata,
+    omitBuilderProvenance = false,
+  ): SessionSynopsis {
     const usage = ctx.getContextUsage();
     // The registry, not the endpoint name, identifies gateway-backed models' canonical vendor.
     const vendor = ctx.model ? snapshotForModel(ctx.model, buildRegistrySnapshot(ctx, scope))?.vendor : undefined;
     return buildSessionSynopsis({
       sessionId: ctx.sessionManager.getSessionId(),
       cwd: ctx.cwd,
-      ...(ctx.model
+      ...(!omitBuilderProvenance && ctx.model
         ? {
             builder: {
               provider: ctx.model.provider,
@@ -384,42 +540,24 @@ export default function routerExtension(pi: ExtensionAPI): void {
         },
       };
     }
-    if (archetype === "code_review") {
-      const builder = snapshotForModel(ctx.model, registry);
-      if (!builder) {
-        return {
-          registry,
-          decision: {
-            kind: "unroutable",
-            policyVersion: POLICY_VERSION,
-            archetype,
-            reason: "review routing requires a recognized current builder model",
-            exclusions: [],
-          },
-        };
-      }
-      return {
-        registry,
-        decision: selectReviewRoute(
-          registry,
-          requirements,
-          builder,
-          pi.getThinkingLevel(),
-          modelAbility(builder.modelId, pi.getThinkingLevel()),
-        ),
-      };
-    }
+    // A standalone review has no tracked builder provenance. Route it from the classified delta
+    // shape just like any other task; builder-relative vendor exclusion is reserved for generated
+    // reviews whose parent lease identifies the actual builder.
+    const routingContext = deriveRoutingContext(classification.features, languageBuckets);
     return {
       registry,
-      decision: selectOrdinaryRoute(
-        archetype,
-        registry,
-        requirements,
-        routeSamples,
-        undefined,
-        explorationKey,
-        deriveRoutingContext(classification.features, languageBuckets),
-      ),
+      decision:
+        archetype === "code_review"
+          ? selectStandaloneReviewRoute(registry, requirements, routeSamples, undefined, explorationKey, routingContext)
+          : selectOrdinaryRoute(
+              archetype,
+              registry,
+              requirements,
+              routeSamples,
+              undefined,
+              explorationKey,
+              routingContext,
+            ),
     };
   }
 
@@ -504,12 +642,77 @@ export default function routerExtension(pi: ExtensionAPI): void {
     child: TaskLease,
     outcome: "completed" | "skipped",
   ): Promise<void> {
-    if (!child.parentLease) return;
-    const parent = {
-      ...child.parentLease,
-      updatedAt: new Date().toISOString(),
-      reviewCompleted: true,
+    if (!child.parentLease || child.lifecycle.phase !== "review") return;
+    const now = new Date().toISOString();
+    const submission = outcome === "completed" ? child.lifecycle.submission : undefined;
+    const reviewOutcome: ReviewOutcome = {
+      kind: child.lifecycle.reviewKind,
+      ...(submission ? { verdict: submission.verdict } : {}),
+      summary: submission?.summary ?? "Independent review was unavailable or did not produce a validated verdict.",
+      reviewTaskId: child.taskId,
+      completedAt: now,
     };
+    const original = child.parentLease;
+    let lifecycle: LeaseLifecycle = original.lifecycle;
+    let triggerContinuation = false;
+
+    if (child.lifecycle.reviewKind === "authorization") {
+      const plan = original.lifecycle.phase === "preflight" ? original.lifecycle.plan : undefined;
+      const approved =
+        submission?.verdict === "approve" &&
+        plan !== undefined &&
+        child.lifecycle.scopeFingerprint ===
+          safetyFingerprint({
+            taskFingerprint: original.lifecycle.taskFingerprint,
+            planFingerprint: plan.planFingerprint,
+          }) &&
+        child.selected.vendor !== original.selected.vendor;
+      lifecycle = approved
+        ? {
+            phase: "authorized_execution",
+            policy: "authorization_then_completion_review",
+            taskFingerprint: original.lifecycle.taskFingerprint,
+            plan,
+            authorization: {
+              taskFingerprint: original.lifecycle.taskFingerprint,
+              planFingerprint: plan.planFingerprint,
+              reviewTaskId: child.taskId,
+              reviewerVendor: child.selected.vendor,
+              sessionId: ctx.sessionManager.getSessionId(),
+              approvedAt: now,
+            },
+          }
+        : {
+            phase: "preflight",
+            policy: "authorization_then_completion_review",
+            taskFingerprint: original.lifecycle.taskFingerprint,
+            ...(plan ? { plan } : {}),
+            lastAuthorizationReview: reviewOutcome,
+          };
+      triggerContinuation = approved;
+    } else if (child.lifecycle.reviewKind === "advisory") {
+      lifecycle = {
+        phase: "ready_after_advisory",
+        policy: "advisory_then_completion_review",
+        taskFingerprint: original.lifecycle.taskFingerprint,
+        advisory: reviewOutcome,
+      };
+      // Advice is deliberately not authorization. Even a cautionary or unavailable opinion completes
+      // the consultation step; the builder remains responsible for deciding how to proceed.
+      triggerContinuation = true;
+    } else {
+      const source = original.lifecycle;
+      lifecycle = {
+        phase: "completed",
+        policy: source.policy === "ordinary" ? "completion_review" : source.policy,
+        taskFingerprint: source.taskFingerprint,
+        completionReview: reviewOutcome,
+        ...(source.phase === "authorized_execution" ? { plan: source.plan, authorization: source.authorization } : {}),
+        ...(source.phase === "ready_after_advisory" ? { advisory: source.advisory } : {}),
+      };
+    }
+
+    const parent = { ...original, updatedAt: now, lifecycle };
     await applyChoice(ctx, parent.selected);
     state = installLease(state, parent);
     const reviewMetrics = lastAttemptMetrics;
@@ -527,9 +730,30 @@ export default function routerExtension(pi: ExtensionAPI): void {
     await record(
       ctx,
       "outcome",
-      { reviewOutcome: outcome, reviewTaskId: child.taskId, parentTaskId: parent.taskId },
+      {
+        reviewOutcome: outcome,
+        reviewKind: child.lifecycle.reviewKind,
+        verdict: submission?.verdict,
+        reviewTaskId: child.taskId,
+        parentTaskId: parent.taskId,
+        executionAuthorized: lifecycle.phase === "authorized_execution",
+      },
       { taskId: parent.taskId, archetype: parent.archetype },
     );
+    if (triggerContinuation) {
+      pi.sendMessage(
+        {
+          customType: CONTEXT_MESSAGE,
+          content:
+            lifecycle.phase === "authorized_execution"
+              ? "The exact reviewed action plan is authorized for this task and session. Execute only that plan; stop if its preconditions, targets, or steps change."
+              : `The pre-action advisor reported: ${reviewOutcome.summary}\nProceed only within the original task scope and account for the advice.`,
+          display: true,
+          details: { parentTaskId: parent.taskId, reviewTaskId: child.taskId, reviewKind: child.lifecycle.reviewKind },
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    }
   }
 
   async function transitionFallback(ctx: ExtensionContext, failure: FailureKind, triggerTurn: boolean): Promise<void> {
@@ -566,13 +790,27 @@ export default function routerExtension(pi: ExtensionAPI): void {
         attemptDisposition = "failed";
         return;
       }
-      state = installLease(state, fallback.lease);
+      const fallbackLease =
+        fallback.lease.lifecycle.phase === "review"
+          ? {
+              ...fallback.lease,
+              lifecycle: {
+                phase: "review" as const,
+                policy: "ordinary" as const,
+                taskFingerprint: fallback.lease.lifecycle.taskFingerprint,
+                reviewKind: fallback.lease.lifecycle.reviewKind,
+                scopeFingerprint: fallback.lease.lifecycle.scopeFingerprint,
+              },
+            }
+          : fallback.lease;
+      state = installLease(state, fallbackLease);
       attemptDisposition = "pending";
       attemptStartedAt = Date.now();
       attemptTurns = 0;
       attemptToolCalls = 0;
       deterministicCheckCalls.clear();
       deterministicCheckResults.clear();
+      potentiallyMutatingCalls.clear();
       persistState();
       updateStatus(ctx);
       if (triggerTurn) {
@@ -596,23 +834,21 @@ export default function routerExtension(pi: ExtensionAPI): void {
       persistState();
       updateStatus(ctx);
     }
-    if (fallback.action === "skip_review" && active.parentLease) {
+    if (fallback.action === "skip_review" && active.lifecycle.phase === "review") {
       attemptDisposition = "failed";
       await restoreParentAfterReview(ctx, active, "skipped");
     }
     ctx.ui.notify(fallback.reason, fallback.action === "skip_review" ? "warning" : "error");
   }
 
-  async function startIndependentReview(ctx: ExtensionContext, parent: TaskLease): Promise<void> {
-    if (
-      state.mode !== "active" ||
-      state.manualOverride ||
-      parent.manualOverride ||
-      !parent.reviewRequired ||
-      parent.reviewCompleted ||
-      parent.parentLease ||
-      parent.archetype === "code_review"
-    ) {
+  async function startIndependentReview(
+    ctx: ExtensionContext,
+    parent: TaskLease,
+    reviewKind: SafetyReviewKind,
+    scopeFingerprint: string,
+    evidenceInstructions: string,
+  ): Promise<void> {
+    if (state.mode !== "active" || parent.lifecycle.phase === "review" || parent.archetype === "code_review") {
       return;
     }
     const registry = buildRegistrySnapshot(ctx, scope);
@@ -663,15 +899,25 @@ export default function routerExtension(pi: ExtensionAPI): void {
       taskId: randomUUID(),
       parentTaskId: parent.taskId,
       parentLease: parent,
+      lifecycle: {
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: parent.lifecycle.taskFingerprint,
+        reviewKind,
+        scopeFingerprint,
+      },
+      safetyEvidence: parent.safetyEvidence,
       startedAt: now,
       updatedAt: now,
       archetype: "code_review",
       features: reviewFeatures,
       selected: decision.primary,
-      fallbacks: [decision.fallback, decision.builderFallback],
+      // Generated reviews never fall back to the tracked builder. In particular, a builder verdict
+      // can never authorize its own potentially irreversible plan.
+      fallbacks: [decision.fallback],
       modelSnapshotId: registrySnapshotId(registry),
       policyVersion: decision.policyVersion,
-      lastPromptFingerprint: promptFingerprint(`review:${parent.taskId}`),
+      lastPromptFingerprint: promptFingerprint(`review:${reviewKind}:${parent.taskId}:${scopeFingerprint}`),
       ...(parent.repositoryLanguageBucket ? { repositoryLanguageBucket: parent.repositoryLanguageBucket } : {}),
       ...(parent.contextSizeBucket ? { contextSizeBucket: parent.contextSizeBucket } : {}),
     });
@@ -690,11 +936,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
     attemptToolCalls = 0;
     deterministicCheckCalls.clear();
     deterministicCheckResults.clear();
+    potentiallyMutatingCalls.clear();
     await record(
       ctx,
       "route_decision",
       {
         kind: "required_independent_review",
+        reviewKind,
+        scopeFingerprint,
         parentTaskId: parent.taskId,
         selection: decision.primary,
         exclusions: decision.exclusions,
@@ -718,10 +967,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
       {
         customType: CONTEXT_MESSAGE,
         content: [
-          `Perform the required independent review for parent task ${parent.taskId}.`,
-          // A parent may commit its work, so an unstaged `git diff` is not a complete review target.
-          "Inspect the parent task's relevant working-tree, staged, and committed changes, plus deterministic test evidence. Do not edit files.",
-          "Report only actionable findings with severity and file/evidence anchors; say explicitly when there are none.",
+          `Perform the ${reviewKind} independent review for tracked parent task ${parent.taskId}.`,
+          `Review scope fingerprint: ${scopeFingerprint}`,
+          evidenceInstructions,
+          "Do not edit files or mutate repository, runtime, or external state.",
+          `Call submit_safety_review exactly once with reviewKind=${reviewKind} and the exact scope fingerprint. A prose-only response is not a valid review.`,
         ].join("\n"),
         display: true,
         details: { parentTaskId: parent.taskId, reviewTaskId: applied.taskId },
@@ -729,6 +979,212 @@ export default function routerExtension(pi: ExtensionAPI): void {
       { triggerTurn: true, deliverAs: "followUp" },
     );
   }
+
+  async function collectCompletionEvidence(
+    ctx: ExtensionContext,
+    parent: TaskLease,
+  ): Promise<{ evidence?: CompletionEvidence; reason?: string }> {
+    const repository = await readRepositoryMetadata(pi, ctx.cwd);
+    const baselineHead = parent.safetyEvidence.baselineHead;
+    let diffText = "";
+    let diffCaptured = false;
+    try {
+      const result = await pi.exec(
+        "git",
+        ["-C", ctx.cwd, "diff", "--no-ext-diff", "--binary", baselineHead ?? "HEAD", "--"],
+        { timeout: 10_000 },
+      );
+      if (result.code === 0) {
+        diffText = result.stdout;
+        diffCaptured = true;
+      }
+    } catch {
+      // Missing git evidence is handled by the validation below; it never degrades to authorization.
+    }
+    const changedFiles = [...new Set(repository.changedFiles)].sort();
+    const repositoryChanged =
+      changedFiles.length > 0 ||
+      (baselineHead !== undefined && repository.head !== undefined && repository.head !== baselineHead);
+    const latestChecks = new Map(parent.safetyEvidence.checks.map((check) => [check.command, check]));
+    const checks = [...latestChecks.values()];
+    const codeBuilder = isCodeBuilder(parent.features);
+    if (codeBuilder && parent.safetyEvidence.mutations.length === 0) {
+      return { reason: "no successful implementation mutation was recorded for this task" };
+    }
+    if (codeBuilder && !repositoryChanged)
+      return { reason: "no repository delta exists relative to the task baseline" };
+    if (codeBuilder && (checks.length === 0 || checks.some((check) => !check.passed))) {
+      return { reason: "post-build review requires passing latest deterministic checks and no unresolved failures" };
+    }
+    if (codeBuilder && repositoryChanged && !diffCaptured) {
+      return { reason: "the repository changed but its diff could not be captured for review evidence" };
+    }
+    if (!codeBuilder && parent.safetyEvidence.mutations.length === 0) {
+      return { reason: "no successful mutation evidence was recorded for completion review" };
+    }
+    const partial = {
+      taskFingerprint: parent.lifecycle.taskFingerprint,
+      ...(baselineHead ? { baselineHead } : {}),
+      ...(repository.head ? { completedHead: repository.head } : {}),
+      changedFiles,
+      ...(repositoryChanged && diffCaptured
+        ? {
+            diffFingerprint: safetyFingerprint({
+              baselineHead,
+              completedHead: repository.head,
+              changedFiles,
+              diffText,
+            }),
+          }
+        : {}),
+      checks,
+      mutations: parent.safetyEvidence.mutations,
+    };
+    return { evidence: { ...partial, evidenceFingerprint: safetyFingerprint(partial) } };
+  }
+
+  async function prepareActiveLeaseForTurn(
+    ctx: ExtensionContext,
+    active: TaskLease,
+    pending: PendingInput | undefined,
+  ): Promise<TaskLease | undefined> {
+    if (active.manualOverride || state.manualOverride) return undefined;
+    if (state.mode === "active" && pending && active.lifecycle.phase === "completed") {
+      active = {
+        ...active,
+        lifecycle: resumeCompletedLifecycle(active.lifecycle, ctx.sessionManager.getSessionId()),
+        updatedAt: new Date().toISOString(),
+      };
+      state = installLease(state, active);
+      persistState();
+    }
+    updateStatus(ctx);
+    if (state.mode === "shadow") {
+      ctx.ui.notify(
+        `Shadow route: ${active.archetype} → ${active.selected.provider}/${active.selected.modelId} (${active.selected.effort})`,
+        "info",
+      );
+      return undefined;
+    }
+    while (!active.executionFailed && !leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) {
+      const previousAttempt = active.attemptIndex;
+      await transitionFallback(ctx, "availability", false);
+      const next = state.active;
+      if (!next || next.executionFailed || next.attemptIndex === previousAttempt) return undefined;
+      active = next;
+    }
+    if (!leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) return undefined;
+    const applied = await applyWithAvailabilityFallback(ctx, active);
+    if (!applied) {
+      state = installLease(state, { ...active, executionFailed: true });
+      persistState();
+      updateStatus(ctx);
+      return undefined;
+    }
+    if (applied !== active) {
+      state = installLease(state, applied);
+      persistState();
+    }
+    return applied;
+  }
+
+  pi.registerTool({
+    name: "submit_action_plan",
+    label: "Validate irreversible-action plan",
+    description:
+      "Submit a concrete irreversible-action plan only when router context explicitly says the active safety lifecycle is preflight. Never infer preflight from the action itself. Validation does not authorize execution; a separate independent review must approve the exact task/plan fingerprint.",
+    parameters: ActionPlanSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const active = state.active;
+      if (active?.lifecycle.phase !== "preflight") {
+        throw new Error("submit_action_plan is only valid inside an irreversible-action preflight lease");
+      }
+      const validation = validateActionPlan(params);
+      await record(
+        ctx,
+        "outcome",
+        {
+          actionPlanValidated: validation.success,
+          validationErrors: validation.success ? [] : validation.errors,
+          ...(validation.success ? { planFingerprint: validation.fingerprint } : {}),
+        },
+        { taskId: active.taskId, archetype: active.archetype },
+      );
+      if (!validation.success) throw new Error(`Invalid irreversible-action plan: ${validation.errors.join("; ")}`);
+      const plan = {
+        taskFingerprint: active.lifecycle.taskFingerprint,
+        planFingerprint: validation.fingerprint,
+        submittedAt: new Date().toISOString(),
+        plan: validation.plan,
+      };
+      state = installLease(state, {
+        ...active,
+        updatedAt: plan.submittedAt,
+        lifecycle: {
+          phase: "preflight",
+          policy: "authorization_then_completion_review",
+          taskFingerprint: active.lifecycle.taskFingerprint,
+          plan,
+        },
+      });
+      persistState();
+      updateStatus(ctx);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Validated irreversible-action plan ${validation.fingerprint}. Execution remains blocked pending independent authorization review.`,
+          },
+        ],
+        details: { planFingerprint: validation.fingerprint, taskFingerprint: active.lifecycle.taskFingerprint },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "submit_safety_review",
+    label: "Submit scoped safety review",
+    description:
+      "Submit a verdict only when router context explicitly identifies a generated read-only review lease. Never use this for an ordinary user-requested review. The review kind and scope fingerprint must exactly match the active lease.",
+    parameters: SafetyReviewSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const active = state.active;
+      if (active?.lifecycle.phase !== "review") {
+        throw new Error("submit_safety_review is only valid inside a generated independent review lease");
+      }
+      if (active.lifecycle.submission) {
+        throw new Error("submit_safety_review may be called only once for a generated review attempt");
+      }
+      const validation = validateSafetyReview(params, active.lifecycle.reviewKind, active.lifecycle.scopeFingerprint);
+      await record(
+        ctx,
+        "outcome",
+        {
+          safetyReviewValidated: validation.success,
+          reviewKind: active.lifecycle.reviewKind,
+          scopeFingerprint: active.lifecycle.scopeFingerprint,
+          validationErrors: validation.success ? [] : validation.errors,
+        },
+        { taskId: active.taskId, archetype: active.archetype },
+      );
+      if (!validation.success) throw new Error(`Invalid safety review: ${validation.errors.join("; ")}`);
+      state = installLease(state, {
+        ...active,
+        updatedAt: new Date().toISOString(),
+        lifecycle: { ...active.lifecycle, submission: validation.submission },
+      });
+      persistState();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Recorded ${active.lifecycle.reviewKind} verdict ${validation.submission.verdict} for ${active.lifecycle.scopeFingerprint}.`,
+          },
+        ],
+        details: validation.submission,
+      };
+    },
+  });
 
   pi.registerTool({
     name: "submit_implementation_plan",
@@ -800,6 +1256,19 @@ export default function routerExtension(pi: ExtensionAPI): void {
     }
     const fallbackMode = carriedMode ?? resolvedStartMode ?? state.mode;
     state = restoreLeaseState(branch, fallbackMode);
+    if (
+      state.active?.lifecycle.phase === "authorized_execution" &&
+      state.active.lifecycle.authorization.sessionId !== ctx.sessionManager.getSessionId()
+    ) {
+      state = { ...state, active: invalidateAuthorization(state.active, "session boundary") };
+      persistState();
+    }
+    if (event.reason !== "reload" && state.active?.lifecycle.phase === "review") {
+      // A generated review cannot cross into a new/forked session and later restore or authorize its
+      // nested parent. The next user turn starts a fresh task under the hard-boundary gate.
+      state = { mode: state.mode, manualOverride: false };
+      persistState();
+    }
     nextParentTaskId = event.reason === "fork" ? state.active?.taskId : undefined;
     if (event.reason !== "reload") state = setHardBoundary(state, event.reason === "fork" ? "subagent" : "new_session");
     if (carriedMode !== undefined) {
@@ -818,7 +1287,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
   pi.on("session_compact", async (_event, ctx) => {
     // Compaction rewrites history, not enablement: the lease is dropped at the boundary while the
     // mode stays in force, and re-persisting it puts the mode after the compaction cut so a later
-    // resume of this session still sees it.
+    // resume of this session still sees it. Invalidate authorization before dropping the lease so
+    // no approval can survive the compaction boundary.
+    if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "compaction boundary") };
     state = setHardBoundary(state, "post_compaction");
     persistState();
     await rememberMode(state.mode);
@@ -835,7 +1306,20 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("input", (event, ctx) => {
+    // The next task boundary is not known yet. Remove phase-scoped validators before Pi builds
+    // the turn prompt; before_agent_start restores exactly the validator accepted by the lease.
+    syncSafetyLifecycleTools(undefined);
     if (state.mode === "off") return { action: "continue" as const };
+    if (
+      state.active &&
+      (state.active.lifecycle.phase === "authorized_execution" ||
+        (state.active.lifecycle.phase === "completed" &&
+          state.active.lifecycle.policy === "authorization_then_completion_review")) &&
+      event.source !== "extension"
+    ) {
+      state = { ...state, active: invalidateAuthorization(state.active, "new user input") };
+      persistState();
+    }
     const cache = cacheEstimate(ctx.sessionManager.getBranch());
     let gate = deterministicBoundaryGate(state, {
       isUserInput: true,
@@ -857,7 +1341,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     }
     pendingInput = {
       gate,
-      repository: readRepositoryMetadata(pi, ctx.cwd),
+      repository: readRepositoryMetadata(pi, ctx.cwd, event.text),
       cache,
       hasImages,
       source: event.source,
@@ -869,7 +1353,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    if (state.mode === "off") return;
+    let exposedSafetyLifecycle: LeaseLifecycle | undefined;
+    if (state.mode === "off") {
+      syncSafetyLifecycleTools(undefined);
+      return;
+    }
     try {
       const pending = pendingInput;
       pendingInput = undefined;
@@ -888,7 +1376,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
           state.active ? { taskId: state.active.taskId } : {},
         );
       }
-      const currentSynopsis = synopsis(ctx, repository);
+      const currentSynopsis = synopsis(
+        ctx,
+        repository,
+        Boolean(repository.reviewDelta) || isStandaloneReviewRequest(event.prompt),
+      );
       let active = state.active;
       let classification: ClassificationResult | undefined;
       let requiresNewLease = pending?.gate.action === "new_task";
@@ -1003,38 +1495,41 @@ export default function routerExtension(pi: ExtensionAPI): void {
         const currentSnapshot = snapshotForModel(ctx.model, routed.registry);
         const currentEffort = pi.getThinkingLevel();
         const priorSelection = previousChoice(currentSnapshot, currentEffort, routed.decision.archetype);
-        const reviewParent =
-          routed.decision.kind === "review" &&
-          state.active &&
-          !(pending?.gate.action === "new_task" && "hardBoundary" in pending.gate)
-            ? state.active
-            : undefined;
-        if (reviewParent) {
-          reviewParentAttemptMetrics = lastAttemptMetrics;
-          lastAttemptMetrics = undefined;
-        }
+        const preserveManualSelection = state.manualOverride || state.active?.manualOverride === true;
+        const routeChoices = routeChoicesForNewLease(
+          routed.decision.primary,
+          routed.decision.kind === "review" ? [routed.decision.fallback] : routed.decision.fallbacks,
+          priorSelection,
+          preserveManualSelection,
+        );
+        const taskFingerprint = safetyFingerprint({
+          prompt: event.prompt,
+          repositoryRoot: repository.root,
+          baselineHead: repository.head,
+        });
+        const safetyPolicy = deriveSafetyPolicy(routedClassification.features);
         const lease = createTaskLease({
           taskId: randomUUID(),
-          ...(reviewParent
-            ? { parentTaskId: reviewParent.taskId, parentLease: reviewParent }
-            : nextParentTaskId
-              ? { parentTaskId: nextParentTaskId }
-              : {}),
+          ...(nextParentTaskId && routed.decision.archetype !== "code_review"
+            ? { parentTaskId: nextParentTaskId }
+            : {}),
           startedAt: now,
           updatedAt: now,
           archetype: routed.decision.archetype,
           features: routedClassification.features,
-          selected: routed.decision.primary,
-          ...(priorSelection ? { previousSelection: priorSelection } : {}),
-          fallbacks:
-            routed.decision.kind === "review"
-              ? [routed.decision.fallback, routed.decision.builderFallback]
-              : routed.decision.fallbacks,
+          selected: routeChoices.selected,
+          ...(routeChoices.previousSelection ? { previousSelection: routeChoices.previousSelection } : {}),
+          fallbacks: routeChoices.fallbacks,
           modelSnapshotId: registrySnapshotId(routed.registry),
           policyVersion: routed.decision.policyVersion,
           lastPromptFingerprint: promptFingerprint(event.prompt),
-          reviewRequired: routedClassification.archetype.requiresIndependentReview,
-          reviewCompleted: false,
+          lifecycle: initialLifecycle(safetyPolicy, taskFingerprint),
+          safetyEvidence: {
+            ...(repository.head ? { baselineHead: repository.head } : {}),
+            baselineChangedFiles: [...repository.changedFiles],
+            checks: [],
+            mutations: [],
+          },
           repositoryLanguageBucket: languageBucket,
           contextSizeBucket: contextBucket,
         });
@@ -1049,6 +1544,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
         attemptToolCalls = 0;
         deterministicCheckCalls.clear();
         deterministicCheckResults.clear();
+        potentiallyMutatingCalls.clear();
         await record(
           ctx,
           "route_decision",
@@ -1057,9 +1553,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
             confidence: routedClassification.features.confidence,
             risk: routedClassification.features.risk,
             failedClosed: routedClassification.failedClosed,
-            reviewRequired: lease.reviewRequired === true,
+            safetyPolicy,
+            lifecyclePhase: lease.lifecycle.phase,
             exclusions: routed.decision.exclusions,
-            selection: routed.decision.primary,
+            selection: lease.selected,
+            manualSelectionPreserved: preserveManualSelection && priorSelection !== undefined,
             telemetryMature: routed.decision.telemetryMature,
             controlledHoldout: routed.decision.kind === "ordinary" ? routed.decision.controlledHoldout : false,
             fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
@@ -1082,49 +1580,15 @@ export default function routerExtension(pi: ExtensionAPI): void {
         );
       }
 
-      if (!active || active.manualOverride || state.manualOverride) return;
-      if (
-        state.mode === "active" &&
-        pending &&
-        active.reviewRequired &&
-        active.reviewCompleted &&
-        !active.parentLease
-      ) {
-        active = { ...active, reviewCompleted: false, updatedAt: new Date().toISOString() };
-        state = installLease(state, active);
-        persistState();
-      }
-      updateStatus(ctx);
-      if (state.mode === "shadow") {
-        ctx.ui.notify(
-          `Shadow route: ${active.archetype} → ${active.selected.provider}/${active.selected.modelId} (${active.selected.effort})`,
-          "info",
-        );
-        return;
-      }
-      while (!active.executionFailed && !leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) {
-        const previousAttempt = active.attemptIndex;
-        await transitionFallback(ctx, "availability", false);
-        active = state.active;
-        if (!active || active.executionFailed || active.attemptIndex === previousAttempt) return;
-      }
-      if (!leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) return;
-      const applied = await applyWithAvailabilityFallback(ctx, active);
-      if (!applied) {
-        state = installLease(state, { ...active, executionFailed: true });
-        persistState();
-        updateStatus(ctx);
-        return;
-      }
-      if (applied !== active) {
-        state = installLease(state, applied);
-        persistState();
-        active = applied;
-      }
+      if (!active) return;
+      active = await prepareActiveLeaseForTurn(ctx, active, pending);
+      if (!active) return;
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
+      exposedSafetyLifecycle = active.lifecycle;
+      const safetyContext = safetyContextForLifecycle(active.lifecycle);
       const compiled = compilePrompt({
-        baseSystemPrompt: event.systemPrompt,
+        baseSystemPrompt: safetyContext ? `${event.systemPrompt}\n\n${safetyContext}` : event.systemPrompt,
         profile,
         synopsis: currentSynopsis,
         userRequest: event.prompt,
@@ -1140,12 +1604,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
         },
       };
     } finally {
+      syncSafetyLifecycleTools(exposedSafetyLifecycle);
       ctx.ui.setWorkingMessage();
     }
   });
 
   pi.on("model_select", async (event, ctx) => {
     if (applyingSelection || event.source === "restore") return;
+    if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual model override") };
     state = markManualOverride(state);
     persistState();
     updateStatus(ctx);
@@ -1168,6 +1634,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
   pi.on("thinking_level_select", async (event, ctx) => {
     if (applyingSelection) return;
+    if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual effort override") };
     const active = state.active;
     const changed = active ? changeEffortWithinLease(active, event.level, new Date().toISOString()) : undefined;
     if (changed?.success) state = { ...state, active: changed.lease };
@@ -1207,6 +1674,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     attemptToolCalls = 0;
     deterministicCheckCalls.clear();
     deterministicCheckResults.clear();
+    potentiallyMutatingCalls.clear();
   });
 
   pi.on("turn_start", () => {
@@ -1216,35 +1684,50 @@ export default function routerExtension(pi: ExtensionAPI): void {
   pi.on("tool_execution_end", (event) => {
     attemptToolCalls++;
     const check = deterministicCheckCalls.get(event.toolCallId);
-    if (check) {
-      deterministicCheckCalls.delete(event.toolCallId);
-      deterministicCheckResults.set(check, !event.isError);
+    const mutation = potentiallyMutatingCalls.get(event.toolCallId);
+    deterministicCheckCalls.delete(event.toolCallId);
+    potentiallyMutatingCalls.delete(event.toolCallId);
+    if (check) deterministicCheckResults.set(check, !event.isError);
+    if (state.active && (check || (mutation && !event.isError))) {
+      const now = new Date().toISOString();
+      state = {
+        ...state,
+        active: {
+          ...state.active,
+          updatedAt: now,
+          safetyEvidence: {
+            ...state.active.safetyEvidence,
+            checks: check
+              ? [
+                  ...state.active.safetyEvidence.checks.filter((entry) => entry.command !== check),
+                  { command: check, passed: !event.isError, recordedAt: now },
+                ].slice(-20)
+              : state.active.safetyEvidence.checks,
+            mutations:
+              mutation && !event.isError
+                ? [...state.active.safetyEvidence.mutations, { ...mutation, recordedAt: now }].slice(-50)
+                : state.active.safetyEvidence.mutations,
+          },
+        },
+      };
+      persistState();
     }
   });
 
   pi.on("tool_call", (event) => {
+    const reason = safetyToolBlockReason(state.active, event.toolName, event.input);
+    if (reason) return { block: true, reason };
     if (event.toolName === "bash") {
       const command = deterministicCheckCommand(typeof event.input.command === "string" ? event.input.command : "");
       if (command) deterministicCheckCalls.set(event.toolCallId, command);
     }
-    if (!state.active?.parentLease) return;
-    if (
-      event.toolName === "read" ||
-      event.toolName === "grep" ||
-      event.toolName === "find" ||
-      event.toolName === "ls"
-    ) {
-      return;
+    if (isPotentiallyMutatingTool(event.toolName, event.input)) {
+      potentiallyMutatingCalls.set(event.toolCallId, {
+        toolName: event.toolName,
+        inputFingerprint: safetyFingerprint(event.input),
+      });
     }
-    if (event.toolName === "bash") {
-      const command = typeof event.input.command === "string" ? event.input.command.trim() : "";
-      const safeCommand =
-        /^(?:git\s+(?:diff|status|show|log|rev-parse|ls-files)\b|rg\b|grep\b|find\b|ls\b|pwd\b|wc\b|head\b|tail\b|file\b)/.test(
-          command,
-        ) && !/[;&|><`$(){}\n]/.test(command);
-      if (safeCommand) return;
-    }
-    return { block: true, reason: "Independent review lease is read-only" };
+    return undefined;
   });
 
   pi.on("after_provider_response", (event) => {
@@ -1324,6 +1807,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
     );
     const deterministicVerificationFailed =
       isActiveAttempt && [...deterministicCheckResults.values()].some((passed) => !passed);
+    const latestLifecycle = state.active?.taskId === active.taskId ? state.active.lifecycle : active.lifecycle;
+    const safetyReviewMissing =
+      isActiveAttempt && latestLifecycle.phase === "review" && latestLifecycle.submission === undefined;
     const planValidationMissing =
       isActiveAttempt &&
       (active.archetype === "implementation_planning" || active.archetype === "large_program_planning") &&
@@ -1371,7 +1857,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
         },
         { triggerTurn: true, deliverAs: "followUp" },
       );
-    } else if (deterministicVerificationFailed || planValidationMissing) {
+    } else if (deterministicVerificationFailed || planValidationMissing || safetyReviewMissing) {
       attemptDisposition = "failed";
       await transitionFallback(ctx, "deterministic_verification", true);
     } else if (isActiveAttempt && (last?.stopReason === "error" || (!last && lastProviderFailure !== undefined))) {
@@ -1394,13 +1880,112 @@ export default function routerExtension(pi: ExtensionAPI): void {
   pi.on("agent_settled", async (_event, ctx) => {
     const active = state.active;
     if (!active || state.mode !== "active" || active.executionFailed) return;
-    if (active.parentLease) {
-      if (attemptDisposition === "success") await restoreParentAfterReview(ctx, active, "completed");
-      else if (attemptDisposition === "aborted") await restoreParentAfterReview(ctx, active, "skipped");
+    if (active.lifecycle.phase === "review") {
+      if (attemptDisposition === "success" && active.lifecycle.submission) {
+        await restoreParentAfterReview(ctx, active, "completed");
+      } else if (attemptDisposition === "aborted") {
+        await restoreParentAfterReview(ctx, active, "skipped");
+      }
       return;
     }
-    if (attemptDisposition === "success" || attemptDisposition === "unknown") {
-      await startIndependentReview(ctx, active);
+    if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
+
+    if (active.lifecycle.phase === "preflight") {
+      const plan = active.lifecycle.plan;
+      if (plan) {
+        const scopeFingerprint = safetyFingerprint({
+          taskFingerprint: active.lifecycle.taskFingerprint,
+          planFingerprint: plan.planFingerprint,
+        });
+        await startIndependentReview(
+          ctx,
+          active,
+          "authorization",
+          scopeFingerprint,
+          [
+            `Review the validated plan ${plan.planFingerprint} for task ${plan.taskFingerprint}.`,
+            `Targets: ${plan.plan.targets.join(", ")}.`,
+            "Verify concrete preconditions, irreversible effects, rollback realism, abort conditions, tool scope, and task/plan alignment. Approval applies only to this exact fingerprint.",
+          ].join("\n"),
+        );
+      } else if (!active.lifecycle.evidenceRepairAttempted) {
+        const repaired = {
+          ...active,
+          updatedAt: new Date().toISOString(),
+          lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
+        };
+        state = installLease(state, repaired);
+        persistState();
+        pi.sendMessage(
+          {
+            customType: CONTEXT_MESSAGE,
+            content:
+              "Preflight is still non-mutating. Inspect the exact targets and call submit_action_plan with concrete steps, preconditions, verification, rollback, abort conditions, irreversible effects, and required tool names.",
+            display: true,
+            details: { taskId: active.taskId, repairReason: "missing_action_plan" },
+          },
+          { triggerTurn: true, deliverAs: "followUp" },
+        );
+      } else {
+        ctx.ui.notify("Irreversible action remains blocked: no validated action plan is available", "error");
+      }
+      return;
+    }
+
+    if (active.lifecycle.phase === "advisory_pending") {
+      await startIndependentReview(
+        ctx,
+        active,
+        "advisory",
+        safetyFingerprint({ taskFingerprint: active.lifecycle.taskFingerprint, features: active.features }),
+        "Assess the high-risk reversible action before execution. Identify failure modes, safer sequencing, checks, and stop conditions. This is advice, not authorization.",
+      );
+      return;
+    }
+
+    if (lifecycleRequiresCompletionReview(active.lifecycle)) {
+      const collected = await collectCompletionEvidence(ctx, active);
+      if (collected.evidence) {
+        const codeBuilder = isCodeBuilder(active.features);
+        await startIndependentReview(
+          ctx,
+          active,
+          "completion",
+          collected.evidence.evidenceFingerprint,
+          codeBuilder
+            ? [
+                `Review implementation evidence ${collected.evidence.evidenceFingerprint}.`,
+                `Baseline HEAD: ${collected.evidence.baselineHead ?? "unavailable"}; completed HEAD: ${collected.evidence.completedHead ?? "unavailable"}.`,
+                `Changed files: ${collected.evidence.changedFiles.join(", ") || "committed delta"}.`,
+                `Deterministic checks: ${collected.evidence.checks.map((check) => `${check.passed ? "PASS" : "FAIL"} ${check.command}`).join("; ")}.`,
+                "Inspect working-tree, staged, and baseline-to-HEAD changes; the fingerprints are scope bindings, not a substitute for reading the diff and test evidence.",
+              ].join("\n")
+            : [
+                `Review completion evidence ${collected.evidence.evidenceFingerprint} for the tracked high-risk operation.`,
+                `Recorded successful mutating tools: ${collected.evidence.mutations.map((mutation) => mutation.toolName).join(", ")}.`,
+                "Check observed outcomes against the original task, advisory/authorization constraints, and available verification evidence.",
+              ].join("\n"),
+        );
+      } else if (!("evidenceRepairAttempted" in active.lifecycle) || !active.lifecycle.evidenceRepairAttempted) {
+        const repaired = {
+          ...active,
+          updatedAt: new Date().toISOString(),
+          lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
+        } as TaskLease;
+        state = installLease(state, repaired);
+        persistState();
+        pi.sendMessage(
+          {
+            customType: CONTEXT_MESSAGE,
+            content: `Required completion review has not started: ${collected.reason ?? "validated evidence is missing"}. Produce the missing deterministic diff/test or operation evidence without broadening scope.`,
+            display: true,
+            details: { taskId: active.taskId, repairReason: "missing_completion_evidence" },
+          },
+          { triggerTurn: true, deliverAs: "followUp" },
+        );
+      } else {
+        ctx.ui.notify(`Required completion review is blocked: ${collected.reason ?? "evidence missing"}`, "error");
+      }
     }
   });
 
@@ -1482,6 +2067,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
             `model=${lease.selected.provider}/${lease.selected.modelId}`,
             `effort=${lease.selected.effort}`,
             `profile=${lease.promptProfileId}`,
+            `safety=${lease.lifecycle.policy}/${lease.lifecycle.phase}`,
             `attempt=${String(lease.attemptIndex + 1)}/${String(lease.fallbacks.length + 1)}`,
             `execution=${lease.executionFailed ? "failed" : "ready"}`,
             `boundary=${lastRoute.boundaryReason ?? "n/a"}`,

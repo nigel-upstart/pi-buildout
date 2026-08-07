@@ -1,3 +1,4 @@
+import { isCodeBuilder, isStandaloneReviewWork } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
 
 export const ARCHETYPES = [
@@ -97,10 +98,15 @@ export function deriveArchetype(features: TaskFeatures): ArchetypeDecision {
     reasons.push("bounded information-only task");
   }
 
+  // A task can classify as both review and implementation ("review this and fix it"). deriveSafetyPolicy
+  // returns `ordinary` for that shape, so claiming a post-completion review here would state a duty the
+  // lifecycle never creates.
   const requiresIndependentReview =
-    archetype === "code_review" ||
-    ((features.risk === "high" || features.risk === "critical") && features.actionMode !== "information_only");
-  if (requiresIndependentReview) reasons.push("independent review required by risk/review policy");
+    !isStandaloneReviewWork(features) &&
+    (features.risk === "high" || features.risk === "critical") &&
+    isCodeBuilder(features) &&
+    features.actionMode === "reversible_mutation";
+  if (requiresIndependentReview) reasons.push("high-risk code builder requires post-completion review");
 
   return { archetype, reasons, requiresIndependentReview };
 }

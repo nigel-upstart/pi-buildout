@@ -22,9 +22,9 @@ For each new task, decide:
    session (not the raw session).
 2. **Model and effort** — ordinary routes get one primary and an ordered chain of every eligible, policy-authorized
    provider endpoint. This permits recovery from a provider-specific rate limit or credential failure without silently
-   broadening to an unvalidated model. Explicit review routes get one candidate from each non-builder model vendor
-   (OpenAI, Anthropic, or Google), followed by the existing builder model as a fixed loss-of-independence fallback only
-   if both independent attempts fail.
+   broadening to an unvalidated model. Standalone reviews use this same feature-based route selection after inspecting
+   their delta. Generated reviews tied to a tracked builder get one candidate from each non-builder model vendor
+   (OpenAI, Anthropic, or Google) and no builder fallback.
 3. **Model-specific prompt profile** — a validated, versioned profile compiled into the final request without altering
    the user's intent.
 
@@ -187,30 +187,43 @@ Deterministic, not LLM-assisted:
 **Sequential fallback:** ordinary routes try every eligible endpoint in the ordered, task-leased policy chain. This
 includes alternate providers for the same model, so a rate limit or invalid credential on one endpoint does not exhaust
 the task while another configured provider remains healthy. Only after that chain is exhausted does the router retain
-(or restore) the pre-existing task selection. Review routes try the two independent reviewers sequentially. If both
-fail, run the review with the existing builder model, record `review_fell_back_to_builder`, and preserve the parent task
-lease. These are sequential attempts, never a panel. Deterministic tests, type checks, linters, scanners, and policy
-gates outrank an LLM verdict and can authorize fallback or escalation; an LLM may only recommend one.
+(or restore) the pre-existing task selection.
+
+Review routing has two deliberately separate forms:
+
+- A generated authorization, advisory, or completion review has a tracked parent/builder lease. It tries the two
+  non-builder vendors sequentially and is read-only. It never falls back to the builder: a builder cannot independently
+  authorize its own plan, and a non-independent verdict must not be mislabeled as completion review. Exhaustion restores
+  the parent with an explicit unavailable/skipped outcome; for authorization, execution remains blocked.
+- A standalone user-requested review has no parent and no assumed builder. Before model selection, the router gathers a
+  bounded non-mutating view of the local delta or referenced pull request and classifies the delta's scope, languages,
+  complexity, risk, horizon, context, and tool needs. It then uses the ordinary feature-based `code_review` policy and
+  fallback chain. It may perform requested external operations such as posting comments and never triggers an automatic
+  review of the review.
+
+These are sequential attempts, never a panel. Deterministic tests, type checks, linters, scanners, and policy gates
+outrank an LLM verdict. An LLM verdict is accepted only through the scoped review tool and only has the lifecycle
+meaning of its explicit kind: authorization, advice, or completion findings.
 
 ### Bootstrap archetype → model priors
 
 These are starting priors to encode in the eligible-candidate registry, expected to be superseded by measured telemetry
 per route:
 
-| Archetype                                   | First choice                                                            | Required secondary                                                                  |
-| ------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Fast classification/routing                 | fast/low-effort model                                                   | different-provider fast model                                                       |
-| Exact extraction, rigid schema              | precise model, low/medium effort                                        | fast fallback                                                                       |
-| Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                                   | same-family fallback, medium                                                        |
-| Median repository implementation (1 PR)     | lowest measured completion cost at a saturated effort tier              | different-vendor fallback at high effort                                            |
-| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort                            | top different-provider agent, high; current-generation same-vendor fallback         |
-| Terminal-heavy implementation               | step-efficient coding model, high effort                                | different-provider high-effort fallback                                             |
-| Algorithmic/rapid iterative coding          | fast iterative model, medium effort                                     | strong coding model, medium                                                         |
-| Code review                                 | closest non-builder-vendor reviewer ≥ builder ability                   | candidate from the other non-builder vendor; fixed builder fallback after both fail |
-| Ordinary implementation planning (2–10 PRs) | pinned top planning model, high                                         | different-provider planning model, high                                             |
-| Large program planning (11–100 PRs)         | pinned top long-run planning model, xhigh                               | different-provider planning model, high/max                                         |
-| Long-context synthesis                      | context-efficient model whose measured peak stays under half the window | different-provider fallback                                                         |
-| Highest-risk ambiguous advisory work        | pinned top reasoning model, max                                         | different-provider top reasoning model                                              |
+| Archetype                                   | First choice                                                                                     | Required secondary                                                                      |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Fast classification/routing                 | fast/low-effort model                                                                            | different-provider fast model                                                           |
+| Exact extraction, rigid schema              | precise model, low/medium effort                                                                 | fast fallback                                                                           |
+| Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                                                            | same-family fallback, medium                                                            |
+| Median repository implementation (1 PR)     | lowest measured completion cost at a saturated effort tier                                       | different-vendor fallback at high effort                                                |
+| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort                                                     | top different-provider agent, high; current-generation same-vendor fallback             |
+| Terminal-heavy implementation               | step-efficient coding model, high effort                                                         | different-provider high-effort fallback                                                 |
+| Algorithmic/rapid iterative coding          | fast iterative model, medium effort                                                              | strong coding model, medium                                                             |
+| Code review                                 | standalone: feature-ranked review model; tracked: closest non-builder reviewer ≥ builder ability | standalone ordinary fallback chain; tracked candidate from the other non-builder vendor |
+| Ordinary implementation planning (2–10 PRs) | pinned top planning model, high                                                                  | different-provider planning model, high                                                 |
+| Large program planning (11–100 PRs)         | pinned top long-run planning model, xhigh                                                        | different-provider planning model, high/max                                             |
+| Long-context synthesis                      | context-efficient model whose measured peak stays under half the window                          | different-provider fallback                                                             |
+| Highest-risk ambiguous advisory work        | pinned top reasoning model, max                                                                  | different-provider top reasoning model                                                  |
 
 Three archetypes carry a **pinned** first choice. Planning, program planning, and highest-risk advisory work order by
 capability rather than by expected completion cost, because a defective plan or a wrong high-risk verdict is paid by the
@@ -225,14 +238,51 @@ regression minimum; and `external_side_effect`, `destructive`, or `critical` ris
 band, because there effort tuning cannot substitute for capability. An archetype that always changes repository state
 acts as a floor under that derivation so a mis-read task cannot be downgraded to read-only. Regression cost is
 discounted by verification strength, since measured breakage is precisely "previously passing tests now fail" and a task
-that runs those tests catches it in the loop. Review is evaluated as read-only work, so a builder is never barred from
-reviewing its own output. Every archetype must keep at least one candidate above the lowest ability band so
-high-consequence work stays routable.
+that runs those tests catches it in the loop. The `code_review` archetype is declared non-mutating, so a review inherits
+no capability floor from its label; it still inherits one from its own declared `actionMode` and `risk`, so a review of
+`external_side_effect` or `destructive` work, or work of `critical` risk, keeps that floor. Independence is a separate
+rule: a generated authorization, advisory, or completion review is barred from its tracked parent/builder. Every
+archetype must keep at least one candidate above the lowest ability band so high-consequence work stays routable.
 
 Effort is constrained per model family, not uniformly: measured saturation tiers cap ordinary archetypes, non-monotonic
 and thrashing tiers are excluded outright, repository-mutating archetypes enforce a per-family minimum effort, and a
 per-language ceiling can lower the cap further. Ambiguous, complex work additionally authorizes a hard-task escalation
 candidate as a retry, never as a first attempt.
+
+### Explicit safety lifecycle
+
+Every v2 task lease persists a discriminated lifecycle. Parent linkage alone has no safety meaning and is valid only on
+an explicit generated `review` lifecycle. Restored v1, malformed, implicitly parent-linked, wrong-policy, stale-plan, or
+wrong-scope states are discarded rather than inferred.
+
+The policy derived once at task creation is one of:
+
+1. `ordinary` — no automatic lifecycle review or mutation gate;
+2. `completion_review` — high-risk code building, followed by independent review after implementation evidence exists;
+3. `advisory_then_completion_review` — high-risk reversible non-code work, with a pre-action advisor and post-action
+   reviewer; or
+4. `authorization_then_completion_review` — high/critical-risk `external_side_effect` or `destructive` work, plus
+   autonomous program-unknown external-effect loops, with hard pre-execution authorization and post-action review.
+
+Only the fourth policy is an approval gate. It begins in `preflight`, where deterministic tool enforcement allows
+bounded inspection and `submit_action_plan` but blocks editing, arbitrary shell composition, subagents, and unknown
+tools. Pi's active tool set exposes `submit_action_plan` only in `preflight` and `submit_safety_review` only in a
+generated `review` phase; registration alone must not advertise either validator during ordinary work. The plan must
+name concrete targets, steps and irreversible effects, preconditions, verification, rollback, abort conditions, and
+mutating tool names. Its canonical fingerprint is bound to the original task fingerprint. A generated independent review
+must call `submit_safety_review` with the exact combined scope fingerprint and an `approve` verdict. Missing, invalid,
+rejected, aborted, or exhausted review leaves the parent in preflight. Approval creates `authorized_execution`, scoped
+to the exact task, plan, reviewer, and session; execution rejects mutating tool names not listed by the plan. A new user
+instruction, plan change, session boundary, compaction, restoration error, or model/effort manual override invalidates
+approval.
+
+The advisory policy temporarily blocks mutation only long enough to obtain the pre-action consultation; advisor outcome
+is persisted as advice and never represented as authorization. If both independent advisor attempts are unavailable, the
+parent may continue with an explicit unavailable outcome rather than silently treating failure as approval. All
+safety-managed work receives a generated completion review after evidence exists. Code builders require a repository
+change attributable to the task, at least one recorded successful mutation, a baseline/current diff fingerprint, and the
+latest result of every recorded deterministic check to pass. Failed checks may be repaired and rerun; stale failures do
+not override a later pass of the same command. A prose-only reviewer response is not a completed review.
 
 The PR-count bands in the table above (`1 PR`, `2–10 PRs`, `11–100 PRs`) are the `HORIZONS` enum in
 [`core/features.ts`](../../extensions/router/core/features.ts) — a coarse classification taxonomy, not tunable
@@ -329,13 +379,22 @@ under another model family's prompt profile.
 
 ## Hard policy invariants
 
-- High/critical-risk implementation routes require a sequential independent review.
+- High-risk code builders require post-completion independent review with diff and passing deterministic-check evidence.
+- High/critical-risk irreversible actions require a validated concrete plan and exact-scope different-vendor approval
+  before mutating execution; advisory and completion verdicts cannot authorize. Autonomous, program-unknown loops that
+  repeatedly create external side effects across repositories or services deterministically receive the same gate even
+  if classifier risk is only medium.
+- High-risk reversible non-code work receives pre-action advice and post-action review without misrepresenting advice as
+  hard authorization.
+- Standalone review is parentless, feature-routed from its delta, and excluded from recursive automatic review.
 - Premium large-program and highest-risk routes require positive, schema-valid semantic evidence; a failed-closed
   classifier cannot select them.
 - No unknown model, unsupported effort, context-window violation, or unvalidated model/archetype/profile combination may
   reach execution.
-- Explicit manual model or effort selection bypasses automatic routing until the next task boundary or until the user
-  re-enables it.
+- Explicit manual model or effort selection bypasses automatic model selection until the next task boundary or until the
+  user re-enables it; it does not pin semantic continuity. A nontrivial later request is still continuity-classified,
+  and a newly detected task receives a fresh lease while preserving the explicitly selected model/effort. Manual
+  selection does not bypass preflight/review tool enforcement and invalidates any existing authorization.
 - Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.
@@ -344,8 +403,8 @@ under another model family's prompt profile.
 
 ## Non-goals
 
-- Parallel/multi-agent review panels or advisor arbitration. Review attempts are sequential and use at most the two
-  non-builder vendors plus the fixed builder fallback.
+- Parallel/multi-agent review panels or advisor arbitration. Generated review attempts are sequential and use at most
+  the two non-builder vendors.
 - A general-purpose simulator or "what-if" routing sandbox (explicitly deferred until the classifier and profile
   registry stabilize).
 - Replacing manual override — a user must still be able to force a model/effort directly (e.g. via `/effort`), bypassing

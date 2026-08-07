@@ -34,8 +34,35 @@ reconstruct behavior from the historical export.
 
 Planning routes must call `submit_implementation_plan`; the tool validates the PR dependency DAG, acceptance criteria,
 rollout, and rollback. A normal response that omits the tool gets one same-lease corrective follow-up before the bounded
-fallback policy applies. A request to start implementation always receives a new lease. High-risk mutating tasks
-automatically run a read-only, provider-independent child review before restoring the builder lease.
+fallback policy applies. A request to start implementation always receives a new lease.
+
+Safety is an explicit persisted lease lifecycle, not an inference from archetype or parent linkage:
+
+- High-risk code builders implement first, record a repository delta and passing deterministic checks, and then receive
+  a read-only, provider-independent completion review.
+- High-risk, potentially irreversible external/repository/runtime actions start in a non-mutating `preflight` phase.
+  `submit_action_plan` validates concrete targets, steps, effects, preconditions, verification, rollback, abort
+  conditions, and tool names. A different-vendor reviewer must approve the exact task/plan fingerprint through
+  `submit_safety_review` before the lease becomes `authorized_execution`. Each validator is active in Pi's model-facing
+  tool set only during the lifecycle phase that accepts it, so ordinary work cannot accidentally call a lease-only tool.
+  Rejection, missing evidence, reviewer failure, plan change, new user input, compaction, session change, or manual
+  model/effort override cannot authorize execution.
+- Other high-risk reversible non-code work consults a read-only advisor before acting and receives a completion review
+  afterward. Advice is explicitly not authorization; cautionary advice is carried back to the tracked worker.
+- Unattended or indefinite loops that repeatedly create external effects across repositories or services are treated as
+  broad-impact authorization work even when each individual effect is reversible or the classifier reports medium risk.
+- Ordinary and non-destructive work is unchanged.
+
+Manual model/effort selection preserves that explicit selection, not the semantic identity of the previous task. A
+nontrivial subsequent request still receives continuity classification; when it is a new task, the router creates a
+fresh lease and safety lifecycle while carrying the selected model/effort into that lease.
+
+Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
+builder, and two non-builder-vendor attempts; they never fall back to the builder for a verdict. Standalone
+user-requested reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta, classify its
+scope/languages/complexity/risk/horizon/context/tool needs, and use feature-based review routing. They do not inherit
+the current lease, invent a builder, become read-only merely because another task preceded them, or trigger recursive
+automatic review. They may perform explicitly requested external operations such as posting review comments.
 
 ## Start mode and enablement continuity
 
@@ -124,7 +151,14 @@ unprobed endpoints stay eligible. Override the record location with `PI_ROUTER_E
 
 - Only user input can trigger classification or a new lease.
 - New sessions, post-compaction turns, upstream-ref changes, and forks are hard boundaries.
-- Explicit model or effort changes bypass automatic routing until the next task boundary.
+- Explicit model or effort changes bypass automatic model selection until the next task boundary, but never convert a
+  preflight into authorization; on a safety-managed lease they invalidate authorization and keep mutation blocked until
+  active routing is safely restored.
+- Preflight, advisory-pending, and generated-review phases use a deterministic read-only tool allowlist. Unknown tools
+  and shell composition are blocked. A `bash` command is lexed into argv (`core/shell.ts`) and then checked against
+  per-binary allowlists of subcommands and options, so a permitted binary cannot be handed a writing option, a second
+  command, substitution, or a malformed quote. Authorized execution additionally rejects mutating tool names absent from
+  the reviewed plan.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
 - Executing work across a dependent pull-request stack is distinct from planning one. The stack route is restricted to
   exact current-generation IDs (`gpt-5.6-sol/high` and `claude-opus-5/high`, plus their same-model availability

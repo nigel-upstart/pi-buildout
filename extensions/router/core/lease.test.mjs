@@ -142,7 +142,7 @@ describe("task boundary gate", () => {
     }
   });
 
-  it("honors manual override until a hard boundary", () => {
+  it("preserves manual selection without pinning semantic task continuity", () => {
     const active = lease();
     const overridden = markManualOverride({ mode: "active", active, manualOverride: false });
     const result = deterministicBoundaryGate(overridden, {
@@ -152,8 +152,19 @@ describe("task boundary gate", () => {
       cachedTokens: 0,
       expectedReuseRatio: 0,
     });
-    assert.equal(result.action, "continue");
-    assert.match(result.reason, /manual/);
+    assert.equal(result.action, "classify_continuity");
+    assert.match(result.reason, /manual.*semantic continuity/);
+    assert.equal(result.lease.selected.modelId, active.selected.modelId);
+
+    const continuation = deterministicBoundaryGate(overridden, {
+      isUserInput: true,
+      source: "interactive",
+      prompt: "Continue",
+      cachedTokens: 0,
+      expectedReuseRatio: 0,
+    });
+    assert.equal(continuation.action, "continue");
+
     const installed = installLease(setHardBoundary(overridden, "new_session"), active);
     assert.equal(installed.manualOverride, false);
     assert.equal("pendingHardBoundary" in installed, false);

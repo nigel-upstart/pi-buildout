@@ -3,14 +3,17 @@ import { describe, it } from "node:test";
 import { deriveArchetype } from "./archetype.ts";
 import { BOOTSTRAP_ROUTE_POLICIES } from "./policy.ts";
 import { conservativeFeatures } from "./features.ts";
+import { deriveSafetyPolicy } from "./safety.ts";
 import {
   canonicalVendor,
   deriveRoutingContext,
   isControlledHoldout,
+  isStandaloneReviewRequest,
   registrySnapshotId,
   robustCostToDone,
   selectOrdinaryRoute,
   selectReviewRoute,
+  selectStandaloneReviewRoute,
 } from "./routing.ts";
 
 function model(provider, modelId, vendor, contextWindow = 1_000_000) {
@@ -90,6 +93,37 @@ describe("deriveArchetype", () => {
       reviewIntent: true,
     };
     assert.equal(deriveArchetype(features).archetype, "highest_risk_advisory");
+  });
+
+  it("claims a post-completion review duty only where the safety policy creates one", () => {
+    const builder = {
+      ...conservativeFeatures(),
+      intent: "implement",
+      workflowType: "coding_implementation",
+      risk: "high",
+      actionMode: "reversible_mutation",
+    };
+    assert.equal(deriveArchetype(builder).requiresIndependentReview, true);
+    assert.equal(deriveSafetyPolicy(builder), "completion_review");
+
+    // "Review this and fix it" classifies as both review and implementation. The safety policy is
+    // ordinary there, so the archetype must not claim a review duty the lifecycle never creates.
+    for (const reviewShape of [
+      { workflowType: "code_review", intent: "implement" },
+      { workflowType: "coding_implementation", intent: "review" },
+    ]) {
+      const features = { ...builder, ...reviewShape };
+      assert.equal(deriveSafetyPolicy(features), "ordinary");
+      assert.equal(
+        deriveArchetype(features).requiresIndependentReview,
+        false,
+        `${reviewShape.workflowType}/${reviewShape.intent} must not require an independent review`,
+      );
+      assert.ok(
+        !deriveArchetype(features).reasons.some((reason) => reason.includes("post-completion review")),
+        "the explanation must not name a review that will not happen",
+      );
+    }
   });
 });
 
@@ -392,14 +426,22 @@ describe("ordinary route selection", () => {
 });
 
 describe("review route selection", () => {
-  it("selects both non-builder vendors and fixes the builder as final fallback", () => {
+  it("routes standalone review from delta features without inventing a builder", () => {
+    const decision = selectStandaloneReviewRoute(registry(), REQUIREMENTS, [], undefined, "standalone", TYPESCRIPT);
+    assert.equal(decision.kind, "ordinary");
+    assert.equal(decision.archetype, "code_review");
+    assert.ok(
+      [decision.primary, ...decision.fallbacks].every((choice) => choice.rankReason !== "fixed_builder_fallback"),
+    );
+  });
+
+  it("selects both non-builder vendors without allowing the builder to review itself", () => {
     const models = registry();
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
     assert.deepEqual(new Set([decision.primary.vendor, decision.fallback.vendor]), new Set(["anthropic", "google"]));
-    assert.equal(decision.builderFallback.vendor, "openai");
-    assert.equal(decision.builderFallback.rankReason, "fixed_builder_fallback");
+    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
 
   it("tries a stronger reviewer tier when the closest at-or-above model is unavailable", () => {
@@ -415,7 +457,7 @@ describe("review route selection", () => {
     assert.equal(anthropic.modelId, "claude-fable-5");
   });
 
-  it("rejects an unavailable fixed builder fallback", () => {
+  it("does not require the tracked builder endpoint to remain available for read-only review", () => {
     const models = registry();
     const builder = { ...models.find((candidate) => candidate.modelId === "gpt-5.6-terra"), available: false };
     const decision = selectReviewRoute(
@@ -425,8 +467,8 @@ describe("review route selection", () => {
       "medium",
       2,
     );
-    assert.equal(decision.kind, "unroutable");
-    assert.ok(decision.exclusions.some((exclusion) => exclusion.code === "unavailable"));
+    assert.equal(decision.kind, "review");
+    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
 });
 
@@ -846,15 +888,12 @@ describe("consequence gating invariants", () => {
     );
   });
 
-  it("still reviews with the builder as final fallback even when the builder is a low tier", () => {
-    // Review is a read-only judgment, so a builder whose effort is barred from state-changing work
-    // must still be able to review its own output.
+  it("keeps tracked review independent even when the builder is a low tier", () => {
     const models = registry();
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
-    assert.equal(decision.builderFallback.modelId, "gpt-5.6-terra");
-    assert.equal(decision.builderFallback.effort, "medium");
+    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
   });
 });
 
@@ -1015,7 +1054,6 @@ describe("scope and health drive the candidate pool", () => {
     assert.equal(decision.kind, "review");
     const vendors = new Set([decision.primary.vendor, decision.fallback.vendor]);
     assert.deepEqual(vendors, new Set(["anthropic", "google"]));
-    assert.equal(decision.builderFallback.vendor, "openai");
   });
 
   it("refuses to route a disqualified Gemini generation even when it is the only one scoped", () => {
@@ -1088,6 +1126,31 @@ describe("Opus generation chain", () => {
         if (choice.logicalModelId !== "claude-opus-4-8") continue;
         assert.equal(choice.effort, "high");
       }
+    }
+  });
+});
+
+describe("isStandaloneReviewRequest", () => {
+  it("detects explicit review verbs and pull-request references only", () => {
+    for (const prompt of [
+      "Review this change for risk",
+      "Please audit the migration script",
+      "Inspect the failing job",
+      "Can you look over my patch",
+      "Take a pass at PR #305",
+      "Take a pass at PR # 305",
+      "Check https://github.com/acme/widgets/pull/42 before we merge",
+      "opinions on pull request 7",
+    ]) {
+      assert.equal(isStandaloneReviewRequest(prompt), true, prompt);
+    }
+    for (const prompt of [
+      "Implement the retry policy",
+      "Rotate the production credential",
+      "Explain how the router picks a model",
+      "Fix the flaky test in shard 3",
+    ]) {
+      assert.equal(isStandaloneReviewRequest(prompt), false, prompt);
     }
   });
 });

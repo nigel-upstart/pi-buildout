@@ -129,10 +129,9 @@
     },
     "expected": {
       "archetype": "code_review",
-      "primaryVendor": "anthropic",
-      "primaryModel": "claude-opus-5",
-      "fallbackVendor": "google",
-      "builderFallbackVendor": "openai"
+      "primaryVendor": "openai",
+      "primaryModel": "gpt-5.6-sol",
+      "fallbackVendor": "anthropic"
     }
   },
   {

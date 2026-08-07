@@ -16,6 +16,13 @@ export type RepositoryMetadata = {
   dirty: boolean;
   changedFiles: readonly string[];
   languageBuckets: readonly string[];
+  reviewDelta?: {
+    source: "working_tree" | "pull_request";
+    reference: string;
+    files: readonly string[];
+    languageBuckets: readonly string[];
+    patchExcerpt: string;
+  };
 };
 
 export type SynopsisInput = {
@@ -47,6 +54,13 @@ export type SessionSynopsis = {
     dirty: boolean;
     changedFiles: string[];
     languageBuckets: string[];
+    reviewDelta?: {
+      source: "working_tree" | "pull_request";
+      reference: string;
+      files: string[];
+      languageBuckets: string[];
+      patchExcerpt: string;
+    };
   };
   artifactState: {
     readFiles: string[];
@@ -184,6 +198,17 @@ export function buildSessionSynopsis(input: SynopsisInput): SessionSynopsis {
       dirty: input.repository.dirty,
       changedFiles: boundedUnique(input.repository.changedFiles, 50, 240).sort(),
       languageBuckets: boundedUnique(input.repository.languageBuckets, 20, 60).sort(),
+      ...(input.repository.reviewDelta
+        ? {
+            reviewDelta: {
+              source: input.repository.reviewDelta.source,
+              reference: cleanText(input.repository.reviewDelta.reference, 240) ?? "unknown",
+              files: boundedUnique(input.repository.reviewDelta.files, 100, 240).sort(),
+              languageBuckets: boundedUnique(input.repository.reviewDelta.languageBuckets, 20, 60).sort(),
+              patchExcerpt: cleanText(input.repository.reviewDelta.patchExcerpt, 4_000) ?? "unavailable",
+            },
+          }
+        : {}),
     },
     artifactState: { readFiles, modifiedFiles, failedTools },
     priorDecisions,

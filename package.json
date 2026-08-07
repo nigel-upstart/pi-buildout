@@ -53,6 +53,8 @@
     "prettier": "^3.6.0",
     "prettier-plugin-sh": "^0.19.0",
     "secretlint": "^13.0.2",
+    "shell-quote": "1.10.0",
+    "shlex": "3.0.0",
     "typebox": "1.1.38",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.64.0"

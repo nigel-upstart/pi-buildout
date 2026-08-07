@@ -59,6 +59,7 @@ describe("classifier request", () => {
     assert.equal(request.toolName, "report_task_features");
     assert.match(request.systemPrompt, /Never return or recommend a model/);
     assert.match(request.systemPrompt, /pull-request stack is coding_implementation/);
+    assert.match(request.systemPrompt, /unattended or indefinite loop.*broad external-impact/);
     assert.match(request.userPrompt, /<untrusted_session_synopsis>/);
     assert.match(request.userPrompt, /<immediate_user_request>\nImplement it/);
     const injected = buildClassifierRequest(
