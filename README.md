@@ -54,8 +54,11 @@ npm run check
 ```
 
 The gate checks Prettier formatting (120-column width and LF line endings), strict type-aware ESLint rules, Markdown
-style, shell scripts, TypeScript types, tests, unused code and dependencies with Knip, and committed secrets. Run
-`npm run audit` separately to check the dependency tree for known high-severity vulnerabilities.
+style, shell scripts, TypeScript types, tests, unused code and dependencies with Knip, duplicate code with jscpd, and
+committed secrets. The jscpd gate scans authored TypeScript, JavaScript, and shell code under `extensions/` and
+`scripts/` in strict mode; its 70-token minimum and 1.5% threshold are an initial ratchet above the existing 1.28%
+duplicated-line rate (1.46% of tokens), to tighten as repeated test fixtures are consolidated. Run `npm run audit`
+separately to check the dependency tree for known high-severity vulnerabilities.
 
 The pre-commit hook validates staged-file safety, auto-fixes and re-stages supported files with Prettier, ESLint, and
 Markdownlint, and runs the strict project typecheck whenever TypeScript is staged. The pre-push hook is deliberately

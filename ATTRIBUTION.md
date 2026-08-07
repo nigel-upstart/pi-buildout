@@ -231,3 +231,15 @@ this repository and is not derived from either package.
 Use: the published `node:assert` declaration was consulted to confirm its control-flow narrowing contract while typing
 local test fixtures. No declaration or implementation code was copied or modified, and no Node runtime internals or
 unrelated DefinitelyTyped patterns were adopted.
+
+## jscpd
+
+- Source: jscpd
+- Canonical repository: <https://github.com/kucherenko/jscpd>
+- Package revision reviewed: `5.0.14`
+- License declared by the package: MIT
+
+Use: jscpd's published CLI help and package metadata were consulted for the supported strict-mode, minimum-token,
+threshold, reporter, format, and ignore options used by `.jscpd.json`. The configuration values and ratchet policy are
+original to this repository; no upstream configuration or implementation code was copied or modified. Cross-format
+matching, generated reports, blame enrichment, and jscpd's implementation architecture were intentionally not adopted.

@@ -29,8 +29,9 @@
     "test": "node --test --test-skip-pattern='real Bifrost routing evaluation' 'extensions/**/*.test.ts' 'scripts/*.test.ts'",
     "test:eval:real": "node --test extensions/router/eval/real.test.ts",
     "knip": "knip",
+    "jscpd": "jscpd extensions scripts --config .jscpd.json",
     "secrets": "secretlint \"**/*\"",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run secrets",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run jscpd && npm run secrets",
     "audit": "node scripts/check-audit.ts"
   },
   "devDependencies": {
@@ -47,6 +48,7 @@
     "eslint-plugin-sonarjs": "^4.2.0",
     "eslint-plugin-unicorn": "^65.0.0",
     "globals": "^16.5.0",
+    "jscpd": "5.0.14",
     "knip": "^6.27.0",
     "lefthook": "^2.1.10",
     "markdownlint-cli2": "^0.23.0",

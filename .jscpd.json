@@ -1,0 +1,16 @@
+{
+  "threshold": 1.5,
+  "minTokens": 70,
+  "mode": "strict",
+  "reporters": ["console"],
+  "noTips": true,
+  "format": ["typescript", "javascript", "bash"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/patches/**",
+    "**/package-lock.json",
+    "**/coverage/**",
+    "**/dist/**",
+    "**/build/**"
+  ]
+}
