@@ -9,7 +9,9 @@
   },
   "packageManager": "npm@11.17.0",
   "overrides": {
-    "js-yaml": "5.2.1",
+    "brace-expansion": "5.0.9",
+    "fast-uri": "3.1.5",
+    "js-yaml": "5.2.2",
     "protobufjs": "7.6.5"
   },
   "scripts": {
@@ -21,7 +23,7 @@
     "lint:markdown": "markdownlint-cli2 \"**/*.md\"",
     "lint:shell": "shellcheck scripts/*.sh",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-skip-pattern='real Bifrost routing evaluation' 'extensions/**/*.test.mjs'",
+    "test": "node --test --test-skip-pattern='real Bifrost routing evaluation' 'extensions/**/*.test.mjs' 'scripts/*.test.mjs'",
     "test:eval:real": "node --test extensions/router/eval/real.test.mjs",
     "knip": "knip",
     "secrets": "secretlint \"**/*\"",

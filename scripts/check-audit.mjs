@@ -1,77 +1,48 @@
-// `npm audit` for this repository's devDependencies can surface a small, dated set of
-// high/critical advisories that are not immediately fixable by this project.
+// Run npm's dependency audit while narrowly accepting reviewed findings that this repository cannot
+// currently remediate. Every accepted direct finding is bound to an exact advisory and complete set
+// of installed paths. New advisories, path changes, malformed reports, and audit transport failures
+// all fail closed.
 //
-// Most entries live entirely inside a nested `npm-shrinkwrap.json` published by
-// `@earendil-works/pi-coding-agent`. A shrinkwrap file is a deliberate npm install boundary (see
-// `npm help npm-shrinkwrap-json`): this project's `overrides` field cannot reach inside it, and
-// bumping the pinned pi package does not help either — the same vulnerable nested versions are still
-// present in the latest version published at the time each entry below was recorded.
-//
-// Some entries may be temporarily held by this repository's `min-release-age` npm policy after a
-// patched package is published but before npm is allowed to install it. Each entry is scoped to an
-// exact advisory, package, and node path so an unrelated or newly reachable instance of the same
-// package/advisory still fails the gate.
-//
-// Review and prune this allowlist whenever `@earendil-works/pi-*` is upgraded or an embargoed fix
-// ages past `min-release-age`: if `npm audit` output for an entry disappears, remove the entry.
+// Review and prune this allowlist whenever ESLint or @earendil-works/pi-coding-agent is upgraded.
 import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const AUDIT_SEVERITIES = ["info", "low", "moderate", "high", "critical"];
+const BLOCKING_SEVERITIES = new Set(["high", "critical"]);
 
 const ALLOWLIST = [
   {
     package: "brace-expansion",
     advisoryUrl: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
-    nodePathPrefix: "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
-    recordedAt: "2026-07-20",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
+    recordedAt: "2026-08-06",
     reason:
-      "Locked by @earendil-works/pi-coding-agent's published npm-shrinkwrap.json through at least 0.80.10; no override reaches inside a shrinkwrapped subtree.",
-  },
-  {
-    package: "protobufjs",
-    advisoryUrl: "https://github.com/advisories/GHSA-j3f2-48v5-ccww",
-    nodePathPrefix: "node_modules/@earendil-works/pi-coding-agent/node_modules/protobufjs",
-    recordedAt: "2026-07-20",
-    reason:
-      "Locked by @earendil-works/pi-coding-agent's published npm-shrinkwrap.json through at least 0.80.10; no override reaches inside a shrinkwrapped subtree.",
-  },
-  {
-    package: "fast-uri",
-    advisoryUrl: "https://github.com/advisories/GHSA-v2hh-gcrm-f6hx",
-    nodePathPrefix: "node_modules/fast-uri",
-    recordedAt: "2026-07-22",
-    reason:
-      "Patched fast-uri 3.1.4 exists, but this repository's min-release-age policy blocks installing it until the release ages past five days; root dev-tooling path only.",
-  },
-  {
-    package: "brace-expansion",
-    advisoryUrl: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
-    nodePaths: [
-      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
-      "node_modules/brace-expansion",
-      "node_modules/minimatch/node_modules/brace-expansion",
-    ],
-    recordedAt: "2026-07-25",
-    reason:
-      "The root dev-tooling tree and Pi's shrinkwrapped subtree resolve only versions covered by this advisory. Patched brace-expansion 5.0.8 was published 2026-07-23 and is temporarily blocked by min-release-age.",
+      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
   },
   {
     package: "brace-expansion",
     advisoryUrl: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-    nodePaths: [
-      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
-      "node_modules/brace-expansion",
-      "node_modules/minimatch/node_modules/brace-expansion",
-    ],
-    recordedAt: "2026-07-25",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
+    recordedAt: "2026-08-06",
     reason:
-      "The root dev-tooling tree and Pi's shrinkwrapped subtree resolve only versions covered by this advisory. Patched brace-expansion 5.0.8 was published 2026-07-23 and is temporarily blocked by min-release-age.",
+      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
   },
   {
-    package: "js-yaml",
-    advisoryUrl: "https://github.com/advisories/GHSA-pm4m-ph32-ghv5",
-    nodePaths: ["node_modules/js-yaml"],
-    recordedAt: "2026-07-25",
+    package: "brace-expansion",
+    advisoryUrl: "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
+    recordedAt: "2026-08-06",
     reason:
-      "Patched js-yaml 5.2.2 was published 2026-07-23 and is temporarily blocked by min-release-age; the only non-shrinkwrapped instance is root dev-tooling.",
+      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
+  },
+  {
+    package: "undici",
+    advisoryUrl: "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
+    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/undici"],
+    recordedAt: "2026-08-06",
+    reason:
+      "Pi's published shrinkwrap pins undici 8.5.0; npm audit fix only proposes downgrading Pi and cannot update the nested dependency.",
   },
 ];
 
@@ -82,74 +53,147 @@ function runAudit() {
       maxBuffer: 16 * 1024 * 1024,
     });
   } catch (error) {
-    // `npm audit` exits non-zero whenever it finds any vulnerability; its JSON report is still on stdout.
-    const stdout = error && typeof error === "object" && "stdout" in error ? String(error.stdout) : undefined;
+    // npm audit exits non-zero for findings, but still writes a usable report to stdout.
+    const stdout = error && typeof error === "object" && "stdout" in error ? String(error.stdout) : "";
     if (stdout) return stdout;
     throw error;
   }
 }
 
-const report = JSON.parse(runAudit());
-const vulnerabilities = Object.values(report.vulnerabilities ?? {});
-const blocking = vulnerabilities.filter((entry) => entry.severity === "high" || entry.severity === "critical");
+const advisoryObjects = (entry) => (entry.via ?? []).filter((via) => typeof via === "object" && via !== null);
+const advisoryUrls = (entry) => advisoryObjects(entry).map((via) => via.url);
+const sortedNodes = (entry) => (Array.isArray(entry.nodes) ? [...entry.nodes].sort() : []);
+const sameStrings = (left, right) =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
 
-const advisoryUrls = (entry) => (entry.via ?? []).filter((via) => typeof via === "object").map((via) => via.url);
-
-const sameNodePaths = (left, right) =>
-  left.length === right.length && left.every((node, index) => node === right[index]);
-
-const directMatches = new Map();
-for (const entry of blocking) {
-  const urls = advisoryUrls(entry);
-  if (urls.length === 0) continue;
-
-  const nodes = Array.isArray(entry.nodes) ? [...entry.nodes].sort() : [];
-  const match = ALLOWLIST.find(
-    (allowed) =>
-      allowed.package === entry.name &&
-      urls.includes(allowed.advisoryUrl) &&
-      nodes.length > 0 &&
-      (allowed.nodePaths
-        ? sameNodePaths(nodes, [...allowed.nodePaths].sort())
-        : nodes.every((node) => node.startsWith(allowed.nodePathPrefix))),
-  );
-  if (match) directMatches.set(entry.name, match);
+function isNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
-const acceptedNames = new Set(directMatches.keys());
-let changed = true;
-while (changed) {
-  changed = false;
-  for (const entry of blocking) {
-    if (acceptedNames.has(entry.name) || advisoryUrls(entry).length > 0) continue;
-    const sources = (entry.via ?? []).filter((via) => typeof via === "string");
-    if (sources.length > 0 && sources.every((source) => acceptedNames.has(source))) {
+function isVulnerabilityEntry([key, entry]) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+  if (key.length === 0 || entry.name !== key || !AUDIT_SEVERITIES.includes(entry.severity)) return false;
+  if (
+    !Array.isArray(entry.nodes) ||
+    entry.nodes.length === 0 ||
+    !entry.nodes.every((node) => typeof node === "string" && node.length > 0)
+  ) {
+    return false;
+  }
+  if (!Array.isArray(entry.via) || entry.via.length === 0) return false;
+  return entry.via.every(
+    (via) =>
+      (typeof via === "string" && via.length > 0) ||
+      (via !== null &&
+        typeof via === "object" &&
+        typeof via.url === "string" &&
+        via.url.length > 0 &&
+        AUDIT_SEVERITIES.includes(via.severity)),
+  );
+}
+
+export function evaluateAudit(report, allowlist = ALLOWLIST) {
+  const totals = report?.metadata?.vulnerabilities;
+  const entries =
+    report?.vulnerabilities && typeof report.vulnerabilities === "object" && !Array.isArray(report.vulnerabilities)
+      ? Object.entries(report.vulnerabilities)
+      : [];
+  const validTotals =
+    totals &&
+    typeof totals === "object" &&
+    AUDIT_SEVERITIES.every((severity) => isNonNegativeInteger(totals[severity])) &&
+    isNonNegativeInteger(totals.total);
+  const actualTotals = Object.fromEntries(
+    AUDIT_SEVERITIES.map((severity) => [severity, entries.filter(([, entry]) => entry?.severity === severity).length]),
+  );
+  const totalsReconcile =
+    validTotals &&
+    totals.total === entries.length &&
+    totals.total === AUDIT_SEVERITIES.reduce((sum, severity) => sum + totals[severity], 0) &&
+    AUDIT_SEVERITIES.every((severity) => totals[severity] === actualTotals[severity]);
+
+  if (
+    !report ||
+    typeof report !== "object" ||
+    Array.isArray(report) ||
+    report.error ||
+    !report.vulnerabilities ||
+    typeof report.vulnerabilities !== "object" ||
+    Array.isArray(report.vulnerabilities) ||
+    !entries.every(isVulnerabilityEntry) ||
+    !totalsReconcile
+  ) {
+    throw new Error("npm audit returned an invalid or unsuccessful report");
+  }
+
+  const vulnerabilities = entries.map(([, entry]) => entry);
+  const blocking = vulnerabilities.filter((entry) => BLOCKING_SEVERITIES.has(entry.severity));
+  const acceptedNames = new Set();
+  const acceptedAdvisories = new Map();
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const entry of blocking) {
+      if (acceptedNames.has(entry.name)) continue;
+
+      const direct = advisoryObjects(entry).filter((via) => BLOCKING_SEVERITIES.has(via.severity));
+      const sources = (entry.via ?? []).filter((via) => typeof via === "string");
+      if (direct.length === 0 && sources.length === 0) continue;
+
+      const nodes = sortedNodes(entry);
+      const matches = direct.map((via) =>
+        allowlist.find(
+          (allowed) =>
+            allowed.package === entry.name &&
+            allowed.advisoryUrl === via.url &&
+            nodes.length > 0 &&
+            sameStrings(nodes, [...allowed.nodePaths].sort()),
+        ),
+      );
+      const directAccepted = direct.length === 0 || matches.every(Boolean);
+      const sourcesAccepted = sources.length === 0 || sources.every((source) => acceptedNames.has(source));
+      if (!directAccepted || !sourcesAccepted) continue;
+
       acceptedNames.add(entry.name);
+      for (const match of matches) {
+        if (match) acceptedAdvisories.set(match.advisoryUrl, match);
+      }
       changed = true;
     }
   }
+
+  return {
+    accepted: blocking.filter((entry) => acceptedNames.has(entry.name)),
+    acceptedAdvisories: [...acceptedAdvisories.values()],
+    blocking,
+    total: report.metadata.vulnerabilities.total,
+    unexplained: blocking.filter((entry) => !acceptedNames.has(entry.name)),
+  };
 }
 
-const accepted = blocking
-  .filter((entry) => acceptedNames.has(entry.name))
-  .map((entry) => ({ entry, match: directMatches.get(entry.name) }))
-  .filter(({ match }) => match);
-const unexplained = blocking.filter((entry) => !acceptedNames.has(entry.name));
+function main() {
+  const result = evaluateAudit(JSON.parse(runAudit()));
 
-for (const { match } of accepted) {
+  for (const match of result.acceptedAdvisories) {
+    console.log(
+      `known reviewed advisory accepted: ${match.package} (${match.advisoryUrl}), recorded ${match.recordedAt} — ${match.reason}`,
+    );
+  }
+
+  if (result.unexplained.length > 0) {
+    console.error("npm audit found high/critical vulnerabilities that are not on the reviewed allowlist:");
+    for (const entry of result.unexplained) {
+      console.error(`- ${entry.name} (${entry.severity}): ${advisoryUrls(entry).join(", ") || "no advisory URL"}`);
+      console.error(`  nodes: ${(entry.nodes ?? []).join(", ")}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+
   console.log(
-    `known reviewed advisory accepted: ${match.package} (${match.advisoryUrl}), recorded ${match.recordedAt} — ${match.reason}`,
+    `npm audit: ${String(result.total)} total finding(s), ${String(result.blocking.length)} high/critical, 0 unexplained`,
   );
 }
 
-if (unexplained.length > 0) {
-  console.error("npm audit found high/critical vulnerabilities that are not on the reviewed allowlist:");
-  for (const entry of unexplained) {
-    console.error(`- ${entry.name} (${entry.severity}): ${advisoryUrls(entry).join(", ") || "no advisory URL"}`);
-    console.error(`  nodes: ${(entry.nodes ?? []).join(", ")}`);
-  }
-  process.exit(1);
-}
-
-const total = report.metadata?.vulnerabilities?.total ?? vulnerabilities.length;
-console.log(`npm audit: ${String(total)} total finding(s), ${String(blocking.length)} high/critical, 0 unexplained`);
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();

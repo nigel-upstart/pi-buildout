@@ -1,5 +1,7 @@
 # Attribution
 
+## Subagent implementations
+
 The subagent extension in [`extensions/subagents`](extensions/subagents) was informed by the two implementations
 identified by the project owner. The implementation in this repository is original code, but it deliberately carries
 forward architectural ideas and operational lessons from both projects.
