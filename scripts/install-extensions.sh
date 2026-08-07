@@ -215,11 +215,38 @@ fi
 mkdir -p "$EXTENSION_DIR"
 for extension in "${EXTENSIONS[@]}"; do
   EXTENSION_STAGE_DIR=$(mktemp -d "$EXTENSION_DIR/.${extension}.XXXXXX")
+  # A `package.json` travels with the extension so its runtime imports resolve outside this
+  # repository. `node_modules` is pruned rather than copied: dependencies are installed into the
+  # staged tree below from that manifest, so the installed tree never inherits this repository's
+  # development tree.
   while IFS= read -r -d '' source_file; do
     relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
     mkdir -p "$EXTENSION_STAGE_DIR/$(dirname "$relative_file")"
     cp "$source_file" "$EXTENSION_STAGE_DIR/$relative_file"
-  done < <(find "$ROOT_DIR/extensions/$extension" -type f -name '*.ts' ! -name '*.test.*' -print0)
+  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' \) -print0)
+
+  # Runtime dependencies are installed before the atomic swap, so a failed or offline install leaves
+  # the previously working extension tree in place instead of publishing one that cannot load.
+  if [[ -f "$EXTENSION_STAGE_DIR/package.json" ]] && node -e 'const d = require(process.argv[1]).dependencies; process.exit(d && Object.keys(d).length > 0 ? 0 : 1)' "$EXTENSION_STAGE_DIR/package.json"; then
+    if ! (cd "$EXTENSION_STAGE_DIR" && npm install --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts > /dev/null); then
+      printf 'Could not install runtime dependencies for %s; leaving the existing extension in place.\n' "$extension" >&2
+      exit 1
+    fi
+    # Resolve every declared dependency the way pi will at load time. A dependency that installs but
+    # does not resolve would otherwise surface as a broken pi session rather than a failed install.
+    # The single quotes are deliberate: ${directory} is a JavaScript template literal evaluated by
+    # node, not a shell expansion.
+    # shellcheck disable=SC2016
+    if ! node -e '
+      const { createRequire } = require("module");
+      const directory = process.argv[1];
+      const resolver = createRequire(`${directory}/index.ts`);
+      for (const name of Object.keys(require(`${directory}/package.json`).dependencies)) resolver.resolve(name);
+    ' "$EXTENSION_STAGE_DIR"; then
+      printf 'Runtime dependencies for %s did not resolve; leaving the existing extension in place.\n' "$extension" >&2
+      exit 1
+    fi
+  fi
 
   EXTENSION_TARGET="$EXTENSION_DIR/$extension"
   EXTENSION_BACKUP="$EXTENSION_STAGE_DIR.backup"
