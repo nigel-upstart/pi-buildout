@@ -19,8 +19,9 @@ import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
-import { canonicalVendor } from "./core/routing.ts";
+import { canonicalVendor, isStandaloneReviewRequest } from "./core/routing.ts";
 import { matchesScope } from "./core/scope.ts";
+import { isLeaseLifecycle, isSafetyEvidenceLog } from "./core/safety.ts";
 import { localRepoKey, normalizeGitRemoteUrl, parseRouterMode, resolveStartMode } from "./core/start-mode.ts";
 import type { StartModeResolution } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteRequirements } from "./core/routing.ts";
@@ -136,7 +137,7 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
   if (!lease || typeof lease.archetype !== "string" || !ARCHETYPES.includes(lease.archetype as Archetype)) return false;
   const archetype = lease.archetype as Archetype;
   if (
-    lease.version !== 1 ||
+    lease.version !== 2 ||
     typeof lease.taskId !== "string" ||
     typeof lease.startedAt !== "string" ||
     typeof lease.updatedAt !== "string" ||
@@ -149,6 +150,15 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     (lease.attemptIndex as number) > lease.fallbacks.length ||
     (lease.previousSelection !== undefined && !isRouteChoice(lease.previousSelection, archetype)) ||
     (lease.parentTaskId !== undefined && typeof lease.parentTaskId !== "string") ||
+    lease.leasePurpose !== undefined ||
+    lease.reviewRequired !== undefined ||
+    lease.reviewCompleted !== undefined ||
+    !isLeaseLifecycle(lease.lifecycle) ||
+    !isSafetyEvidenceLog(lease.safetyEvidence) ||
+    (lease.lifecycle.phase === "review" &&
+      (archetype !== "code_review" || lease.parentLease === undefined || lease.parentTaskId === undefined)) ||
+    (lease.lifecycle.phase !== "review" && lease.parentLease !== undefined) ||
+    (archetype === "code_review" && lease.lifecycle.phase !== "review" && lease.parentTaskId !== undefined) ||
     typeof lease.promptProfileId !== "string" ||
     object(lease.selected)?.profileId !== lease.promptProfileId ||
     typeof lease.modelSnapshotId !== "string" ||
@@ -163,9 +173,13 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     return false;
   }
   const candidate = lease as unknown as TaskLease;
+  if (validateFallbackTopology(candidate).length > 0) return false;
+  if (lease.parentLease === undefined) return lease.parentTaskId === undefined || depth === 0;
   return (
-    validateFallbackTopology(candidate).length === 0 &&
-    (lease.parentLease === undefined || isTaskLease(lease.parentLease, depth + 1))
+    isTaskLease(lease.parentLease, depth + 1) &&
+    lease.parentTaskId === lease.parentLease.taskId &&
+    lease.lifecycle.taskFingerprint === lease.parentLease.lifecycle.taskFingerprint &&
+    lease.parentLease.lifecycle.phase !== "review"
   );
 }
 
@@ -550,7 +564,27 @@ function languageBuckets(files: readonly string[]): string[] {
   return [...buckets].sort();
 }
 
-export async function readRepositoryMetadata(pi: ExtensionAPI, cwd: string): Promise<RepositoryMetadata> {
+/** Pure patch parsing, kept separate from the command execution that produces the patch. */
+function parseReviewDelta(
+  patch: string,
+  source: NonNullable<RepositoryMetadata["reviewDelta"]>["source"],
+  reference: string,
+): NonNullable<RepositoryMetadata["reviewDelta"]> {
+  const files = [
+    ...new Set(
+      [...patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)]
+        .map((match) => match[2] ?? match[1])
+        .filter((file): file is string => typeof file === "string"),
+    ),
+  ].slice(0, 100);
+  return { source, reference, files, languageBuckets: languageBuckets(files), patchExcerpt: patch.slice(0, 4_000) };
+}
+
+export async function readRepositoryMetadata(
+  pi: ExtensionAPI,
+  cwd: string,
+  possibleReviewPrompt?: string,
+): Promise<RepositoryMetadata> {
   const [root, head, upstream, status, tracked] = await Promise.all([
     git(pi, cwd, ["rev-parse", "--show-toplevel"]),
     git(pi, cwd, ["rev-parse", "HEAD"]),
@@ -563,6 +597,32 @@ export async function readRepositoryMetadata(pi: ExtensionAPI, cwd: string): Pro
     .filter(Boolean)
     .map((line) => line.slice(3).split(" -> ").at(-1) ?? line.slice(3));
   const trackedFiles = (tracked ?? "").split("\n").filter(Boolean).slice(0, 20_000);
+  let reviewDelta: RepositoryMetadata["reviewDelta"];
+  const pullRequestUrl = possibleReviewPrompt
+    ? /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/i.exec(possibleReviewPrompt)?.[0]
+    : undefined;
+  const pullRequestNumber = possibleReviewPrompt
+    ? /\b(?:pr|pull request)\s*#?(\d+)\b/i.exec(possibleReviewPrompt)?.[1]
+    : undefined;
+  if (possibleReviewPrompt && isStandaloneReviewRequest(possibleReviewPrompt)) {
+    const pullRequest = pullRequestUrl ?? pullRequestNumber;
+    try {
+      const result = pullRequest
+        ? await pi.exec("gh", ["pr", "diff", pullRequest, "--patch"], { timeout: 10_000 })
+        : await pi.exec("git", ["-C", cwd, "diff", "--no-ext-diff", "--unified=1", "HEAD", "--"], {
+            timeout: 10_000,
+          });
+      if (result.code === 0 && result.stdout.trim()) {
+        reviewDelta = parseReviewDelta(
+          result.stdout,
+          pullRequest ? "pull_request" : "working_tree",
+          pullRequestUrl ?? (pullRequestNumber ? `PR #${pullRequestNumber}` : "HEAD to working tree/index"),
+        );
+      }
+    } catch {
+      // Review routing still uses the prompt and bounded repository metadata when the delta is unavailable.
+    }
+  }
   return {
     root: root ?? cwd,
     ...(head ? { head } : {}),
@@ -570,6 +630,7 @@ export async function readRepositoryMetadata(pi: ExtensionAPI, cwd: string): Pro
     dirty: changedFiles.length > 0,
     changedFiles,
     languageBuckets: languageBuckets(trackedFiles),
+    ...(reviewDelta ? { reviewDelta } : {}),
   };
 }
 

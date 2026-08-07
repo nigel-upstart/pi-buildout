@@ -5,7 +5,7 @@ import { deriveArchetype } from "../core/archetype.ts";
 import { conservativeFeatures, validateTaskFeatures } from "../core/features.ts";
 import { BOOTSTRAP_ROUTE_POLICIES, reviewerRefs } from "../core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "../core/profiles.ts";
-import { deriveRoutingContext, selectOrdinaryRoute, selectReviewRoute } from "../core/routing.ts";
+import { deriveRoutingContext, selectOrdinaryRoute, selectStandaloneReviewRoute } from "../core/routing.ts";
 import { scoreFeatureAxes } from "./score.ts";
 
 const fixtures = JSON.parse(await readFile(new URL("./corpus/routes.json", import.meta.url), "utf8"));
@@ -97,12 +97,13 @@ describe("routing golden corpus", () => {
       assert.equal(archetype, fixture.expected.archetype);
       const decision =
         archetype === "code_review"
-          ? selectReviewRoute(
+          ? selectStandaloneReviewRoute(
               models,
               requirements,
-              models.find((model) => model.provider === "openai-codex" && model.modelId === "gpt-5.6-terra"),
-              "medium",
-              2,
+              [],
+              undefined,
+              undefined,
+              deriveRoutingContext(features, []),
             )
           : selectOrdinaryRoute(
               archetype,
@@ -133,18 +134,10 @@ describe("routing golden corpus", () => {
       if (fixture.expected.fallbackVendor) {
         assert.ok(fallbacks.some((choice) => choice.vendor === fixture.expected.fallbackVendor));
       }
-      if (fixture.expected.builderFallbackVendor) {
-        assert.equal(decision.kind, "review");
-        assert.equal(decision.builderFallback.vendor, fixture.expected.builderFallbackVendor);
-      }
       if (!PREMIUM_ARCHETYPES.has(fixture.expected.archetype)) {
         assert.equal(isPremiumChoice(decision.primary), false, `${fixture.id} received a premium primary`);
       }
-      for (const choice of [
-        decision.primary,
-        ...fallbacks,
-        ...(decision.kind === "review" ? [decision.builderFallback] : []),
-      ]) {
+      for (const choice of [decision.primary, ...fallbacks]) {
         assert.ok(findPromptProfile(choice.vendor, choice.modelId, archetype, choice.effort));
       }
     });
