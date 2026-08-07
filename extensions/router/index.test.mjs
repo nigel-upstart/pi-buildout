@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -8,6 +8,9 @@ import { describe, it } from "node:test";
 // than reading whatever the developer happens to have enabled.
 process.env.PI_ROUTER_MODEL_SCOPE = "*";
 process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH = "/nonexistent-router-health.json";
+// Recording the last known mode is a real filesystem write; keep every test out of the developer's
+// agent directory unless the test points it somewhere itself.
+process.env.PI_ROUTER_LAST_MODE_PATH = join(await mkdtemp(join(tmpdir(), "pi-router-last-mode-")), "last-mode.jsonl");
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import routerExtension, { automaticRoutingBlockReason, deterministicCheckCommand } from "./index.ts";
@@ -29,6 +32,40 @@ describe("deterministicCheckCommand", () => {
     assert.equal(deterministicCheckCommand("echo hello"), undefined);
   });
 });
+
+/** Runs a startup `session_start` against a session with no router history and returns persisted state. */
+async function startupRouterState(overrides = {}) {
+  const hooks = new Map();
+  const appended = [];
+  routerExtension({
+    on: (event, handler) => hooks.set(event, handler),
+    registerCommand: () => {},
+    registerTool: () => {},
+    appendEntry: (customType, data) => appended.push({ customType, data }),
+    ...overrides,
+  });
+  await hooks.get("session_start")(
+    { type: "session_start", reason: "startup" },
+    {
+      cwd: "/repo",
+      sessionManager: { getSessionId: () => "startup-session", getBranch: () => [] },
+      modelRegistry: { getAvailable: () => [], getAll: () => [] },
+      model: undefined,
+      getContextUsage: () => ({ tokens: 0, contextWindow: 128000 }),
+      ui: { setStatus: () => {}, notify: () => {}, theme: { fg: (_color, text) => text } },
+    },
+  );
+  return appended.filter((entry) => entry.customType === "model-router-state");
+}
+
+function restoreEnv({ previousAgentDir, previousMode, previousLastModePath }) {
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
+  else process.env.PI_ROUTER_MODE = previousMode;
+  if (previousLastModePath === undefined) delete process.env.PI_ROUTER_LAST_MODE_PATH;
+  else process.env.PI_ROUTER_LAST_MODE_PATH = previousLastModePath;
+}
 
 describe("routerExtension", () => {
   it("registers the routing lifecycle and status command without starting background work", () => {
@@ -65,16 +102,28 @@ describe("routerExtension", () => {
 
   it("carries routing enablement mode through /clear (session_shutdown → session_start)", async () => {
     const hooks = new Map();
+    const commands = new Map();
     const appended = [];
     routerExtension({
       on: (event, handler) => hooks.set(event, handler),
-      registerCommand: () => {},
+      registerCommand: (name, command) => commands.set(name, command),
       registerTool: () => {},
       appendEntry: (customType, data) => appended.push({ customType, data }),
     });
 
+    const lastModePath = join(await mkdtemp(join(tmpdir(), "pi-router-clear-")), "last-mode.jsonl");
+    const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    process.env.PI_ROUTER_LAST_MODE_PATH = lastModePath;
+
+    // The operator enables routing before clearing.
+    await commands.get("route").handler("active", {
+      sessionManager: { getSessionId: () => "pre-clear" },
+      ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+    });
+    assert.equal(appended.at(-1).data.mode, "active");
+
     // Simulate session_shutdown when /clear creates a new session.
-    hooks.get("session_shutdown")({
+    await hooks.get("session_shutdown")({
       type: "session_shutdown",
       reason: "new",
     });
@@ -114,6 +163,47 @@ describe("routerExtension", () => {
       beforeStartPersist + 1,
       "session_start should persist the restored mode",
     );
+    assert.equal(persistedEntriesAfter.at(-1).data.mode, "active", "/clear must not disable active routing");
+    assert.equal(persistedEntriesAfter.at(-1).data.active, undefined, "/clear must still drop the task lease");
+    const recorded = (await readFile(lastModePath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.equal(recorded.at(-1).mode, "active", "the mode in force must be recorded for the next start");
+    process.env.PI_ROUTER_LAST_MODE_PATH = previousLastModePath;
+  });
+
+  it("keeps active routing through /compact while dropping the lease at the boundary", async () => {
+    const hooks = new Map();
+    const commands = new Map();
+    const appended = [];
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-compact-"));
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    process.env.PI_ROUTER_LAST_MODE_PATH = join(telemetryDirectory, "last-mode.jsonl");
+    try {
+      routerExtension({
+        on: (event, handler) => hooks.set(event, handler),
+        registerCommand: (name, command) => commands.set(name, command),
+        registerTool: () => {},
+        appendEntry: (customType, data) => appended.push({ customType, data }),
+      });
+      const ctx = {
+        sessionManager: { getSessionId: () => "compacting" },
+        ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+      };
+      await commands.get("route").handler("active", ctx);
+
+      await hooks.get("session_compact")({ type: "session_compact" }, ctx);
+
+      const persisted = appended.filter((entry) => entry.customType === "model-router-state");
+      assert.equal(persisted.at(-1).data.mode, "active", "/compact must not disable active routing");
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+      process.env.PI_ROUTER_LAST_MODE_PATH = previousLastModePath;
+    }
   });
 
   it("reads startMode from config file when env var is not set", async () => {
@@ -169,6 +259,61 @@ describe("routerExtension", () => {
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
       else process.env.PI_ROUTER_MODE = previousMode;
+    }
+  });
+
+  it("starts in the last recorded mode by default so enablement survives a restart", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-router-last-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousMode = process.env.PI_ROUTER_MODE;
+    const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempDir;
+      delete process.env.PI_ROUTER_MODE;
+      process.env.PI_ROUTER_LAST_MODE_PATH = join(tempDir, "router-last-mode.jsonl");
+      // No router-config.json: the built-in preference is the last recorded mode.
+      await writeFile(
+        process.env.PI_ROUTER_LAST_MODE_PATH,
+        `${JSON.stringify({ version: 1, mode: "active", updatedAt: "2026-01-01T00:00:00.000Z" })}\n`,
+      );
+
+      const entries = await startupRouterState();
+      assert.equal(entries.at(-1)?.data.mode, "active", "startup should restore the recorded exit mode");
+    } finally {
+      restoreEnv({ previousAgentDir, previousMode, previousLastModePath });
+    }
+  });
+
+  it("lets a repository-scoped startMode override the global one", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-router-repo-scope-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousMode = process.env.PI_ROUTER_MODE;
+    const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempDir;
+      delete process.env.PI_ROUTER_MODE;
+      process.env.PI_ROUTER_LAST_MODE_PATH = join(tempDir, "router-last-mode.jsonl");
+      await writeFile(join(tempDir, "router-config.json"), JSON.stringify({ startMode: "off" }));
+      await writeFile(
+        join(tempDir, "repo-router-config.json"),
+        JSON.stringify({
+          "github.com:nigel-upstart/pi-buildout": { startMode: "active" },
+          "github.com:other/repo": { startMode: "off" },
+        }),
+      );
+
+      const entries = await startupRouterState({
+        exec: (_command, args) => {
+          const gitArgs = args.slice(2);
+          if (gitArgs[0] === "remote" && gitArgs[1] === "get-url" && gitArgs[2] === "upstream") {
+            return Promise.resolve({ code: 0, stdout: "git@github.com:nigel-upstart/pi-buildout.git\n", stderr: "" });
+          }
+          return Promise.resolve({ code: 1, stdout: "", stderr: "" });
+        },
+      });
+      assert.equal(entries.at(-1)?.data.mode, "active", "the repository entry should win over the global file");
+    } finally {
+      restoreEnv({ previousAgentDir, previousMode, previousLastModePath });
     }
   });
 

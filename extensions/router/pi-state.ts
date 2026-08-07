@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -11,7 +11,7 @@ import type { Archetype } from "./core/archetype.ts";
 import { validateFallbackTopology } from "./core/fallback.ts";
 import { validateTaskFeatures } from "./core/features.ts";
 import type { TaskFeatures } from "./core/features.ts";
-import type { LeaseState, TaskLease } from "./core/lease.ts";
+import type { LeaseState, RouterMode, TaskLease } from "./core/lease.ts";
 import { evidenceAbility } from "./core/evidence.ts";
 import { ENDPOINT_TIERS, POLICY_VERSION, policyAbility } from "./core/policy.ts";
 import type { EndpointTier } from "./core/policy.ts";
@@ -21,6 +21,8 @@ import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
 import { canonicalVendor } from "./core/routing.ts";
 import { matchesScope } from "./core/scope.ts";
+import { localRepoKey, normalizeGitRemoteUrl, parseRouterMode, resolveStartMode } from "./core/start-mode.ts";
+import type { StartModeResolution } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteRequirements } from "./core/routing.ts";
 import type { RepositoryMetadata, SynopsisEntry } from "./core/synopsis.ts";
 
@@ -167,6 +169,17 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
   );
 }
 
+/**
+ * Whether this session branch already carries router state. A session that carries its own state
+ * keeps it, so the configured start mode only decides what a session with no history starts as.
+ */
+export function hasPersistedRouterState(entries: readonly unknown[]): boolean {
+  return entries.some((rawEntry) => {
+    const entry = object(rawEntry);
+    return entry?.type === "custom" && entry.customType === "model-router-state";
+  });
+}
+
 export function restoreLeaseState(entries: readonly unknown[], defaultMode: LeaseState["mode"]): LeaseState {
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = object(entries[index]);
@@ -265,6 +278,185 @@ async function readJsonFile(path: string): Promise<unknown> {
   } catch {
     return undefined;
   }
+}
+
+/** Global start-mode configuration: `{ "startMode": "last" | "off" | "shadow" | "active" }`. */
+const ROUTER_CONFIG_FILE = "router-config.json";
+/** Repository-scoped start-mode configuration, keyed by repository identity. */
+const ROUTER_REPO_CONFIG_FILE = "repo-router-config.json";
+/**
+ * Where the mode in force at the last stop is recorded so `startMode: "last"` has something to read.
+ *
+ * Append-only, one JSON record per line, because several pi processes on one machine stop at
+ * unpredictable times. A read-modify-write of a single JSON object would let the last writer drop
+ * another repository's record; an append cannot lose a record it never read.
+ */
+const ROUTER_LAST_MODE_FILE = "router-last-mode.jsonl";
+
+/**
+ * Records kept when the log is compacted, and the length that triggers compaction. The log only needs
+ * the most recent record per repository, so this bound keeps it small without needing exact history.
+ */
+const LAST_MODE_LOG_COMPACT_AT = 200;
+
+/**
+ * Repository identity used to key repository-scoped router configuration, resolved from git remotes
+ * (`upstream`, then `origin`, then the first configured remote) and falling back to the repository
+ * root path. Same key format as this repository's pi skills patch uses for `repo-skills.json`.
+ */
+export async function resolveRouterRepoKey(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
+  for (const remote of ["upstream", "origin"]) {
+    const key = normalizeGitRemoteUrl(await git(pi, cwd, ["remote", "get-url", remote]));
+    if (key) return key;
+  }
+  const remotes = (await git(pi, cwd, ["remote"]))?.split(/\r?\n/).map((name) => name.trim()) ?? [];
+  const firstRemote = remotes.find(Boolean);
+  const firstKey = firstRemote
+    ? normalizeGitRemoteUrl(await git(pi, cwd, ["remote", "get-url", firstRemote]))
+    : undefined;
+  if (firstKey) return firstKey;
+  return localRepoKey(await git(pi, cwd, ["rev-parse", "--show-toplevel"]), homedir());
+}
+
+function lastModePath(agentDir: string): string {
+  return process.env.PI_ROUTER_LAST_MODE_PATH ?? join(agentDir, ROUTER_LAST_MODE_FILE);
+}
+
+/**
+ * Reads one key of a parsed JSON object without letting a repository whose identity happens to be
+ * `__proto__` or `constructor` reach the prototype chain.
+ */
+function ownProperty(source: ObjectLike | undefined, key: string): unknown {
+  return source ? Object.getOwnPropertyDescriptor(source, key)?.value : undefined;
+}
+
+type LastModeRecord = {
+  version: 1;
+  /** Absent for a record written outside any repository; such a record is the machine-wide fallback. */
+  repoKey?: string;
+  mode: RouterMode;
+  updatedAt: string;
+};
+
+function parseLastModeRecord(line: string): LastModeRecord | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    // A partially written line from a killed process is skipped, not fatal.
+    return undefined;
+  }
+  const record = object(parsed);
+  const mode = parseRouterMode(record?.mode);
+  if (!record || !mode) return undefined;
+  const repoKey = string(record.repoKey);
+  return {
+    version: 1,
+    ...(repoKey ? { repoKey } : {}),
+    mode,
+    updatedAt: string(record.updatedAt) ?? "",
+  };
+}
+
+async function readLastModeLog(agentDir: string): Promise<LastModeRecord[]> {
+  let content: string;
+  try {
+    content = await readFile(lastModePath(agentDir), "utf8");
+  } catch {
+    return [];
+  }
+  return content
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => parseLastModeRecord(line))
+    .filter((record): record is LastModeRecord => record !== undefined);
+}
+
+/**
+ * The mode recorded at the last stop. A record for this repository wins over the machine-wide one so
+ * enabling routing in one checkout does not silently enable it everywhere.
+ */
+async function readLastKnownMode(agentDir: string, repoKey: string | undefined): Promise<RouterMode | undefined> {
+  const records = await readLastModeLog(agentDir);
+  if (repoKey) {
+    for (let index = records.length - 1; index >= 0; index--) {
+      const record = records[index];
+      if (record?.repoKey === repoKey) return record.mode;
+    }
+  }
+  // No record for this repository: the newest record of any scope is the machine-wide fallback.
+  return records.at(-1)?.mode;
+}
+
+/**
+ * Records the mode currently in force by appending one line, so a concurrent pi process recording a
+ * different repository cannot overwrite this record or have its own dropped. The log is compacted to
+ * the newest record per repository once it grows past a bound.
+ */
+export async function writeLastKnownMode(
+  agentDir: string,
+  repoKey: string | undefined,
+  mode: RouterMode,
+): Promise<void> {
+  const path = lastModePath(agentDir);
+  const record: LastModeRecord = {
+    version: 1,
+    ...(repoKey ? { repoKey } : {}),
+    mode,
+    updatedAt: new Date().toISOString(),
+  };
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
+  await compactLastModeLog(agentDir, path);
+}
+
+/**
+ * Rewrites the log with only the newest record per repository. Best-effort and deliberately silent: a
+ * failed compaction only means the log stays long. A record appended by another process during the
+ * rewrite window can be lost, which at worst makes one repository fall back to the machine-wide mode
+ * on its next start; compaction runs about once per few hundred session ends, so that window is rare
+ * and the mode is re-recorded at the next change or shutdown.
+ */
+async function compactLastModeLog(agentDir: string, path: string): Promise<void> {
+  const records = await readLastModeLog(agentDir);
+  if (records.length < LAST_MODE_LOG_COMPACT_AT) return;
+  const newest = new Map<string, LastModeRecord>();
+  for (const entry of records) newest.set(entry.repoKey ?? "", entry);
+  const kept = [...newest.values()].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, kept.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf8");
+    await rename(temporary, path);
+  } catch {
+    await rm(temporary, { force: true });
+  }
+}
+
+/**
+ * Resolves the mode a session with no router state of its own should start in, reading the
+ * environment override, the repository-scoped configuration entry, the global configuration file, and
+ * the recorded exit mode. Every read is best-effort: unreadable configuration yields the default
+ * preference (`last`) rather than an error, because start mode must never block a session.
+ */
+export async function readStartModeResolution(input: {
+  agentDir: string;
+  repoKey: string | undefined;
+}): Promise<StartModeResolution> {
+  const { agentDir, repoKey } = input;
+  const [globalConfig, repoConfig, lastKnownMode] = await Promise.all([
+    readJsonFile(join(agentDir, ROUTER_CONFIG_FILE)),
+    readJsonFile(join(agentDir, ROUTER_REPO_CONFIG_FILE)),
+    readLastKnownMode(agentDir, repoKey),
+  ]);
+  const repoEntry = repoKey ? object(ownProperty(object(repoConfig), repoKey)) : undefined;
+  return {
+    ...resolveStartMode({
+      envMode: process.env.PI_ROUTER_MODE,
+      repoStartMode: repoEntry?.startMode,
+      globalStartMode: object(globalConfig)?.startMode,
+      lastKnownMode,
+    }),
+  };
 }
 
 export function snapshotForModel(

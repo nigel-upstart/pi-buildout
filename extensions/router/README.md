@@ -37,20 +37,51 @@ rollout, and rollback. A normal response that omits the tool gets one same-lease
 fallback policy applies. A request to start implementation always receives a new lease. High-risk mutating tasks
 automatically run a read-only, provider-independent child review before restoring the builder lease.
 
-`PI_ROUTER_MODE=shadow|active|off` controls the initial mode when a session has no persisted router state. The default
-is `shadow`. The routing enablement mode selected with `/route shadow|active|off` is carried through `/clear`; only the
-mode is preserved, not the task lease, selected model, or effort. Other new sessions still use `PI_ROUTER_MODE` when
-they have no persisted router state.
+## Start mode and enablement continuity
 
-Alternatively, create `~/.pi/agent/router-config.json`:
+Enablement is sticky. The mode selected with `/route shadow|active|off` survives `/compact` and `/clear`, and by default
+it also survives quitting pi: the next session starts in the mode that was in force when the router last stopped. Only
+the mode is carried; the task lease, selected model, and effort are always discarded at those boundaries, so the next
+user message starts a new task.
 
-```json
-{
-  "startMode": "active"
-}
-```
+A session that already carries its own router state keeps it. Start-mode configuration only decides what a session with
+no router history starts in (a fresh launch, `/clear`, or a fork).
 
-Precedence: `PI_ROUTER_MODE` environment variable > config file > built-in default (`shadow`).
+Configure the start mode with `startMode`, which accepts `last` (the default), `off`, `shadow`, or `active`:
+
+- Global — `~/.pi/agent/router-config.json`:
+
+  ```json
+  {
+    "startMode": "last"
+  }
+  ```
+
+- Per repository — `~/.pi/agent/repo-router-config.json`, keyed by repository identity:
+
+  ```json
+  {
+    "github.com:nigel-upstart/pi-buildout": { "startMode": "active" },
+    "local:~/repos/private-tool": { "startMode": "off" }
+  }
+  ```
+
+Repository keys use the same format as pi's repository-scoped skills configuration: resolved from git remotes in the
+order `upstream`, `origin`, then the first configured remote, with remote URLs normalized so
+`git@github.com:org/repo.git`, `https://github.com/org/repo`, and `ssh://git@github.com/org/repo.git` all become
+`github.com:org/repo`. With no usable remote, the key is `local:<repo-root-relative-to-$HOME>`.
+
+Precedence: `PI_ROUTER_MODE` environment variable > repository entry > global config file > built-in default (`last`).
+`PI_ROUTER_MODE` also accepts `last`. Malformed values are ignored rather than treated as an enablement request, so a
+bad config can never switch routing on.
+
+The mode in force is recorded in `~/.pi/agent/router-last-mode.jsonl` (override with `PI_ROUTER_LAST_MODE_PATH`)
+whenever it changes and at session shutdown. The file is an append-only log of one JSON record per line, keyed by
+repository, so several pi processes stopping at once cannot drop each other's records; the newest record for the current
+repository wins on read, and the newest record of any repository is the machine-wide fallback. The log is compacted to
+the newest record per repository once it passes a few hundred lines. Recording is best-effort — if the file cannot be
+written, the next session falls back to the configured or built-in default. When `startMode` is `last` and nothing has
+been recorded, the router starts in `shadow`.
 
 ## Data and telemetry
 
