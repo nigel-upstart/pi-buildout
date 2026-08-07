@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { readFile } from "node:fs/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -24,6 +23,7 @@ import { POLICY_VERSION } from "./core/policy.ts";
 import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import { deriveRoutingContext, registrySnapshotId, selectOrdinaryRoute, selectReviewRoute } from "./core/routing.ts";
+import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
 import type { RepositoryMetadata, SessionSynopsis } from "./core/synopsis.ts";
@@ -31,7 +31,10 @@ import { classifyTaskWithPi } from "./pi-classifier.ts";
 import {
   buildRegistrySnapshot,
   EMPTY_SCOPE,
+  hasPersistedRouterState,
   readRouterScope,
+  readStartModeResolution,
+  resolveRouterRepoKey,
   cacheEstimate,
   latestReportedContextTokens,
   modelAbility,
@@ -41,6 +44,7 @@ import {
   restoreLeaseState,
   routeRequirements,
   snapshotForModel,
+  writeLastKnownMode,
 } from "./pi-state.ts";
 import type { RouterScope } from "./pi-state.ts";
 import { aggregateRouteSamples, JsonlTelemetryStore, withRouterSpan } from "./telemetry.ts";
@@ -119,36 +123,13 @@ async function classifyWithTimeout(
   }
 }
 
-type RouterConfigFile = {
-  startMode?: string;
-};
-
-async function readRouterConfig(): Promise<RouterConfigFile | undefined> {
-  try {
-    const configPath = join(getAgentDir(), "router-config.json");
-    const content = await readFile(configPath, "utf8");
-    const parsed = JSON.parse(content) as RouterConfigFile;
-    return parsed;
-  } catch {
-    // Config file missing or invalid JSON is not an error; use defaults.
-    return undefined;
-  }
-}
-
-function defaultMode(): RouterMode {
-  const configured = process.env.PI_ROUTER_MODE;
-  // Routing remains observational unless explicitly enabled; malformed configuration must not activate it.
-  return configured === "off" || configured === "active" || configured === "shadow" ? configured : "shadow";
-}
-
-async function defaultModeAsync(): Promise<RouterMode> {
-  const envMode = process.env.PI_ROUTER_MODE;
-  if (envMode === "off" || envMode === "active" || envMode === "shadow") {
-    return envMode;
-  }
-  const config = await readRouterConfig();
-  const configMode = config?.startMode;
-  return configMode === "off" || configMode === "active" || configMode === "shadow" ? configMode : "shadow";
+/**
+ * The mode held before any configuration is read. Routing stays observational unless the environment
+ * explicitly enables it, so a malformed or absent environment value cannot activate routing before
+ * `session_start` resolves the operator's configured start mode.
+ */
+function provisionalMode(): RouterMode {
+  return parseRouterMode(process.env.PI_ROUTER_MODE) ?? UNKNOWN_LAST_MODE;
 }
 
 function assistantMessage(message: AgentMessage): message is AssistantMessage {
@@ -226,12 +207,17 @@ export default function routerExtension(pi: ExtensionAPI): void {
   const telemetry = new JsonlTelemetryStore(
     process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
   );
-  let state: LeaseState = { mode: defaultMode(), manualOverride: false };
+  let state: LeaseState = { mode: provisionalMode(), manualOverride: false };
   // The replacement session has a new branch, so carry only the enablement mode
   // across /clear. The task lease must still be discarded at the new-session
   // boundary.
   let modeForNextSession: RouterMode | undefined;
-  let configLoadedFromFile = false;
+  // Repository identity for repository-scoped start-mode configuration and for the recorded exit
+  // mode. Resolved once per working directory because it costs git calls and cannot change while a
+  // session runs, but /resume can move the process to a different checkout.
+  let repoKey: string | undefined;
+  let repoKeyCwd: string | undefined;
+  let recordedExitMode: RouterMode | undefined;
   let pendingInput: PendingInput | undefined;
   let nextParentTaskId: string | undefined;
   let lastRoute: LastRoute = {};
@@ -260,6 +246,22 @@ export default function routerExtension(pi: ExtensionAPI): void {
     });
   }
 
+  /**
+   * Records the mode now in force so `startMode: "last"` can restore it in the next session, whether
+   * that session comes from `/clear`, `/compact`, or the next `pi` launch. Recording is best-effort:
+   * an unwritable state directory must not fail a turn, it only means the next start falls back to the
+   * configured or built-in default.
+   */
+  async function rememberMode(mode: RouterMode): Promise<void> {
+    if (mode === recordedExitMode) return;
+    try {
+      await writeLastKnownMode(getAgentDir(), repoKey, mode);
+      recordedExitMode = mode;
+    } catch {
+      // Ignored deliberately; see above.
+    }
+  }
+
   function updateStatus(ctx: ExtensionContext): void {
     ctx.ui.setStatus("model-router", ctx.ui.theme.fg(state.mode === "active" ? "accent" : "muted", statusLabel(state)));
   }
@@ -271,6 +273,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       state = { ...state, mode: "shadow" };
       persistState();
       updateStatus(ctx);
+      void rememberMode(state.mode);
     }
     ctx.ui.notify(
       `Router telemetry failed; automatic routing is disabled for this session: ${error instanceof Error ? error.message : String(error)}`,
@@ -766,35 +769,45 @@ export default function routerExtension(pi: ExtensionAPI): void {
     },
   });
 
-  pi.on("session_shutdown", (event) => {
+  pi.on("session_shutdown", async (event) => {
     if (event.reason === "new") modeForNextSession = state.mode;
+    // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
+    // sees the mode in force when a session ends.
+    await rememberMode(state.mode);
   });
 
   pi.on("session_start", async (event, ctx) => {
     attemptDisposition = "unknown";
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
     scope = await readRouterScope(ctx.cwd);
-    let fallbackMode = defaultMode();
-    let usedConfigFile = false;
-    // On first startup, check config file for startMode preference when env var is not set
-    if (event.reason === "startup" && !configLoadedFromFile && !process.env.PI_ROUTER_MODE) {
-      configLoadedFromFile = true;
-      const configMode = await defaultModeAsync();
-      if (configMode !== fallbackMode) {
-        fallbackMode = configMode;
-        usedConfigFile = true;
-      }
-    } else if (event.reason === "startup" && !configLoadedFromFile) {
-      configLoadedFromFile = true;
+    const branch = ctx.sessionManager.getBranch();
+    // A session that already carries router state keeps it, and /reload keeps the running mode.
+    // Configuration only decides what a session with no router history of its own starts as.
+    const needsStartMode = event.reason !== "reload" && !hasPersistedRouterState(branch);
+    const carriedMode = event.reason === "new" ? modeForNextSession : undefined;
+    modeForNextSession = undefined;
+    if (repoKeyCwd !== ctx.cwd) {
+      repoKey = await resolveRouterRepoKey(pi, ctx.cwd);
+      repoKeyCwd = ctx.cwd;
+      recordedExitMode = undefined;
     }
-    state = restoreLeaseState(ctx.sessionManager.getBranch(), fallbackMode);
+    const modeBeforeStart = state.mode;
+    let resolvedStartMode: RouterMode | undefined;
+    if (needsStartMode && carriedMode === undefined) {
+      const resolution = await readStartModeResolution({ agentDir: getAgentDir(), repoKey });
+      recordedExitMode = resolution.lastKnownMode;
+      resolvedStartMode = resolution.mode;
+    }
+    const fallbackMode = carriedMode ?? resolvedStartMode ?? state.mode;
+    state = restoreLeaseState(branch, fallbackMode);
     nextParentTaskId = event.reason === "fork" ? state.active?.taskId : undefined;
     if (event.reason !== "reload") state = setHardBoundary(state, event.reason === "fork" ? "subagent" : "new_session");
-    if (event.reason === "new" && modeForNextSession !== undefined) {
-      state = { ...state, mode: modeForNextSession };
-      modeForNextSession = undefined;
+    if (carriedMode !== undefined) {
+      state = { ...state, mode: carriedMode };
       persistState();
-    } else if (usedConfigFile) {
+    } else if (resolvedStartMode !== undefined && resolvedStartMode !== modeBeforeStart) {
+      // Only a start mode that actually changes enablement is worth a session entry; recording the
+      // unchanged default on every launch would add history without adding information.
       persistState();
     }
     const repository = await readRepositoryMetadata(pi, ctx.cwd);
@@ -803,8 +816,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_compact", async (_event, ctx) => {
+    // Compaction rewrites history, not enablement: the lease is dropped at the boundary while the
+    // mode stays in force, and re-persisting it puts the mode after the compaction cut so a later
+    // resume of this session still sees it.
     state = setHardBoundary(state, "post_compaction");
     persistState();
+    await rememberMode(state.mode);
     await record(ctx, "boundary", { boundary: "post_compaction" }, state.active ? { taskId: state.active.taskId } : {});
   });
 
@@ -1415,6 +1432,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
         }
         persistState();
         updateStatus(ctx);
+        // Recorded immediately so `startMode: "last"` survives a crash, not just a clean exit.
+        await rememberMode(state.mode);
         ctx.ui.notify(`Model router mode set to ${command}`, "info");
         return;
       }

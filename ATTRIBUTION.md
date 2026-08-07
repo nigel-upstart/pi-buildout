@@ -173,3 +173,21 @@ Major pieces intentionally not adopted include Pi's full interactive mode, sessi
 workflows, custom provider implementations, and bundled role-based subagent profiles. No Pi source file or example was
 copied verbatim; the extension is original code using Pi's published APIs and adapting the documented architectural
 patterns.
+
+### Router start-mode scoping (`extensions/router/core/start-mode.ts`)
+
+The router's start-mode configuration reuses the repository-identity scoping mechanism introduced by this repository's
+version-pinned pi skills patch ([`patches/pi-0.83.0/skills.patch`](patches/pi-0.83.0/skills.patch), applied to
+`@earendil-works/pi-coding-agent@0.83.0`, MIT), which itself extends pi's skills configuration.
+
+- Adopted as **modified code**: the git-remote normalization and repository-key resolution algorithm — remote preference
+  order `upstream`, `origin`, then the first configured remote; normalization of SCP-style, HTTPS, `git+`, and `ssh://`
+  URLs to `host:path`; and the `local:~/<path-relative-to-$HOME>` fallback for a repository with no usable remote. The
+  router's copy is retyped for TypeScript, split into a pure module with the git calls kept in the extension's I/O
+  layer, and hardened against prototype-polluting keys. Keeping the algorithm identical is deliberate so
+  `repo-skills.json` and `repo-router-config.json` use one key format.
+- Adopted as **conceptual pattern**: a global JSON configuration file plus a repository-keyed file in the agent
+  directory, where the repository entry overrides the global value.
+- **Intentionally not adopted**: the skills catalog/activation model, session-scoped (`--session`) entries, the
+  `/skills` command surface, and the enabled-entry list shape. Router start mode is a single scalar preference per
+  scope, not a list, and it is not settable from a slash command.

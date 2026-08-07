@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { appendFile, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
@@ -12,8 +15,15 @@ import {
   normalizeSessionEntries,
   promptFingerprint,
   readRepositoryMetadata,
+  readStartModeResolution,
   restoreLeaseState,
+  writeLastKnownMode,
 } from "./pi-state.ts";
+
+/** The mode `startMode: "last"` would restore for a repository, with no configuration present. */
+async function readStartModeMode(agentDir, repoKey) {
+  return (await readStartModeResolution({ agentDir, repoKey })).lastKnownMode;
+}
 
 describe("modelAbility", () => {
   it("defers to the authoritative policy and evidence tables for known (model, effort) pairs", () => {
@@ -227,5 +237,44 @@ describe("readRepositoryMetadata", () => {
     assert.equal(metadata.upstream, "def");
     assert.deepEqual(metadata.changedFiles, ["src/a.ts", "src/new.py"]);
     assert.deepEqual(metadata.languageBuckets, ["kotlin", "python", "shell", "typescript"]);
+  });
+});
+
+describe("last known router mode", () => {
+  it("keeps concurrent per-repository records instead of letting one writer drop another", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-router-last-mode-concurrency-"));
+    const previousPath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    process.env.PI_ROUTER_LAST_MODE_PATH = join(directory, "router-last-mode.jsonl");
+    try {
+      // Two pi processes in different checkouts stop at the same moment.
+      await Promise.all([
+        writeLastKnownMode(directory, "github.com:org/first", "active"),
+        writeLastKnownMode(directory, "github.com:org/second", "off"),
+        writeLastKnownMode(directory, undefined, "shadow"),
+      ]);
+      assert.equal(await readStartModeMode(directory, "github.com:org/first"), "active");
+      assert.equal(await readStartModeMode(directory, "github.com:org/second"), "off");
+      // An unknown repository falls back to the most recent machine-wide record.
+      assert.ok(["active", "off", "shadow"].includes(await readStartModeMode(directory, "github.com:org/third")));
+    } finally {
+      if (previousPath === undefined) delete process.env.PI_ROUTER_LAST_MODE_PATH;
+      else process.env.PI_ROUTER_LAST_MODE_PATH = previousPath;
+    }
+  });
+
+  it("records the newest mode per repository and survives a truncated line", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-router-last-mode-newest-"));
+    const previousPath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    const path = join(directory, "router-last-mode.jsonl");
+    process.env.PI_ROUTER_LAST_MODE_PATH = path;
+    try {
+      await writeLastKnownMode(directory, "github.com:org/repo", "active");
+      await appendFile(path, '{"version":1,"repoKey":"github.com:org/re\n', "utf8");
+      await writeLastKnownMode(directory, "github.com:org/repo", "off");
+      assert.equal(await readStartModeMode(directory, "github.com:org/repo"), "off");
+    } finally {
+      if (previousPath === undefined) delete process.env.PI_ROUTER_LAST_MODE_PATH;
+      else process.env.PI_ROUTER_LAST_MODE_PATH = previousPath;
+    }
   });
 });
