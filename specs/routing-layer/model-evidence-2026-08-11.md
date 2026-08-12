@@ -573,13 +573,15 @@ scope and the vendor-documented 2x list-rate basis.
 
 ### Residual OpenAI-rung differences
 
-Bedrock GPT-5.6 uses explicit breakpoints, a 1,024-token minimum, and a 30-minute TTL, as documented by
-[AWS](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html). OpenAI direct prompt caching is
-automatic; its in-memory entries are generally cleared after about 5–10 minutes of inactivity and always within one
-hour, with optional 24-hour retention on eligible non-ZDR configurations, as documented in
-[OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching). The direction is ambiguous and
-plausibly favors Bedrock for multi-turn agent sessions because an explicit 30-minute window can preserve a prefix across
-longer pauses. That is a hit-rate hypothesis, not a price claim, and needs runtime cache-read telemetry.
+Bedrock GPT-5.6 uses explicit breakpoints, a 1,024-token minimum, and a 30-minute minimum TTL, as documented by
+[AWS](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html). Direct OpenAI GPT-5.6 also defaults to
+implicit breakpoint caching, supports explicit breakpoints, requires at least 1,024 tokens, and defaults to the same
+30-minute minimum TTL, as documented in
+[OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching). The same OpenAI page's roughly
+5–10-minute inactivity window, one-hour maximum, and optional 24-hour retention describe pre-GPT-5.6 in-memory cache
+policies, not the direct GPT-5.6 Sol route. The cited terms therefore establish no TTL advantage for either GPT-5.6
+provider; any hit-rate difference would need runtime cache-read telemetry and would be an implementation observation,
+not a documented retention-policy difference.
 
 A separate rate asymmetry remains: direct `openai/gpt-5.6-sol` has a long-context tier above 272,000 input tokens (input
 10, output 45, `cacheRead` 1, `cacheWrite` 12.5), while `amazon-bedrock/openai.gpt-5.6-sol` has no corresponding

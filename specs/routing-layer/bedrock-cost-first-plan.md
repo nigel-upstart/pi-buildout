@@ -149,8 +149,8 @@ Branch `router/evidence-replace`. No dependencies.
 - [x] Record the generational `gpt-5.6` cache finding and explicitly retract the "registry is inconsistent" claim.
 - [x] Record that `cacheWrite1h` has no rate and that `calculateCost` uses `input * 2`, so an input-rate weight
       discounts 1-hour writes automatically.
-- [x] Record the contract terms, the order-preserving derivation, confirmed cache parity, and the residual OpenAI TTL
-      divergence, with citations.
+- [x] Record the contract terms, the order-preserving derivation, confirmed cache parity, and the documented GPT-5.6 TTL
+      parity, with citations.
 - [x] Re-point every inbound reference: `extensions/router/README.md`, `decisions.md`, `SPEC.md`, `eval.md`, the
       `evidence-data.ts` header, and citing comments in `core/evidence.ts` and `core/policy.ts`.
 - [x] The evidence-data agreement test passes unchanged. `ATTRIBUTION.md` updated for the AWS and Anthropic sources.
@@ -244,10 +244,10 @@ Branch `router/scope-observability`. Depends on pr6.
 - [ ] Telemetry gains `endpointEffectiveCost`, applied weight, basis, and cache classification; store stays append-only
       and older records still parse.
 - [ ] Attempt outcomes record observed `cacheRead` / `cacheWrite` token counts per endpoint.
-- [ ] `future-work.md` gains **FW3** for the one residual cache question: whether Bedrock's 30-minute
-      explicit-breakpoint TTL on the OpenAI rung yields materially different observed `cacheRead` ratios than OpenAI
-      direct's inactivity window. It cannot change Bedrock-versus-first-party ordering, and the pr3 invariant reads
-      registry rates so it would not detect a behavioural divergence.
+- [ ] `future-work.md` gains **FW3** for the one residual cache question: whether Bedrock and OpenAI direct yield
+      materially different observed `cacheRead` ratios despite both documenting a 30-minute minimum TTL for GPT-5.6. It
+      cannot change Bedrock-versus-first-party ordering, and the pr3 invariant reads registry rates so it would not
+      detect a behavioural divergence.
 - [ ] Output bounded; secretlint passes over the telemetry path.
 - [ ] `npm run check` passes.
 
@@ -271,7 +271,8 @@ telemetry on at least one real repository, then enable active routing per reposi
 - The registry's long-context tier on `openai` / `openai-codex` `gpt-5.6-*` has no Bedrock equivalent. This is now the
   only unmodelled pricing asymmetry, and unlike cache terms it is **not** a uniform scalar, so it could affect ordering
   above 272K input tokens.
-- Whether Bedrock's 30-minute TTL on the OpenAI rung changes observed hit rates. Tracked as FW3.
+- Whether Bedrock and OpenAI direct produce different GPT-5.6 cache-hit rates despite their documented 30-minute
+  minimum-TTL parity. Tracked as FW3.
 - pi hardcodes the 1-hour write as `input * 2`; if a provider deviates, pi mis-prices it and the router inherits that.
 - Bedrock latency, throughput, and throttling versus first-party routes are unmeasured here, though Bedrock cache reads
   not counting against input TPM quotas is a documented point in its favour.

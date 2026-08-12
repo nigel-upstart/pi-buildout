@@ -128,9 +128,10 @@ example code, or prose was copied.
 - Revision reviewed: live documentation on 2026-08-11
 - License: no documentation license was identified; no source code or documentation text was copied
 
-Use: automatic direct-route caching, in-memory inactivity/maximum retention, extended retention, and minimum-prefix
-behavior. These facts document a possible cache-hit-rate difference from Bedrock; they are not used as token-price
-claims. No SDK or example code was copied.
+Use: GPT-5.6 implicit and explicit breakpoints, its 30-minute minimum TTL, automatic caching for earlier models,
+in-memory inactivity/maximum retention, extended retention, and minimum-prefix behavior. The comparison preserves the
+documented GPT-5.6 TTL parity with Bedrock and treats any provider hit-rate difference as unmeasured; none of these
+facts is used as a token-price claim. No SDK or example code was copied.
 
 ## LLM effectiveness research corpus and its upstream benchmark sources
 
