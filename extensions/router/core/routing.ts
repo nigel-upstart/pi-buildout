@@ -12,6 +12,8 @@ import type { TaskFeatures } from "./features.ts";
 import { blendedEndpointCost, calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./endpoint-cost.ts";
 import { healthVerdict } from "./health.ts";
 import type { EndpointHealth } from "./health.ts";
+import { providerWeightFor } from "./provider-weights.ts";
+import type { ResolvedProviderWeight } from "./provider-weights.ts";
 import {
   BOOTSTRAP_ROUTE_POLICIES,
   ENDPOINT_TIERS,
@@ -42,6 +44,8 @@ export type RegistryModelSnapshot = {
     cacheRead: number;
     cacheWrite: number;
   };
+  /** Validated route weight applied only to endpoint effective cost. */
+  providerWeight?: ResolvedProviderWeight;
   /** Last observed outcome for this endpoint, from the probe record. Absent means never probed. */
   health?: EndpointHealth;
 };
@@ -199,9 +203,6 @@ const FOREGROUND_WAIT_MULTIPLIER = 8;
  * measured cost difference. A language may widen this from its own evidence.
  */
 const DEFAULT_NEAR_TIE_FRACTION = 0.05;
-
-/** Provider weighting is deliberately neutral until the provider-weight policy layer. */
-const PROVIDER_WEIGHT = 1.0;
 
 /** Bedrock Sol exposes only its short-context rate; direct OpenAI changes tiers above this boundary. */
 const BEDROCK_SOL_SHORT_CONTEXT_LIMIT = 272_000;
@@ -395,6 +396,12 @@ function modelKey(model: Pick<RegistryModelSnapshot, "provider" | "modelId">): s
   return `${model.provider}/${model.modelId}`;
 }
 
+function effectiveProviderWeight(model: RegistryModelSnapshot): ResolvedProviderWeight {
+  // Pure routing tests and callers built before scope metadata was introduced remain compatible; a
+  // snapshot produced by buildRegistrySnapshot always carries the validated configured resolution.
+  return model.providerWeight ?? providerWeightFor(model.provider);
+}
+
 /**
  * Every endpoint in the live registry that serves this logical model, ordered by preference: the
  * manufacturer's own route first, then a gateway, then resale; within a tier token-billed effective
@@ -411,7 +418,7 @@ function resolveEndpoints(ref: CandidateRef, registry: readonly RegistryModelSna
     .map((model) => {
       let endpointEffectiveCost: number | undefined;
       try {
-        endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+        endpointEffectiveCost = calculateEndpointEffectiveCost(model, effectiveProviderWeight(model).weight);
       } catch (error) {
         // Eligibility records malformed endpoint pricing below. Keep it out of numeric comparison so
         // one ineligible or malformed registry row cannot abort resolution of every valid endpoint.
@@ -562,7 +569,7 @@ function evaluateEndpoint(
   }
   let endpointEffectiveCost: number | undefined;
   try {
-    endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+    endpointEffectiveCost = calculateEndpointEffectiveCost(model, effectiveProviderWeight(model).weight);
   } catch (error) {
     if (!(error instanceof RangeError)) throw error;
     exclusions.push({

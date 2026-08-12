@@ -9,6 +9,7 @@ import {
   classifyCacheWriteRate,
   compareEndpointEffectiveCost,
 } from "./endpoint-cost.ts";
+import { providerWeightFor, resolveProviderWeights } from "./provider-weights.ts";
 
 function requiredModel(provider, modelId) {
   const found = getModel(provider, modelId);
@@ -18,6 +19,19 @@ function requiredModel(provider, modelId) {
 
 function pricedEndpoint(provider, modelId, input, output) {
   return { provider, modelId, costPerMillion: { input, output } };
+}
+
+const builtInWeights = resolveProviderWeights().weights;
+
+function effectiveCost(model) {
+  return calculateEndpointEffectiveCost(
+    { provider: model.provider, costPerMillion: model.cost },
+    providerWeightFor(model.provider, builtInWeights).weight,
+  );
+}
+
+function assertClose(actual, expected) {
+  assert.ok(Math.abs(actual - expected) < 1e-12, `${String(actual)} != ${String(expected)}`);
 }
 
 function usage(overrides = {}) {
@@ -39,18 +53,37 @@ describe("endpoint effective cost", () => {
     assert.equal(calculateEndpointEffectiveCost(endpoint, 1.0), 23.75);
   });
 
-  it("keeps regional registry markup in the endpoint-specific effective cost", () => {
-    const global = requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5");
-    const eu = requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5");
-    const price = (model) => ({ provider: model.provider, costPerMillion: model.cost });
-    assert.equal(calculateEndpointEffectiveCost(price(global), 1.0), 8);
-    assert.equal(calculateEndpointEffectiveCost(price(eu), 1.0), 8.8);
+  it("pins weighted effective costs from the installed registry, including regional markup", () => {
+    const cases = [
+      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 19.7125],
+      [requiredModel("openai-codex", "gpt-5.6-sol"), 23.75],
+      [requiredModel("openai", "gpt-5.6-sol"), 23.77375],
+      [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 6.64],
+      [requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), 7.304],
+      [requiredModel("anthropic", "claude-sonnet-5"), 8],
+      [requiredModel("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1"), 54.78],
+    ];
+    for (const [model, expected] of cases) assertClose(effectiveCost(model), expected);
   });
 
-  it("does not interpret Copilot's nominal token prices as billed cost", () => {
+  it("applies the unknown-provider default", () => {
+    const endpoint = pricedEndpoint("new-token-provider", "gpt-5.6-sol", 5, 30);
+    assertClose(
+      calculateEndpointEffectiveCost(endpoint, providerWeightFor(endpoint.provider, builtInWeights).weight),
+      23.9875,
+    );
+  });
+
+  it("does not interpret Copilot's configured nominal weight or token prices as billed cost", () => {
     const copilot = requiredModel("github-copilot", "gpt-5.6-sol");
+    const configured = resolveProviderWeights({
+      projectSettings: { routerProviderWeights: { "github-copilot": 0.5 } },
+    });
     assert.equal(
-      calculateEndpointEffectiveCost({ provider: copilot.provider, costPerMillion: copilot.cost }, 1.0),
+      calculateEndpointEffectiveCost(
+        { provider: copilot.provider, costPerMillion: copilot.cost },
+        providerWeightFor(copilot.provider, configured.weights).weight,
+      ),
       undefined,
     );
   });
