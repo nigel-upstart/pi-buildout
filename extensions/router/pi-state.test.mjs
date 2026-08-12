@@ -132,6 +132,7 @@ describe("router scope configuration", () => {
     });
 
     assert.deepEqual(scope.patterns, ["amazon-bedrock/*"]);
+    assert.equal(scope.patternSource, "project");
     assert.deepEqual(scope.providerWeights.get("amazon-bedrock"), {
       weight: 0.6,
       basis: "preference",
@@ -164,6 +165,19 @@ describe("router scope configuration", () => {
     assert.deepEqual(snapshots[0].providerWeight, scope.providerWeights.get("amazon-bedrock"));
   });
 
+  it("records the environment source for every override pattern", async (t) => {
+    const paths = await fixture(t);
+    await writeJson(paths.projectSettings, { enabledModels: ["amazon-bedrock/*"] });
+    const scope = await readRouterScope(paths.project, {
+      environment: { PI_ROUTER_MODEL_SCOPE: "openai-codex/gpt-5.6-*, anthropic/claude-opus-5" },
+      userSettingsPath: paths.userSettings,
+      healthPath: paths.health,
+    });
+
+    assert.deepEqual(scope.patterns, ["openai-codex/gpt-5.6-*", "anthropic/claude-opus-5"]);
+    assert.equal(scope.patternSource, "environment");
+  });
+
   it("records malformed environment JSON while retaining best-effort file fallback", async (t) => {
     const paths = await fixture(t);
     await mkdir(dirname(paths.projectSettings), { recursive: true });
@@ -179,6 +193,7 @@ describe("router scope configuration", () => {
     });
 
     assert.deepEqual(scope.patterns, ["anthropic/*"]);
+    assert.equal(scope.patternSource, "user");
     assert.equal(scope.providerWeights.get("anthropic").weight, 0.9);
     assert.equal(scope.providerWeights.get("anthropic").source, "user");
     assert.equal(scope.providerWeightRejections.length, 1);
@@ -203,6 +218,7 @@ describe("router scope configuration", () => {
       healthPath: missing.health,
     });
     assert.deepEqual(missingScope.patterns, []);
+    assert.equal(missingScope.patternSource, "default");
     assert.deepEqual(missingScope.providerWeights.get("amazon-bedrock"), {
       weight: 0.83,
       basis: "contract",
@@ -220,6 +236,7 @@ describe("router scope configuration", () => {
       healthPath: malformed.health,
     });
     assert.deepEqual(malformedScope.patterns, []);
+    assert.equal(malformedScope.patternSource, "default");
     assert.equal(malformedScope.providerWeights.get("openai").weight, 1.001);
     assert.deepEqual(malformedScope.providerWeightRejections, []);
   });

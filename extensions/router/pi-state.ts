@@ -24,6 +24,7 @@ import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
 import { canonicalVendor, isStandaloneReviewRequest } from "./core/routing.ts";
 import { canonicalModelId, isFlatRateProvider, matchesScope } from "./core/scope.ts";
+import type { ScopePatternSource } from "./core/scope.ts";
 import { isLeaseLifecycle, isSafetyEvidenceLog } from "./core/safety.ts";
 import { localRepoKey, normalizeGitRemoteUrl, parseRouterMode, resolveStartMode } from "./core/start-mode.ts";
 import type { StartModeResolution } from "./core/start-mode.ts";
@@ -260,6 +261,8 @@ export function buildRegistrySnapshot(
 export type RouterScope = {
   /** `enabledModels` patterns. Empty means no scope is configured, so everything available is in scope. */
   patterns: readonly string[];
+  /** Source of every pattern in `patterns`; scope precedence selects one complete pattern list. */
+  patternSource: ScopePatternSource;
   health: EndpointHealthRecord | undefined;
   /** Validated per-provider weights, including source and contract/preference basis metadata. */
   providerWeights: ReadonlyMap<string, ResolvedProviderWeight>;
@@ -270,6 +273,7 @@ export type RouterScope = {
 const DEFAULT_PROVIDER_WEIGHTS = resolveProviderWeights();
 export const EMPTY_SCOPE: RouterScope = Object.freeze({
   patterns: Object.freeze([]),
+  patternSource: "default",
   health: undefined,
   providerWeights: DEFAULT_PROVIDER_WEIGHTS.weights,
   providerWeightRejections: DEFAULT_PROVIDER_WEIGHTS.rejections,
@@ -317,8 +321,18 @@ export async function readRouterScope(cwd: string, options: RouterScopeReadOptio
     projectSettings: project,
     userSettings: user,
   });
+  const resolvedPatterns = overridePatterns ?? (patterns.length > 0 ? patterns : fallbackPatterns);
+  const patternSource: ScopePatternSource =
+    overridePatterns !== undefined
+      ? "environment"
+      : patterns.length > 0
+        ? "project"
+        : fallbackPatterns.length > 0
+          ? "user"
+          : "default";
   return {
-    patterns: overridePatterns ?? (patterns.length > 0 ? patterns : fallbackPatterns),
+    patterns: resolvedPatterns,
+    patternSource,
     health: isEndpointHealthRecord(health) ? health : undefined,
     providerWeights: providerWeights.weights,
     providerWeightRejections: providerWeights.rejections,

@@ -252,18 +252,18 @@ Branch `router/scope-aware-classifier`. Depends on pr5.
 
 Branch `router/scope-observability`. Depends on pr6.
 
-- [ ] `/route scope` reports patterns and their source, resolved logical models, and per model each eligible endpoint in
+- [x] `/route scope` reports patterns and their source, resolved logical models, and per model each eligible endpoint in
       selection order with list cost, applied weight, basis, cache classification, and effective cost.
-- [ ] Excluded endpoints listed with their `ExclusionCode` and detail.
-- [ ] Telemetry gains `endpointEffectiveCost`, applied weight, basis, and cache classification; store stays append-only
+- [x] Excluded endpoints listed with their `ExclusionCode` and detail.
+- [x] Telemetry gains `endpointEffectiveCost`, applied weight, basis, and cache classification; store stays append-only
       and older records still parse.
-- [ ] Attempt outcomes record observed `cacheRead` / `cacheWrite` token counts per endpoint.
-- [ ] `future-work.md` gains **FW3** for the one residual cache question: whether Bedrock and OpenAI direct yield
+- [x] Attempt outcomes record observed `cacheRead` / `cacheWrite` token counts per endpoint.
+- [x] `future-work.md` gains **FW3** for the one residual cache question: whether Bedrock and OpenAI direct yield
       materially different observed `cacheRead` ratios despite both documenting a 30-minute minimum TTL for GPT-5.6. It
       cannot change Bedrock-versus-first-party ordering, and the pr3 invariant reads registry rates so it would not
       detect a behavioural divergence.
-- [ ] Output bounded; secretlint passes over the telemetry path.
-- [ ] `npm run check` passes.
+- [x] Output bounded; secretlint passes over the telemetry path.
+- [x] `npm run check` passes.
 
 ## Rollout
 

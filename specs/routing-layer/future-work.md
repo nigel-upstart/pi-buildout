@@ -38,3 +38,18 @@ Evaluate either:
 
 Any change must preserve strict schema validation, update all classifier prompts and corpus fixtures, include a
 migration for persisted leases, and demonstrate better archetype accuracy without increasing hard-policy violations.
+
+## FW3 — Observed GPT-5.6 cache-read ratios across endpoints
+
+**Status:** deferred; collect comparable endpoint telemetry before drawing a behavioural conclusion.
+
+Determine whether Amazon Bedrock and OpenAI direct endpoints yield materially different observed `cacheRead` ratios for
+GPT-5.6, despite both providers documenting a 30-minute minimum TTL for that model family. Compare like-for-like
+prompts, logical models, request timing, token accounting, and cache-write observations; report sample counts and
+uncertainty so endpoint traffic mix is not mistaken for provider behaviour.
+
+A measured divergence cannot change Bedrock-versus-first-party endpoint ordering. The confirmed Bedrock contract weight
+is a uniform scalar over every billed token class, so it remains order-preserving for the exact rate-parity pairs
+already identified. The pr3 invariant would not detect this behavioural divergence: it reads registry rates and
+cache-rate classifications, not observed `cacheRead` outcomes. Use the PR7 per-endpoint `cacheRead` and `cacheWrite`
+telemetry to answer the operational question without turning it into a selection rule.

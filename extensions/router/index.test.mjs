@@ -284,6 +284,102 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_safety_review"), true);
   });
 
+  it("renders /route scope from the scoped registry in endpoint selection order", async () => {
+    const commands = new Map();
+    const notifications = [];
+    routerExtension({
+      on: () => {},
+      registerCommand: (name, command) => commands.set(name, command),
+      registerTool: () => {},
+    });
+    const makeModel = (provider, id) => ({
+      provider,
+      id,
+      name: id,
+      api: "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
+    const models = [makeModel("openai-codex", "gpt-5.6-sol"), makeModel("amazon-bedrock", "openai.gpt-5.6-sol")];
+    await commands.get("route").handler("scope", {
+      modelRegistry: { getAll: () => models, getAvailable: () => models },
+      ui: { notify: (message, type) => notifications.push({ message, type }) },
+    });
+
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].type, "info");
+    assert.equal(
+      notifications[0].message,
+      [
+        "route scope",
+        "patterns (0):",
+        "  - source=default pattern=<all registry models>",
+        "unmatched patterns (0):",
+        "logical models (1):",
+        "  gpt-5.6-sol (2 eligible endpoints):",
+        "    1. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=0.830000 weightBasis=contract weightSource=built-in cacheWrite=priced_write effectiveCost=19.712500",
+        "    2. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "excluded endpoints (0):",
+        "provider-weight rejections (0):",
+      ].join("\n"),
+    );
+  });
+
+  it("enriches endpoint-tagged telemetry without changing the event payload", async () => {
+    const hooks = new Map();
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-endpoint-telemetry-"));
+    const telemetryPath = join(telemetryDirectory, "events.jsonl");
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
+    const model = {
+      provider: "amazon-bedrock",
+      id: "openai.gpt-5.6-sol",
+      name: "gpt-5.6-sol",
+      api: "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    };
+    try {
+      routerExtension({
+        on: (event, handler) => hooks.set(event, handler),
+        registerCommand: () => {},
+        registerTool: () => {},
+        appendEntry: () => {},
+      });
+      await hooks.get("model_select")(
+        { source: "user", model },
+        {
+          modelRegistry: { find: () => model },
+          sessionManager: { getSessionId: () => "endpoint-telemetry" },
+          ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+        },
+      );
+
+      const event = JSON.parse((await readFile(telemetryPath, "utf8")).trim());
+      assert.equal(event.kind, "outcome");
+      assert.deepEqual(event.data, {
+        manualOverride: "model",
+        provider: "amazon-bedrock",
+        modelId: "openai.gpt-5.6-sol",
+      });
+      assert.equal(event.endpointEffectiveCost, 19.7125);
+      assert.equal(event.appliedProviderWeight, 0.83);
+      assert.equal(event.providerWeightBasis, "contract");
+      assert.equal(event.cacheWriteClassification, "priced_write");
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+    }
+  });
+
   it("uses one scoped registry snapshot for classification and the resulting route decision", async () => {
     const hooks = new Map();
     const notifications = [];
@@ -1019,8 +1115,9 @@ describe("routerExtension", () => {
     const selectedModels = [];
     const notifications = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-auth-failover-"));
+    const telemetryPath = join(telemetryDirectory, "events.jsonl");
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
-    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
     const now = new Date().toISOString();
     const choices = [
       {
@@ -1145,7 +1242,7 @@ describe("routerExtension", () => {
               provider: model.provider,
               model: model.id,
               stopReason: "error",
-              usage: { input: 100, output: 0, cacheRead: 0, cost: { total: 0 } },
+              usage: { input: 100, output: 0, cacheRead: 25, cacheWrite: 10, cost: { total: 0 } },
             },
           ],
         },
@@ -1167,6 +1264,19 @@ describe("routerExtension", () => {
         ["openai", "anthropic"],
       );
       assert.match(notifications[0].message, /all authorized ordinary provider choices exhausted/);
+      const attempts = (await readFile(telemetryPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((event) => event.kind === "attempt_completed");
+      assert.deepEqual(
+        attempts.map((event) => [event.provider, event.data.cacheReadTokens, event.data.cacheWriteTokens]),
+        [
+          ["openai-codex", 25, 10],
+          ["openai", 25, 10],
+          ["anthropic", 25, 10],
+        ],
+      );
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;

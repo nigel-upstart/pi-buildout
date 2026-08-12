@@ -1,5 +1,7 @@
 import type { EndpointTier } from "./policy.ts";
 
+export type ScopePatternSource = "environment" | "project" | "user" | "default";
+
 /**
  * Endpoint identity and scope resolution.
  *

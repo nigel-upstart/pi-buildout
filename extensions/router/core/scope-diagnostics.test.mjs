@@ -1,0 +1,280 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { providerWeightFor } from "./provider-weights.ts";
+import { selectOrdinaryRoute } from "./routing.ts";
+import { buildScopeDiagnostics, MAX_ROUTE_SCOPE_BYTES, renderScopeDiagnostics } from "./scope-diagnostics.ts";
+
+function model(provider, modelId, overrides = {}) {
+  return {
+    provider,
+    modelId,
+    name: modelId,
+    vendor: "openai",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    available: true,
+    reasoning: true,
+    supportedEfforts: ["high"],
+    inputTypes: ["text"],
+    toolCapable: true,
+    costPerMillion: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    providerWeight: providerWeightFor(provider),
+    ...overrides,
+  };
+}
+
+function diagnostics(overrides = {}) {
+  return buildScopeDiagnostics({
+    patterns: ["*/gpt-5.6-*"],
+    patternSource: "project",
+    registry: [],
+    allRegistryEndpoints: [],
+    providerWeightRejections: [],
+    ...overrides,
+  });
+}
+
+describe("scope diagnostics", () => {
+  it("groups resolved models and reuses the endpoint cost comparator's selection order", () => {
+    const registry = [
+      model("openai", "gpt-5.6-sol"),
+      model("github-copilot", "gpt-5.6-sol"),
+      model("amazon-bedrock", "openai.gpt-5.6-sol"),
+      model("openai-codex", "gpt-5.6-sol"),
+    ];
+    const result = diagnostics({ registry, allRegistryEndpoints: registry });
+
+    assert.deepEqual(
+      result.logicalModels.map((entry) => entry.logicalModelId),
+      ["gpt-5.6-sol"],
+    );
+    const endpoints = result.logicalModels[0].endpoints;
+    assert.deepEqual(
+      endpoints.map((endpoint) => endpoint.provider),
+      ["amazon-bedrock", "openai-codex", "openai", "github-copilot"],
+    );
+    assert.equal(endpoints[0].listCost, 23.75);
+    assert.equal(endpoints[0].appliedWeight, 0.83);
+    assert.equal(endpoints[0].weightBasis, "contract");
+    assert.equal(endpoints[0].cacheWriteClassification, "priced_write");
+    assert.ok(Math.abs(endpoints[0].effectiveCost - 19.7125) < 1e-12);
+    assert.equal(endpoints.at(-1).effectiveCost, undefined, "flat-rate endpoints remain last");
+  });
+
+  it("matches ordinary-route order for mixed Bedrock, direct, and flat-rate endpoints", () => {
+    const registry = [
+      model("openai", "gpt-5.6-sol"),
+      model("github-copilot", "gpt-5.6-sol", {
+        costPerMillion: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      }),
+      model("amazon-bedrock", "openai.gpt-5.6-sol"),
+      model("openai-codex", "gpt-5.6-sol"),
+    ];
+    const result = diagnostics({ registry, allRegistryEndpoints: registry });
+    const displayed = result.logicalModels[0].endpoints.map(({ provider, modelId }) => `${provider}/${modelId}`);
+    const decision = selectOrdinaryRoute("terminal_heavy_implementation", registry, {
+      estimatedFinishedTokens: 50_000,
+      requiresImages: false,
+      requiresTools: true,
+    });
+
+    assert.equal(decision.kind, "ordinary");
+    const selected = [decision.primary, ...decision.fallbacks]
+      .filter((choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high")
+      .map(({ provider, modelId }) => `${provider}/${modelId}`);
+    assert.deepEqual(displayed, [
+      "amazon-bedrock/openai.gpt-5.6-sol",
+      "openai-codex/gpt-5.6-sol",
+      "openai/gpt-5.6-sol",
+      "github-copilot/gpt-5.6-sol",
+    ]);
+    assert.deepEqual(selected, displayed);
+  });
+
+  it("keeps cache-only diagnostic failures out of routing eligibility", () => {
+    const registry = [
+      model("openai-codex", "gpt-5.6-sol", {
+        costPerMillion: { input: 5, output: 30, cacheRead: -1, cacheWrite: 0 },
+      }),
+      model("github-copilot", "gpt-5.6-sol", {
+        costPerMillion: { input: -1, output: -1, cacheRead: -1, cacheWrite: -1 },
+      }),
+    ];
+    const result = diagnostics({ registry, allRegistryEndpoints: registry });
+
+    // An unclassifiable cache rate is reported as absent rather than as a fabricated
+    // classification, because "invalid" is not one of the registry's three real cache states.
+    assert.deepEqual(
+      result.logicalModels[0].endpoints.map(({ provider, cacheWriteClassification }) => [
+        provider,
+        cacheWriteClassification,
+      ]),
+      [
+        ["openai-codex", undefined],
+        ["github-copilot", undefined],
+      ],
+    );
+    assert.deepEqual(result.exclusions, []);
+    assert.match(renderScopeDiagnostics(result), /cacheWrite=n\/a/);
+  });
+
+  it("surfaces unmatched patterns, scope and route exclusions, and bounded weight rejections", () => {
+    const registry = [
+      model("openai-codex", "gpt-5.6-sol", { available: false }),
+      model("openai", "gpt-5.6-sol", {
+        health: {
+          provider: "openai",
+          modelId: "gpt-5.6-sol",
+          status: "client_error",
+          httpStatus: 403,
+          detail: "not entitled",
+        },
+      }),
+    ];
+    const result = diagnostics({
+      patterns: ["openai*/gpt-5.6-*", "github-copilot/gemini-2.5-pro"],
+      registry,
+      allRegistryEndpoints: registry,
+      providerWeightRejections: [
+        {
+          provider: "amazon-bedrock",
+          source: "environment",
+          rejectedValueType: "number",
+          reason: "weight must be between 0.5 and 2 inclusive",
+        },
+      ],
+      latestRouteExclusions: [
+        {
+          candidate: "amazon-bedrock/openai.gpt-5.6-sol@max",
+          code: "effort_unsupported",
+          detail: "max effort is unsupported",
+        },
+      ],
+    });
+
+    assert.deepEqual(result.unmatchedPatterns, ["github-copilot/gemini-2.5-pro"]);
+    assert.deepEqual(
+      result.exclusions.map(({ source, code }) => [source, code]),
+      [
+        ["scope", "unavailable"],
+        ["scope", "endpoint_unhealthy"],
+        ["latest-route", "effort_unsupported"],
+      ],
+    );
+    const output = renderScopeDiagnostics(result);
+    assert.match(output, /source=project pattern=github-copilot\/gemini-2\.5-pro/);
+    assert.match(output, /code=endpoint_unhealthy detail=last observation was 403: not entitled/);
+    assert.match(output, /provider=amazon-bedrock source=environment reason=weight must be between/);
+  });
+
+  it("redacts credentials from configured and observed diagnostic text", () => {
+    const secret = ["super", "sensitive", "value"].join("-");
+    const registry = [
+      model("openai", "gpt-5.6-sol", {
+        health: {
+          provider: "openai",
+          modelId: "gpt-5.6-sol",
+          status: "failed",
+          // The bare `Authorization:` form carries no scheme and a token too short to match any
+          // known key format, so only the header rule can redact it.
+          detail: `Authorization: Bearer ${secret}; Authorization: ${secret}; api_key=${secret}; https://user:${secret}@example.invalid`,
+        },
+      }),
+    ];
+    const result = diagnostics({
+      patterns: [`provider/token=${secret}`],
+      registry,
+      allRegistryEndpoints: registry,
+      providerWeightRejections: [
+        {
+          provider: "amazon-bedrock",
+          source: "environment",
+          rejectedValueType: "string",
+          reason: `credential=${secret} is not a valid weight`,
+          rejectedValue: secret,
+        },
+      ],
+    });
+    const output = renderScopeDiagnostics(result);
+
+    assert.equal(output.includes(secret), false);
+    assert.match(output, /pattern=provider\/token=\[REDACTED\]/);
+    assert.match(output, /Authorization: \[REDACTED\]/);
+    assert.equal(/Authorization: (?!\[REDACTED\])/u.test(output), false, "every Authorization value is redacted");
+    assert.match(output, /api_key=\[REDACTED\]/);
+    assert.match(output, /https:\/\/\[REDACTED\]@example\.invalid/);
+    assert.match(output, /reason=credential=\[REDACTED\] is not a valid weight/);
+  });
+
+  it("renders unmatched-only empty registries and bounded weight rejections cleanly", () => {
+    const result = diagnostics({
+      patterns: ["github-copilot/gemini-2.5-pro"],
+      registry: [],
+      allRegistryEndpoints: [],
+      providerWeightRejections: [
+        {
+          source: "environment",
+          rejectedValueType: "string",
+          reason: "PI_ROUTER_PROVIDER_WEIGHTS must contain valid JSON",
+        },
+      ],
+    });
+
+    assert.equal(
+      renderScopeDiagnostics(result),
+      [
+        "route scope",
+        "patterns (1):",
+        "  - source=project pattern=github-copilot/gemini-2.5-pro",
+        "unmatched patterns (1):",
+        "  - source=project pattern=github-copilot/gemini-2.5-pro",
+        "logical models (0):",
+        "excluded endpoints (0):",
+        "provider-weight rejections (1):",
+        "  - provider=<map> source=environment reason=PI_ROUTER_PROVIDER_WEIGHTS must contain valid JSON",
+      ].join("\n"),
+    );
+  });
+
+  it("caps pathological output and reports omitted complete lines", () => {
+    const registry = Array.from({ length: 200 }, (_, index) =>
+      model(`provider-${String(index)}-${"p".repeat(500)}`, `gpt-5.6-sol-${String(index)}-${"m".repeat(500)}`),
+    );
+    const result = diagnostics({
+      patterns: Array.from({ length: 200 }, (_, index) => `provider-${String(index)}/*`),
+      registry,
+      allRegistryEndpoints: registry,
+      latestRouteExclusions: Array.from({ length: 200 }, (_, index) => ({
+        candidate: `provider-${String(index)}/model-${String(index)}`,
+        code: "context_headroom",
+        detail: "estimated tokens exceed endpoint headroom",
+      })),
+      providerWeightRejections: Array.from({ length: 100 }, (_, index) => ({
+        provider: `provider-${String(index)}`,
+        source: "project",
+        rejectedValueType: "number",
+        reason: "weight must be between 0.5 and 2 inclusive",
+      })),
+    });
+    const output = renderScopeDiagnostics(result, 500);
+
+    assert.ok(Buffer.byteLength(output, "utf8") <= 500);
+    assert.match(output, /\.\.\. truncated: \d+ additional lines omitted \(500-byte budget\)$/);
+    assert.ok(Buffer.byteLength(renderScopeDiagnostics(result), "utf8") <= MAX_ROUTE_SCOPE_BYTES);
+  });
+
+  it("omits one over-budget UTF-8 line rather than splitting or exceeding it", () => {
+    const result = diagnostics({
+      patterns: [`provider/${"🧪".repeat(10_000)}`],
+    });
+
+    assert.equal(
+      renderScopeDiagnostics(result, 128),
+      ["route scope", "patterns (1):", "... truncated: 6 additional lines omitted (128-byte budget)"].join("\n"),
+    );
+    assert.equal(renderScopeDiagnostics(result, Number.NaN), "");
+    const oversizedBudgetOutput = renderScopeDiagnostics(result, MAX_ROUTE_SCOPE_BYTES * 10);
+    assert.ok(Buffer.byteLength(oversizedBudgetOutput, "utf8") <= MAX_ROUTE_SCOPE_BYTES);
+    assert.match(oversizedBudgetOutput, /\(8000-byte budget\)$/);
+  });
+});

@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { aggregateRouteSamples, JsonlTelemetryStore, percentile, withRouterSpan } from "./telemetry.ts";
+import { fileURLToPath } from "node:url";
+import { providerWeightFor } from "./core/provider-weights.ts";
+import {
+  aggregateAttemptTokenCounts,
+  aggregateRouteSamples,
+  attemptOutcomesFromTelemetry,
+  endpointTelemetryFields,
+  JsonlTelemetryStore,
+  percentile,
+  withRouterSpan,
+} from "./telemetry.ts";
 
 const temporaryDirectories = [];
 afterEach(async () => {
@@ -22,6 +32,85 @@ function event(id) {
 }
 
 describe("JsonlTelemetryStore", () => {
+  it("rejects persisted cache counts that are not finite and nonnegative", () => {
+    // These reach aggregation through the store, so a persisted NaN would poison the token totals.
+    const outcome = {
+      provider: "openai-codex",
+      modelId: "gpt-5.6-sol",
+      archetype: "median_repository_implementation",
+      accepted: true,
+      modelAndToolCost: 0.42,
+      wallTimeMs: 1_200,
+      humanIntervention: false,
+      retried: false,
+    };
+    const event = (data) => ({
+      version: 1,
+      eventId: "persisted",
+      timestamp: "2026-08-12T00:00:00.000Z",
+      kind: "outcome",
+      sessionId: "session",
+      data,
+    });
+
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      assert.deepEqual(
+        attemptOutcomesFromTelemetry([event({ ...outcome, cacheReadTokens: invalid })]),
+        [],
+        `cacheReadTokens ${String(invalid)} must be rejected`,
+      );
+      assert.deepEqual(
+        attemptOutcomesFromTelemetry([event({ ...outcome, cacheWriteTokens: invalid })]),
+        [],
+        `cacheWriteTokens ${String(invalid)} must be rejected`,
+      );
+    }
+    assert.equal(attemptOutcomesFromTelemetry([event({ ...outcome, cacheReadTokens: 0 })]).length, 1);
+  });
+
+  it("parses a checked-in pre-PR7 record without optional endpoint fields", async () => {
+    const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "telemetry-v1-pre-pr7.jsonl");
+    const events = await new JsonlTelemetryStore(fixture).read();
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].eventId, "pre-pr7-outcome");
+    assert.equal(events[0].endpointEffectiveCost, undefined);
+    assert.equal(events[0].appliedProviderWeight, undefined);
+    assert.equal(events[0].providerWeightBasis, undefined);
+    assert.equal(events[0].cacheWriteClassification, undefined);
+
+    const outcomes = attemptOutcomesFromTelemetry(events);
+    assert.deepEqual(outcomes, [
+      {
+        provider: "openai-codex",
+        modelId: "gpt-5.6-sol",
+        archetype: "median_repository_implementation",
+        accepted: true,
+        modelAndToolCost: 0.42,
+        wallTimeMs: 1_200,
+        humanIntervention: false,
+        retried: false,
+      },
+    ]);
+    assert.deepEqual(aggregateRouteSamples(outcomes), [
+      {
+        provider: "openai-codex",
+        modelId: "gpt-5.6-sol",
+        archetype: "median_repository_implementation",
+        comparableSamples: 1,
+        acceptedRate: 1,
+        p50ModelAndToolCost: 0.42,
+        p75ModelAndToolCost: 0.42,
+        p90ModelAndToolCost: 0.42,
+        p50WallTimeMs: 1_200,
+        p75WallTimeMs: 1_200,
+        p90WallTimeMs: 1_200,
+        probabilityHumanIntervention: 0,
+        probabilityRetry: 0,
+      },
+    ]);
+  });
+
   it("appends inspectable events and tolerates a torn final line", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-router-telemetry-"));
     temporaryDirectories.push(directory);
@@ -35,6 +124,60 @@ describe("JsonlTelemetryStore", () => {
       ["one", "two"],
     );
     assert.match(await readFile(path, "utf8"), /"eventId":"one"/);
+  });
+});
+
+describe("endpoint telemetry fields", () => {
+  it("records the weighted effective cost and cache-rate classification", () => {
+    assert.deepEqual(
+      endpointTelemetryFields(
+        {
+          provider: "amazon-bedrock",
+          costPerMillion: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+        },
+        providerWeightFor("amazon-bedrock"),
+      ),
+      {
+        endpointEffectiveCost: 19.7125,
+        appliedProviderWeight: 0.83,
+        providerWeightBasis: "contract",
+        cacheWriteClassification: "priced_write",
+      },
+    );
+  });
+
+  it("keeps flat-rate endpoint costs absent without dropping cache classification", () => {
+    assert.deepEqual(
+      endpointTelemetryFields(
+        {
+          provider: "github-copilot",
+          costPerMillion: { input: 0, output: 0, cacheRead: 1, cacheWrite: 0 },
+        },
+        providerWeightFor("github-copilot"),
+      ),
+      { cacheWriteClassification: "no_write_line_item" },
+    );
+  });
+});
+
+describe("attempt token outcomes", () => {
+  it("records observed cache-read and cache-write counts independently", () => {
+    assert.deepEqual(
+      aggregateAttemptTokenCounts([
+        { input: 100, output: 20, cacheRead: 80, cacheWrite: 10 },
+        { input: 50, output: 5, cacheRead: 40, cacheWrite: 0 },
+      ]),
+      {
+        inputTokens: 150,
+        outputTokens: 25,
+        cacheReadTokens: 120,
+        cacheWriteTokens: 10,
+      },
+    );
+  });
+
+  it("tolerates a missing legacy cache-write count", () => {
+    assert.equal(aggregateAttemptTokenCounts([{ input: 1, output: 1, cacheRead: 1 }]).cacheWriteTokens, 0);
   });
 });
 

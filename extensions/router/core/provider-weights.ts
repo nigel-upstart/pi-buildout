@@ -8,8 +8,8 @@ export const PROVIDER_WEIGHT_MAX = 2.0;
 export const PROVIDER_WEIGHT_REJECTION_LIMIT = 100;
 const REJECTION_PROVIDER_MAX_LENGTH = 160;
 
-type ProviderWeightBasis = "contract" | "preference";
-type ProviderWeightSource = "environment" | "project" | "user" | "built-in" | "rejection-fallback";
+export type ProviderWeightBasis = "contract" | "preference";
+export type ProviderWeightSource = "environment" | "project" | "user" | "built-in" | "rejection-fallback";
 type ConfiguredProviderWeightSource = Extract<ProviderWeightSource, "environment" | "project" | "user">;
 
 export type ResolvedProviderWeight = Readonly<{

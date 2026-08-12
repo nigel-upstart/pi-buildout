@@ -69,7 +69,7 @@ type ExclusionCode =
   | "profile_missing"
   | "duplicate_model";
 
-type CandidateExclusion = {
+export type CandidateExclusion = {
   candidate: string;
   code: ExclusionCode;
   detail: string;

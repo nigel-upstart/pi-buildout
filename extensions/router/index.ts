@@ -36,6 +36,7 @@ import {
 import type { CompletionEvidence, LeaseLifecycle, ReviewOutcome, SafetyReviewKind } from "./core/safety.ts";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
+import { providerWeightFor } from "./core/provider-weights.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import {
   bedrockSolLongContextPricingUnavailable,
@@ -47,6 +48,7 @@ import {
   selectStandaloneReviewRoute,
 } from "./core/routing.ts";
 import { canonicalModelId } from "./core/scope.ts";
+import { buildScopeDiagnostics, renderScopeDiagnostics } from "./core/scope-diagnostics.ts";
 import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
@@ -71,8 +73,15 @@ import {
   writeLastKnownMode,
 } from "./pi-state.ts";
 import type { RouterScope } from "./pi-state.ts";
-import { aggregateRouteSamples, JsonlTelemetryStore, withRouterSpan } from "./telemetry.ts";
-import type { AttemptOutcome, RouterTelemetryEvent } from "./telemetry.ts";
+import {
+  aggregateAttemptTokenCounts,
+  aggregateRouteSamples,
+  attemptOutcomesFromTelemetry,
+  endpointTelemetryFields,
+  JsonlTelemetryStore,
+  withRouterSpan,
+} from "./telemetry.ts";
+import type { RouterTelemetryEvent } from "./telemetry.ts";
 
 const STATE_ENTRY = "model-router-state";
 const CONTEXT_MESSAGE = "model-router-context";
@@ -98,6 +107,8 @@ type AttemptMetrics = {
   modelAndToolCost: number;
   wallTimeMs: number;
   retried: boolean;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 };
 
 type AttemptDisposition = "unknown" | "pending" | "success" | "aborted" | "incomplete" | "failed";
@@ -296,28 +307,6 @@ function previousChoice(
   };
 }
 
-function telemetryOutcomes(events: readonly RouterTelemetryEvent[]): AttemptOutcome[] {
-  const outcomes: AttemptOutcome[] = [];
-  for (const event of events) {
-    if (event.kind !== "outcome") continue;
-    const data = event.data;
-    if (
-      typeof data.provider !== "string" ||
-      typeof data.modelId !== "string" ||
-      typeof data.archetype !== "string" ||
-      typeof data.accepted !== "boolean" ||
-      typeof data.modelAndToolCost !== "number" ||
-      typeof data.wallTimeMs !== "number" ||
-      typeof data.humanIntervention !== "boolean" ||
-      typeof data.retried !== "boolean"
-    ) {
-      continue;
-    }
-    outcomes.push(data as unknown as AttemptOutcome);
-  }
-  return outcomes;
-}
-
 export default function routerExtension(pi: ExtensionAPI): void {
   /**
    * The operator's model scope and last probe results, read once per session. Routing derives its
@@ -449,12 +438,27 @@ export default function routerExtension(pi: ExtensionAPI): void {
   ): Promise<void> {
     if (!telemetryHealthy) return;
     try {
+      let endpointFields = {};
+      if (extra.provider && extra.modelId) {
+        try {
+          const model = ctx.modelRegistry.find(extra.provider, extra.modelId);
+          if (model) {
+            endpointFields = endpointTelemetryFields(
+              { provider: model.provider, costPerMillion: model.cost },
+              providerWeightFor(model.provider, scope.providerWeights),
+            );
+          }
+        } catch {
+          // Endpoint diagnostics are best-effort and must never block the base audit event.
+        }
+      }
       await telemetry.append({
         version: 1,
         eventId: randomUUID(),
         timestamp: new Date().toISOString(),
         kind,
         sessionId: ctx.sessionManager.getSessionId(),
+        ...endpointFields,
         ...extra,
         data,
       });
@@ -527,7 +531,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       // Bootstrap ordering is safe without history; disable active routing rather than use stale telemetry.
       disableForTelemetryFailure(ctx, error);
     }
-    const routeSamples: RouteSample[] = aggregateRouteSamples(telemetryOutcomes(events)).filter(
+    const routeSamples: RouteSample[] = aggregateRouteSamples(attemptOutcomesFromTelemetry(events)).filter(
       (sample) =>
         sample.contextBucket === contextBucket &&
         sample.risk === classification.features.risk &&
@@ -727,6 +731,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
     await applyChoice(ctx, parent.selected);
     state = installLease(state, parent);
     const reviewMetrics = lastAttemptMetrics;
+    // Cost, wall time, and retry are task-level totals, so the review's share is added to the
+    // parent. Cache-token counts are deliberately NOT summed: they are a per-endpoint observation,
+    // and an independent review always runs on a different vendor's endpoint. Folding its counts in
+    // would attribute one endpoint's cache behavior to another and corrupt the Bedrock-versus-direct
+    // cache-ratio comparison that FW3 exists to measure.
     lastAttemptMetrics = reviewParentAttemptMetrics
       ? {
           ...reviewParentAttemptMetrics,
@@ -1636,16 +1645,18 @@ export default function routerExtension(pi: ExtensionAPI): void {
       ctx,
       "outcome",
       { manualOverride: "model", provider: event.model.provider, modelId: event.model.id },
-      state.active
-        ? {
-            taskId: state.active.taskId,
-            archetype: state.active.archetype,
-            provider: event.model.provider,
-            modelId: event.model.id,
-            policyVersion: state.active.policyVersion,
-            modelSnapshotId: state.active.modelSnapshotId,
-          }
-        : {},
+      {
+        provider: event.model.provider,
+        modelId: event.model.id,
+        ...(state.active
+          ? {
+              taskId: state.active.taskId,
+              archetype: state.active.archetype,
+              policyVersion: state.active.policyVersion,
+              modelSnapshotId: state.active.modelSnapshotId,
+            }
+          : {}),
+      },
     );
   });
 
@@ -1780,6 +1791,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
     const accumulatedStartedAt =
       taskStartedAt.get(active.taskId) ?? (attemptStartedAt > 0 ? attemptStartedAt : Date.now());
     const accumulatedWallTimeMs = Date.now() - accumulatedStartedAt;
+    const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = aggregateAttemptTokenCounts(
+      relevant.map((message) => message.usage),
+    );
     lastAttemptMetrics = isActiveAttempt
       ? {
           provider: attemptedProvider,
@@ -1788,10 +1802,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
           modelAndToolCost: accumulatedCost,
           wallTimeMs: Math.max(wallTimeMs, accumulatedWallTimeMs),
           retried: active.attemptIndex > 0,
+          cacheReadTokens,
+          cacheWriteTokens,
         }
       : undefined;
-    const inputTokens = relevant.reduce((total, message) => total + message.usage.input, 0);
-    const cachedInputTokens = relevant.reduce((total, message) => total + message.usage.cacheRead, 0);
     await record(
       ctx,
       "attempt_completed",
@@ -1802,9 +1816,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
         cost,
         wallTimeMs,
         inputTokens,
-        cachedInputTokens,
-        cacheHitRatio: inputTokens > 0 ? cachedInputTokens / inputTokens : 0,
-        outputTokens: relevant.reduce((total, message) => total + message.usage.output, 0),
+        // Retain the pre-PR7 name while adding the exact provider usage field names.
+        cachedInputTokens: cacheReadTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        cacheHitRatio: inputTokens > 0 ? cacheReadTokens / inputTokens : 0,
+        outputTokens,
         turns: attemptTurns,
         toolCalls: attemptToolCalls,
         deterministicChecksPassed: [...deterministicCheckResults.values()].filter(Boolean).length,
@@ -2007,7 +2024,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("route", {
-    description: "Show or change model-router mode; record outcomes or trigger deterministic fallback",
+    description: "Show model-router mode or scope diagnostics; record outcomes or trigger deterministic fallback",
     handler: async (args, ctx) => {
       const [command, value] = args.trim().split(/\s+/, 2);
       if (command === "active" || command === "shadow" || command === "off") {
@@ -2039,6 +2056,21 @@ export default function routerExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(`Model router mode set to ${command}`, "info");
         return;
       }
+      if (command === "scope") {
+        const registry = buildRegistrySnapshot(ctx, scope);
+        const diagnostics = buildScopeDiagnostics({
+          patterns: scope.patterns,
+          patternSource: scope.patternSource,
+          registry,
+          allRegistryEndpoints: ctx.modelRegistry
+            .getAll()
+            .map((model) => ({ provider: model.provider, modelId: model.id })),
+          providerWeightRejections: scope.providerWeightRejections,
+          ...(lastRoute.decision ? { latestRouteExclusions: lastRoute.decision.exclusions } : {}),
+        });
+        ctx.ui.notify(renderScopeDiagnostics(diagnostics), "info");
+        return;
+      }
       if (command === "reset") {
         state = setHardBoundary({ mode: state.mode, manualOverride: false }, "new_session");
         persistState();
@@ -2063,7 +2095,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
             interactivity: state.active.features.interactivity,
             languageBucket: state.active.repositoryLanguageBucket ?? "unknown",
           },
-          { taskId: state.active.taskId, archetype: state.active.archetype },
+          {
+            taskId: state.active.taskId,
+            archetype: state.active.archetype,
+            provider: lastAttemptMetrics.provider,
+            modelId: lastAttemptMetrics.modelId,
+          },
         );
         ctx.ui.notify(`Recorded routed attempt as ${command === "accept" ? "accepted" : "rejected"}`, "info");
         return;
