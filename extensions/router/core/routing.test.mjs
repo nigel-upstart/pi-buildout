@@ -316,6 +316,44 @@ describe("ordinary route selection", () => {
     assert.equal(openaiReviewer.endpointEffectiveCost, ordinary.primary.endpointEffectiveCost);
   });
 
+  it("fails closed per endpoint when registry pricing is malformed", () => {
+    const unavailable = {
+      ...model("openai", "gpt-5.6-sol", "openai"),
+      available: false,
+      costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const malformed = {
+      ...model("amazon-bedrock", "global.openai.gpt-5.6-sol", "openai"),
+      costPerMillion: { input: -1, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const decision = selectOrdinaryRoute(
+      "median_repository_implementation",
+      [...registry(), unavailable, malformed],
+      REQUIREMENTS,
+    );
+    assert.equal(decision.kind, "ordinary");
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) => exclusion.candidate === "openai/gpt-5.6-sol" && exclusion.code === "unavailable",
+      ),
+    );
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) =>
+          exclusion.candidate === "amazon-bedrock/global.openai.gpt-5.6-sol" &&
+          exclusion.code === "endpoint_pricing_invalid" &&
+          /finite and nonnegative/.test(exclusion.detail),
+      ),
+    );
+    assert.ok(
+      [decision.primary, ...decision.fallbacks].every(
+        (choice) =>
+          `${choice.provider}/${choice.modelId}` !== "openai/gpt-5.6-sol" &&
+          `${choice.provider}/${choice.modelId}` !== "amazon-bedrock/global.openai.gpt-5.6-sol",
+      ),
+    );
+  });
+
   it("keeps flat-rate nominal prices outside endpoint cost ordering", () => {
     const models = [
       ...registry(),

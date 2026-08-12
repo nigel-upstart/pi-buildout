@@ -56,6 +56,7 @@ type ExclusionCode =
   | "not_in_registry"
   | "not_in_scope"
   | "endpoint_unhealthy"
+  | "endpoint_pricing_invalid"
   | "unavailable"
   | "context_headroom"
   | "context_headroom_prior"
@@ -408,7 +409,14 @@ function resolveEndpoints(ref: CandidateRef, registry: readonly RegistryModelSna
   return registry
     .filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId)
     .map((model) => {
-      const endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+      let endpointEffectiveCost: number | undefined;
+      try {
+        endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+      } catch (error) {
+        // Eligibility records malformed endpoint pricing below. Keep it out of numeric comparison so
+        // one ineligible or malformed registry row cannot abort resolution of every valid endpoint.
+        if (!(error instanceof RangeError)) throw error;
+      }
       return {
         model,
         provider: model.provider,
@@ -552,7 +560,18 @@ function evaluateEndpoint(
     });
     return undefined;
   }
-  const endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+  let endpointEffectiveCost: number | undefined;
+  try {
+    endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    exclusions.push({
+      candidate: key,
+      code: "endpoint_pricing_invalid",
+      detail: error.message,
+    });
+    return undefined;
+  }
   return {
     provider: model.provider,
     modelId: model.modelId,
