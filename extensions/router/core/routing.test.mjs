@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { deriveArchetype } from "./archetype.ts";
-import { BOOTSTRAP_ROUTE_POLICIES } from "./policy.ts";
+import { BOOTSTRAP_ROUTE_POLICIES, MODEL_VENDOR } from "./policy.ts";
 import { conservativeFeatures } from "./features.ts";
 import { deriveSafetyPolicy } from "./safety.ts";
 import {
@@ -49,6 +49,29 @@ function registry() {
     model("anthropic", "claude-fable-5", "anthropic"),
     model("google-vertex", "gemini-3.6-flash", "google"),
   ];
+}
+
+function endpointPrimaryGoldenRegistry() {
+  const manufacturerProvider = {
+    openai: "openai-codex",
+    anthropic: "anthropic",
+    google: "google-vertex",
+  };
+  const direct = Object.entries(MODEL_VENDOR).map(([modelId, vendor]) =>
+    model(manufacturerProvider[vendor], modelId, vendor),
+  );
+  const bedrock = Object.entries(MODEL_VENDOR).map(([modelId, vendor]) => {
+    const endpoint = model("amazon-bedrock", `${vendor}.${modelId}`, vendor);
+    if (modelId === "gpt-5.6-sol") {
+      endpoint.supportedEfforts = ["off", "minimal", "low", "medium", "high", "xhigh"];
+    }
+    return endpoint;
+  });
+  const copilot = {
+    ...model("github-copilot", "gpt-5.6-sol", "openai"),
+    costPerMillion: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  return { direct, weighted: [...direct, ...bedrock, copilot] };
 }
 
 // Contexts are built through deriveRoutingContext so the fixtures cannot drift from the real derivation.
@@ -254,6 +277,123 @@ describe("ordinary route selection", () => {
       .filter((choice) => choice.modelId === "claude-opus-5")
       .map((choice) => choice.effort);
     assert.deepEqual(opusEfforts, ["max", "high"]);
+  });
+
+  it("pins the cost-first endpoint primary for every bootstrap archetype", () => {
+    const expectedPrimaries = {
+      fast_classification: {
+        logicalModelId: "claude-haiku-4-5",
+        effort: "low",
+        endpoint: "amazon-bedrock/anthropic.claude-haiku-4-5",
+      },
+      exact_extraction: {
+        logicalModelId: "claude-haiku-4-5",
+        effort: "low",
+        endpoint: "amazon-bedrock/anthropic.claude-haiku-4-5",
+      },
+      // These Sol routes stay first party because the deliberately large request exceeds the 272K
+      // Bedrock list-rate boundary. Copilot is eligible but remains last as a flat-rate proxy.
+      deliberate_tool_workflow: {
+        logicalModelId: "gpt-5.6-sol",
+        effort: "high",
+        endpoint: "openai-codex/gpt-5.6-sol",
+      },
+      median_repository_implementation: {
+        logicalModelId: "gpt-5.6-sol",
+        effort: "high",
+        endpoint: "openai-codex/gpt-5.6-sol",
+      },
+      stacked_pr_implementation: {
+        logicalModelId: "gpt-5.6-sol",
+        effort: "high",
+        endpoint: "openai-codex/gpt-5.6-sol",
+      },
+      terminal_heavy_implementation: {
+        logicalModelId: "gpt-5.6-sol",
+        effort: "high",
+        endpoint: "openai-codex/gpt-5.6-sol",
+      },
+      algorithmic_iterative_coding: {
+        logicalModelId: "claude-opus-5",
+        effort: "medium",
+        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+      },
+      code_review: {
+        logicalModelId: "gpt-5.6-sol",
+        effort: "high",
+        endpoint: "openai-codex/gpt-5.6-sol",
+      },
+      implementation_planning: {
+        logicalModelId: "claude-opus-5",
+        effort: "high",
+        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+      },
+      large_program_planning: {
+        logicalModelId: "claude-opus-5",
+        effort: "xhigh",
+        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+      },
+      long_context_synthesis: {
+        logicalModelId: "gpt-5.6-sol",
+        effort: "high",
+        endpoint: "openai-codex/gpt-5.6-sol",
+      },
+      highest_risk_advisory: {
+        logicalModelId: "claude-opus-5",
+        effort: "max",
+        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+      },
+    };
+    assert.deepEqual(Object.keys(expectedPrimaries).sort(), Object.keys(BOOTSTRAP_ROUTE_POLICIES).sort());
+
+    const { direct, weighted } = endpointPrimaryGoldenRegistry();
+    const longContextRequirements = { ...REQUIREMENTS, estimatedFinishedTokens: 300_000 };
+    for (const [archetype, expected] of Object.entries(expectedPrimaries)) {
+      const baseline = selectOrdinaryRoute(archetype, direct, longContextRequirements);
+      const decision = selectOrdinaryRoute(archetype, weighted, longContextRequirements);
+      assert.equal(baseline.kind, "ordinary", `${archetype} direct baseline must route`);
+      assert.equal(decision.kind, "ordinary", `${archetype} weighted registry must route`);
+      assert.deepEqual(
+        { logicalModelId: decision.primary.logicalModelId, effort: decision.primary.effort },
+        { logicalModelId: baseline.primary.logicalModelId, effort: baseline.primary.effort },
+        `${archetype} must preserve logical model and effort selection`,
+      );
+      assert.deepEqual(
+        { logicalModelId: decision.primary.logicalModelId, effort: decision.primary.effort },
+        { logicalModelId: expected.logicalModelId, effort: expected.effort },
+        `${archetype} logical primary drifted`,
+      );
+      assert.equal(
+        `${decision.primary.provider}/${decision.primary.modelId}`,
+        expected.endpoint,
+        `${archetype} endpoint primary drifted`,
+      );
+
+      if (expected.endpoint === "openai-codex/gpt-5.6-sol") {
+        assert.ok(
+          decision.exclusions.some(
+            (exclusion) =>
+              exclusion.candidate === "amazon-bedrock/openai.gpt-5.6-sol" &&
+              exclusion.code === "long_context_pricing_unavailable",
+          ),
+          `${archetype} must reject Bedrock Sol before ordering at long context`,
+        );
+        const selectedEndpoints = [decision.primary, ...decision.fallbacks].filter(
+          (choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high",
+        );
+        assert.equal(selectedEndpoints.at(-1)?.provider, "github-copilot");
+      }
+
+      if (archetype === "large_program_planning" || archetype === "highest_risk_advisory") {
+        assert.ok(
+          decision.exclusions.some(
+            (exclusion) =>
+              exclusion.candidate === "amazon-bedrock/openai.gpt-5.6-sol" && exclusion.code === "effort_unsupported",
+          ),
+          `${archetype} must reject Bedrock Sol max before ordering`,
+        );
+      }
+    }
   });
 
   it("orders endpoints cost-first while keeping every selected-model endpoint contiguous", () => {
