@@ -257,9 +257,13 @@ export function buildRegistrySnapshot(
   return snapshots;
 }
 
+export type RouterScopePatternSource = "environment" | "project" | "user" | "default";
+
 export type RouterScope = {
   /** `enabledModels` patterns. Empty means no scope is configured, so everything available is in scope. */
   patterns: readonly string[];
+  /** Source of every pattern in `patterns`; scope precedence selects one complete pattern list. */
+  patternSource: RouterScopePatternSource;
   health: EndpointHealthRecord | undefined;
   /** Validated per-provider weights, including source and contract/preference basis metadata. */
   providerWeights: ReadonlyMap<string, ResolvedProviderWeight>;
@@ -270,6 +274,7 @@ export type RouterScope = {
 const DEFAULT_PROVIDER_WEIGHTS = resolveProviderWeights();
 export const EMPTY_SCOPE: RouterScope = Object.freeze({
   patterns: Object.freeze([]),
+  patternSource: "default",
   health: undefined,
   providerWeights: DEFAULT_PROVIDER_WEIGHTS.weights,
   providerWeightRejections: DEFAULT_PROVIDER_WEIGHTS.rejections,
@@ -317,8 +322,18 @@ export async function readRouterScope(cwd: string, options: RouterScopeReadOptio
     projectSettings: project,
     userSettings: user,
   });
+  const resolvedPatterns = overridePatterns ?? (patterns.length > 0 ? patterns : fallbackPatterns);
+  const patternSource: RouterScopePatternSource =
+    overridePatterns !== undefined
+      ? "environment"
+      : patterns.length > 0
+        ? "project"
+        : fallbackPatterns.length > 0
+          ? "user"
+          : "default";
   return {
-    patterns: overridePatterns ?? (patterns.length > 0 ? patterns : fallbackPatterns),
+    patterns: resolvedPatterns,
+    patternSource,
     health: isEndpointHealthRecord(health) ? health : undefined,
     providerWeights: providerWeights.weights,
     providerWeightRejections: providerWeights.rejections,
