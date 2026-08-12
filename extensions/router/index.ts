@@ -467,10 +467,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
     ctx: ExtensionContext,
     repository: RepositoryMetadata,
     omitBuilderProvenance = false,
+    scopedRegistry?: readonly RegistryModelSnapshot[],
   ): SessionSynopsis {
     const usage = ctx.getContextUsage();
     // The registry, not the endpoint name, identifies gateway-backed models' canonical vendor.
-    const vendor = ctx.model ? snapshotForModel(ctx.model, buildRegistrySnapshot(ctx, scope))?.vendor : undefined;
+    // Callers that already hold the turn's scoped snapshot pass it in rather than rebuilding it.
+    const vendor = ctx.model
+      ? snapshotForModel(ctx.model, scopedRegistry ?? buildRegistrySnapshot(ctx, scope))?.vendor
+      : undefined;
     return buildSessionSynopsis({
       sessionId: ctx.sessionManager.getSessionId(),
       cwd: ctx.cwd,
@@ -1383,14 +1387,16 @@ export default function routerExtension(pi: ExtensionAPI): void {
           state.active ? { taskId: state.active.taskId } : {},
         );
       }
+      // Classification, builder provenance, and route selection consume the exact same
+      // operator-scoped snapshot. The classifier never reconstructs candidates from the
+      // process-wide available-model list, and this turn never reads the registry twice.
+      const registry = buildRegistrySnapshot(ctx, scope);
       const currentSynopsis = synopsis(
         ctx,
         repository,
         Boolean(repository.reviewDelta) || isStandaloneReviewRequest(event.prompt),
+        registry,
       );
-      // Classification and route selection consume the exact same operator-scoped snapshot. The
-      // classifier never reconstructs candidates from the process-wide available-model list.
-      const registry = buildRegistrySnapshot(ctx, scope);
       let active = state.active;
       let classification: ClassificationResult | undefined;
       let requiresNewLease = pending?.gate.action === "new_task";

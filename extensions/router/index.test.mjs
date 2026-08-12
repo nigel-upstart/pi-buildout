@@ -301,13 +301,16 @@ describe("routerExtension", () => {
       appendEntry: () => {},
       exec: async () => ({ code: 1, stdout: "", stderr: "" }),
       getActiveTools: () => activeTools,
+      getThinkingLevel: () => "high",
       setActiveTools: (tools) => {
         activeTools = tools;
       },
     };
     const ctx = {
       cwd: telemetryDirectory,
-      model: undefined,
+      // Defined so builder-provenance resolution also runs; with an undefined model that branch
+      // never reads the registry and could not observe a duplicate snapshot build.
+      model: { provider: "openai-codex", id: "gpt-5.6-sol" },
       modelRegistry: {
         getAvailable: () => [],
         getAll: () => {
@@ -332,7 +335,7 @@ describe("routerExtension", () => {
         { prompt: "Implement the change", systemPrompt: "system", images: [] },
         ctx,
       );
-      assert.equal(snapshotReads, 1, "routing must reuse the snapshot that constrained classification");
+      assert.equal(snapshotReads, 1, "classification, builder provenance, and routing must share one scoped snapshot");
       assert.match(notifications.at(-1)?.message ?? "", /retained current model/i);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
