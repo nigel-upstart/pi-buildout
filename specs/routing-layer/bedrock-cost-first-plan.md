@@ -148,8 +148,8 @@ Branch `router/evidence-replace`. No dependencies.
       divergence, with citations.
 - [x] Re-point every inbound reference: `extensions/router/README.md`, `decisions.md`, `SPEC.md`, `eval.md`, the
       `evidence-data.ts` header, and citing comments in `core/evidence.ts` and `core/policy.ts`.
-- [ ] The evidence-data agreement test passes unchanged. `ATTRIBUTION.md` updated for the AWS and Anthropic sources.
-- [ ] `npm run check` passes.
+- [x] The evidence-data agreement test passes unchanged. `ATTRIBUTION.md` updated for the AWS and Anthropic sources.
+- [x] `npm run check` passes.
 
 ### pr2 — Canonical-ID prompt-profile eligibility
 
