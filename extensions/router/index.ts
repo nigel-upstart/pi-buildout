@@ -45,6 +45,7 @@ import {
   selectReviewRoute,
   selectStandaloneReviewRoute,
 } from "./core/routing.ts";
+import { canonicalModelId } from "./core/scope.ts";
 import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
@@ -279,7 +280,9 @@ function previousChoice(
   return {
     provider: model.provider,
     modelId: model.modelId,
-    logicalModelId: model.modelId,
+    // Registry IDs are provider-specific spellings; the logical ID is always canonical, and
+    // isRouteChoice enforces that pairing when a lease is rehydrated.
+    logicalModelId: canonicalModelId(model.modelId),
     vendor: model.vendor,
     effort,
     ability: modelAbility(model.modelId, effort),

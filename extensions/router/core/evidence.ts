@@ -235,15 +235,6 @@ export const EFFORT_POLICIES: readonly EffortPolicy[] = [
       "max is worse than xhigh on pass (67.3 vs 69.9) and partial credit (64.9% vs 79.9%) at $30.74 vs $19.02 per pass",
   },
   {
-    // Availability-only generation tail; see the Opus degradation chain in core/policy.ts. Effort is
-    // capped at high because the curve is flat and expensive above it: pass moves 51.8 high, 53.8
-    // xhigh, 56.0 max while cost per pass goes $8.27, $14.74, $22.47. If this model is in use at all
-    // then Opus 5 was absent, and paying 2.7x for 4.2 points is the wrong trade in a degraded state.
-    modelId: "claude-opus-4-8",
-    saturationEffort: "high",
-    saturationReason: "pass 51.8 high, 53.8 xhigh, 56.0 max for $8.27, $14.74, and $22.47 per pass",
-  },
-  {
     modelId: "claude-sonnet-5",
     saturationEffort: "high",
     saturationReason: "pass 48.2 high with 138 median steps",
@@ -261,10 +252,9 @@ function findEffortPolicy(modelId: string): EffortPolicy | undefined {
  * Candidates the evidence pack disqualifies outright. These are excluded before scoring so a
  * measured failure mode cannot be reintroduced by a favorable cost term.
  *
- * The bar is a measured failure mode, not a preference: being beaten by a newer model is an ordering
- * fact that ranking already expresses, and disqualifying on that basis makes a machine that only has
- * the older model unroutable rather than degraded. `claude-opus-4-8` was removed from this list for
- * exactly that reason and is now the tail of the Opus generation chain in core/policy.ts.
+ * Superseded generations are also excluded when every measured tier is dominated by a current model;
+ * carrying an otherwise-unused prompt profile only to preserve a legacy availability tail broadens
+ * eligibility without a corresponding policy benefit.
  */
 const DISQUALIFIED_MODELS: readonly { modelId: string; reason: string }[] = [
   {
@@ -274,6 +264,10 @@ const DISQUALIFIED_MODELS: readonly { modelId: string; reason: string }[] = [
   {
     modelId: "gemini-3.5-flash",
     reason: "pass 37.4%, $19.64 per pass, p90 peak context 924,506 with 3.8% context overflow",
+  },
+  {
+    modelId: "claude-opus-4-8",
+    reason: "superseded by claude-opus-5 at every effort tier; 56.0% pass at max versus 72.3% at opus-5 high",
   },
   // The previous-generation OpenAI core models are retired on the same generation-currency basis as
   // claude-opus-4-8, and the numbers are not close. gpt-5.6-sol at xhigh dominates gpt-5.5 at xhigh on

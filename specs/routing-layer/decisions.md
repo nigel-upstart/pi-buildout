@@ -402,23 +402,12 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     fallback, which uses the user's current effort — and capping it there would make review _skip_ rather than degrade,
     contradicting decision 20. Effort coverage therefore stays expressed as which (model, effort) pairs policy names.
 
-25. **Disqualification is reserved for measured failure modes; superseded generations degrade instead.** Review pushed
-    back on `claude-opus-4-8` being disqualified, and the objection holds: unlike `gemini-3.5-flash` (3.8% measured
-    context overflow) or `gemini-3.1-pro-preview` (11.7% pass at
-    $80.70), its exclusion rested on being beaten by Opus 5
-    at every tier. That is an ordering fact the cost ranking already expresses, and enforcing it as a ban made a machine
-    whose Anthropic catalog tops out at 4.8 *unroutable* for exactly the archetypes whose intent is "use the best Opus
-    available". It is now the tail of an Opus generation chain on `implementation_planning`,
-    `large_program_planning`, and `highest_risk_advisory`, with the preference for Opus 5 unchanged and enforced by three
-    separate mechanisms: endpoint expansion tries every scoped Opus 5 route first with the manufacturer route ahead of
-    gateways and resale, so an Anthropic outage degrades to Opus 5 elsewhere before the chain applies; the tail's own
-    numbers rank it last (51.8% pass at $8.27
-    per pass against Opus 5 at high with 72.3% at
-    $8.42); and its effort is
-    capped at `high`, including in the two archetypes that permit super-saturation, because its curve is flat and
-    expensive above that (56.0% at max for $22.47).
-    4.8 precedes 4.6 in the chain because it is the higher generation and is measured agentically, where 4.6 is retained
-    only as the scoped frugal candidate.
+25. **The previous-generation Opus availability tail is removed.** User review found no reason to admit
+    `claude-opus-4-8` to the planning profile merely to preserve a legacy fallback. Opus 5 dominates it at every
+    measured tier, while the planning ladders already retain current-generation Sol, Fable, and Opus fallbacks. Removing
+    only the profile entry would leave a dead policy candidate and reintroduce `profile_missing` exclusions, so its
+    policy ref and vendor declaration are removed with the profile and the model returns to the generation-superseded
+    disqualification list.
 
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
 telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work. The

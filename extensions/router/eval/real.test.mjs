@@ -322,7 +322,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
       {
         archetype: "implementation_planning",
         vendor: "anthropic",
-        modelId: "claude-opus-4-8",
+        modelId: "claude-opus-5",
         effort: "high",
         request: "Plan a three-PR additive database migration with dependencies, acceptance, rollout, and rollback.",
       },

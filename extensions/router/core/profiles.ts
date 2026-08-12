@@ -1,4 +1,5 @@
 import type { Archetype } from "./archetype.ts";
+import { canonicalModelId } from "./scope.ts";
 
 export const EFFORT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
@@ -9,6 +10,7 @@ export type PromptProfile = {
   id: string;
   version: 1;
   vendor: ModelVendor;
+  /** Canonical logical model IDs, never provider-specific registry spellings. */
   modelIds: readonly string[];
   archetypes: readonly Archetype[];
   efforts: readonly EffortLevel[];
@@ -34,24 +36,6 @@ const ALL_ARCHETYPES: readonly Archetype[] = [
   "highest_risk_advisory",
 ];
 
-/**
- * Profile eligibility matches an exact registry model ID, so every authorized endpoint for a model
- * must be listed. Resale routes expose the same model under provider-specific IDs.
- */
-function endpointIds(directId: string, bedrockPath: string, extra: readonly string[] = []): readonly string[] {
-  return [directId, `global.${bedrockPath}`, `us.${bedrockPath}`, ...extra];
-}
-
-const OPUS_5_IDS = endpointIds("claude-opus-5", "anthropic.claude-opus-5");
-const FABLE_5_IDS = endpointIds("claude-fable-5", "anthropic.claude-fable-5");
-const SONNET_5_IDS = endpointIds("claude-sonnet-5", "anthropic.claude-sonnet-5", ["bedrock/anthropic.claude-sonnet-5"]);
-const OPUS_46_IDS = endpointIds("claude-opus-4-6", "anthropic.claude-opus-4-6-v1", ["claude-opus-4.6"]);
-// Availability tail of the Opus generation chain, so a degraded machine still resolves a profile.
-const OPUS_48_IDS = endpointIds("claude-opus-4-8", "anthropic.claude-opus-4-8-v1", ["claude-opus-4.8"]);
-const GPT_OSS_IDS = ["gpt-oss-120b", "openai.gpt-oss-120b", "openai.gpt-oss-120b-1:0"] as const;
-
-const HAIKU_IDS = ["claude-haiku-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4.5"] as const;
-
 const SHARED_CONSTRAINTS = [
   "Preserve the user's stated scope and constraints.",
   "Do not claim completion without checking the available evidence.",
@@ -63,7 +47,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "openai-gpt-5.6-agent-v1",
     version: 1,
     vendor: "openai",
-    modelIds: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "openai.gpt-5.6-sol"],
+    modelIds: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"],
     archetypes: ALL_ARCHETYPES,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
@@ -83,7 +67,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "openai-gpt-oss-bounded-v1",
     version: 1,
     vendor: "openai",
-    modelIds: GPT_OSS_IDS,
+    modelIds: ["gpt-oss-120b"],
     archetypes: ["fast_classification", "exact_extraction"],
     efforts: ["low", "medium", "high"],
     executionSurface: "pi-coding-agent",
@@ -101,7 +85,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-opus-4-6-frugal-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: OPUS_46_IDS,
+    modelIds: ["claude-opus-4-6"],
     archetypes: ["median_repository_implementation", "long_context_synthesis"],
     efforts: ["medium", "high"],
     executionSurface: "pi-coding-agent",
@@ -136,7 +120,9 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-fast-agent-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: [...HAIKU_IDS, ...SONNET_5_IDS],
+    // Profiles are keyed by the model's vendor, not its route provider: Bedrock and Bifrost Sonnet IDs
+    // canonicalize to this Anthropic logical model ID before profile lookup.
+    modelIds: ["claude-haiku-4-5", "claude-sonnet-5"],
     archetypes: ALL_ARCHETYPES.filter((archetype) => archetype !== "large_program_planning"),
     efforts: ["low", "medium", "high", "xhigh"],
     executionSurface: "pi-coding-agent",
@@ -154,7 +140,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-opus-5-agent-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: OPUS_5_IDS,
+    modelIds: ["claude-opus-5"],
     archetypes: ALL_ARCHETYPES.filter(
       (archetype) =>
         archetype !== "stacked_pr_implementation" &&
@@ -179,7 +165,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-stacked-pr-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: OPUS_5_IDS,
+    modelIds: ["claude-opus-5"],
     archetypes: ["stacked_pr_implementation"],
     efforts: ["high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
@@ -196,7 +182,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-planning-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: [...OPUS_5_IDS, ...FABLE_5_IDS, ...OPUS_48_IDS],
+    modelIds: ["claude-opus-5", "claude-fable-5"],
     archetypes: ["implementation_planning", "large_program_planning", "highest_risk_advisory", "code_review"],
     efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
@@ -263,10 +249,11 @@ export function findPromptProfile(
   archetype: Archetype,
   effort: EffortLevel,
 ): PromptProfile | undefined {
+  const logicalModelId = canonicalModelId(modelId);
   return PROMPT_PROFILES.find(
     (profile) =>
       profile.vendor === vendor &&
-      profile.modelIds.includes(modelId) &&
+      profile.modelIds.includes(logicalModelId) &&
       profile.archetypes.includes(archetype) &&
       profile.efforts.includes(effort),
   );
