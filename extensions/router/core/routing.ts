@@ -50,7 +50,7 @@ export type RouteRequirements = {
   requiresTools: boolean;
 };
 
-type ExclusionCode =
+export type ExclusionCode =
   | "not_in_registry"
   | "not_in_scope"
   | "endpoint_unhealthy"
@@ -69,7 +69,7 @@ type ExclusionCode =
   | "profile_missing"
   | "duplicate_model";
 
-type CandidateExclusion = {
+export type CandidateExclusion = {
   candidate: string;
   code: ExclusionCode;
   detail: string;

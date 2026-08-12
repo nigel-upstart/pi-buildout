@@ -24,6 +24,7 @@ import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
 import { canonicalVendor, isStandaloneReviewRequest } from "./core/routing.ts";
 import { canonicalModelId, isFlatRateProvider, matchesScope } from "./core/scope.ts";
+import type { ScopePatternSource } from "./core/scope.ts";
 import { isLeaseLifecycle, isSafetyEvidenceLog } from "./core/safety.ts";
 import { localRepoKey, normalizeGitRemoteUrl, parseRouterMode, resolveStartMode } from "./core/start-mode.ts";
 import type { StartModeResolution } from "./core/start-mode.ts";
@@ -257,7 +258,7 @@ export function buildRegistrySnapshot(
   return snapshots;
 }
 
-export type RouterScopePatternSource = "environment" | "project" | "user" | "default";
+export type RouterScopePatternSource = ScopePatternSource;
 
 export type RouterScope = {
   /** `enabledModels` patterns. Empty means no scope is configured, so everything available is in scope. */
