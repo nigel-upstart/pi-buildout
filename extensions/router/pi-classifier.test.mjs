@@ -157,6 +157,31 @@ describe("selectClassifierModels", () => {
     assert.equal(selected.primary[1]?.endpointEffectiveCost, undefined);
   });
 
+  it("excludes endpoints that cannot serve the classifier's forced tool call", () => {
+    // Classification is enforced through a forced tool call, so a non-tool-capable endpoint could
+    // never satisfy this tier even when it is scoped in, healthy, and the cheapest candidate.
+    const selected = selectClassifierModels([
+      snapshot("amazon-bedrock", "openai.gpt-5.6-luna", {
+        toolCapable: false,
+        costPerMillion: { input: 0.01, output: 0.01, cacheRead: 0.001, cacheWrite: 0.01 },
+      }),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
+      ["openai-codex/gpt-5.6-luna"],
+    );
+  });
+
+  it("declines classification when every scoped endpoint lacks tool support", () => {
+    const selected = selectClassifierModels([
+      snapshot("openai-codex", "gpt-5.6-luna", { toolCapable: false }),
+      snapshot("anthropic", "claude-haiku-4-5", { toolCapable: false }),
+    ]);
+    assert.deepEqual(selected.primary, []);
+    assert.deepEqual(selected.secondary, []);
+  });
+
   it("excludes unavailable and recurring-failure endpoints but retains transient failures", () => {
     const selected = selectClassifierModels([
       snapshot("github-copilot", "gpt-5.6-luna", { available: false }),

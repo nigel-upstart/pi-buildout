@@ -67,6 +67,10 @@ function resolveClassifierTier(registry: readonly RegistryModelSnapshot[], logic
   const candidates: ClassifierModel[] = [];
   for (const endpoint of registry) {
     if (!endpoint.available || canonicalModelId(endpoint.modelId) !== logicalModelId) continue;
+    // Classification is enforced through a forced tool call, so an endpoint without tool support
+    // cannot serve this tier at all. Routing excludes these as `tools_unsupported`; the classifier
+    // must not admit one just because it is scoped in and healthy.
+    if (!endpoint.toolCapable) continue;
     if (!healthVerdict(endpoint.health).usable) continue;
     let endpointEffectiveCost: number | undefined;
     try {
