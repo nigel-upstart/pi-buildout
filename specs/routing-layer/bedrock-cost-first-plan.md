@@ -276,8 +276,9 @@ telemetry on at least one real repository, then enable active routing per reposi
 - `pr1`–`pr4`: revert the commit. Nothing persisted depends on them.
 - `pr5`: revert to restore tier-first ordering and `router-policy-v5`; leases created under v6 are then discarded by the
   version check, which is the intended fail-safe. Partial mitigation without a deploy is to raise the `amazon-bedrock`
-  weight to 1.0 or above in settings — this removes the Bedrock promotion but does **not** restore tier-first ordering,
-  because there is deliberately no dual-mode switch.
+  weight above 1.0 where its list rates match direct, or scope Bedrock out when it must be excluded. A weight of exactly
+  1.0 removes only the contract discount and leaves deterministic tie-breaks authoritative. None of these mitigations
+  restores tier-first ordering, because there is deliberately no dual-mode switch.
 - `pr6`–`pr7`: revert. Telemetry consumers tolerate absent fields because the store is append-only JSONL.
 
 ## Open unknowns

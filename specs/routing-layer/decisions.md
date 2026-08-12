@@ -440,9 +440,10 @@ model, effort, capability, evidence, and fallback decisions are unchanged.
    `max` effort is likewise resolved by eligibility before ordering.
 
 5. **Rollback is policy-versioned.** Reverting to `router-policy-v5` restores tier-first, manufacturer-first ordering;
-   the lease policy-version check then discards leases created under v6. Raising the Bedrock weight to `1.0` or above is
-   a narrower operational mitigation that removes the default Bedrock promotion, but it does not restore tier-first
-   behavior because v6 has no dual routing mode.
+   the lease policy-version check then discards leases created under v6. Raising the Bedrock weight above `1.0` can
+   suppress Bedrock where its list rates otherwise match a direct route; setting it to exactly `1.0` only removes the
+   contract discount and leaves deterministic tie-breaks authoritative. Scope Bedrock out when it must be excluded. None
+   of these mitigations restores tier-first behavior because v6 has no dual routing mode.
 
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
 telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work. The
