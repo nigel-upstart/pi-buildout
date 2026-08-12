@@ -36,6 +36,7 @@ import {
 import type { CompletionEvidence, LeaseLifecycle, ReviewOutcome, SafetyReviewKind } from "./core/safety.ts";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
+import { providerWeightFor } from "./core/provider-weights.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import {
   bedrockSolLongContextPricingUnavailable,
@@ -72,7 +73,7 @@ import {
   writeLastKnownMode,
 } from "./pi-state.ts";
 import type { RouterScope } from "./pi-state.ts";
-import { aggregateRouteSamples, JsonlTelemetryStore, withRouterSpan } from "./telemetry.ts";
+import { aggregateRouteSamples, endpointTelemetryFields, JsonlTelemetryStore, withRouterSpan } from "./telemetry.ts";
 import type { AttemptOutcome, RouterTelemetryEvent } from "./telemetry.ts";
 
 const STATE_ENTRY = "model-router-state";
@@ -450,12 +451,27 @@ export default function routerExtension(pi: ExtensionAPI): void {
   ): Promise<void> {
     if (!telemetryHealthy) return;
     try {
+      let endpointFields = {};
+      if (extra.provider && extra.modelId) {
+        try {
+          const model = ctx.modelRegistry.find(extra.provider, extra.modelId);
+          if (model) {
+            endpointFields = endpointTelemetryFields(
+              { provider: model.provider, costPerMillion: model.cost },
+              providerWeightFor(model.provider, scope.providerWeights),
+            );
+          }
+        } catch {
+          // Endpoint diagnostics are best-effort and must never block the base audit event.
+        }
+      }
       await telemetry.append({
         version: 1,
         eventId: randomUUID(),
         timestamp: new Date().toISOString(),
         kind,
         sessionId: ctx.sessionManager.getSessionId(),
+        ...endpointFields,
         ...extra,
         data,
       });
@@ -1637,16 +1653,18 @@ export default function routerExtension(pi: ExtensionAPI): void {
       ctx,
       "outcome",
       { manualOverride: "model", provider: event.model.provider, modelId: event.model.id },
-      state.active
-        ? {
-            taskId: state.active.taskId,
-            archetype: state.active.archetype,
-            provider: event.model.provider,
-            modelId: event.model.id,
-            policyVersion: state.active.policyVersion,
-            modelSnapshotId: state.active.modelSnapshotId,
-          }
-        : {},
+      {
+        provider: event.model.provider,
+        modelId: event.model.id,
+        ...(state.active
+          ? {
+              taskId: state.active.taskId,
+              archetype: state.active.archetype,
+              policyVersion: state.active.policyVersion,
+              modelSnapshotId: state.active.modelSnapshotId,
+            }
+          : {}),
+      },
     );
   });
 

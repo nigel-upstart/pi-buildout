@@ -255,7 +255,7 @@ Branch `router/scope-observability`. Depends on pr6.
 - [x] `/route scope` reports patterns and their source, resolved logical models, and per model each eligible endpoint in
       selection order with list cost, applied weight, basis, cache classification, and effective cost.
 - [x] Excluded endpoints listed with their `ExclusionCode` and detail.
-- [ ] Telemetry gains `endpointEffectiveCost`, applied weight, basis, and cache classification; store stays append-only
+- [x] Telemetry gains `endpointEffectiveCost`, applied weight, basis, and cache classification; store stays append-only
       and older records still parse.
 - [ ] Attempt outcomes record observed `cacheRead` / `cacheWrite` token counts per endpoint.
 - [ ] `future-work.md` gains **FW3** for the one residual cache question: whether Bedrock and OpenAI direct yield

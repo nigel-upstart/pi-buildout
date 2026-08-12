@@ -329,6 +329,57 @@ describe("routerExtension", () => {
     );
   });
 
+  it("enriches endpoint-tagged telemetry without changing the event payload", async () => {
+    const hooks = new Map();
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-endpoint-telemetry-"));
+    const telemetryPath = join(telemetryDirectory, "events.jsonl");
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
+    const model = {
+      provider: "amazon-bedrock",
+      id: "openai.gpt-5.6-sol",
+      name: "gpt-5.6-sol",
+      api: "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    };
+    try {
+      routerExtension({
+        on: (event, handler) => hooks.set(event, handler),
+        registerCommand: () => {},
+        registerTool: () => {},
+        appendEntry: () => {},
+      });
+      await hooks.get("model_select")(
+        { source: "user", model },
+        {
+          modelRegistry: { find: () => model },
+          sessionManager: { getSessionId: () => "endpoint-telemetry" },
+          ui: { theme: { fg: (_color, text) => text }, setStatus: () => {}, notify: () => {} },
+        },
+      );
+
+      const event = JSON.parse((await readFile(telemetryPath, "utf8")).trim());
+      assert.equal(event.kind, "outcome");
+      assert.deepEqual(event.data, {
+        manualOverride: "model",
+        provider: "amazon-bedrock",
+        modelId: "openai.gpt-5.6-sol",
+      });
+      assert.equal(event.endpointEffectiveCost, 19.7125);
+      assert.equal(event.appliedProviderWeight, 0.83);
+      assert.equal(event.providerWeightBasis, "contract");
+      assert.equal(event.cacheWriteClassification, "priced_write");
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+    }
+  });
+
   it("uses one scoped registry snapshot for classification and the resulting route decision", async () => {
     const hooks = new Map();
     const notifications = [];
