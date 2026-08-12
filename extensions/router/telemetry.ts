@@ -1,6 +1,9 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Archetype } from "./core/archetype.ts";
+import { calculateEndpointEffectiveCost, classifyCacheWriteRate } from "./core/endpoint-cost.ts";
+import type { CacheWriteClassification } from "./core/endpoint-cost.ts";
+import type { ProviderWeightBasis, ResolvedProviderWeight } from "./core/provider-weights.ts";
 import type { RouteSample } from "./core/routing.ts";
 
 type TelemetryEventKind =
@@ -21,6 +24,11 @@ export type RouterTelemetryEvent = {
   promptProfileId?: string;
   policyVersion?: string;
   modelSnapshotId?: string;
+  /** Endpoint ordering diagnostics captured at event time; absent on pre-PR7 and non-endpoint records. */
+  endpointEffectiveCost?: number;
+  appliedProviderWeight?: number;
+  providerWeightBasis?: ProviderWeightBasis;
+  cacheWriteClassification?: CacheWriteClassification;
   data: Record<string, unknown>;
 };
 
@@ -39,6 +47,10 @@ export type AttemptOutcome = {
   retried: boolean;
 };
 
+function optionalFiniteNonnegative(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
+}
+
 function isRouterTelemetryEvent(value: unknown): value is RouterTelemetryEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
@@ -46,10 +58,54 @@ function isRouterTelemetryEvent(value: unknown): value is RouterTelemetryEvent {
     candidate.version === 1 &&
     typeof candidate.kind === "string" &&
     typeof candidate.sessionId === "string" &&
+    optionalFiniteNonnegative(candidate.endpointEffectiveCost) &&
+    optionalFiniteNonnegative(candidate.appliedProviderWeight) &&
+    (candidate.providerWeightBasis === undefined ||
+      candidate.providerWeightBasis === "contract" ||
+      candidate.providerWeightBasis === "preference") &&
+    (candidate.cacheWriteClassification === undefined ||
+      candidate.cacheWriteClassification === "priced_write" ||
+      candidate.cacheWriteClassification === "no_write_line_item" ||
+      candidate.cacheWriteClassification === "caching_unpriced") &&
     candidate.data !== null &&
     typeof candidate.data === "object" &&
     !Array.isArray(candidate.data)
   );
+}
+
+export type EndpointTelemetryFields = Pick<
+  RouterTelemetryEvent,
+  "endpointEffectiveCost" | "appliedProviderWeight" | "providerWeightBasis" | "cacheWriteClassification"
+>;
+
+/**
+ * Captures the exact inputs behind endpoint ordering without making telemetry a routing dependency.
+ * Malformed diagnostic prices are omitted rather than throwing after route selection has completed.
+ */
+export function endpointTelemetryFields(
+  endpoint: {
+    provider: string;
+    costPerMillion: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  },
+  providerWeight: ResolvedProviderWeight,
+): EndpointTelemetryFields {
+  const fields: EndpointTelemetryFields = {};
+  try {
+    fields.cacheWriteClassification = classifyCacheWriteRate(endpoint.costPerMillion);
+  } catch {
+    // Route selection records its own pricing exclusion; diagnostics must not degrade routing.
+  }
+  try {
+    const endpointEffectiveCost = calculateEndpointEffectiveCost(endpoint, providerWeight.weight);
+    if (endpointEffectiveCost !== undefined) {
+      fields.endpointEffectiveCost = endpointEffectiveCost;
+      fields.appliedProviderWeight = providerWeight.weight;
+      fields.providerWeightBasis = providerWeight.basis;
+    }
+  } catch {
+    // See above. Older or malformed registries still retain the base append-only event.
+  }
+  return fields;
 }
 
 export class JsonlTelemetryStore {

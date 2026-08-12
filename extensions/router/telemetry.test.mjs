@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { aggregateRouteSamples, JsonlTelemetryStore, percentile, withRouterSpan } from "./telemetry.ts";
+import { fileURLToPath } from "node:url";
+import { providerWeightFor } from "./core/provider-weights.ts";
+import {
+  aggregateRouteSamples,
+  endpointTelemetryFields,
+  JsonlTelemetryStore,
+  percentile,
+  withRouterSpan,
+} from "./telemetry.ts";
 
 const temporaryDirectories = [];
 afterEach(async () => {
@@ -22,6 +30,18 @@ function event(id) {
 }
 
 describe("JsonlTelemetryStore", () => {
+  it("parses a checked-in pre-PR7 record without optional endpoint fields", async () => {
+    const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "telemetry-v1-pre-pr7.jsonl");
+    const events = await new JsonlTelemetryStore(fixture).read();
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].eventId, "pre-pr7-outcome");
+    assert.equal(events[0].endpointEffectiveCost, undefined);
+    assert.equal(events[0].appliedProviderWeight, undefined);
+    assert.equal(events[0].providerWeightBasis, undefined);
+    assert.equal(events[0].cacheWriteClassification, undefined);
+  });
+
   it("appends inspectable events and tolerates a torn final line", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-router-telemetry-"));
     temporaryDirectories.push(directory);
@@ -35,6 +55,39 @@ describe("JsonlTelemetryStore", () => {
       ["one", "two"],
     );
     assert.match(await readFile(path, "utf8"), /"eventId":"one"/);
+  });
+});
+
+describe("endpoint telemetry fields", () => {
+  it("records the weighted effective cost and cache-rate classification", () => {
+    assert.deepEqual(
+      endpointTelemetryFields(
+        {
+          provider: "amazon-bedrock",
+          costPerMillion: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+        },
+        providerWeightFor("amazon-bedrock"),
+      ),
+      {
+        endpointEffectiveCost: 19.7125,
+        appliedProviderWeight: 0.83,
+        providerWeightBasis: "contract",
+        cacheWriteClassification: "priced_write",
+      },
+    );
+  });
+
+  it("keeps flat-rate endpoint costs absent without dropping cache classification", () => {
+    assert.deepEqual(
+      endpointTelemetryFields(
+        {
+          provider: "github-copilot",
+          costPerMillion: { input: 0, output: 0, cacheRead: 1, cacheWrite: 0 },
+        },
+        providerWeightFor("github-copilot"),
+      ),
+      { cacheWriteClassification: "no_write_line_item" },
+    );
   });
 });
 
