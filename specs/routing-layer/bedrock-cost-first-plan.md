@@ -42,14 +42,17 @@ effect, so it legitimately affects route choice.
 
 ### Why omitting cache terms from the blend is safe
 
-Because the discount is a **uniform scalar across input, output, `cacheRead`, and `cacheWrite`**, and Bedrock list rates
-equal first-party list rates on the bare/`us.`/`global.`/`jp.`/`au.` profiles, the fixed `0.25 * input + 0.75 * output`
-blend is **order-preserving for the Bedrock-versus-first-party decision by construction**, not by approximation. No
-token mix and no cache hit rate can reverse it.
+Because the discount is a **uniform scalar across input, output, `cacheRead`, and `cacheWrite`**, the fixed
+`0.25 * input + 0.75 * output` blend is **order-preserving for each exact Bedrock/first-party pair whose complete
+list-rate vectors are equal**, not by approximation. Prefix alone does not establish parity: the surveyed
+`au.anthropic.claude-opus-4-6-v1` vector is markedly higher than first party and must retain its exact registry rates.
+No token mix and no cache hit rate can reverse a pair that satisfies the equality condition.
 
-Supporting parity, measured in the registry: `cacheRead/input = 0.10` and `cacheWrite/input = 1.25` for every Anthropic
-and OpenAI model on `anthropic`, `openai`, `openai-codex`, and all `amazon-bedrock` region profiles. Regional markups
-scale cache rates proportionally (`eu.anthropic.claude-sonnet-5`: input 2.2, cacheRead 0.22, cacheWrite 2.75).
+Supporting parity, measured in the pinned registry: positive short-write rates use `cacheRead/input = 0.10` and
+`cacheWrite/input = 1.25` on the exact Anthropic and OpenAI model/provider pairs surveyed, including proportional
+regional markups (`eu.anthropic.claude-sonnet-5`: input 2.2, cacheRead 0.22, cacheWrite 2.75). This is not universal
+provider behavior: `gpt-5.4` and `gpt-5.5` use `cacheWrite: 0`, while `gpt-5.6-sol` uses `6.25` on its compared OpenAI,
+Codex, Azure, Bedrock, and OpenCode routes; the pinned registry contains no `claude-opus-5` entry.
 
 Supporting parity, in vendor docs: AWS and Anthropic both bill a 5-minute Claude cache write at 1.25x input and a read
 at 0.1x, both default to a 5-minute TTL refreshed by hits at no charge, and both offer a 1-hour write at 2x input.

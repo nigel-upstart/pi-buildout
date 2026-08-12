@@ -497,9 +497,10 @@ credit, or budget-level rebate. The effective scalar is therefore `d = 0.83` for
 For a list-rate vector `p` and any nonnegative usage vector `q`, a parity Bedrock endpoint costs
 `q · (0.83p) = 0.83(q · p)`. The same identity gives
 `0.25(0.83p_input) + 0.75(0.83p_output) = 0.83(0.25p_input + 0.75p_output)`. Consequently, for model/endpoint pairs
-where Bedrock list rates equal first-party list rates—the surveyed bare, `us.`, `global.`, `jp.`, and `au.` parity
-profiles—the fixed blend is order-preserving for Bedrock versus first party **by construction, not approximation**. No
-token mix and no cache hit rate can reverse that ordering.
+where a Bedrock endpoint's exact list-rate vector equals its first-party model's exact vector—the surveyed bare and
+matching `us.`, `global.`, and some `jp.`/`au.` entries—the fixed blend is order-preserving for that exact pair **by
+construction, not approximation**. Prefix alone never establishes parity: `au.anthropic.claude-opus-4-6-v1` is a
+marked-up exception. No token mix and no cache hit rate can reverse the ordering of a pair that satisfies the condition.
 
 The parity condition is essential. Regional or model-specific list-rate exceptions must still use their exact registry
 rates: for example, the surveyed `au.anthropic.claude-opus-4-6-v1` is far above first-party list price and remains more
@@ -508,11 +509,13 @@ never replace per-endpoint list rates.
 
 ### Cache-rate parity and vendor terms
 
-For every cross-provider Anthropic and OpenAI model in the compared token-billing routes, the registry reports
-`cacheRead / input = 0.10` and `cacheWrite / input = 1.25` on `anthropic`, `openai`, `openai-codex`, and all matching
-`amazon-bedrock` region profiles. Markups scale proportionally: `eu.anthropic.claude-sonnet-5` is input 2.2, `cacheRead`
-0.22, and `cacheWrite` 2.75. The sole-route `amazon-bedrock/openai.gpt-oss-120b` zero/zero entry has no cross-provider
-ordering effect.
+For surveyed model/provider pairs that carry a positive short-write rate, the pinned registry reports
+`cacheRead / input = 0.10` and `cacheWrite / input = 1.25`; regional markups preserve those ratios. For example,
+`eu.anthropic.claude-sonnet-5` is input 2.2, `cacheRead` 0.22, and `cacheWrite` 2.75. This is not a provider-wide OpenAI
+claim: `gpt-5.4` and `gpt-5.5` use `cacheWrite: 0`, whereas `gpt-5.6-sol` uses `6.25` on the compared OpenAI, Codex,
+Azure, Bedrock, and OpenCode routes. Anthropic conclusions are likewise limited to models present in the pinned
+registry; it has no `claude-opus-5` entry. The sole-route `amazon-bedrock/openai.gpt-oss-120b` zero/zero entry has no
+cross-provider ordering effect.
 
 Vendor documentation agrees on the Claude terms:
 
