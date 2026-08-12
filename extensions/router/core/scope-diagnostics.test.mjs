@@ -203,15 +203,71 @@ describe("scope diagnostics", () => {
     assert.match(output, /reason=credential=\[REDACTED\] is not a valid weight/);
   });
 
-  it("caps rendered UTF-8 output and reports omitted complete lines", () => {
-    const registry = Array.from({ length: 100 }, (_, index) =>
-      model(`provider-${String(index)}`, `gpt-5.6-sol-${String(index)}`),
+  it("renders unmatched-only empty registries and bounded weight rejections cleanly", () => {
+    const result = diagnostics({
+      patterns: ["github-copilot/gemini-2.5-pro"],
+      registry: [],
+      allRegistryEndpoints: [],
+      providerWeightRejections: [
+        {
+          source: "environment",
+          rejectedValueType: "string",
+          reason: "PI_ROUTER_PROVIDER_WEIGHTS must contain valid JSON",
+        },
+      ],
+    });
+
+    assert.equal(
+      renderScopeDiagnostics(result),
+      [
+        "route scope",
+        "patterns (1):",
+        "  - source=project pattern=github-copilot/gemini-2.5-pro",
+        "unmatched patterns (1):",
+        "  - source=project pattern=github-copilot/gemini-2.5-pro",
+        "logical models (0):",
+        "excluded endpoints (0):",
+        "provider-weight rejections (1):",
+        "  - provider=<map> source=environment reason=PI_ROUTER_PROVIDER_WEIGHTS must contain valid JSON",
+      ].join("\n"),
     );
-    const result = diagnostics({ registry, allRegistryEndpoints: registry });
+  });
+
+  it("caps pathological output and reports omitted complete lines", () => {
+    const registry = Array.from({ length: 200 }, (_, index) =>
+      model(`provider-${String(index)}-${"p".repeat(500)}`, `gpt-5.6-sol-${String(index)}-${"m".repeat(500)}`),
+    );
+    const result = diagnostics({
+      patterns: Array.from({ length: 200 }, (_, index) => `provider-${String(index)}/*`),
+      registry,
+      allRegistryEndpoints: registry,
+      latestRouteExclusions: Array.from({ length: 200 }, (_, index) => ({
+        candidate: `provider-${String(index)}/model-${String(index)}`,
+        code: "context_headroom",
+        detail: "estimated tokens exceed endpoint headroom",
+      })),
+      providerWeightRejections: Array.from({ length: 100 }, (_, index) => ({
+        provider: `provider-${String(index)}`,
+        source: "project",
+        rejectedValueType: "number",
+        reason: "weight must be between 0.5 and 2 inclusive",
+      })),
+    });
     const output = renderScopeDiagnostics(result, 500);
 
     assert.ok(Buffer.byteLength(output, "utf8") <= 500);
     assert.match(output, /\.\.\. truncated: \d+ additional lines omitted \(500-byte budget\)$/);
     assert.ok(Buffer.byteLength(renderScopeDiagnostics(result), "utf8") <= MAX_ROUTE_SCOPE_BYTES);
+  });
+
+  it("omits one over-budget UTF-8 line rather than splitting or exceeding it", () => {
+    const result = diagnostics({
+      patterns: [`provider/${"🧪".repeat(10_000)}`],
+    });
+
+    assert.equal(
+      renderScopeDiagnostics(result, 128),
+      ["route scope", "patterns (1):", "... truncated: 6 additional lines omitted (128-byte budget)"].join("\n"),
+    );
   });
 });
