@@ -288,6 +288,58 @@ describe("ordinary route selection", () => {
     assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
   });
 
+  it("uses identical effective-cost semantics in registry resolution and RouteChoice ordering", () => {
+    const cheap = {
+      ...model("openai", "gpt-5.6-sol", "openai"),
+      costPerMillion: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1.25 },
+    };
+    const expensive = {
+      ...model("openai-codex", "gpt-5.6-sol", "openai"),
+      costPerMillion: { input: 10, output: 10, cacheRead: 1, cacheWrite: 12.5 },
+    };
+    const models = [...registry().filter((candidate) => candidate.modelId !== "gpt-5.6-sol"), expensive, cheap];
+
+    // Ordinary routing evaluates all endpoints and then orders the resulting RouteChoice group.
+    const ordinary = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
+    assert.equal(ordinary.kind, "ordinary");
+    assert.equal(ordinary.primary.provider, "openai");
+    assert.equal(ordinary.primary.endpointBlendedCost, 1);
+    assert.equal(ordinary.primary.endpointEffectiveCost, 1);
+
+    // Tracked review takes the first resolved endpoint before RouteChoice group ordering, exercising
+    // the registry-snapshot call path independently.
+    const builder = models.find((candidate) => candidate.modelId === "claude-opus-5");
+    const review = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
+    assert.equal(review.kind, "review");
+    const openaiReviewer = [review.primary, review.fallback].find((choice) => choice.vendor === "openai");
+    assert.equal(openaiReviewer.provider, "openai");
+    assert.equal(openaiReviewer.endpointEffectiveCost, ordinary.primary.endpointEffectiveCost);
+  });
+
+  it("keeps flat-rate nominal prices outside endpoint cost ordering", () => {
+    const models = [
+      ...registry(),
+      {
+        ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
+        costPerMillion: { input: 100, output: 100, cacheRead: 10, cacheWrite: 125 },
+      },
+      {
+        ...model("github-copilot", "gpt-5.6-sol", "openai"),
+        costPerMillion: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ];
+    const decision = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
+    const endpoints = [decision.primary, ...decision.fallbacks].filter(
+      (choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high",
+    );
+    const bedrock = endpoints.findIndex((choice) => choice.provider === "amazon-bedrock");
+    const copilot = endpoints.findIndex((choice) => choice.provider === "github-copilot");
+    assert.ok(bedrock >= 0 && copilot > bedrock);
+    assert.equal(endpoints[copilot].endpointBlendedCost, undefined);
+    assert.equal(endpoints[copilot].endpointEffectiveCost, undefined);
+  });
+
   it("gates low-effort tiers on task consequence rather than on the archetype label", () => {
     const mutating = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
     assert.equal(mutating.kind, "ordinary");

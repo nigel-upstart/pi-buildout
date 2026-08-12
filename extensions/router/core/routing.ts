@@ -9,6 +9,7 @@ import {
 } from "./evidence.ts";
 import type { ConsequenceTier, EvidenceCostWeights, EvidenceScoreContext, RoutableLanguage } from "./evidence.ts";
 import type { TaskFeatures } from "./features.ts";
+import { blendedEndpointCost, calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./endpoint-cost.ts";
 import { healthVerdict } from "./health.ts";
 import type { EndpointHealth } from "./health.ts";
 import {
@@ -20,7 +21,7 @@ import {
 } from "./policy.ts";
 import type { CandidateRef, EndpointTier } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
-import { canonicalModelId, endpointSpecificity, endpointTierFor, isFlatRateProvider } from "./scope.ts";
+import { canonicalModelId, endpointTierFor } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
 export type RegistryModelSnapshot = {
@@ -94,6 +95,8 @@ export type RouteChoice = {
   endpointTier: EndpointTier;
   /** Blended per-million route price, absent for flat-rate subscription endpoints. */
   endpointBlendedCost?: number;
+  /** Weighted per-million ordering cost, optional for lease compatibility and absent for flat-rate endpoints. */
+  endpointEffectiveCost?: number;
   /** Authorized as a retry only; never placed in the primary slot. */
   escalationOnly?: boolean;
   /** Authorized only where step count rather than token cost is the binding constraint. */
@@ -195,10 +198,8 @@ const FOREGROUND_WAIT_MULTIPLIER = 8;
  */
 const DEFAULT_NEAR_TIE_FRACTION = 0.05;
 
-/** Output-weighted blend used only to order endpoints that resolve to the same model and effort. */
-function blendedEndpointCost(model: RegistryModelSnapshot): number {
-  return 0.25 * model.costPerMillion.input + 0.75 * model.costPerMillion.output;
-}
+/** Provider weighting is deliberately neutral until the provider-weight policy layer. */
+const PROVIDER_WEIGHT = 1.0;
 
 /**
  * Task shape that modifies scoring without changing which models are policy-authorized. Derived
@@ -379,9 +380,9 @@ function modelKey(model: Pick<RegistryModelSnapshot, "provider" | "modelId">): s
 
 /**
  * Every endpoint in the live registry that serves this logical model, ordered by preference: the
- * manufacturer's own route first, then a gateway, then resale; within a tier the plainest spelling of
- * the ID, then the cheaper route, with flat-rate subscription endpoints last because their modeled
- * token price is a capability proxy rather than a cost.
+ * manufacturer's own route first, then a gateway, then resale; within a tier token-billed effective
+ * cost, ID specificity, and exact endpoint identity form one deterministic order. Flat-rate
+ * subscription endpoints remain last because their modeled token price is a capability proxy.
  *
  * The registry passed here is already scoped to the operator's `enabledModels`, so an endpoint absent
  * from this list is one they did not scope in, one their auth does not cover, or one a probe found
@@ -390,18 +391,22 @@ function modelKey(model: Pick<RegistryModelSnapshot, "provider" | "modelId">): s
 function resolveEndpoints(ref: CandidateRef, registry: readonly RegistryModelSnapshot[]): RegistryModelSnapshot[] {
   return registry
     .filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId)
+    .map((model) => {
+      const endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+      return {
+        model,
+        provider: model.provider,
+        modelId: model.modelId,
+        ...(endpointEffectiveCost === undefined ? {} : { endpointEffectiveCost }),
+      };
+    })
     .sort((left, right) => {
       const tier =
         ENDPOINT_TIERS.indexOf(endpointTierFor(left.provider)) -
         ENDPOINT_TIERS.indexOf(endpointTierFor(right.provider));
-      if (tier !== 0) return tier;
-      const specificity = endpointSpecificity(left.modelId) - endpointSpecificity(right.modelId);
-      if (specificity !== 0) return specificity;
-      const leftFlat = isFlatRateProvider(left.provider);
-      const rightFlat = isFlatRateProvider(right.provider);
-      if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
-      return blendedEndpointCost(left) - blendedEndpointCost(right);
-    });
+      return tier || compareEndpointEffectiveCost(left, right);
+    })
+    .map(({ model }) => model);
 }
 
 function evaluateEndpoint(
@@ -531,6 +536,7 @@ function evaluateEndpoint(
     });
     return undefined;
   }
+  const endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
   return {
     provider: model.provider,
     modelId: model.modelId,
@@ -541,7 +547,12 @@ function evaluateEndpoint(
     profileId: profile.id,
     contextWindow: model.contextWindow,
     endpointTier: endpointTierFor(model.provider),
-    ...(isFlatRateProvider(model.provider) ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
+    ...(endpointEffectiveCost === undefined
+      ? {}
+      : {
+          endpointBlendedCost: blendedEndpointCost(model),
+          endpointEffectiveCost,
+        }),
     ...(ref.escalationOnly ? { escalationOnly: true } : {}),
     ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
     ...(ref.unmeasuredPeer ? { unmeasuredPeer: true } : {}),
@@ -651,18 +662,14 @@ type CandidateGroup = {
 };
 
 /**
- * Endpoint order within one model: manufacturer route first, then gateway, then resale. Route price
- * only breaks ties inside a tier, and flat-rate subscription endpoints sort last in their tier
- * because their modeled token price is a capability proxy rather than a cost.
+ * Endpoint order within one model: manufacturer route first, then gateway, then resale. The shared
+ * cost comparator orders only within each tier until the later cost-first routing layer removes this
+ * wrapper.
  */
 function orderEndpoints(endpoints: readonly RouteChoice[]): RouteChoice[] {
   return [...endpoints].sort((left, right) => {
     const tier = ENDPOINT_TIERS.indexOf(left.endpointTier) - ENDPOINT_TIERS.indexOf(right.endpointTier);
-    if (tier !== 0) return tier;
-    const leftFlat = left.endpointBlendedCost === undefined;
-    const rightFlat = right.endpointBlendedCost === undefined;
-    if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
-    return (left.endpointBlendedCost ?? 0) - (right.endpointBlendedCost ?? 0);
+    return tier || compareEndpointEffectiveCost(left, right);
   });
 }
 

@@ -20,7 +20,7 @@ import type { EffortLevel } from "./core/profiles.ts";
 import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
 import { canonicalVendor, isStandaloneReviewRequest } from "./core/routing.ts";
-import { canonicalModelId, matchesScope } from "./core/scope.ts";
+import { canonicalModelId, isFlatRateProvider, matchesScope } from "./core/scope.ts";
 import { isLeaseLifecycle, isSafetyEvidenceLog } from "./core/safety.ts";
 import { localRepoKey, normalizeGitRemoteUrl, parseRouterMode, resolveStartMode } from "./core/start-mode.ts";
 import type { StartModeResolution } from "./core/start-mode.ts";
@@ -123,7 +123,12 @@ function isRouteChoice(value: unknown, archetype: Archetype): boolean {
     typeof choice.ability !== "number" ||
     typeof choice.logicalModelId !== "string" ||
     choice.logicalModelId !== canonicalModelId(choice.modelId) ||
-    !ENDPOINT_TIERS.includes(choice.endpointTier as EndpointTier)
+    !ENDPOINT_TIERS.includes(choice.endpointTier as EndpointTier) ||
+    (choice.endpointEffectiveCost !== undefined &&
+      (typeof choice.endpointEffectiveCost !== "number" ||
+        !Number.isFinite(choice.endpointEffectiveCost) ||
+        choice.endpointEffectiveCost < 0)) ||
+    (isFlatRateProvider(choice.provider) && choice.endpointEffectiveCost !== undefined)
   ) {
     return false;
   }

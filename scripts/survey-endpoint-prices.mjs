@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 
+import { classifyCacheWriteRate } from "../extensions/router/core/endpoint-cost.ts";
 import { canonicalModelId } from "../extensions/router/core/scope.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -49,6 +50,7 @@ function endpointRecord(provider, model) {
     output,
     cacheRead,
     cacheWrite,
+    cacheWriteClassification: classifyCacheWriteRate({ cacheRead, cacheWrite }),
     cacheReadToInput: ratio(cacheRead, input),
     cacheWriteToInput: ratio(cacheWrite, input),
     priceTierCount: tiers?.length ?? 0,
