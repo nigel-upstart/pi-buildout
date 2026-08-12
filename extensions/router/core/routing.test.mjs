@@ -1069,63 +1069,16 @@ describe("scope and health drive the candidate pool", () => {
   });
 });
 
-describe("Opus generation chain", () => {
-  const PLANNING = ["implementation_planning", "large_program_planning", "highest_risk_advisory"];
-  const readOnly = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
-
-  function chainFor(archetype, models) {
-    const decision = selectOrdinaryRoute(archetype, models, REQUIREMENTS, [], undefined, undefined, readOnly);
-    assert.equal(decision.kind, "ordinary", decision.reason);
-    return [decision.primary, ...decision.fallbacks];
-  }
-
-  it("keeps a machine whose Anthropic catalog tops out at 4.8 routable rather than unroutable", () => {
-    // A resale catalog that never got Opus 5. Previously this model was disqualified outright, which
-    // dropped the Anthropic rung from the archetypes whose whole point is to use the best Opus.
-    const noOpus5 = [
-      model("openai-codex", "gpt-5.6-sol", "openai"),
-      model("github-copilot", "claude-opus-4-8", "anthropic"),
-    ];
-    for (const archetype of PLANNING) {
-      const chain = chainFor(archetype, noOpus5);
+describe("previous-generation Opus exclusion", () => {
+  it("does not recover Opus 4.8 through a gateway when current-generation fallbacks exist", () => {
+    const models = [...registry(), model("github-copilot", "claude-opus-4-8", "anthropic")];
+    for (const archetype of ["implementation_planning", "large_program_planning", "highest_risk_advisory"]) {
+      const decision = selectOrdinaryRoute(archetype, models, REQUIREMENTS);
+      assert.equal(decision.kind, "ordinary", decision.reason);
       assert.ok(
-        chain.some((choice) => choice.logicalModelId === "claude-opus-4-8"),
-        `${archetype} should degrade to the highest available Opus`,
+        [decision.primary, ...decision.fallbacks].every((choice) => choice.logicalModelId !== "claude-opus-4-8"),
+        `${archetype} recovered a removed previous-generation profile`,
       );
-    }
-  });
-
-  it("never lets the tail displace an Opus 5 endpoint that exists, including on a fallback provider", () => {
-    // Anthropic's own route is absent, so Opus 5 is only reachable through a gateway. That still
-    // outranks a previous-generation model, and the tail stays behind it.
-    const gatewayOpus5 = [
-      model("openai-codex", "gpt-5.6-sol", "openai"),
-      model("github-copilot", "claude-opus-5", "anthropic"),
-      model("github-copilot", "claude-opus-4-8", "anthropic"),
-    ];
-    for (const archetype of PLANNING) {
-      const chain = chainFor(archetype, gatewayOpus5);
-      const order = chain.map((choice) => choice.logicalModelId);
-      assert.equal(order[0], "claude-opus-5", `${archetype} must still prefer Opus 5`);
-      const tail = order.indexOf("claude-opus-4-8");
-      if (tail !== -1) {
-        assert.ok(tail > order.lastIndexOf("claude-opus-5"), `${archetype} put the tail ahead of Opus 5`);
-      }
-    }
-  });
-
-  it("caps the tail at its saturation tier even where super-saturation is allowed", () => {
-    const noOpus5 = [
-      model("openai-codex", "gpt-5.6-sol", "openai"),
-      model("github-copilot", "claude-opus-4-8", "anthropic"),
-    ];
-    // large_program_planning and highest_risk_advisory set allowSuperSaturation, so this proves the
-    // degraded rung is not silently promoted to the expensive flat end of its curve.
-    for (const archetype of ["large_program_planning", "highest_risk_advisory"]) {
-      for (const choice of chainFor(archetype, noOpus5)) {
-        if (choice.logicalModelId !== "claude-opus-4-8") continue;
-        assert.equal(choice.effort, "high");
-      }
     }
   });
 });

@@ -120,6 +120,8 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-fast-agent-v1",
     version: 1,
     vendor: "anthropic",
+    // Profiles are keyed by the model's vendor, not its route provider: Bedrock and Bifrost Sonnet IDs
+    // canonicalize to this Anthropic logical model ID before profile lookup.
     modelIds: ["claude-haiku-4-5", "claude-sonnet-5"],
     archetypes: ALL_ARCHETYPES.filter((archetype) => archetype !== "large_program_planning"),
     efforts: ["low", "medium", "high", "xhigh"],
@@ -180,7 +182,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-planning-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: ["claude-opus-5", "claude-fable-5", "claude-opus-4-8"],
+    modelIds: ["claude-opus-5", "claude-fable-5"],
     archetypes: ["implementation_planning", "large_program_planning", "highest_risk_advisory", "code_review"],
     efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",

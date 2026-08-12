@@ -109,7 +109,7 @@ describe("prompt profile eligibility is declared in canonical logical model IDs"
       );
       if (!resolvable) unroutable.push(`${endpoint.provider}/${endpoint.modelId}`);
     }
-    assert.equal(named.length, 60, "the registry fixture no longer describes the surveyed endpoint set");
+    assert.equal(named.length, 52, "the registry fixture no longer describes the surveyed policy endpoint set");
     assert.deepEqual(unroutable, [], "policy-named endpoints resolve no profile and would be excluded");
   });
 
@@ -138,6 +138,20 @@ describe("canonical eligibility does not over-admit", () => {
   });
 
   it("does not let a different model inherit a neighbour's profile", () => {
+    assert.equal(MODEL_VENDOR["claude-opus-4-8"], undefined);
+    for (const spelling of [
+      "claude-opus-4-8",
+      "claude-opus-4.8",
+      "eu.anthropic.claude-opus-4-8",
+      "anthropic.claude-opus-4-8",
+    ]) {
+      assert.equal(
+        findPromptProfile("anthropic", spelling, "implementation_planning", "high"),
+        undefined,
+        `${spelling} retained the removed previous-generation planning profile`,
+      );
+    }
+
     // claude-opus-4-7 sits between two admitted models and is named by no profile.
     assert.equal(MODEL_VENDOR["claude-opus-4-7"], undefined);
     for (const spelling of [
@@ -161,7 +175,6 @@ describe("canonical eligibility does not over-admit", () => {
     assert.equal(new Set(logical).size, logical.length, "two policy-named models collapse to one logical ID");
     // The spellings that previously needed hand-listing must not merge separate generations.
     const pairs = [
-      ["us.anthropic.claude-opus-4-6-v1", "us.anthropic.claude-opus-4-8"],
       ["anthropic.claude-opus-5", "anthropic.claude-sonnet-5"],
       ["openai.gpt-5.6-luna", "openai.gpt-5.6-terra"],
       ["claude-haiku-4.5", "claude-sonnet-5"],

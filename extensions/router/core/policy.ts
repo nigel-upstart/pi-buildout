@@ -58,7 +58,6 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "gpt-5.4-mini": "openai",
   "gpt-oss-120b": "openai",
   "claude-opus-5": "anthropic",
-  "claude-opus-4-8": "anthropic",
   "claude-opus-4-6": "anthropic",
   "claude-fable-5": "anthropic",
   "claude-sonnet-5": "anthropic",
@@ -162,24 +161,6 @@ const OPUS_XHIGH = candidates("claude-opus-5", "xhigh");
 const OPUS_MAX = candidates("claude-opus-5", "max");
 const FABLE_XHIGH = candidates("claude-fable-5", "xhigh");
 const OPUS_46_HIGH = candidates("claude-opus-4-6", "high").map((ref) => ({ ...ref, scopedFrugal: true }));
-/**
- * Availability tail of the Opus generation chain, for the archetypes whose intent is "use the best
- * Anthropic Opus available" rather than "use whichever model scores best".
- *
- * Opus 5 remains strongly preferred and nothing here competes with it: every scoped endpoint for Opus
- * 5 is expanded and tried first, manufacturer route ahead of gateways and resale, so an Anthropic
- * outage or an unscoped first-party route already degrades to Opus 5 on a fallback provider before any
- * of this applies. This rung exists for the narrower case where no Opus 5 endpoint exists at all on the
- * machine — a resale catalog that still tops out at 4.8 — where the alternative is dropping the
- * Anthropic rung entirely.
- *
- * It is ordered last and ranks poorly on its own numbers (51.8% pass at $8.27 per pass against Opus 5
- * at high with 72.3% and $8.42), which is the intended behavior: it should never displace a
- * current-generation candidate that is present, only fill a gap that would otherwise be empty. 4.8
- * precedes 4.6 because it is the higher generation and is measured agentically, where 4.6 is retained
- * only as the scoped frugal candidate.
- */
-const OPUS_GENERATION_TAIL = candidates("claude-opus-4-8", "high");
 /**
  * Preference order for the Google rung. Independent review requires two non-builder vendors, so the
  * chain exists to guarantee Google can always supply one: whichever entry is scoped in and healthy on
@@ -349,7 +330,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   implementation_planning: {
     archetype: "implementation_planning",
     primary: OPUS_HIGH,
-    fallback: [...SOL_HIGH, ...FABLE_XHIGH, ...OPUS_GENERATION_TAIL],
+    fallback: [...SOL_HIGH, ...FABLE_XHIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.72,
     allowSuperSaturation: false,
@@ -365,7 +346,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   large_program_planning: {
     archetype: "large_program_planning",
     primary: OPUS_XHIGH,
-    fallback: [...SOL_MAX, ...FABLE_XHIGH, ...OPUS_GENERATION_TAIL],
+    fallback: [...SOL_MAX, ...FABLE_XHIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.72,
     allowSuperSaturation: true,
@@ -401,7 +382,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   highest_risk_advisory: {
     archetype: "highest_risk_advisory",
     primary: OPUS_MAX,
-    fallback: [...SOL_MAX, ...OPUS_HIGH, ...OPUS_GENERATION_TAIL],
+    fallback: [...SOL_MAX, ...OPUS_HIGH],
     qualityFloor: 0.8,
     deterministicPassFloor: 0.73,
     allowSuperSaturation: true,

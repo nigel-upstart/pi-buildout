@@ -241,17 +241,18 @@ describe("lease restoration and context estimates", () => {
         "shadow",
       ).active;
 
-    // Accepts a resale spelling that exact-ID eligibility used to reject. eu.anthropic.claude-opus-4-8
+    // Accepts a regional spelling that exact-ID eligibility used to reject. eu.anthropic.claude-sonnet-5
     // is a real Bedrock region profile that was never in the hand-maintained spelling list, so a lease
     // recorded against it was discarded on restore even though the endpoint was authorized.
     const resaleSpelling = structuredClone(active);
     resaleSpelling.fallbacks[0].provider = "amazon-bedrock";
-    resaleSpelling.fallbacks[0].modelId = "eu.anthropic.claude-opus-4-8";
-    resaleSpelling.fallbacks[0].logicalModelId = "claude-opus-4-8";
+    resaleSpelling.fallbacks[0].modelId = "eu.anthropic.claude-sonnet-5";
+    resaleSpelling.fallbacks[0].logicalModelId = "claude-sonnet-5";
+    resaleSpelling.fallbacks[0].profileId = "anthropic-claude-fast-agent-v1";
     resaleSpelling.fallbacks[0].endpointTier = "resale";
     assert.equal(
       restore(resaleSpelling)?.fallbacks[0].modelId,
-      "eu.anthropic.claude-opus-4-8",
+      "eu.anthropic.claude-sonnet-5",
       "a canonical-eligible resale spelling must survive restore",
     );
 
@@ -259,7 +260,7 @@ describe("lease restoration and context estimates", () => {
     // the shape the pre-canonicalization bootstrap path wrote, and it must not be trusted, because
     // every later comparison keys off the logical ID.
     const staleLogicalId = structuredClone(resaleSpelling);
-    staleLogicalId.fallbacks[0].logicalModelId = "eu.anthropic.claude-opus-4-8";
+    staleLogicalId.fallbacks[0].logicalModelId = "eu.anthropic.claude-sonnet-5";
     assert.equal(
       restore(staleLogicalId),
       undefined,
