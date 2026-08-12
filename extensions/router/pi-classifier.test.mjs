@@ -121,22 +121,45 @@ describe("selectClassifierModels", () => {
     assert.equal(anthropicPrimary.secondary[0]?.model.provider, "amazon-bedrock");
   });
 
-  it("chooses the secondary logical tier from the primary model vendor, not its endpoint provider", () => {
-    const selected = selectClassifierModels([
+  it("chooses both secondary logical tiers from the primary model vendor, not its endpoint provider", () => {
+    const openaiSelected = selectClassifierModels([
       snapshot("amazon-bedrock", "openai.gpt-5.6-luna"),
       snapshot("amazon-bedrock", "anthropic.claude-sonnet-5"),
       snapshot("amazon-bedrock", "openai.gpt-5.6-terra"),
     ]);
-    assert.equal(selected.primary[0]?.vendor, "openai");
+    assert.equal(openaiSelected.primary[0]?.vendor, "openai");
     assert.deepEqual(
-      selected.secondary.map((entry) => entry.model.id),
+      openaiSelected.secondary.map((entry) => entry.model.id),
       ["anthropic.claude-sonnet-5"],
     );
+
+    const anthropicSelected = selectClassifierModels([
+      snapshot("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"),
+      snapshot("amazon-bedrock", "anthropic.claude-sonnet-5"),
+      snapshot("amazon-bedrock", "openai.gpt-5.6-terra"),
+    ]);
+    assert.equal(anthropicSelected.primary[0]?.vendor, "anthropic");
+    assert.deepEqual(
+      anthropicSelected.secondary.map((entry) => entry.model.id),
+      ["openai.gpt-5.6-terra"],
+    );
+  });
+
+  it("orders flat-rate endpoints after token-billed alternatives", () => {
+    const selected = selectClassifierModels([
+      snapshot("github-copilot", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.provider),
+      ["openai-codex", "github-copilot"],
+    );
+    assert.equal(selected.primary[1]?.endpointEffectiveCost, undefined);
   });
 
   it("excludes unavailable and recurring-failure endpoints but retains transient failures", () => {
     const selected = selectClassifierModels([
-      snapshot("openai-codex", "gpt-5.6-luna", { available: false }),
+      snapshot("github-copilot", "gpt-5.6-luna", { available: false }),
       snapshot("openai", "gpt-5.6-luna", {
         health: { provider: "openai", modelId: "gpt-5.6-luna", status: "client_error" },
       }),
@@ -146,10 +169,14 @@ describe("selectClassifierModels", () => {
       snapshot("amazon-bedrock", "openai.gpt-5.6-luna", {
         health: { provider: "amazon-bedrock", modelId: "openai.gpt-5.6-luna", status: "server_error" },
       }),
+      snapshot("google-vertex", "gpt-5.6-luna", {
+        health: { provider: "google-vertex", modelId: "gpt-5.6-luna", status: "timeout" },
+      }),
+      snapshot("openai-codex", "gpt-5.6-luna"),
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
-      ["amazon-bedrock/openai.gpt-5.6-luna"],
+      ["amazon-bedrock/openai.gpt-5.6-luna", "google-vertex/gpt-5.6-luna", "openai-codex/gpt-5.6-luna"],
     );
   });
 
