@@ -510,11 +510,13 @@ Vendor documentation agrees on the Claude terms:
   quotas in [Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
 - Anthropic documents the same 1.25x write and 0.1x read rates, the same default 5-minute TTL refreshed at no charge,
   and a 1-hour write at 2x input in
-  [Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching). Its model table
-  includes the 1-hour option on Bedrock for the Claude families named by this policy.
-- AWS documents Bedrock's 1-hour support in the
+  [Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+- AWS documents Bedrock's 1-hour support for select Claude models in the
   [January 2026 announcement](https://aws.amazon.com/about-aws/whats-new/2026/01/amazon-bedrock-one-hour-duration-prompt-caching/),
-  while the [Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) is the published list-rate authority.
+  while the [Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) is the published list-rate authority. The
+  cited AWS support table does not list `claude-opus-4-8`, `claude-sonnet-5`, or `claude-fable-5`, and the pinned
+  registry has no `claude-opus-5`; minimum-token and TTL support for those policy models is therefore **unconfirmed by
+  this evidence**, not inferred from family-level terms.
 
 Because the contract scalar covers all of these rates, omitting cache terms from the fixed blend does not approximate a
 particular cache-hit ratio. It preserves the parity-route ordering for every ratio.
@@ -532,10 +534,11 @@ The installed pi-ai evidence makes the schema semantics explicit:
 - `cacheRead == 0 && cacheWrite == 0` identifies caching as unpriced or unsupported. `cacheRead > 0 && cacheWrite == 0`
   identifies caching with no separate write line item—the genuine OpenAI, Azure, and Nova shape. For example,
   `azure-openai-responses/gpt-4o` carries input 2.5, `cacheRead` 1.25, and `cacheWrite` 0.
-- Rates and reported usage agree. `anthropic-messages.js` populates `usage.cacheWrite` from
-  `cache_creation_input_tokens`, and `bedrock-converse-stream.js` uses `cacheWriteInputTokens`. OpenAI-family transports
-  do not populate `usage.cacheWrite`, so their zero rate multiplies a zero usage count rather than leaking an input-rate
-  charge.
+- The Anthropic and Bedrock transports populate `usage.cacheWrite` from `cache_creation_input_tokens` and
+  `cacheWriteInputTokens`, respectively. The OpenAI Responses and Completions transports also accept
+  `cache_write_tokens` when a provider reports it; usage therefore does **not** establish that every zero rate pairs
+  with a zero count. No such invariant is needed: `calculateCost` multiplies every short-write count by the selected
+  rate, so a zero rate still contributes exactly zero with no input-rate fallback.
 
 ### OpenAI cache-write generations — explicit retraction
 

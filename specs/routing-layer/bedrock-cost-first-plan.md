@@ -53,8 +53,9 @@ scale cache rates proportionally (`eu.anthropic.claude-sonnet-5`: input 2.2, cac
 
 Supporting parity, in vendor docs: AWS and Anthropic both bill a 5-minute Claude cache write at 1.25x input and a read
 at 0.1x, both default to a 5-minute TTL refreshed by hits at no charge, and both offer a 1-hour write at 2x input.
-Anthropic documents the 1-hour option as available on Bedrock for the models this policy names. Bedrock cache reads
-additionally do not count against input-tokens-per-minute quotas.
+Bedrock cache reads additionally do not count against input-tokens-per-minute quotas. The cited AWS support table does
+not list `claude-opus-4-8`, `claude-sonnet-5`, or `claude-fable-5`, and the pinned registry has no `claude-opus-5`, so
+this evidence does not assert minimum-token or TTL support for those specific policy models.
 
 ### What a zero cache rate means
 
@@ -68,9 +69,10 @@ schema. It is resolved as follows:
 - `cacheRead` disambiguates the rest: `cacheRead == 0 && cacheWrite == 0` means caching is unpriced or unsupported;
   `cacheRead > 0 && cacheWrite == 0` means caching exists with **no separate write line item**, which is the genuine
   OpenAI / Azure / Amazon Nova billing shape (`azure-openai-responses/gpt-4o`: input 2.5, cacheRead 1.25, cacheWrite 0).
-- `0` does not leak charge, because rates and reported usage agree. Anthropic's transport populates `usage.cacheWrite`
-  from `cache_creation_input_tokens` and Bedrock's from `cacheWriteInputTokens`, while OpenAI-family transports never
-  populate it. A `0` rate multiplies a `0` count.
+- Anthropic's transport populates `usage.cacheWrite` from `cache_creation_input_tokens` and Bedrock's from
+  `cacheWriteInputTokens`. OpenAI Responses and Completions transports also accept `cache_write_tokens` when a provider
+  reports it, so a zero rate is not assumed to pair with zero usage. It still cannot leak charge: `calculateCost`
+  multiplies every short-write count by the selected rate, and a zero rate contributes exactly zero.
 
 The registry is **not** internally inconsistent about OpenAI cache writes. `gpt-5.4` and `gpt-5.5` carry `cacheWrite: 0`
 on every provider, while `gpt-5.6-sol` carries `6.25` (exactly 1.25x) on `openai`, `openai-codex`,
