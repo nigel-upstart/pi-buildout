@@ -60,6 +60,31 @@ describe("scope diagnostics", () => {
     assert.equal(endpoints.at(-1).effectiveCost, undefined, "flat-rate endpoints remain last");
   });
 
+  it("keeps cache-only diagnostic failures out of routing eligibility", () => {
+    const registry = [
+      model("openai-codex", "gpt-5.6-sol", {
+        costPerMillion: { input: 5, output: 30, cacheRead: -1, cacheWrite: 0 },
+      }),
+      model("github-copilot", "gpt-5.6-sol", {
+        costPerMillion: { input: -1, output: -1, cacheRead: -1, cacheWrite: -1 },
+      }),
+    ];
+    const result = diagnostics({ registry, allRegistryEndpoints: registry });
+
+    assert.deepEqual(
+      result.logicalModels[0].endpoints.map(({ provider, cacheWriteClassification }) => [
+        provider,
+        cacheWriteClassification,
+      ]),
+      [
+        ["openai-codex", "invalid"],
+        ["github-copilot", "invalid"],
+      ],
+    );
+    assert.deepEqual(result.exclusions, []);
+    assert.match(renderScopeDiagnostics(result), /cacheWrite=invalid/);
+  });
+
   it("surfaces unmatched patterns, scope and route exclusions, and bounded weight rejections", () => {
     const registry = [
       model("openai-codex", "gpt-5.6-sol", { available: false }),

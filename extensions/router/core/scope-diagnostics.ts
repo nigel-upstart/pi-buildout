@@ -27,7 +27,7 @@ type ScopeEndpointDiagnostic = {
   appliedWeight?: number;
   weightBasis?: ProviderWeightBasis;
   weightSource?: ProviderWeightSource;
-  cacheWriteClassification: CacheWriteClassification;
+  cacheWriteClassification: CacheWriteClassification | "invalid";
   effectiveCost?: number;
 };
 
@@ -73,11 +73,18 @@ function diagnosticForEndpoint(
     return undefined;
   }
 
+  let cacheWriteClassification: CacheWriteClassification | "invalid" = "invalid";
   try {
-    const cacheWriteClassification = classifyCacheWriteRate(model.costPerMillion);
-    if (isFlatRateProvider(model.provider)) {
-      return { provider: model.provider, modelId: model.modelId, cacheWriteClassification };
-    }
+    cacheWriteClassification = classifyCacheWriteRate(model.costPerMillion);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    // Cache rates are diagnostic metadata, not an input to route eligibility or endpoint ordering.
+  }
+  if (isFlatRateProvider(model.provider)) {
+    return { provider: model.provider, modelId: model.modelId, cacheWriteClassification };
+  }
+
+  try {
     const weight = model.providerWeight ?? providerWeightFor(model.provider);
     const effectiveCost = calculateEndpointEffectiveCost(model, weight.weight);
     if (effectiveCost === undefined) throw new RangeError("token-billed endpoint has no effective cost");
