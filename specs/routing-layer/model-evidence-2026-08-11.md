@@ -536,9 +536,10 @@ particular cache-hit ratio. It preserves the parity-route ordering for every rat
 
 The installed pi-ai evidence makes the schema semantics explicit:
 
-- `dist/types.d.ts` around lines 255–257 declares `cost.cacheWrite` as a **required number** and `cacheWrite1h` as an
-  optional usage field. Across all 1,065 generated registry models, `cacheWrite` is undefined zero times, equals zero
-  858 times, and is positive 207 times. No model has a `cacheWrite1h` rate.
+- `dist/types.d.ts` declares `Usage.cacheWrite` as a **required number** and `Usage.cacheWrite1h` as an optional usage
+  split around lines 251–257; it separately declares `ModelCostRates.cacheWrite` as a **required number** around lines
+  586–591. Across all 1,065 generated registry models, `model.cost.cacheWrite` is undefined zero times, equals zero 858
+  times, and is positive 207 times. `ModelCostRates` has no `cacheWrite1h` rate field.
 - `calculateCost` in `dist/models.js` around lines 186–204 computes
   `cacheWrite = (rates.cacheWrite * shortWrite + rates.input * 2 * longWrite) / 1e6`. There is no fallback from a zero
   write rate to `rates.input`. Therefore **zero means no charge, never no premium over base**.

@@ -59,9 +59,10 @@ this evidence does not assert minimum-token or TTL support for those specific po
 
 ### What a zero cache rate means
 
-`cost.cacheWrite` is a **required** `number` in `dist/types.d.ts:255` and is never `undefined` across 1065 registry
-models, so `0` is the only value available for anything that is not a positive rate. The ambiguity is a property of the
-schema. It is resolved as follows:
+`Usage.cacheWrite` is a **required** `number` in `dist/types.d.ts:255`, `Usage.cacheWrite1h` is optional at line 257,
+and `ModelCostRates.cacheWrite` is a **required** `number` around lines 586–591. `model.cost.cacheWrite` is never
+`undefined` across 1,065 registry models, so `0` is the only value available for anything that is not a positive rate.
+The ambiguity is a property of the schema. It is resolved as follows:
 
 - `calculateCost` (`dist/models.js:186-204`) computes
   `cacheWrite = (rates.cacheWrite * shortWrite + rates.input * 2 * longWrite) / 1e6`. A `0` rate contributes exactly
