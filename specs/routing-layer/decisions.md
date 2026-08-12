@@ -409,6 +409,42 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     policy ref and vendor declaration are removed with the profile and the model returns to the generation-superseded
     disqualification list.
 
+## Cost-first endpoint ordering, 2026-08-12 (`router-policy-v6`)
+
+This revision explicitly supersedes decision 1 of `router-policy-v5` (manufacturer-first endpoints). The remaining v5
+model, effort, capability, evidence, and fallback decisions are unchanged.
+
+1. **Eligible endpoints order by weighted effective list cost.** Eligibility is complete before any endpoint enters the
+   comparator, so scope, health, context, capability, effort, prompt-profile, and pricing guards remain authoritative.
+   For token-billed endpoints, effective cost is the endpoint's exact `0.25 * input + 0.75 * output` list-rate blend
+   multiplied by its provider weight, followed by model-ID specificity and exact provider/model ID as deterministic
+   tie-breakers. The built-ins preserve the route-weight table's distinction between a price contract and an ordering
+   preference: `amazon-bedrock` is `0.83` (`contract`); `openai-codex`, `anthropic`, `google`, `google-vertex`, and
+   `bifrost` are `1.0` (`preference`); `openai` is `1.001` (`preference`); and an unknown provider is `1.01`
+   (`preference`). Exact endpoint rates remain mandatory, so a marked-up regional route does not win merely because it
+   is on Bedrock.
+
+2. **Model fallback topology does not change.** Every eligible endpoint for one logical model and effort remains grouped
+   ahead of every different-model fallback. Cost-first ordering selects the endpoint primary inside that group; it does
+   not alter the policy's logical model/effort ladders or cross-model scoring. Manufacturer, gateway, and resale tiers
+   remain persisted diagnostic metadata only and no longer participate in endpoint order.
+
+3. **GitHub Copilot is outside token-cost comparison.** Its registry token prices represent flat-rate capability
+   proxies, not marginal billed costs. `github-copilot` therefore has no effective-cost value and is ordered after every
+   eligible token-billed endpoint rather than assigning a false price weight.
+
+4. **Scope remains the residency control.** Operators must scope in only the regional inference profiles they are
+   permitted to use and scope out Global or other profiles that violate residency requirements. Ordering never adds an
+   endpoint or overrides scope. Bedrock `gpt-5.6-sol` also remains ineligible above 272,000 estimated finished tokens
+   until a corresponding long-context rate is registered; its short-context list rate is never extrapolated. Its lack of
+   `max` effort is likewise resolved by eligibility before ordering.
+
+5. **Rollback is policy-versioned.** Reverting to `router-policy-v5` restores tier-first, manufacturer-first ordering;
+   the lease policy-version check then discards leases created under v6. Raising the Bedrock weight above `1.0` can
+   suppress Bedrock where its list rates otherwise match a direct route; setting it to exactly `1.0` only removes the
+   contract discount and leaves deterministic tie-breaks authoritative. Scope Bedrock out when it must be excluded. None
+   of these mitigations restores tier-first behavior because v6 has no dual routing mode.
+
 Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
 telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work. The
 unresolved comparison between `gpt-5.4-mini` and `claude-haiku-4-5` is the clearest next evidence gap: both are routed

@@ -132,9 +132,9 @@ explicitly skips real-provider calls so local credentials do not make quality ch
 ## Model scope and endpoint health
 
 The router chooses only from models the operator has scoped in through `enabledModels`, the same set pi's model selector
-offers. Policy declares a logical model and an effort; concrete endpoints are resolved from the live registry, so all
-spellings of one model (Bedrock region profiles, resale catalog IDs, gateway paths) group together and an availability
-failure retries the same model before the router changes models.
+offers. Policy declares a logical model and an effort; concrete endpoints are resolved from the live registry. Eligible
+spellings of one model (Bedrock region profiles, resale catalog IDs, gateway paths) are ordered cost-first as one group,
+and an endpoint failure tries the rest of that group before the router changes models.
 
 Set `PI_ROUTER_MODEL_SCOPE` to a comma-separated pattern list to pin the scope for a run.
 
@@ -147,6 +147,68 @@ node scripts/probe-scoped-models.mjs --dry-run # list the scope without calling 
 
 Recurring failures (4xx and unusable responses) are excluded until re-probed. Transient failures (5xx, timeouts) and
 unprobed endpoints stay eligible. Override the record location with `PI_ROUTER_ENDPOINT_HEALTH_PATH`.
+
+## Cost-first endpoint ordering
+
+Eligibility is resolved before ordering. Every token-billed endpoint for the selected logical model is ordered by
+ascending weighted effective cost, then model-ID specificity, then exact provider/model ID. Effective cost uses the
+endpoint's own list rates:
+
+```text
+(0.25 * input + 0.75 * output) * provider weight
+```
+
+The built-in route weights are:
+
+| Provider                  | Weight | Basis      | Purpose                                                         |
+| ------------------------- | -----: | ---------- | --------------------------------------------------------------- |
+| `amazon-bedrock`          |   0.83 | contract   | 17% off published list price across every token class           |
+| `openai-codex`            |    1.0 | preference | preferred first-party subscription route                        |
+| `anthropic`               |    1.0 | preference | neutral first-party route                                       |
+| `google`, `google-vertex` |    1.0 | preference | neutral first-party routes                                      |
+| `bifrost`                 |    1.0 | preference | neutral self-operated gateway                                   |
+| `openai`                  |  1.001 | preference | just behind `openai-codex` when list rates match                |
+| unknown provider          |   1.01 | preference | trails neutral known routes when list rates match               |
+| `github-copilot`          |    n/a | —          | excluded from token-cost comparison and ordered last; see below |
+
+A `contract` basis asserts an actual price adjustment; a `preference` basis asserts ordering only and makes no price
+claim.
+
+Configure overrides in project `.pi/settings.json` or user `~/.pi/agent/settings.json` under `routerProviderWeights`, or
+set `PI_ROUTER_PROVIDER_WEIGHTS` to a JSON object. A number declares a `preference` weight; an object declares both
+fields explicitly:
+
+```json
+{
+  "routerProviderWeights": {
+    "amazon-bedrock": { "weight": 0.83, "basis": "contract" },
+    "openai": 1.001
+  }
+}
+```
+
+```sh
+export PI_ROUTER_PROVIDER_WEIGHTS='{"amazon-bedrock":{"weight":0.83,"basis":"contract"}}'
+```
+
+Precedence is resolved independently for each provider: environment, then project, then user, then built-in. Weights
+must be finite numbers from `0.5` through `2.0`, inclusive. An invalid selected entry records a non-sensitive rejection
+and uses neutral `1.0`; it does not recover a lower-precedence value for that provider.
+
+The Bedrock operator adjustment covers input, output, cache reads, short cache writes, and 1-hour cache writes. Pi
+prices a 1-hour write as `input * 2`, so applying the uniform weight to input covers that class as well. Cache-write
+rates are classified explicitly: `priced_write` for a positive write rate, `no_write_line_item` when reads are priced
+but writes have no separate charge, and `caching_unpriced` when both read and write rates are zero (unpriced or
+unsupported). GitHub Copilot's flat-rate token prices are capability proxies rather than marginal billed costs, so
+Copilot has no effective-cost value and follows all eligible token-billed routes.
+
+Bedrock `gpt-5.6-sol` is excluded above 272,000 estimated finished tokens until its registry entry supplies a
+long-context rate; the router never extends its short-context rate beyond that boundary. Residency remains a scope
+choice, not an ordering preference: scope in only the regional inference profiles permitted for the workload and scope
+out Global or other profiles that violate the requirement. Cost ordering never adds or revives an out-of-scope endpoint.
+
+Endpoint tiers remain in route and lease records as diagnostic metadata only. Every endpoint for the selected logical
+model and effort still precedes every different-model fallback.
 
 ## Safety behavior
 

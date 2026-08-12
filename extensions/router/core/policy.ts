@@ -5,12 +5,11 @@ import { MODEL_VENDORS } from "./profiles.ts";
 import { canonicalModelId } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
-export const POLICY_VERSION = "router-policy-v5";
+export const POLICY_VERSION = "router-policy-v6";
 
 /**
- * Endpoint preference tiers. The model manufacturer's own route is always the primary instance for
- * a model; every other configured route for that same model is an ordered availability backup.
- * Route price only sorts endpoints within a tier — it never selects between different models.
+ * Backward-compatible endpoint classification retained for lease validation and diagnostics. Tiers
+ * do not participate in endpoint ordering; weighted effective cost selects the endpoint primary.
  */
 export const ENDPOINT_TIERS = ["manufacturer", "gateway", "resale"] as const;
 export type EndpointTier = (typeof ENDPOINT_TIERS)[number];

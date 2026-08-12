@@ -43,9 +43,9 @@ export function canonicalModelId(modelId: string): string {
 }
 
 /**
- * Endpoint preference tier for a provider. The manufacturer's own route is preferred, a gateway we
- * operate comes next, and a resale catalog last. Unknown providers are treated as resale rather than
- * promoted, so adding a provider cannot silently outrank a first-party route.
+ * Diagnostic endpoint classification retained in persisted leases and scope tests. It records the
+ * provider relationship but does not influence endpoint ordering; unknown providers remain labelled
+ * as resale metadata.
  */
 const PROVIDER_TIERS: Readonly<Record<string, EndpointTier>> = {
   anthropic: "manufacturer",
@@ -70,9 +70,8 @@ export function isFlatRateProvider(provider: string): boolean {
 }
 
 /**
- * Within one provider, prefer the plainest spelling of a model. Bedrock exposes the same model as a
- * bare ID and as several region profiles; a dated or versioned ID is the least preferred because it
- * pins a specific release.
+ * Deterministic tie-break for equal-effective-cost endpoints. Prefer the plainest spelling of a
+ * model; a dated or versioned ID is least specific because it pins a particular release.
  */
 export function endpointSpecificity(modelId: string): number {
   let score = 0;

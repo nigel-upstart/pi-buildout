@@ -221,20 +221,20 @@ Branch `router/provider-weights`. Depends on pr3.
 
 Branch `router/cost-first-ordering`. Depends on pr4. **This is the behaviour change.**
 
-- [ ] Order by ascending weighted effective cost, then specificity, then ID. `ENDPOINT_TIERS` and `endpointTierFor` no
+- [x] Order by ascending weighted effective cost, then specificity, then ID. `ENDPOINT_TIERS` and `endpointTierFor` no
       longer participate; `endpointTier` retained as diagnostic metadata so `isRouteChoice` keeps validating it.
-- [ ] `github-copilot` excluded from cost comparison and ordered last, with the reason recorded in `decisions.md`.
-- [ ] Eligibility-before-ordering tests, including the `SOL_MAX` / `effort_unsupported` case.
-- [ ] `au.anthropic.claude-opus-4-6-v1` never takes the primary slot.
-- [ ] Cross-model ranking untouched; same-model grouping preserved; `validateFallbackTopology` and the tracked-review
+- [x] `github-copilot` excluded from cost comparison and ordered last, with the reason recorded in `decisions.md`.
+- [x] Eligibility-before-ordering tests, including the `SOL_MAX` / `effort_unsupported` case.
+- [x] `au.anthropic.claude-opus-4-6-v1` never takes the primary slot.
+- [x] Cross-model ranking untouched; same-model grouping preserved; `validateFallbackTopology` and the tracked-review
       two-non-builder-vendor invariant still pass.
-- [ ] `POLICY_VERSION` → `router-policy-v6`; test asserts a persisted v5 lease is rejected.
-- [ ] `decisions.md` dated decision superseding decision 1 of `router-policy-v5`; `SPEC.md` updated where it asserts
+- [x] `POLICY_VERSION` → `router-policy-v6`; test asserts a persisted v5 lease is rejected.
+- [x] `decisions.md` dated decision superseding decision 1 of `router-policy-v5`; `SPEC.md` updated where it asserts
       manufacturer-primary and within-tier-only pricing.
-- [ ] `README.md` documents the weight table, the discount scope, the Copilot exclusion, the zero-rate semantics, and
+- [x] `README.md` documents the weight table, the discount scope, the Copilot exclusion, the zero-rate semantics, and
       the residency guidance. `ATTRIBUTION.md` updated.
-- [ ] Golden test records the new expected primary per archetype.
-- [ ] `npm run check` passes.
+- [x] Golden test records the new expected primary per archetype.
+- [x] `npm run check` passes.
 
 ### pr6 — Scope-aware classifier
 
@@ -276,8 +276,9 @@ telemetry on at least one real repository, then enable active routing per reposi
 - `pr1`–`pr4`: revert the commit. Nothing persisted depends on them.
 - `pr5`: revert to restore tier-first ordering and `router-policy-v5`; leases created under v6 are then discarded by the
   version check, which is the intended fail-safe. Partial mitigation without a deploy is to raise the `amazon-bedrock`
-  weight to 1.0 or above in settings — this removes the Bedrock promotion but does **not** restore tier-first ordering,
-  because there is deliberately no dual-mode switch.
+  weight above 1.0 where its list rates match direct, or scope Bedrock out when it must be excluded. A weight of exactly
+  1.0 removes only the contract discount and leaves deterministic tie-breaks authoritative. None of these mitigations
+  restores tier-first ordering, because there is deliberately no dual-mode switch.
 - `pr6`–`pr7`: revert. Telemetry consumers tolerate absent fields because the store is append-only JSONL.
 
 ## Open unknowns

@@ -46,15 +46,15 @@ describe("canonical model identity", () => {
   });
 });
 
-describe("endpoint preference", () => {
-  it("ranks first-party routes above gateways and resale, and treats unknown providers as resale", () => {
+describe("endpoint metadata and tie-breaks", () => {
+  it("classifies first-party routes, gateways, resale, and unknown providers for diagnostics", () => {
     assert.equal(endpointTierFor("anthropic"), "manufacturer");
     assert.equal(endpointTierFor("openai-codex"), "manufacturer");
     assert.equal(endpointTierFor("google-vertex"), "manufacturer");
     assert.equal(endpointTierFor("bifrost"), "gateway");
     assert.equal(endpointTierFor("amazon-bedrock"), "resale");
     assert.equal(endpointTierFor("github-copilot"), "resale");
-    // A provider nobody has classified must not be promoted above a first-party route.
+    // An unclassified provider keeps the conservative diagnostic label; cost ordering is separate.
     assert.equal(endpointTierFor("some-new-broker"), "resale");
   });
 

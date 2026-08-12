@@ -160,10 +160,10 @@ Deterministic, not LLM-assisted:
   changes, while a 5xx or timeout remains usable because removing an endpoint during a provider outage shrinks the
   fallback chain exactly when it is needed. An endpoint that was never probed is usable, because absence of evidence is
   not evidence of failure.
-- The model manufacturer's own route is the primary instance for a model. Every other configured route for the same
-  model is an ordered availability backup that precedes any different-model fallback, so an endpoint failure retries the
-  same model before routing changes models. Route price only orders endpoints within one preference tier, and flat-rate
-  subscription endpoints are excluded from that comparison.
+- Endpoints for the selected logical model order by ascending weighted effective cost, then model-ID specificity, then
+  exact provider/model ID. Flat-rate subscription endpoints are excluded from cost comparison and ordered last.
+  Same-model endpoint grouping remains ahead of every different-model fallback, so an endpoint failure retries the same
+  model before routing changes models. Endpoint tiers are diagnostic metadata only and do not affect ordering.
 - Candidate IDs are exact and version-aware. Unknown IDs and silently moving aliases are ineligible unless a policy
   entry explicitly permits that alias; preview/restricted/safeguarded models require explicit registry flags and
   configured fallbacks.

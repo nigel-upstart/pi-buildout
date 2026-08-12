@@ -14,13 +14,7 @@ import { healthVerdict } from "./health.ts";
 import type { EndpointHealth } from "./health.ts";
 import { providerWeightFor } from "./provider-weights.ts";
 import type { ResolvedProviderWeight } from "./provider-weights.ts";
-import {
-  BOOTSTRAP_ROUTE_POLICIES,
-  ENDPOINT_TIERS,
-  HARD_TASK_ESCALATION_REFS,
-  POLICY_VERSION,
-  reviewerRefs,
-} from "./policy.ts";
+import { BOOTSTRAP_ROUTE_POLICIES, HARD_TASK_ESCALATION_REFS, POLICY_VERSION, reviewerRefs } from "./policy.ts";
 import type { CandidateRef, EndpointTier } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
 import { canonicalModelId, endpointTierFor } from "./scope.ts";
@@ -402,42 +396,22 @@ function effectiveProviderWeight(model: RegistryModelSnapshot): ResolvedProvider
   return model.providerWeight ?? providerWeightFor(model.provider);
 }
 
+type EligibleResolvedEndpoint = {
+  model: RegistryModelSnapshot;
+  choice: RouteChoice;
+};
+
 /**
- * Every endpoint in the live registry that serves this logical model, ordered by preference: the
- * manufacturer's own route first, then a gateway, then resale; within a tier token-billed effective
- * cost, ID specificity, and exact endpoint identity form one deterministic order. Flat-rate
- * subscription endpoints remain last because their modeled token price is a capability proxy.
+ * Orders already-eligible, validly priced registry endpoints by weighted effective cost. Specificity
+ * and exact endpoint identity provide the deterministic tie-breaks, and flat-rate subscription
+ * endpoints remain last because their modeled token price is a capability proxy.
  *
- * The registry passed here is already scoped to the operator's `enabledModels`, so an endpoint absent
- * from this list is one they did not scope in, one their auth does not cover, or one a probe found
- * broken.
+ * The registry candidates have already been scoped to the operator's `enabledModels` and evaluated
+ * before reaching this function. Keeping eligibility ahead of comparison ensures an unsupported,
+ * unhealthy, or malformed endpoint can neither win nor disrupt ordering of the valid endpoints.
  */
-function resolveEndpoints(ref: CandidateRef, registry: readonly RegistryModelSnapshot[]): RegistryModelSnapshot[] {
-  return registry
-    .filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId)
-    .map((model) => {
-      let endpointEffectiveCost: number | undefined;
-      try {
-        endpointEffectiveCost = calculateEndpointEffectiveCost(model, effectiveProviderWeight(model).weight);
-      } catch (error) {
-        // Eligibility records malformed endpoint pricing below. Keep it out of numeric comparison so
-        // one ineligible or malformed registry row cannot abort resolution of every valid endpoint.
-        if (!(error instanceof RangeError)) throw error;
-      }
-      return {
-        model,
-        provider: model.provider,
-        modelId: model.modelId,
-        ...(endpointEffectiveCost === undefined ? {} : { endpointEffectiveCost }),
-      };
-    })
-    .sort((left, right) => {
-      const tier =
-        ENDPOINT_TIERS.indexOf(endpointTierFor(left.provider)) -
-        ENDPOINT_TIERS.indexOf(endpointTierFor(right.provider));
-      return tier || compareEndpointEffectiveCost(left, right);
-    })
-    .map(({ model }) => model);
+function resolveEndpoints(endpoints: readonly EligibleResolvedEndpoint[]): EligibleResolvedEndpoint[] {
+  return [...endpoints].sort((left, right) => compareEndpointEffectiveCost(left.choice, right.choice));
 }
 
 function evaluateEndpoint(
@@ -643,8 +617,7 @@ function evaluateCandidate(
     );
     return false;
   });
-  const endpoints = resolveEndpoints(ref, priceableEndpoints);
-  if (endpoints.length === 0) {
+  if (priceableEndpoints.length === 0) {
     if (scopedEndpoints.length === 0) {
       exclusions.push({
         candidate: `${ref.logicalModelId}@${ref.effort}`,
@@ -654,9 +627,13 @@ function evaluateCandidate(
     }
     return [];
   }
-  return endpoints
-    .map((model) => evaluateEndpoint(ref, model, archetype, requirements, exclusions, context))
-    .filter((choice): choice is RouteChoice => choice !== undefined);
+  const eligible = priceableEndpoints
+    .map((model): EligibleResolvedEndpoint | undefined => {
+      const choice = evaluateEndpoint(ref, model, archetype, requirements, exclusions, context);
+      return choice ? { model, choice } : undefined;
+    })
+    .filter((endpoint): endpoint is EligibleResolvedEndpoint => endpoint !== undefined);
+  return resolveEndpoints(eligible).map(({ choice }) => choice);
 }
 
 /**
@@ -727,15 +704,13 @@ type CandidateGroup = {
 };
 
 /**
- * Endpoint order within one model: manufacturer route first, then gateway, then resale. The shared
- * cost comparator orders only within each tier until the later cost-first routing layer removes this
- * wrapper.
+ * Endpoint order within one logical model is weighted effective cost, followed by the comparator's
+ * specificity and exact-identity tie-breaks. Endpoint tiers remain metadata and do not select the
+ * primary. Group ordering is separate, so every endpoint for this model stays ahead of a different
+ * logical-model fallback.
  */
 function orderEndpoints(endpoints: readonly RouteChoice[]): RouteChoice[] {
-  return [...endpoints].sort((left, right) => {
-    const tier = ENDPOINT_TIERS.indexOf(left.endpointTier) - ENDPOINT_TIERS.indexOf(right.endpointTier);
-    return tier || compareEndpointEffectiveCost(left, right);
-  });
+  return [...endpoints].sort(compareEndpointEffectiveCost);
 }
 
 function groupCandidates(choices: readonly RouteChoice[]): CandidateGroup[] {

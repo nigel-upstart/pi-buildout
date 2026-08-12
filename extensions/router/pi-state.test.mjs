@@ -254,17 +254,8 @@ describe("normalizeSessionEntries", () => {
 });
 
 describe("lease restoration and context estimates", () => {
-  it("restores only router-authored state entries", () => {
-    const state = restoreLeaseState(
-      [
-        { type: "custom", customType: "other", data: { mode: "active" } },
-        { type: "custom", customType: "model-router-state", data: { mode: "active", manualOverride: true } },
-      ],
-      "shadow",
-    );
-    assert.deepEqual(state, { mode: "active", manualOverride: true });
-
-    const active = createTaskLease({
+  function leaseFixture() {
+    return createTaskLease({
       taskId: "task",
       startedAt: "2026-07-17T00:00:00.000Z",
       updatedAt: "2026-07-17T00:00:00.000Z",
@@ -300,6 +291,19 @@ describe("lease restoration and context estimates", () => {
       policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
     });
+  }
+
+  it("restores only router-authored state entries", () => {
+    const state = restoreLeaseState(
+      [
+        { type: "custom", customType: "other", data: { mode: "active" } },
+        { type: "custom", customType: "model-router-state", data: { mode: "active", manualOverride: true } },
+      ],
+      "shadow",
+    );
+    assert.deepEqual(state, { mode: "active", manualOverride: true });
+
+    const active = leaseFixture();
     active.planValidationRepairAttempted = true;
     const restored = restoreLeaseState(
       [{ type: "custom", customType: "model-router-state", data: { mode: "active", active } }],
@@ -432,6 +436,21 @@ describe("lease restoration and context estimates", () => {
       undefined,
       "a lease whose archetype/effort pairing has no profile must be discarded",
     );
+  });
+
+  it("discards persisted v5 leases and restores the same lease under the current policy", () => {
+    const restore = (lease) =>
+      restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: lease } }],
+        "shadow",
+      ).active;
+    const v5Lease = leaseFixture();
+    v5Lease.policyVersion = "router-policy-v5";
+    assert.equal(restore(v5Lease), undefined);
+
+    const currentLease = structuredClone(v5Lease);
+    currentLease.policyVersion = POLICY_VERSION;
+    assert.equal(restore(currentLease)?.taskId, "task");
   });
 
   it("adds deterministic tool, response, change, and compaction reserves", () => {

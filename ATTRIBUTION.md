@@ -106,11 +106,12 @@ package is absent. No `pi-telemetry-otel` source was copied.
 - Revision reviewed: live documentation on 2026-08-11
 - License: no documentation license was identified; no source code or documentation text was copied
 
-Use: published per-token list rates; cache read/write billing ratios; default and one-hour TTL behavior; GPT-5.6's
-explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior; and the exclusion of cache-read tokens from
-input-token rate-limit quotas. The repository's operator-supplied routing adjustment was not derived from AWS
-documentation; the public pricing page is used only as its list-price basis. Provisioned-throughput and commitment
-pricing were intentionally not adopted.
+Use: published per-token input and output list rates now drive cost-first endpoint ordering. Cache read/write semantics
+establish the related cost classifications; the sources also establish default and one-hour TTL behavior, GPT-5.6's
+explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior, and the exclusion of cache-read tokens from
+input-token rate-limit quotas. The repository's operator-supplied routing adjustment remains separate from and was not
+derived from AWS documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and
+commitment pricing were intentionally not adopted.
 
 ### Anthropic prompt caching
 
