@@ -51,7 +51,7 @@ export type CandidateRef = {
  * Vendor for each logical model the policy can name. Explicit rather than inferred from the ID, so a
  * new candidate must declare which vendor ladder and prompt-profile family it belongs to.
  */
-const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
+export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "gpt-5.6-luna": "openai",
   "gpt-5.6-terra": "openai",
   "gpt-5.6-sol": "openai",
