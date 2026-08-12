@@ -246,7 +246,7 @@ Branch `router/scope-aware-classifier`. Depends on pr5.
 - [x] Tier semantics preserved exactly, including cross-vendor independence of the secondary tier.
 - [x] Unhealthy endpoints never called; abort still short-circuits.
 - [x] Empty-scope path: classification fails cleanly, current selection retained, no premium route manufactured.
-- [ ] `npm run check` passes.
+- [x] `npm run check` passes.
 
 ### pr7 — Scope, cost, and cache diagnostics, plus FW3
 
