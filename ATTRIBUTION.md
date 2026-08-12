@@ -98,6 +98,41 @@ Use: `extensions/router/telemetry.ts` studies and consumes this package's public
 global registries — to emit optional parented OTel spans without a static dependency, and no-ops cleanly when the
 package is absent. No `pi-telemetry-otel` source was copied.
 
+### Amazon Bedrock pricing and prompt caching
+
+- Sources: [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/),
+  [Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html), and
+  [the January 2026 one-hour caching announcement](https://aws.amazon.com/about-aws/whats-new/2026/01/amazon-bedrock-one-hour-duration-prompt-caching/)
+- Revision reviewed: live documentation on 2026-08-11
+- License: no documentation license was identified; no source code or documentation text was copied
+
+Use: published per-token list rates; cache read/write billing ratios; default and one-hour TTL behavior; GPT-5.6's
+explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior; and the exclusion of cache-read tokens from
+input-token rate-limit quotas. The repository's operator-supplied routing adjustment was not derived from AWS
+documentation; the public pricing page is used only as its list-price basis. Provisioned-throughput and commitment
+pricing were intentionally not adopted.
+
+### Anthropic prompt caching
+
+- Source: [Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- Revision reviewed: live documentation on 2026-08-11
+- License: no documentation license was identified; no source code or documentation text was copied
+
+Use: Claude's 5-minute cache-write and cache-read multipliers, TTL refresh behavior, 1-hour write multiplier, and the
+models/providers for which the 1-hour option is documented. Only behavioral and pricing facts were consulted; no SDK,
+example code, or prose was copied.
+
+### OpenAI prompt caching
+
+- Source: [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+- Revision reviewed: live documentation on 2026-08-11
+- License: no documentation license was identified; no source code or documentation text was copied
+
+Use: GPT-5.6 implicit and explicit breakpoints, its 30-minute minimum TTL, automatic caching for earlier models,
+in-memory inactivity/maximum retention, extended retention, and minimum-prefix behavior. The comparison preserves the
+documented GPT-5.6 TTL parity with Bedrock and treats any provider hit-rate difference as unmeasured; none of these
+facts is used as a token-price claim. No SDK or example code was copied.
+
 ## LLM effectiveness research corpus and its upstream benchmark sources
 
 The router's bootstrap priors in [`extensions/router/core/evidence.ts`](extensions/router/core/evidence.ts) and
@@ -151,7 +186,7 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.82.0`, `0.82.1`, `0.83.0`, and `0.84.1`
+- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, and `0.84.1`
 - License declared by the package: MIT
 
 Ideas and API patterns used:
@@ -163,6 +198,9 @@ Ideas and API patterns used:
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
   resource inheritance.
+- The `@earendil-works/pi-ai@0.80.7` generated registry's endpoint rates and capabilities, plus its `calculateCost`
+  cache-accounting behavior, as versioned evidence for the offline endpoint survey and routing evidence document. No
+  registry generator or cost-calculation code was copied or adopted into the router runtime.
 - Pi's thinking-level clamp policy (prefer the nearest supported level above the request, fall back downward only when
   necessary) is a conceptual adaptation, reimplemented in `extensions/subagents/helpers.ts`; no Pi code was copied.
   `supportedThinkingLevels` additionally narrows OpenAI's direct GPT-5.6 levels beyond what Pi's generated model

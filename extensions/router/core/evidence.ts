@@ -37,7 +37,7 @@ export type LanguageEvidencePolicy = {
 /**
  * Per-language evidence policy. Each entry records why the language is or is not allowed to change
  * scoring, so a weakly evidenced affinity cannot quietly acquire the weight of a measured one. See
- * specs/routing-layer/model-evidence-2026-07-25.md for the underlying tables and their sources.
+ * specs/routing-layer/model-evidence-2026-08-11.md for the underlying tables and their sources.
  */
 export const LANGUAGE_EVIDENCE: readonly LanguageEvidencePolicy[] = [
   {
@@ -194,7 +194,7 @@ export type EffortPolicy = {
 
 /**
  * Effort is not a uniform quality dial. Each entry records a measured curve from the evidence
- * pack; see specs/routing-layer/model-evidence-2026-07-25.md for the tables behind them.
+ * pack; see specs/routing-layer/model-evidence-2026-08-11.md for the tables behind them.
  */
 export const EFFORT_POLICIES: readonly EffortPolicy[] = [
   {

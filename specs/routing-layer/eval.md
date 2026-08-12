@@ -3,7 +3,8 @@
 Companion to [`SPEC.md`](SPEC.md) (the functional spec — see its own "Evaluation" section for the metrics this harness
 reports) and [`decisions.md`](decisions.md) (architecture). The deterministic corpus and explicit-Bifrost real-call
 harness are implemented under `extensions/router/eval/`. Invoke real calls explicitly with `npm run test:eval:real`;
-ordinary tests skip them. The accepted full-run metrics are recorded in
+ordinary tests skip them. The checked-in benchmark priors and their construct limits are recorded in the generated-table
+[`model and endpoint evidence`](model-evidence-2026-08-11.md). The accepted full-run metrics are recorded in
 [`eval-results-2026-07-17.md`](eval-results-2026-07-17.md).
 
 ## Decision: TS-native harness, real provider calls via Bifrost — no mocks

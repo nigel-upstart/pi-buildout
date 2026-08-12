@@ -228,7 +228,7 @@ semantic summary only if it outperforms the deterministic round-robin baseline.
 ## Evidence-driven policy revision, 2026-07-25 (`router-policy-v5`)
 
 These decisions replace the hand-set priors of `router-policy-v4`. Each cites
-[`model-evidence-2026-07-25.md`](model-evidence-2026-07-25.md), which carries the provenance and construct limits of
+[`model-evidence-2026-08-11.md`](model-evidence-2026-08-11.md), which carries the provenance and construct limits of
 every number below. Benchmark pass rates are pre-telemetry ordering priors and never the router's acceptance signal.
 
 1. **Manufacturer-first endpoints with same-model backups.** The model manufacturer's own route is the primary instance

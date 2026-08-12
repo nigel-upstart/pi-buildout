@@ -1,7 +1,7 @@
 // GENERATED DATA — do not hand-edit individual numbers.
 //
 // Source of truth: specs/routing-layer/model-evidence-2026-07-25.json, whose provenance,
-// construct limits, and caveats are documented in specs/routing-layer/model-evidence-2026-07-25.md.
+// construct limits, and caveats are documented in specs/routing-layer/model-evidence-2026-08-11.md.
 // evidence-data.test.mjs asserts this module and that JSON agree, so drift fails the build.
 //
 // These are pre-telemetry ordering priors measured on the DeepSWE `mini-swe-agent` harness.
