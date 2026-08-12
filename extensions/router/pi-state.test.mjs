@@ -234,6 +234,50 @@ describe("lease restoration and context estimates", () => {
       ).active,
       undefined,
     );
+
+    const restore = (lease) =>
+      restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: lease } }],
+        "shadow",
+      ).active;
+
+    // Accepts a resale spelling that exact-ID eligibility used to reject. eu.anthropic.claude-opus-4-8
+    // is a real Bedrock region profile that was never in the hand-maintained spelling list, so a lease
+    // recorded against it was discarded on restore even though the endpoint was authorized.
+    const resaleSpelling = structuredClone(active);
+    resaleSpelling.fallbacks[0].provider = "amazon-bedrock";
+    resaleSpelling.fallbacks[0].modelId = "eu.anthropic.claude-opus-4-8";
+    resaleSpelling.fallbacks[0].logicalModelId = "claude-opus-4-8";
+    resaleSpelling.fallbacks[0].endpointTier = "resale";
+    assert.equal(
+      restore(resaleSpelling)?.fallbacks[0].modelId,
+      "eu.anthropic.claude-opus-4-8",
+      "a canonical-eligible resale spelling must survive restore",
+    );
+
+    // Rejects a lease whose recorded logical ID is not the canonical form of its registry ID. This is
+    // the shape the pre-canonicalization bootstrap path wrote, and it must not be trusted, because
+    // every later comparison keys off the logical ID.
+    const staleLogicalId = structuredClone(resaleSpelling);
+    staleLogicalId.fallbacks[0].logicalModelId = "eu.anthropic.claude-opus-4-8";
+    assert.equal(
+      restore(staleLogicalId),
+      undefined,
+      "a lease whose logical ID is a registry spelling must be discarded",
+    );
+
+    // Rejects a lease whose profile pairing no longer exists. Canonicalization widened which
+    // spellings resolve a profile; it did not weaken the pairing check.
+    const vanishedProfile = structuredClone(active);
+    vanishedProfile.selected.profileId = "anthropic-claude-planning-v1";
+    assert.equal(restore(vanishedProfile), undefined, "a lease naming another vendor's profile must be discarded");
+    const unpairedEffort = structuredClone(active);
+    unpairedEffort.fallbacks[0].effort = "off";
+    assert.equal(
+      restore(unpairedEffort),
+      undefined,
+      "a lease whose archetype/effort pairing has no profile must be discarded",
+    );
   });
 
   it("adds deterministic tool, response, change, and compaction reserves", () => {
