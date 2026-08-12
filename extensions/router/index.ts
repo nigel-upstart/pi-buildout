@@ -184,6 +184,7 @@ export const CLASSIFICATION_TIMEOUT_MS = 10_000;
 
 async function classifyWithTimeout(
   ctx: ExtensionContext,
+  registry: readonly RegistryModelSnapshot[],
   prompt: string,
   taskSynopsis: SessionSynopsis,
 ): Promise<{ classification: ClassificationResult; timedOut: boolean }> {
@@ -194,6 +195,7 @@ async function classifyWithTimeout(
   try {
     const classification = await classifyTaskWithPi({
       ctx,
+      registry,
       prompt,
       synopsis: taskSynopsis,
       signal: controller.signal,
@@ -465,10 +467,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
     ctx: ExtensionContext,
     repository: RepositoryMetadata,
     omitBuilderProvenance = false,
+    scopedRegistry?: readonly RegistryModelSnapshot[],
   ): SessionSynopsis {
     const usage = ctx.getContextUsage();
     // The registry, not the endpoint name, identifies gateway-backed models' canonical vendor.
-    const vendor = ctx.model ? snapshotForModel(ctx.model, buildRegistrySnapshot(ctx, scope))?.vendor : undefined;
+    // Callers that already hold the turn's scoped snapshot pass it in rather than rebuilding it.
+    const vendor = ctx.model
+      ? snapshotForModel(ctx.model, scopedRegistry ?? buildRegistrySnapshot(ctx, scope))?.vendor
+      : undefined;
     return buildSessionSynopsis({
       sessionId: ctx.sessionManager.getSessionId(),
       cwd: ctx.cwd,
@@ -492,14 +498,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
   async function route(
     ctx: ExtensionContext,
+    registry: readonly RegistryModelSnapshot[],
     classification: ClassificationResult,
     hasImages: boolean,
     languageBucket: string,
     languageBuckets: readonly string[],
     contextBucket: string,
     explorationKey: string,
-  ): Promise<{ decision: RouteDecision; registry: RegistryModelSnapshot[] }> {
-    const registry = buildRegistrySnapshot(ctx, scope);
+  ): Promise<{ decision: RouteDecision; registry: readonly RegistryModelSnapshot[] }> {
     const blockReason = automaticRoutingBlockReason(classification);
     if (blockReason) {
       return {
@@ -1381,10 +1387,15 @@ export default function routerExtension(pi: ExtensionAPI): void {
           state.active ? { taskId: state.active.taskId } : {},
         );
       }
+      // Classification, builder provenance, and route selection consume the exact same
+      // operator-scoped snapshot. The classifier never reconstructs candidates from the
+      // process-wide available-model list, and this turn never reads the registry twice.
+      const registry = buildRegistrySnapshot(ctx, scope);
       const currentSynopsis = synopsis(
         ctx,
         repository,
         Boolean(repository.reviewDelta) || isStandaloneReviewRequest(event.prompt),
+        registry,
       );
       let active = state.active;
       let classification: ClassificationResult | undefined;
@@ -1395,7 +1406,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           ctx.sessionManager.getSessionId(),
           "router.classify_continuity",
           { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, event.prompt, currentSynopsis),
+          () => classifyWithTimeout(ctx, registry, event.prompt, currentSynopsis),
         );
         classification = continuityResult.classification;
         if (continuityResult.timedOut) {
@@ -1420,7 +1431,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           ctx.sessionManager.getSessionId(),
           "router.classify",
           { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, event.prompt, currentSynopsis),
+          () => classifyWithTimeout(ctx, registry, event.prompt, currentSynopsis),
         );
         classification = freshResult.classification;
         classificationTimedOut = freshResult.timedOut;
@@ -1458,6 +1469,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           async (span) => {
             const result = await route(
               ctx,
+              registry,
               routedClassification,
               pending?.hasImages ?? Boolean(event.images?.length),
               languageBucket,

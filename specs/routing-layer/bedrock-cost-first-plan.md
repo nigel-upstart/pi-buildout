@@ -240,13 +240,13 @@ Branch `router/cost-first-ordering`. Depends on pr4. **This is the behaviour cha
 
 Branch `router/scope-aware-classifier`. Depends on pr5.
 
-- [ ] `selectClassifierModels` consumes the scoped, health-annotated snapshot from `buildRegistrySnapshot`.
-- [ ] Replace `FAST_PRIMARY_IDS` / `SECONDARY_IDS_BY_PRIMARY_VENDOR` with logical tiers resolved through
+- [x] `selectClassifierModels` consumes the scoped, health-annotated snapshot from `buildRegistrySnapshot`.
+- [x] Replace `FAST_PRIMARY_IDS` / `SECONDARY_IDS_BY_PRIMARY_VENDOR` with logical tiers resolved through
       `canonicalModelId` and ordered by the shared comparator.
-- [ ] Tier semantics preserved exactly, including cross-vendor independence of the secondary tier.
-- [ ] Unhealthy endpoints never called; abort still short-circuits.
-- [ ] Empty-scope path: classification fails cleanly, current selection retained, no premium route manufactured.
-- [ ] `npm run check` passes.
+- [x] Tier semantics preserved exactly, including cross-vendor independence of the secondary tier.
+- [x] Unhealthy endpoints never called; abort still short-circuits.
+- [x] Empty-scope path: classification fails cleanly, current selection retained, no premium route manufactured.
+- [x] `npm run check` passes.
 
 ### pr7 — Scope, cost, and cache diagnostics, plus FW3
 
