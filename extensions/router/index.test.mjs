@@ -832,6 +832,126 @@ describe("routerExtension", () => {
     }
   });
 
+  it("moves a persisted Bedrock Sol lease off an endpoint with no long-context price", async () => {
+    const hooks = new Map();
+    const appended = [];
+    const selectedModels = [];
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-long-context-lease-"));
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    const now = new Date().toISOString();
+    const choices = [
+      {
+        provider: "amazon-bedrock",
+        modelId: "global.openai.gpt-5.6-sol",
+        logicalModelId: "gpt-5.6-sol",
+        vendor: "openai",
+        effort: "high",
+        ability: 3,
+        profileId: "openai-gpt-5.6-agent-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "resale",
+        rankReason: "bootstrap",
+      },
+      {
+        provider: "anthropic",
+        modelId: "claude-sonnet-5",
+        logicalModelId: "claude-sonnet-5",
+        vendor: "anthropic",
+        effort: "high",
+        ability: 3,
+        profileId: "anthropic-claude-fast-agent-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "bootstrap",
+      },
+    ];
+    const lease = {
+      version: 2,
+      taskId: "long-context-lease-task",
+      startedAt: now,
+      updatedAt: now,
+      archetype: "median_repository_implementation",
+      features: conservativeFeatures("long-context lease test"),
+      selected: choices[0],
+      fallbacks: choices.slice(1),
+      attemptIndex: 0,
+      promptProfileId: choices[0].profileId,
+      modelSnapshotId: "snapshot",
+      policyVersion: POLICY_VERSION,
+      lastPromptFingerprint: "fingerprint",
+      lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task-fingerprint" },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+      manualOverride: false,
+    };
+    const models = choices.map((choice) => ({
+      provider: choice.provider,
+      id: choice.modelId,
+      name: choice.modelId,
+      api: choice.vendor === "anthropic" ? "anthropic-messages" : "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
+      contextWindow: choice.contextWindow,
+      maxTokens: 128_000,
+    }));
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "active", manualOverride: false, active: lease },
+      },
+    ];
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: () => {},
+      registerTool: () => {},
+      appendEntry: (customType, data) => appended.push({ customType, data }),
+      sendMessage: () => {},
+      setModel: async (model) => {
+        selectedModels.push(model);
+        return true;
+      },
+      setThinkingLevel: () => {},
+      getThinkingLevel: () => "high",
+      getActiveTools: () => [],
+      setActiveTools: () => {},
+      exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+    };
+    routerExtension(pi);
+    const ctx = {
+      cwd: telemetryDirectory,
+      model: models[0],
+      modelRegistry: {
+        getAll: () => models,
+        getAvailable: () => models,
+        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+      },
+      sessionManager: { getBranch: () => branch, getSessionId: () => "long-context-lease-session" },
+      getContextUsage: () => ({ tokens: 272_001, contextWindow: 1_000_000, percent: 28 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        setWorkingMessage: () => {},
+        setWorkingVisible: () => {},
+        notify: () => {},
+      },
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hooks.get("before_agent_start")({ prompt: "Continue the task", systemPrompt: "base" }, ctx);
+      const latestLease = appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+      assert.equal(latestLease.selected.provider, "anthropic");
+      assert.equal(latestLease.attemptIndex, 1);
+      assert.ok(selectedModels.length > 0);
+      assert.ok(selectedModels.every((model) => model.provider === "anthropic"));
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+    }
+  });
+
   it("tries every leased provider after an invalidated OpenAI Codex token", async () => {
     const hooks = new Map();
     const appended = [];

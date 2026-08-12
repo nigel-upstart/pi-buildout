@@ -241,6 +241,25 @@ describe("lease restoration and context estimates", () => {
         "shadow",
       ).active;
 
+    // The effective cost is optional so leases without it remain compatible, while newly written
+    // values persist and malformed pricing data fails closed.
+    assert.equal(restore(active)?.selected.endpointEffectiveCost, undefined);
+    const withEffectiveCost = structuredClone(active);
+    withEffectiveCost.selected.endpointEffectiveCost = 23.75;
+    withEffectiveCost.fallbacks[0].endpointEffectiveCost = 20;
+    const restoredEffectiveCost = restore(withEffectiveCost);
+    assert.equal(restoredEffectiveCost?.selected.endpointEffectiveCost, 23.75);
+    assert.equal(restoredEffectiveCost?.fallbacks[0].endpointEffectiveCost, 20);
+    for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const malformedCost = structuredClone(withEffectiveCost);
+      malformedCost.selected.endpointEffectiveCost = invalid;
+      assert.equal(restore(malformedCost), undefined, `${String(invalid)} effective cost must be rejected`);
+    }
+    const flatRateCost = structuredClone(withEffectiveCost);
+    flatRateCost.selected.provider = "github-copilot";
+    flatRateCost.selected.endpointTier = "resale";
+    assert.equal(restore(flatRateCost), undefined, "flat-rate choices cannot persist a token effective cost");
+
     // Accepts a regional spelling that exact-ID eligibility used to reject. eu.anthropic.claude-sonnet-5
     // is a real Bedrock region profile that was never in the hand-maintained spelling list, so a lease
     // recorded against it was discarded on restore even though the endpoint was authorized.

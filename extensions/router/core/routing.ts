@@ -9,6 +9,7 @@ import {
 } from "./evidence.ts";
 import type { ConsequenceTier, EvidenceCostWeights, EvidenceScoreContext, RoutableLanguage } from "./evidence.ts";
 import type { TaskFeatures } from "./features.ts";
+import { blendedEndpointCost, calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./endpoint-cost.ts";
 import { healthVerdict } from "./health.ts";
 import type { EndpointHealth } from "./health.ts";
 import {
@@ -20,7 +21,7 @@ import {
 } from "./policy.ts";
 import type { CandidateRef, EndpointTier } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
-import { canonicalModelId, endpointSpecificity, endpointTierFor, isFlatRateProvider } from "./scope.ts";
+import { canonicalModelId, endpointTierFor } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
 export type RegistryModelSnapshot = {
@@ -55,9 +56,11 @@ type ExclusionCode =
   | "not_in_registry"
   | "not_in_scope"
   | "endpoint_unhealthy"
+  | "endpoint_pricing_invalid"
   | "unavailable"
   | "context_headroom"
   | "context_headroom_prior"
+  | "long_context_pricing_unavailable"
   | "image_unsupported"
   | "tools_unsupported"
   | "effort_unsupported"
@@ -94,6 +97,8 @@ export type RouteChoice = {
   endpointTier: EndpointTier;
   /** Blended per-million route price, absent for flat-rate subscription endpoints. */
   endpointBlendedCost?: number;
+  /** Weighted per-million ordering cost, optional for lease compatibility and absent for flat-rate endpoints. */
+  endpointEffectiveCost?: number;
   /** Authorized as a retry only; never placed in the primary slot. */
   escalationOnly?: boolean;
   /** Authorized only where step count rather than token cost is the binding constraint. */
@@ -195,9 +200,22 @@ const FOREGROUND_WAIT_MULTIPLIER = 8;
  */
 const DEFAULT_NEAR_TIE_FRACTION = 0.05;
 
-/** Output-weighted blend used only to order endpoints that resolve to the same model and effort. */
-function blendedEndpointCost(model: RegistryModelSnapshot): number {
-  return 0.25 * model.costPerMillion.input + 0.75 * model.costPerMillion.output;
+/** Provider weighting is deliberately neutral until the provider-weight policy layer. */
+const PROVIDER_WEIGHT = 1.0;
+
+/** Bedrock Sol exposes only its short-context rate; direct OpenAI changes tiers above this boundary. */
+const BEDROCK_SOL_SHORT_CONTEXT_LIMIT = 272_000;
+
+/** Applies the missing-price guard to both new route selection and persisted-lease revalidation. */
+export function bedrockSolLongContextPricingUnavailable(
+  model: Pick<RegistryModelSnapshot, "provider" | "modelId">,
+  estimatedFinishedTokens: number,
+): boolean {
+  return (
+    model.provider === "amazon-bedrock" &&
+    canonicalModelId(model.modelId) === "gpt-5.6-sol" &&
+    estimatedFinishedTokens > BEDROCK_SOL_SHORT_CONTEXT_LIMIT
+  );
 }
 
 /**
@@ -379,9 +397,9 @@ function modelKey(model: Pick<RegistryModelSnapshot, "provider" | "modelId">): s
 
 /**
  * Every endpoint in the live registry that serves this logical model, ordered by preference: the
- * manufacturer's own route first, then a gateway, then resale; within a tier the plainest spelling of
- * the ID, then the cheaper route, with flat-rate subscription endpoints last because their modeled
- * token price is a capability proxy rather than a cost.
+ * manufacturer's own route first, then a gateway, then resale; within a tier token-billed effective
+ * cost, ID specificity, and exact endpoint identity form one deterministic order. Flat-rate
+ * subscription endpoints remain last because their modeled token price is a capability proxy.
  *
  * The registry passed here is already scoped to the operator's `enabledModels`, so an endpoint absent
  * from this list is one they did not scope in, one their auth does not cover, or one a probe found
@@ -390,18 +408,29 @@ function modelKey(model: Pick<RegistryModelSnapshot, "provider" | "modelId">): s
 function resolveEndpoints(ref: CandidateRef, registry: readonly RegistryModelSnapshot[]): RegistryModelSnapshot[] {
   return registry
     .filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId)
+    .map((model) => {
+      let endpointEffectiveCost: number | undefined;
+      try {
+        endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+      } catch (error) {
+        // Eligibility records malformed endpoint pricing below. Keep it out of numeric comparison so
+        // one ineligible or malformed registry row cannot abort resolution of every valid endpoint.
+        if (!(error instanceof RangeError)) throw error;
+      }
+      return {
+        model,
+        provider: model.provider,
+        modelId: model.modelId,
+        ...(endpointEffectiveCost === undefined ? {} : { endpointEffectiveCost }),
+      };
+    })
     .sort((left, right) => {
       const tier =
         ENDPOINT_TIERS.indexOf(endpointTierFor(left.provider)) -
         ENDPOINT_TIERS.indexOf(endpointTierFor(right.provider));
-      if (tier !== 0) return tier;
-      const specificity = endpointSpecificity(left.modelId) - endpointSpecificity(right.modelId);
-      if (specificity !== 0) return specificity;
-      const leftFlat = isFlatRateProvider(left.provider);
-      const rightFlat = isFlatRateProvider(right.provider);
-      if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
-      return blendedEndpointCost(left) - blendedEndpointCost(right);
-    });
+      return tier || compareEndpointEffectiveCost(left, right);
+    })
+    .map(({ model }) => model);
 }
 
 function evaluateEndpoint(
@@ -531,6 +560,18 @@ function evaluateEndpoint(
     });
     return undefined;
   }
+  let endpointEffectiveCost: number | undefined;
+  try {
+    endpointEffectiveCost = calculateEndpointEffectiveCost(model, PROVIDER_WEIGHT);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    exclusions.push({
+      candidate: key,
+      code: "endpoint_pricing_invalid",
+      detail: error.message,
+    });
+    return undefined;
+  }
   return {
     provider: model.provider,
     modelId: model.modelId,
@@ -541,7 +582,12 @@ function evaluateEndpoint(
     profileId: profile.id,
     contextWindow: model.contextWindow,
     endpointTier: endpointTierFor(model.provider),
-    ...(isFlatRateProvider(model.provider) ? {} : { endpointBlendedCost: blendedEndpointCost(model) }),
+    ...(endpointEffectiveCost === undefined
+      ? {}
+      : {
+          endpointBlendedCost: blendedEndpointCost(model),
+          endpointEffectiveCost,
+        }),
     ...(ref.escalationOnly ? { escalationOnly: true } : {}),
     ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
     ...(ref.unmeasuredPeer ? { unmeasuredPeer: true } : {}),
@@ -569,13 +615,36 @@ function evaluateCandidate(
   exclusions: CandidateExclusion[],
   context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
 ): RouteChoice[] {
-  const endpoints = resolveEndpoints(ref, registry);
+  const scopedEndpoints = registry.filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId);
+  // Filter this pricing guard before resolution computes endpoint cost: a larger request must never
+  // be compared at Bedrock Sol's short-context rate, even transiently before eligibility rejects it.
+  const priceableEndpoints = scopedEndpoints.filter((model) => {
+    if (!bedrockSolLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return true;
+    const supported = model.supportedEfforts.includes(ref.effort);
+    exclusions.push(
+      supported
+        ? {
+            candidate: `${model.provider}/${model.modelId}`,
+            code: "long_context_pricing_unavailable",
+            detail: `Bedrock Sol has no registered price above ${String(BEDROCK_SOL_SHORT_CONTEXT_LIMIT)} estimated tokens`,
+          }
+        : {
+            candidate: `${model.provider}/${model.modelId}`,
+            code: "effort_unsupported",
+            detail: `${ref.effort} effort is unsupported`,
+          },
+    );
+    return false;
+  });
+  const endpoints = resolveEndpoints(ref, priceableEndpoints);
   if (endpoints.length === 0) {
-    exclusions.push({
-      candidate: `${ref.logicalModelId}@${ref.effort}`,
-      code: "not_in_scope",
-      detail: "no scoped registry endpoint serves this model",
-    });
+    if (scopedEndpoints.length === 0) {
+      exclusions.push({
+        candidate: `${ref.logicalModelId}@${ref.effort}`,
+        code: "not_in_scope",
+        detail: "no scoped registry endpoint serves this model",
+      });
+    }
     return [];
   }
   return endpoints
@@ -651,18 +720,14 @@ type CandidateGroup = {
 };
 
 /**
- * Endpoint order within one model: manufacturer route first, then gateway, then resale. Route price
- * only breaks ties inside a tier, and flat-rate subscription endpoints sort last in their tier
- * because their modeled token price is a capability proxy rather than a cost.
+ * Endpoint order within one model: manufacturer route first, then gateway, then resale. The shared
+ * cost comparator orders only within each tier until the later cost-first routing layer removes this
+ * wrapper.
  */
 function orderEndpoints(endpoints: readonly RouteChoice[]): RouteChoice[] {
   return [...endpoints].sort((left, right) => {
     const tier = ENDPOINT_TIERS.indexOf(left.endpointTier) - ENDPOINT_TIERS.indexOf(right.endpointTier);
-    if (tier !== 0) return tier;
-    const leftFlat = left.endpointBlendedCost === undefined;
-    const rightFlat = right.endpointBlendedCost === undefined;
-    if (leftFlat !== rightFlat) return leftFlat ? 1 : -1;
-    return (left.endpointBlendedCost ?? 0) - (right.endpointBlendedCost ?? 0);
+    return tier || compareEndpointEffectiveCost(left, right);
   });
 }
 

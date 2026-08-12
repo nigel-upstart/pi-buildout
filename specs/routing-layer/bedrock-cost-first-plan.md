@@ -181,21 +181,21 @@ owns those.
 
 Branch `router/endpoint-comparator`. Depends on pr1 + pr2.
 
-- [ ] Single exported comparator used by both `resolveEndpoints` and `orderEndpoints`.
-- [ ] `effectiveCost = blendedEndpointCost(model) * providerWeight`, all weights 1.0 in this PR.
-- [ ] Three-valued cache classifier — `priced_write`, `no_write_line_item`, `caching_unpriced` — consumed everywhere
+- [x] Single exported comparator used by both `resolveEndpoints` and `orderEndpoints`.
+- [x] `effectiveCost = blendedEndpointCost(model) * providerWeight`, all weights 1.0 in this PR.
+- [x] Three-valued cache classifier — `priced_write`, `no_write_line_item`, `caching_unpriced` — consumed everywhere
       instead of a bare `0`.
-- [ ] Test pinning pi's zero semantics: `calculateCost` charges nothing at a `0` rate and does not fall back to input;
+- [x] Test pinning pi's zero semantics: `calculateCost` charges nothing at a `0` rate and does not fall back to input;
       1-hour writes price as `input * 2`.
-- [ ] Cross-provider invariant over the enum, comparing only token-billing surfaces; Copilot and Cloudflare registered
+- [x] Cross-provider invariant over the enum, comparing only token-billing surfaces; Copilot and Cloudflare registered
       as expected `no_write_line_item`.
-- [ ] Test pinning the generational finding so a registry bump that flattens it fails loudly.
-- [ ] `RouteChoice.endpointEffectiveCost` optional, absent for flat-rate, so no lease-shape break.
-- [ ] Comparator is a **total order**: cost, then `endpointSpecificity`, then exact provider/ID string.
-- [ ] Bedrock GPT-5.6 Sol requests above 272,000 input tokens are rejected until that endpoint exposes a long-context
-      rate; the short-context rate must never price larger requests.
-- [ ] Golden test: ordered endpoints and selected primary byte-identical before and after.
-- [ ] `npm run check` passes.
+- [x] Test pinning the generational finding so a registry bump that flattens it fails loudly.
+- [x] `RouteChoice.endpointEffectiveCost` optional, absent for flat-rate, so no lease-shape break.
+- [x] Comparator is a **total order**: cost, then `endpointSpecificity`, then exact provider/ID string.
+- [x] Bedrock GPT-5.6 Sol requests above 272,000 estimated finished tokens are rejected until that endpoint exposes a
+      long-context rate; the short-context rate must never price larger requests.
+- [x] Golden test: ordered endpoints and selected primary byte-identical before and after.
+- [x] `npm run check` passes.
 
 ### pr4 — Configurable per-provider route weights
 

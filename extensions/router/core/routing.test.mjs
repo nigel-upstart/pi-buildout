@@ -288,6 +288,96 @@ describe("ordinary route selection", () => {
     assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
   });
 
+  it("uses identical effective-cost semantics in registry resolution and RouteChoice ordering", () => {
+    const cheap = {
+      ...model("openai", "gpt-5.6-sol", "openai"),
+      costPerMillion: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1.25 },
+    };
+    const expensive = {
+      ...model("openai-codex", "gpt-5.6-sol", "openai"),
+      costPerMillion: { input: 10, output: 10, cacheRead: 1, cacheWrite: 12.5 },
+    };
+    const models = [...registry().filter((candidate) => candidate.modelId !== "gpt-5.6-sol"), expensive, cheap];
+
+    // Ordinary routing evaluates all endpoints and then orders the resulting RouteChoice group.
+    const ordinary = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
+    assert.equal(ordinary.kind, "ordinary");
+    assert.equal(ordinary.primary.provider, "openai");
+    assert.equal(ordinary.primary.endpointBlendedCost, 1);
+    assert.equal(ordinary.primary.endpointEffectiveCost, 1);
+
+    // Tracked review takes the first resolved endpoint before RouteChoice group ordering, exercising
+    // the registry-snapshot call path independently.
+    const builder = models.find((candidate) => candidate.modelId === "claude-opus-5");
+    const review = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
+    assert.equal(review.kind, "review");
+    const openaiReviewer = [review.primary, review.fallback].find((choice) => choice.vendor === "openai");
+    assert.equal(openaiReviewer.provider, "openai");
+    assert.equal(openaiReviewer.endpointEffectiveCost, ordinary.primary.endpointEffectiveCost);
+  });
+
+  it("fails closed per endpoint when registry pricing is malformed", () => {
+    const unavailable = {
+      ...model("openai", "gpt-5.6-sol", "openai"),
+      available: false,
+      costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const malformed = {
+      ...model("amazon-bedrock", "global.openai.gpt-5.6-sol", "openai"),
+      costPerMillion: { input: -1, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const decision = selectOrdinaryRoute(
+      "median_repository_implementation",
+      [...registry(), unavailable, malformed],
+      REQUIREMENTS,
+    );
+    assert.equal(decision.kind, "ordinary");
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) => exclusion.candidate === "openai/gpt-5.6-sol" && exclusion.code === "unavailable",
+      ),
+    );
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) =>
+          exclusion.candidate === "amazon-bedrock/global.openai.gpt-5.6-sol" &&
+          exclusion.code === "endpoint_pricing_invalid" &&
+          /finite and nonnegative/.test(exclusion.detail),
+      ),
+    );
+    assert.ok(
+      [decision.primary, ...decision.fallbacks].every(
+        (choice) =>
+          `${choice.provider}/${choice.modelId}` !== "openai/gpt-5.6-sol" &&
+          `${choice.provider}/${choice.modelId}` !== "amazon-bedrock/global.openai.gpt-5.6-sol",
+      ),
+    );
+  });
+
+  it("keeps flat-rate nominal prices outside endpoint cost ordering", () => {
+    const models = [
+      ...registry(),
+      {
+        ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
+        costPerMillion: { input: 100, output: 100, cacheRead: 10, cacheWrite: 125 },
+      },
+      {
+        ...model("github-copilot", "gpt-5.6-sol", "openai"),
+        costPerMillion: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ];
+    const decision = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
+    const endpoints = [decision.primary, ...decision.fallbacks].filter(
+      (choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high",
+    );
+    const bedrock = endpoints.findIndex((choice) => choice.provider === "amazon-bedrock");
+    const copilot = endpoints.findIndex((choice) => choice.provider === "github-copilot");
+    assert.ok(bedrock >= 0 && copilot > bedrock);
+    assert.equal(endpoints[copilot].endpointBlendedCost, undefined);
+    assert.equal(endpoints[copilot].endpointEffectiveCost, undefined);
+  });
+
   it("gates low-effort tiers on task consequence rather than on the archetype label", () => {
     const mutating = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
     assert.equal(mutating.kind, "ordinary");
@@ -338,6 +428,104 @@ describe("ordinary route selection", () => {
     });
     assert.equal(decision.kind, "unroutable");
     assert.ok(decision.exclusions.some((exclusion) => exclusion.code === "context_headroom"));
+  });
+
+  it("excludes Bedrock Sol only above its registered short-context pricing boundary", () => {
+    const bedrockSol = {
+      ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
+      // The real endpoint does not expose max effort; high remains eligible for this boundary test.
+      supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+      costPerMillion: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const models = [...registry(), bedrockSol];
+    const atBoundary = selectOrdinaryRoute("median_repository_implementation", models, {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 272_000,
+    });
+    assert.equal(atBoundary.kind, "ordinary");
+    assert.ok(
+      [atBoundary.primary, ...atBoundary.fallbacks].some(
+        (choice) => choice.provider === "amazon-bedrock" && choice.modelId === "openai.gpt-5.6-sol",
+      ),
+    );
+
+    // Poison the short-context price for the larger request. Eligibility must remove this endpoint
+    // before registry resolution attempts to compute or compare that rate.
+    const aboveBoundaryModels = models.map((candidate) =>
+      candidate === bedrockSol
+        ? { ...candidate, costPerMillion: { ...candidate.costPerMillion, input: Number.NaN } }
+        : candidate,
+    );
+    const aboveBoundary = selectOrdinaryRoute("median_repository_implementation", aboveBoundaryModels, {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 272_001,
+    });
+    assert.equal(aboveBoundary.kind, "ordinary");
+    assert.ok(
+      [aboveBoundary.primary, ...aboveBoundary.fallbacks].every(
+        (choice) => choice.provider !== "amazon-bedrock" || choice.modelId !== "openai.gpt-5.6-sol",
+      ),
+    );
+    assert.ok(
+      aboveBoundary.exclusions.some(
+        (exclusion) =>
+          exclusion.candidate === "amazon-bedrock/openai.gpt-5.6-sol" &&
+          exclusion.code === "long_context_pricing_unavailable" &&
+          /no registered price above 272000 estimated tokens/.test(exclusion.detail),
+      ),
+    );
+  });
+
+  it("guards every canonical Bedrock Sol spelling before computing its short-context price", () => {
+    for (const modelId of ["global.openai.gpt-5.6-sol", "us.openai.gpt-5.6-sol-v1:0"]) {
+      const bedrockSol = {
+        ...model("amazon-bedrock", modelId, "openai"),
+        supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+        costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      };
+      const decision = selectOrdinaryRoute("median_repository_implementation", [...registry(), bedrockSol], {
+        ...REQUIREMENTS,
+        estimatedFinishedTokens: 272_001,
+      });
+      assert.equal(decision.kind, "ordinary");
+      assert.ok(
+        [decision.primary, ...decision.fallbacks].every(
+          (choice) => choice.provider !== "amazon-bedrock" || choice.modelId !== modelId,
+        ),
+      );
+      assert.ok(
+        decision.exclusions.some(
+          (exclusion) =>
+            exclusion.candidate === `amazon-bedrock/${modelId}` &&
+            exclusion.code === "long_context_pricing_unavailable",
+        ),
+      );
+    }
+  });
+
+  it("preserves Bedrock Sol's max-effort exclusion", () => {
+    const modelId = "global.openai.gpt-5.6-sol";
+    const bedrockSol = {
+      ...model("amazon-bedrock", modelId, "openai"),
+      supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+      // An unsupported larger request must retain the effort reason without touching this price.
+      costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const decision = selectOrdinaryRoute("highest_risk_advisory", [...registry(), bedrockSol], {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 272_001,
+    });
+    assert.equal(decision.kind, "ordinary");
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) => exclusion.candidate === `amazon-bedrock/${modelId}` && exclusion.code === "effort_unsupported",
+      ),
+    );
+    assert.ok(
+      [decision.primary, ...decision.fallbacks].every(
+        (choice) => choice.provider !== "amazon-bedrock" || choice.modelId !== modelId || choice.effort !== "max",
+      ),
+    );
   });
 
   it("rejects candidates whose measured peak context exceeds the window headroom", () => {
