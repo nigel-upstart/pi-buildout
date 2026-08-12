@@ -76,11 +76,12 @@ import type { RouterScope } from "./pi-state.ts";
 import {
   aggregateAttemptTokenCounts,
   aggregateRouteSamples,
+  attemptOutcomesFromTelemetry,
   endpointTelemetryFields,
   JsonlTelemetryStore,
   withRouterSpan,
 } from "./telemetry.ts";
-import type { AttemptOutcome, RouterTelemetryEvent } from "./telemetry.ts";
+import type { RouterTelemetryEvent } from "./telemetry.ts";
 
 const STATE_ENTRY = "model-router-state";
 const CONTEXT_MESSAGE = "model-router-context";
@@ -304,30 +305,6 @@ function previousChoice(
     endpointTier: "manufacturer",
     rankReason: "bootstrap",
   };
-}
-
-function telemetryOutcomes(events: readonly RouterTelemetryEvent[]): AttemptOutcome[] {
-  const outcomes: AttemptOutcome[] = [];
-  for (const event of events) {
-    if (event.kind !== "outcome") continue;
-    const data = event.data;
-    if (
-      typeof data.provider !== "string" ||
-      typeof data.modelId !== "string" ||
-      typeof data.archetype !== "string" ||
-      typeof data.accepted !== "boolean" ||
-      typeof data.modelAndToolCost !== "number" ||
-      typeof data.wallTimeMs !== "number" ||
-      typeof data.humanIntervention !== "boolean" ||
-      typeof data.retried !== "boolean" ||
-      (data.cacheReadTokens !== undefined && typeof data.cacheReadTokens !== "number") ||
-      (data.cacheWriteTokens !== undefined && typeof data.cacheWriteTokens !== "number")
-    ) {
-      continue;
-    }
-    outcomes.push(data as unknown as AttemptOutcome);
-  }
-  return outcomes;
 }
 
 export default function routerExtension(pi: ExtensionAPI): void {
@@ -554,7 +531,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
       // Bootstrap ordering is safe without history; disable active routing rather than use stale telemetry.
       disableForTelemetryFailure(ctx, error);
     }
-    const routeSamples: RouteSample[] = aggregateRouteSamples(telemetryOutcomes(events)).filter(
+    const routeSamples: RouteSample[] = aggregateRouteSamples(attemptOutcomesFromTelemetry(events)).filter(
       (sample) =>
         sample.contextBucket === contextBucket &&
         sample.risk === classification.features.risk &&

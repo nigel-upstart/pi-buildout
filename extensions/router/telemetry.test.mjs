@@ -8,6 +8,7 @@ import { providerWeightFor } from "./core/provider-weights.ts";
 import {
   aggregateAttemptTokenCounts,
   aggregateRouteSamples,
+  attemptOutcomesFromTelemetry,
   endpointTelemetryFields,
   JsonlTelemetryStore,
   percentile,
@@ -41,6 +42,37 @@ describe("JsonlTelemetryStore", () => {
     assert.equal(events[0].appliedProviderWeight, undefined);
     assert.equal(events[0].providerWeightBasis, undefined);
     assert.equal(events[0].cacheWriteClassification, undefined);
+
+    const outcomes = attemptOutcomesFromTelemetry(events);
+    assert.deepEqual(outcomes, [
+      {
+        provider: "openai-codex",
+        modelId: "gpt-5.6-sol",
+        archetype: "median_repository_implementation",
+        accepted: true,
+        modelAndToolCost: 0.42,
+        wallTimeMs: 1_200,
+        humanIntervention: false,
+        retried: false,
+      },
+    ]);
+    assert.deepEqual(aggregateRouteSamples(outcomes), [
+      {
+        provider: "openai-codex",
+        modelId: "gpt-5.6-sol",
+        archetype: "median_repository_implementation",
+        comparableSamples: 1,
+        acceptedRate: 1,
+        p50ModelAndToolCost: 0.42,
+        p75ModelAndToolCost: 0.42,
+        p90ModelAndToolCost: 0.42,
+        p50WallTimeMs: 1_200,
+        p75WallTimeMs: 1_200,
+        p90WallTimeMs: 1_200,
+        probabilityHumanIntervention: 0,
+        probabilityRetry: 0,
+      },
+    ]);
   });
 
   it("appends inspectable events and tolerates a torn final line", async () => {

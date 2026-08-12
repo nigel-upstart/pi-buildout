@@ -142,6 +142,31 @@ export function endpointTelemetryFields(
   return fields;
 }
 
+/** Extracts valid labeled outcomes while preserving optional fields on pre-PR7 records. */
+export function attemptOutcomesFromTelemetry(events: readonly RouterTelemetryEvent[]): AttemptOutcome[] {
+  const outcomes: AttemptOutcome[] = [];
+  for (const event of events) {
+    if (event.kind !== "outcome") continue;
+    const data = event.data;
+    if (
+      typeof data.provider !== "string" ||
+      typeof data.modelId !== "string" ||
+      typeof data.archetype !== "string" ||
+      typeof data.accepted !== "boolean" ||
+      typeof data.modelAndToolCost !== "number" ||
+      typeof data.wallTimeMs !== "number" ||
+      typeof data.humanIntervention !== "boolean" ||
+      typeof data.retried !== "boolean" ||
+      (data.cacheReadTokens !== undefined && typeof data.cacheReadTokens !== "number") ||
+      (data.cacheWriteTokens !== undefined && typeof data.cacheWriteTokens !== "number")
+    ) {
+      continue;
+    }
+    outcomes.push(data as unknown as AttemptOutcome);
+  }
+  return outcomes;
+}
+
 export class JsonlTelemetryStore {
   readonly path: string;
 
