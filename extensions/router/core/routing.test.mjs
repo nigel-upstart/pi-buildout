@@ -442,8 +442,13 @@ describe("ordinary route selection", () => {
     const bedrockSol = {
       ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
       supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+      // An unsupported larger request must retain the effort reason without touching this price.
+      costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
     };
-    const decision = selectOrdinaryRoute("highest_risk_advisory", [...registry(), bedrockSol], REQUIREMENTS);
+    const decision = selectOrdinaryRoute("highest_risk_advisory", [...registry(), bedrockSol], {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 272_001,
+    });
     assert.equal(decision.kind, "ordinary");
     assert.ok(
       decision.exclusions.some(

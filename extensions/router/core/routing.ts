@@ -480,12 +480,6 @@ function evaluateEndpoint(
     exclusions.push({ candidate: key, code: "effort_unauthorized", detail: authorization.reason });
     return undefined;
   }
-  const bedrockSol = model.provider === "amazon-bedrock" && model.modelId === "openai.gpt-5.6-sol";
-  // Keep the endpoint's existing effort guard authoritative when both guards apply.
-  if (bedrockSol && !model.supportedEfforts.includes(ref.effort)) {
-    exclusions.push({ candidate: key, code: "effort_unsupported", detail: `${ref.effort} effort is unsupported` });
-    return undefined;
-  }
   const headroom = Math.floor(model.contextWindow * 0.7);
   if (requirements.estimatedFinishedTokens > headroom) {
     exclusions.push({
@@ -594,17 +588,25 @@ function evaluateCandidate(
   // Filter this pricing guard before resolution computes endpoint cost: a larger request must never
   // be compared at Bedrock Sol's short-context rate, even transiently before eligibility rejects it.
   const priceableEndpoints = scopedEndpoints.filter((model) => {
-    const unavailable =
+    const longBedrockSolRequest =
       model.provider === "amazon-bedrock" &&
       model.modelId === "openai.gpt-5.6-sol" &&
-      model.supportedEfforts.includes(ref.effort) &&
       requirements.estimatedFinishedTokens > BEDROCK_SOL_SHORT_CONTEXT_LIMIT;
-    if (!unavailable) return true;
-    exclusions.push({
-      candidate: `${model.provider}/${model.modelId}`,
-      code: "long_context_pricing_unavailable",
-      detail: `Bedrock Sol has no registered price above ${String(BEDROCK_SOL_SHORT_CONTEXT_LIMIT)} estimated tokens`,
-    });
+    if (!longBedrockSolRequest) return true;
+    const supported = model.supportedEfforts.includes(ref.effort);
+    exclusions.push(
+      supported
+        ? {
+            candidate: `${model.provider}/${model.modelId}`,
+            code: "long_context_pricing_unavailable",
+            detail: `Bedrock Sol has no registered price above ${String(BEDROCK_SOL_SHORT_CONTEXT_LIMIT)} estimated tokens`,
+          }
+        : {
+            candidate: `${model.provider}/${model.modelId}`,
+            code: "effort_unsupported",
+            detail: `${ref.effort} effort is unsupported`,
+          },
+    );
     return false;
   });
   const endpoints = resolveEndpoints(ref, priceableEndpoints);
