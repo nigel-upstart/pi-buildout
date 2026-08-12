@@ -70,7 +70,8 @@ const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
 
 /**
  * Candidates no source in the evidence pack measures at all, admitted only as a lowest-band peer of
- * an already-admitted lowest-band model, and only in the bounded read-only ladders.
+ * an already-admitted lowest-band model, and only in the bounded read-only ladders. See
+ * specs/routing-layer/model-evidence-2026-08-11.md for the pack's generated tables and source limits.
  *
  * This is deliberately not the same mechanism as an evidence band, and it is not a quality claim.
  * `claude-haiku-4-5` is itself admitted from a consensus figure with no agentic rollout row, so the

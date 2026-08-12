@@ -21,6 +21,8 @@
     "prepare": "lefthook install",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "evidence:generate": "node scripts/generate-model-evidence-tables.mjs",
+    "evidence:check": "node scripts/generate-model-evidence-tables.mjs --check",
     "lint": "npm run lint:eslint && npm run lint:markdown && npm run lint:shell",
     "lint:eslint": "eslint . --max-warnings 0",
     "lint:markdown": "markdownlint-cli2 \"**/*.md\"",
@@ -30,7 +32,7 @@
     "test:eval:real": "node --test extensions/router/eval/real.test.mjs",
     "knip": "knip",
     "secrets": "secretlint \"**/*\"",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run secrets",
+    "check": "npm run format:check && npm run evidence:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run secrets",
     "audit": "node scripts/check-audit.mjs"
   },
   "devDependencies": {

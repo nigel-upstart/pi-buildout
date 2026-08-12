@@ -11,8 +11,9 @@ prompt. This is intentional.
 The router has no dependency on an untracked design document or local conversation export. Its checked-in authorities
 are:
 
-- the [functional specification](../../specs/routing-layer/SPEC.md) and
-  [source basis](../../specs/routing-layer/source-basis.md);
+- the [functional specification](../../specs/routing-layer/SPEC.md),
+  [source basis](../../specs/routing-layer/source-basis.md), and generated-table
+  [model and endpoint evidence](../../specs/routing-layer/model-evidence-2026-08-11.md);
 - the executable [feature](core/features.ts), [synopsis](core/synopsis.ts), [policy](core/policy.ts), and
   [prompt-profile](core/profiles.ts) contracts;
 - the [architecture decisions](../../specs/routing-layer/decisions.md),

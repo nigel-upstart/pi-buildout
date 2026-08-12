@@ -98,6 +98,40 @@ Use: `extensions/router/telemetry.ts` studies and consumes this package's public
 global registries — to emit optional parented OTel spans without a static dependency, and no-ops cleanly when the
 package is absent. No `pi-telemetry-otel` source was copied.
 
+### Amazon Bedrock pricing and prompt caching
+
+- Sources: [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/),
+  [Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html), and
+  [the January 2026 one-hour caching announcement](https://aws.amazon.com/about-aws/whats-new/2026/01/amazon-bedrock-one-hour-duration-prompt-caching/)
+- Revision reviewed: live documentation on 2026-08-11
+- License: no documentation license was identified; no source code or documentation text was copied
+
+Use: published per-token list rates; cache read/write billing ratios; default and one-hour TTL behavior; GPT-5.6's
+explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior; and the exclusion of cache-read tokens from
+input-token rate-limit quotas. The operator's private 17% discount was **not** derived from AWS documentation: it is a
+separately confirmed contract term, and this repository uses the public pricing page only as its list-price basis.
+Provisioned-throughput and commitment pricing were intentionally not adopted.
+
+### Anthropic prompt caching
+
+- Source: [Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- Revision reviewed: live documentation on 2026-08-11
+- License: no documentation license was identified; no source code or documentation text was copied
+
+Use: Claude's 5-minute cache-write and cache-read multipliers, TTL refresh behavior, 1-hour write multiplier, and the
+models/providers for which the 1-hour option is documented. Only behavioral and pricing facts were consulted; no SDK,
+example code, or prose was copied.
+
+### OpenAI prompt caching
+
+- Source: [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+- Revision reviewed: live documentation on 2026-08-11
+- License: no documentation license was identified; no source code or documentation text was copied
+
+Use: automatic direct-route caching, in-memory inactivity/maximum retention, extended retention, and minimum-prefix
+behavior. These facts document a possible cache-hit-rate difference from Bedrock; they are not used as token-price
+claims. No SDK or example code was copied.
+
 ## LLM effectiveness research corpus and its upstream benchmark sources
 
 The router's bootstrap priors in [`extensions/router/core/evidence.ts`](extensions/router/core/evidence.ts) and

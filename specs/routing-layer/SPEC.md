@@ -170,7 +170,7 @@ Deterministic, not LLM-assisted:
 - Until local telemetry is mature — at least the minimum comparable-sample count enforced per candidate in
   [`core/routing.ts`](../../extensions/router/core/routing.ts), each sample passing the route's quality floor — rank the
   authorized pool by the same robust cost-to-done shape seeded from the checked-in measured priors in
-  [`model-evidence-2026-07-25.md`](model-evidence-2026-07-25.md), rather than by policy list order. That sample floor
+  [`model-evidence-2026-08-11.md`](model-evidence-2026-08-11.md), rather than by policy list order. That sample floor
   exists so a former second choice is promoted only on evidence, not on a handful of noisy runs. After maturity, rank by
   the observed robust cost-to-done score:
 
