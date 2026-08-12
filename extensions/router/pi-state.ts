@@ -17,12 +17,8 @@ import { ENDPOINT_TIERS, POLICY_VERSION, policyAbility } from "./core/policy.ts"
 import type { EndpointTier } from "./core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
-import {
-  ownProperty,
-  providerWeightFor,
-  resolveProviderWeights,
-  ROUTER_PROVIDER_WEIGHTS_ENV,
-} from "./core/provider-weights.ts";
+import { ownProperty } from "./core/object-property.ts";
+import { providerWeightFor, resolveProviderWeights, ROUTER_PROVIDER_WEIGHTS_ENV } from "./core/provider-weights.ts";
 import type { ProviderWeightRejection, ResolvedProviderWeight } from "./core/provider-weights.ts";
 import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
@@ -306,16 +302,16 @@ export async function readRouterScope(cwd: string, options: RouterScopeReadOptio
           .map((pattern) => pattern.trim())
           .filter((pattern) => pattern.length > 0);
   const userSettingsPath = options.userSettingsPath ?? join(homedir(), ".pi", "agent", "settings.json");
-  const [project, user] = await Promise.all([
-    readJsonFile(join(cwd, CONFIG_DIR_NAME, "settings.json")),
-    readJsonFile(userSettingsPath),
-  ]);
-  const patterns = stringArray(ownProperty(object(project), "enabledModels"));
-  const fallbackPatterns = stringArray(ownProperty(object(user), "enabledModels"));
   const configuredHealthPath = string(ownProperty(environment, "PI_ROUTER_ENDPOINT_HEALTH_PATH"));
   const healthPath =
     options.healthPath ?? configuredHealthPath ?? join(homedir(), ".pi", "agent", "router-endpoint-health.json");
-  const health = await readJsonFile(healthPath);
+  const [project, user, health] = await Promise.all([
+    readJsonFile(join(cwd, CONFIG_DIR_NAME, "settings.json")),
+    readJsonFile(userSettingsPath),
+    readJsonFile(healthPath),
+  ]);
+  const patterns = stringArray(ownProperty(object(project), "enabledModels"));
+  const fallbackPatterns = stringArray(ownProperty(object(user), "enabledModels"));
   const providerWeights = resolveProviderWeights({
     environmentValue: string(ownProperty(environment, ROUTER_PROVIDER_WEIGHTS_ENV)),
     projectSettings: project,

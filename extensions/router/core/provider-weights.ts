@@ -1,3 +1,5 @@
+import { ownProperty } from "./object-property.ts";
+
 export const ROUTER_PROVIDER_WEIGHTS_ENV = "PI_ROUTER_PROVIDER_WEIGHTS";
 const ROUTER_PROVIDER_WEIGHTS_SETTING = "routerProviderWeights";
 
@@ -79,11 +81,6 @@ function immutableMap<K, V>(entries: Iterable<readonly [K, V]>): ReadonlyMap<K, 
 
 function object(value: unknown): ObjectLike | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as ObjectLike) : undefined;
-}
-
-/** Reads only a data property's own descriptor, without invoking accessors or reaching a prototype. */
-export function ownProperty(source: ObjectLike | undefined, key: string): unknown {
-  return source ? Object.getOwnPropertyDescriptor(source, key)?.value : undefined;
 }
 
 function hasOwnProperty(source: ObjectLike, key: string): boolean {

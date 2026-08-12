@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -96,8 +96,9 @@ describe("modelAbility", () => {
 });
 
 describe("router scope configuration", () => {
-  async function fixture() {
+  async function fixture(t) {
     const root = await mkdtemp(join(tmpdir(), "pi-router-scope-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
     return {
       project: join(root, "project"),
       projectSettings: join(root, "project", ".pi", "settings.json"),
@@ -111,8 +112,8 @@ describe("router scope configuration", () => {
     await writeFile(path, JSON.stringify(value), "utf8");
   }
 
-  it("reads isolated project and user settings with per-provider environment precedence", async () => {
-    const paths = await fixture();
+  it("reads isolated project and user settings with per-provider environment precedence", async (t) => {
+    const paths = await fixture(t);
     await writeJson(paths.projectSettings, {
       enabledModels: ["amazon-bedrock/*"],
       routerProviderWeights: { "amazon-bedrock": 0.8, openai: { weight: 1.2, basis: "contract" } },
@@ -163,8 +164,8 @@ describe("router scope configuration", () => {
     assert.deepEqual(snapshots[0].providerWeight, scope.providerWeights.get("amazon-bedrock"));
   });
 
-  it("records malformed environment JSON while retaining best-effort file fallback", async () => {
-    const paths = await fixture();
+  it("records malformed environment JSON while retaining best-effort file fallback", async (t) => {
+    const paths = await fixture(t);
     await mkdir(dirname(paths.projectSettings), { recursive: true });
     await writeFile(paths.projectSettings, "{not-json", "utf8");
     await writeJson(paths.userSettings, {
@@ -185,7 +186,7 @@ describe("router scope configuration", () => {
     assert.match(scope.providerWeightRejections[0].reason, /valid JSON/);
   });
 
-  it("uses immutable built-ins when isolated settings files are missing or malformed", async () => {
+  it("uses immutable built-ins when isolated settings files are missing or malformed", async (t) => {
     assert.equal(Object.isFrozen(EMPTY_SCOPE), true);
     assert.equal(Object.isFrozen(EMPTY_SCOPE.patterns), true);
     assert.equal(typeof EMPTY_SCOPE.providerWeights.set, "undefined");
@@ -195,7 +196,7 @@ describe("router scope configuration", () => {
       source: "built-in",
     });
 
-    const missing = await fixture();
+    const missing = await fixture(t);
     const missingScope = await readRouterScope(missing.project, {
       environment: {},
       userSettingsPath: missing.userSettings,
@@ -208,7 +209,7 @@ describe("router scope configuration", () => {
       source: "built-in",
     });
 
-    const malformed = await fixture();
+    const malformed = await fixture(t);
     await mkdir(dirname(malformed.projectSettings), { recursive: true });
     await mkdir(dirname(malformed.userSettings), { recursive: true });
     await writeFile(malformed.projectSettings, "null", "utf8");
