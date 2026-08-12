@@ -438,9 +438,37 @@ describe("ordinary route selection", () => {
     );
   });
 
+  it("guards every canonical Bedrock Sol spelling before computing its short-context price", () => {
+    for (const modelId of ["global.openai.gpt-5.6-sol", "us.openai.gpt-5.6-sol-v1:0"]) {
+      const bedrockSol = {
+        ...model("amazon-bedrock", modelId, "openai"),
+        supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+        costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      };
+      const decision = selectOrdinaryRoute("median_repository_implementation", [...registry(), bedrockSol], {
+        ...REQUIREMENTS,
+        estimatedFinishedTokens: 272_001,
+      });
+      assert.equal(decision.kind, "ordinary");
+      assert.ok(
+        [decision.primary, ...decision.fallbacks].every(
+          (choice) => choice.provider !== "amazon-bedrock" || choice.modelId !== modelId,
+        ),
+      );
+      assert.ok(
+        decision.exclusions.some(
+          (exclusion) =>
+            exclusion.candidate === `amazon-bedrock/${modelId}` &&
+            exclusion.code === "long_context_pricing_unavailable",
+        ),
+      );
+    }
+  });
+
   it("preserves Bedrock Sol's max-effort exclusion", () => {
+    const modelId = "global.openai.gpt-5.6-sol";
     const bedrockSol = {
-      ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
+      ...model("amazon-bedrock", modelId, "openai"),
       supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
       // An unsupported larger request must retain the effort reason without touching this price.
       costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
@@ -452,14 +480,12 @@ describe("ordinary route selection", () => {
     assert.equal(decision.kind, "ordinary");
     assert.ok(
       decision.exclusions.some(
-        (exclusion) =>
-          exclusion.candidate === "amazon-bedrock/openai.gpt-5.6-sol" && exclusion.code === "effort_unsupported",
+        (exclusion) => exclusion.candidate === `amazon-bedrock/${modelId}` && exclusion.code === "effort_unsupported",
       ),
     );
     assert.ok(
       [decision.primary, ...decision.fallbacks].every(
-        (choice) =>
-          choice.provider !== "amazon-bedrock" || choice.modelId !== "openai.gpt-5.6-sol" || choice.effort !== "max",
+        (choice) => choice.provider !== "amazon-bedrock" || choice.modelId !== modelId || choice.effort !== "max",
       ),
     );
   });

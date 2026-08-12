@@ -590,7 +590,7 @@ function evaluateCandidate(
   const priceableEndpoints = scopedEndpoints.filter((model) => {
     const longBedrockSolRequest =
       model.provider === "amazon-bedrock" &&
-      model.modelId === "openai.gpt-5.6-sol" &&
+      canonicalModelId(model.modelId) === "gpt-5.6-sol" &&
       requirements.estimatedFinishedTokens > BEDROCK_SOL_SHORT_CONTEXT_LIMIT;
     if (!longBedrockSolRequest) return true;
     const supported = model.supportedEfforts.includes(ref.effort);
