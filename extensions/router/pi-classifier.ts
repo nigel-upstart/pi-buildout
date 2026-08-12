@@ -3,9 +3,14 @@ import type { Api, Model, Tool } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CLASSIFIER_TOOL_NAME, classifyTask } from "./classifier.ts";
 import type { ClassificationResult, ClassifierRequest, ClassifierTransport } from "./classifier.ts";
+import { calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./core/endpoint-cost.ts";
+import type { EndpointEffectiveCostComparable } from "./core/endpoint-cost.ts";
 import { TaskFeaturesSchema } from "./core/features.ts";
+import { healthVerdict } from "./core/health.ts";
 import type { ModelVendor } from "./core/profiles.ts";
-import { canonicalVendor } from "./core/routing.ts";
+import { providerWeightFor } from "./core/provider-weights.ts";
+import type { RegistryModelSnapshot } from "./core/routing.ts";
+import { canonicalModelId } from "./core/scope.ts";
 import type { SessionSynopsis } from "./core/synopsis.ts";
 import { requireToolCall } from "./core/tool-choice.ts";
 
@@ -16,51 +21,24 @@ const CLASSIFIER_TOOL: Tool = {
 };
 
 type ClassifierModel = {
-  model: Model<Api>;
+  model: Pick<Model<Api>, "provider" | "id">;
   vendor: ModelVendor;
+  endpointEffectiveCost?: number;
 };
 
-// Ordered endpoint candidates for the cheap primary classification pass. Luna is preferred across
-// every configured endpoint (including direct Amazon Bedrock); Haiku is the validated cross-vendor
-// availability fallback tier, tried only once every Luna endpoint has failed, not an extra call.
-// We do not guess an older Sonnet ID: exact IDs need a live registry entry and validated profile.
-//
-// Amazon Bedrock nomenclature differs from the vendor-native APIs: OpenAI models keep the bare
-// "openai.<model>" form, while Anthropic models are dated release IDs ("anthropic.claude-haiku-
-// 4-5-20251001-v1:0") and are also published behind cross-region inference profile IDs prefixed
-// with a region code, e.g. "us.anthropic.claude-haiku-4-5-20251001-v1:0".
-const FAST_PRIMARY_IDS = [
-  ["openai-codex", "gpt-5.6-luna"],
-  ["openai", "gpt-5.6-luna"],
-  ["github-copilot", "gpt-5.6-luna"],
-  ["amazon-bedrock", "openai.gpt-5.6-luna"],
-  ["anthropic", "claude-haiku-4-5"],
-  ["github-copilot", "claude-haiku-4.5"],
-  ["amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"],
-  ["amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0"],
-] as const;
+// Logical classifier tiers are resolved only against the operator's scoped registry snapshot.
+// Luna remains preferred over Haiku regardless of endpoint cost; the shared endpoint comparator
+// orders alternatives serving the same logical model. We do not guess an older Sonnet ID: an exact
+// endpoint must canonicalize to one of these validated logical model IDs.
+const PRIMARY_CLASSIFIER_TIERS = ["gpt-5.6-luna", "claude-haiku-4-5"] as const;
 
-// The key is the primary tier's canonical vendor; each value is deliberately from a different
-// vendor for independent reconciliation. Thus the `google` entry contains OpenAI models. Multiple
-// rows for one model are endpoint alternatives (including Amazon Bedrock), not extra calls.
-const SECONDARY_IDS_BY_PRIMARY_VENDOR: Record<ModelVendor, readonly (readonly [string, string])[]> = {
-  openai: [
-    ["anthropic", "claude-sonnet-5"],
-    ["github-copilot", "claude-sonnet-5"],
-    ["amazon-bedrock", "anthropic.claude-sonnet-5"],
-    ["amazon-bedrock", "us.anthropic.claude-sonnet-5"],
-  ],
-  anthropic: [
-    ["openai-codex", "gpt-5.6-terra"],
-    ["openai", "gpt-5.6-terra"],
-    ["github-copilot", "gpt-5.6-terra"],
-    ["amazon-bedrock", "openai.gpt-5.6-terra"],
-  ],
-  google: [
-    ["openai-codex", "gpt-5.6-terra"],
-    ["openai", "gpt-5.6-terra"],
-    ["amazon-bedrock", "openai.gpt-5.6-terra"],
-  ],
+// The key is the primary tier's canonical vendor; each logical secondary tier deliberately belongs
+// to a different vendor for independent reconciliation. Endpoint providers do not determine this:
+// an Amazon Bedrock endpoint serving Sonnet is still an Anthropic secondary, for example.
+const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Record<ModelVendor, readonly string[]> = {
+  openai: ["claude-sonnet-5"],
+  anthropic: ["gpt-5.6-terra"],
+  google: ["gpt-5.6-terra"],
 };
 
 // Any thrown failure (rate limiting, transient 5xx, missing credentials, an unhealthy endpoint,
@@ -75,36 +53,57 @@ function candidateLabel(candidate: ClassifierModel): string {
   return `${candidate.model.provider}/${candidate.model.id}`;
 }
 
-function findConfiguredModels(
-  models: readonly Model<Api>[],
-  ids: readonly (readonly [string, string])[],
-): ClassifierModel[] {
-  const seen = new Set<string>();
-  const found: ClassifierModel[] = [];
-  for (const [provider, modelId] of ids) {
-    const key = `${provider}/${modelId}`;
-    if (seen.has(key)) continue;
-    const model = models.find((candidate) => candidate.provider === provider && candidate.id === modelId);
-    const vendor = model ? canonicalVendor(model.provider, model.id) : undefined;
-    if (model && vendor) {
-      found.push({ model, vendor });
-      seen.add(key);
-    }
-  }
-  return found;
+function comparable(candidate: ClassifierModel): EndpointEffectiveCostComparable {
+  return {
+    provider: candidate.model.provider,
+    modelId: candidate.model.id,
+    ...(candidate.endpointEffectiveCost === undefined
+      ? {}
+      : { endpointEffectiveCost: candidate.endpointEffectiveCost }),
+  };
 }
 
-export function selectClassifierModels(models: readonly Model<Api>[]): {
+function resolveClassifierTier(registry: readonly RegistryModelSnapshot[], logicalModelId: string): ClassifierModel[] {
+  const candidates: ClassifierModel[] = [];
+  for (const endpoint of registry) {
+    if (!endpoint.available || canonicalModelId(endpoint.modelId) !== logicalModelId) continue;
+    if (!healthVerdict(endpoint.health).usable) continue;
+    let endpointEffectiveCost: number | undefined;
+    try {
+      endpointEffectiveCost = calculateEndpointEffectiveCost(
+        endpoint,
+        (endpoint.providerWeight ?? providerWeightFor(endpoint.provider)).weight,
+      );
+    } catch (error) {
+      if (error instanceof RangeError) continue;
+      throw error;
+    }
+    candidates.push({
+      model: { provider: endpoint.provider, id: endpoint.modelId },
+      vendor: endpoint.vendor,
+      ...(endpointEffectiveCost === undefined ? {} : { endpointEffectiveCost }),
+    });
+  }
+  return candidates.sort((left, right) => compareEndpointEffectiveCost(comparable(left), comparable(right)));
+}
+
+function resolveClassifierTiers(
+  registry: readonly RegistryModelSnapshot[],
+  logicalModelIds: readonly string[],
+): ClassifierModel[] {
+  return logicalModelIds.flatMap((logicalModelId) => resolveClassifierTier(registry, logicalModelId));
+}
+
+export function selectClassifierModels(registry: readonly RegistryModelSnapshot[]): {
   primary: ClassifierModel[];
   secondary: ClassifierModel[];
 } {
-  const primary = findConfiguredModels(models, FAST_PRIMARY_IDS);
+  const primary = resolveClassifierTiers(registry, PRIMARY_CLASSIFIER_TIERS);
   // The vendor guess only decides which independent secondary tier to search; tier order (Luna
-  // before Haiku) already means this reflects whichever tier has any configured endpoint at all,
-  // regardless of which specific endpoint within that tier ends up answering at call time.
+  // before Haiku) means this reflects whichever logical tier has any eligible scoped endpoint.
   const primaryVendorGuess = primary[0]?.vendor;
   const secondary = primaryVendorGuess
-    ? findConfiguredModels(models, SECONDARY_IDS_BY_PRIMARY_VENDOR[primaryVendorGuess])
+    ? resolveClassifierTiers(registry, SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR[primaryVendorGuess])
     : [];
   return { primary, secondary };
 }
@@ -142,13 +141,14 @@ async function callClassifierModel(
   candidate: ClassifierModel,
   request: ClassifierRequest,
 ): Promise<ClassifierTransportResult> {
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(candidate.model);
+  const model = ctx.modelRegistry.find(candidate.model.provider, candidate.model.id);
+  if (!model) throw new Error(`Classifier endpoint disappeared from registry: ${candidateLabel(candidate)}`);
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
-  if (!auth.apiKey)
-    throw new Error(`No request credential resolved for ${candidate.model.provider}/${candidate.model.id}`);
+  if (!auth.apiKey) throw new Error(`No request credential resolved for ${candidateLabel(candidate)}`);
   const started = performance.now();
   const response = await complete(
-    candidate.model,
+    model,
     {
       systemPrompt: request.systemPrompt,
       messages: [
@@ -168,7 +168,7 @@ async function callClassifierModel(
       maxTokens: 4_096,
       maxRetries: 1,
       reasoning: "low",
-      onPayload: (payload) => requireToolCall(payload, candidate.model.api, CLASSIFIER_TOOL_NAME),
+      onPayload: (payload) => requireToolCall(payload, model.api, CLASSIFIER_TOOL_NAME),
     },
   );
   if (response.stopReason === "error" || response.stopReason === "aborted") {
@@ -203,12 +203,12 @@ function transportFor(ctx: ExtensionContext, candidates: readonly ClassifierMode
 
 export async function classifyTaskWithPi(input: {
   ctx: ExtensionContext;
+  registry: readonly RegistryModelSnapshot[];
   prompt: string;
   synopsis: SessionSynopsis;
   signal?: AbortSignal;
 }): Promise<ClassificationResult> {
-  const models = input.ctx.modelRegistry.getAvailable();
-  const selected = selectClassifierModels(models);
+  const selected = selectClassifierModels(input.registry);
   const primaryVendor = selected.primary[0]?.vendor;
   const secondaryVendor = selected.secondary[0]?.vendor;
   return classifyTask({

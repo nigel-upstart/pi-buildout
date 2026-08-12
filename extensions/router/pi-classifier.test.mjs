@@ -1,9 +1,35 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { selectClassifierModels, transportFromCandidates } from "./pi-classifier.ts";
+import { classifyTaskWithPi, selectClassifierModels, transportFromCandidates } from "./pi-classifier.ts";
 
 function model(provider, id) {
   return { provider, id };
+}
+
+function snapshot(provider, modelId, overrides = {}) {
+  const canonicalId = modelId
+    .replace(/^(?:us|eu|au|jp|apac|global)\./, "")
+    .replace(/^(?:anthropic|openai|google)\./, "");
+  const vendor = canonicalId.startsWith("claude-")
+    ? "anthropic"
+    : canonicalId.startsWith("gemini-")
+      ? "google"
+      : "openai";
+  return {
+    provider,
+    modelId,
+    name: modelId,
+    vendor,
+    contextWindow: 128_000,
+    maxOutputTokens: 16_384,
+    available: true,
+    reasoning: true,
+    supportedEfforts: ["low"],
+    inputTypes: ["text"],
+    toolCapable: true,
+    costPerMillion: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    ...overrides,
+  };
 }
 
 function candidate(provider, id, vendor) {
@@ -29,8 +55,8 @@ function rateLimitError(provider) {
 describe("selectClassifierModels", () => {
   it("selects exact configured IDs from different model vendors", () => {
     const selected = selectClassifierModels([
-      model("openai-codex", "gpt-5.6-luna"),
-      model("anthropic", "claude-sonnet-5"),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("anthropic", "claude-sonnet-5"),
     ]);
     assert.equal(selected.primary[0].model.id, "gpt-5.6-luna");
     assert.equal(selected.primary[0].vendor, "openai");
@@ -40,37 +66,37 @@ describe("selectClassifierModels", () => {
 
   it("does not downgrade the independent secondary from validated Sonnet to Haiku", () => {
     const selected = selectClassifierModels([
-      model("openai-codex", "gpt-5.6-luna"),
-      model("anthropic", "claude-haiku-4-5"),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("anthropic", "claude-haiku-4-5"),
     ]);
     assert.equal(selected.primary[0].model.id, "gpt-5.6-luna");
     assert.equal(selected.secondary.length, 0);
   });
 
   it("does not invent an unconfigured classifier model", () => {
-    const selected = selectClassifierModels([model("openai", "gpt-4o")]);
+    const selected = selectClassifierModels([snapshot("openai", "gpt-4o")]);
     assert.equal(selected.primary.length, 0);
     assert.equal(selected.secondary.length, 0);
   });
 
   it("collects every configured Luna endpoint, including direct Amazon Bedrock, ahead of Haiku", () => {
     const selected = selectClassifierModels([
-      model("openai-codex", "gpt-5.6-luna"),
-      model("openai", "gpt-5.6-luna"),
-      model("amazon-bedrock", "openai.gpt-5.6-luna"),
-      model("anthropic", "claude-haiku-4-5"),
-      model("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"),
-      model("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai", "gpt-5.6-luna"),
+      snapshot("amazon-bedrock", "openai.gpt-5.6-luna"),
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"),
+      snapshot("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
       [
+        "amazon-bedrock/openai.gpt-5.6-luna",
         "openai-codex/gpt-5.6-luna",
         "openai/gpt-5.6-luna",
-        "amazon-bedrock/openai.gpt-5.6-luna",
-        "anthropic/claude-haiku-4-5",
         "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
         "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "anthropic/claude-haiku-4-5",
       ],
     );
     // The vendor guess for secondary selection follows the highest-priority tier (Luna/openai),
@@ -80,18 +106,76 @@ describe("selectClassifierModels", () => {
 
   it("offers Amazon Bedrock as a secondary endpoint alternative for Sonnet and Terra", () => {
     const openaiPrimary = selectClassifierModels([
-      model("openai-codex", "gpt-5.6-luna"),
-      model("amazon-bedrock", "anthropic.claude-sonnet-5"),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("amazon-bedrock", "anthropic.claude-sonnet-5"),
     ]);
     assert.equal(openaiPrimary.secondary[0]?.model.id, "anthropic.claude-sonnet-5");
     assert.equal(openaiPrimary.secondary[0]?.model.provider, "amazon-bedrock");
 
     const anthropicPrimary = selectClassifierModels([
-      model("anthropic", "claude-haiku-4-5"),
-      model("amazon-bedrock", "openai.gpt-5.6-terra"),
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("amazon-bedrock", "openai.gpt-5.6-terra"),
     ]);
     assert.equal(anthropicPrimary.secondary[0]?.model.id, "openai.gpt-5.6-terra");
     assert.equal(anthropicPrimary.secondary[0]?.model.provider, "amazon-bedrock");
+  });
+
+  it("chooses the secondary logical tier from the primary model vendor, not its endpoint provider", () => {
+    const selected = selectClassifierModels([
+      snapshot("amazon-bedrock", "openai.gpt-5.6-luna"),
+      snapshot("amazon-bedrock", "anthropic.claude-sonnet-5"),
+      snapshot("amazon-bedrock", "openai.gpt-5.6-terra"),
+    ]);
+    assert.equal(selected.primary[0]?.vendor, "openai");
+    assert.deepEqual(
+      selected.secondary.map((entry) => entry.model.id),
+      ["anthropic.claude-sonnet-5"],
+    );
+  });
+
+  it("excludes unavailable and recurring-failure endpoints but retains transient failures", () => {
+    const selected = selectClassifierModels([
+      snapshot("openai-codex", "gpt-5.6-luna", { available: false }),
+      snapshot("openai", "gpt-5.6-luna", {
+        health: { provider: "openai", modelId: "gpt-5.6-luna", status: "client_error" },
+      }),
+      snapshot("bifrost", "gpt-5.6-luna", {
+        health: { provider: "bifrost", modelId: "gpt-5.6-luna", status: "failed" },
+      }),
+      snapshot("amazon-bedrock", "openai.gpt-5.6-luna", {
+        health: { provider: "amazon-bedrock", modelId: "openai.gpt-5.6-luna", status: "server_error" },
+      }),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
+      ["amazon-bedrock/openai.gpt-5.6-luna"],
+    );
+  });
+
+  it("returns no candidates when the scoped snapshot contains no classifier model", () => {
+    const selected = selectClassifierModels([]);
+    assert.deepEqual(selected, { primary: [], secondary: [] });
+  });
+
+  it("fails closed without consulting the registry when scope leaves no classifier endpoint", async () => {
+    let registryLookups = 0;
+    const result = await classifyTaskWithPi({
+      ctx: {
+        modelRegistry: {
+          find: () => {
+            registryLookups++;
+            return undefined;
+          },
+        },
+      },
+      registry: [],
+      prompt: "Implement the change",
+      synopsis: {},
+    });
+    assert.equal(result.failedClosed, true);
+    assert.equal(registryLookups, 0);
+    assert.equal(result.attempts.length, 4);
+    assert.ok(result.attempts.every((attempt) => attempt.valid === false));
   });
 });
 

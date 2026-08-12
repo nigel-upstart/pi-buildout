@@ -184,6 +184,7 @@ export const CLASSIFICATION_TIMEOUT_MS = 10_000;
 
 async function classifyWithTimeout(
   ctx: ExtensionContext,
+  registry: readonly RegistryModelSnapshot[],
   prompt: string,
   taskSynopsis: SessionSynopsis,
 ): Promise<{ classification: ClassificationResult; timedOut: boolean }> {
@@ -194,6 +195,7 @@ async function classifyWithTimeout(
   try {
     const classification = await classifyTaskWithPi({
       ctx,
+      registry,
       prompt,
       synopsis: taskSynopsis,
       signal: controller.signal,
@@ -1386,6 +1388,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
         repository,
         Boolean(repository.reviewDelta) || isStandaloneReviewRequest(event.prompt),
       );
+      // Classification and route selection consume the same operator-scoped registry shape. The
+      // classifier never reconstructs candidates from the process-wide available-model list.
+      const classifierRegistry = buildRegistrySnapshot(ctx, scope);
       let active = state.active;
       let classification: ClassificationResult | undefined;
       let requiresNewLease = pending?.gate.action === "new_task";
@@ -1395,7 +1400,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           ctx.sessionManager.getSessionId(),
           "router.classify_continuity",
           { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, event.prompt, currentSynopsis),
+          () => classifyWithTimeout(ctx, classifierRegistry, event.prompt, currentSynopsis),
         );
         classification = continuityResult.classification;
         if (continuityResult.timedOut) {
@@ -1420,7 +1425,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           ctx.sessionManager.getSessionId(),
           "router.classify",
           { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, event.prompt, currentSynopsis),
+          () => classifyWithTimeout(ctx, classifierRegistry, event.prompt, currentSynopsis),
         );
         classification = freshResult.classification;
         classificationTimedOut = freshResult.timedOut;
