@@ -258,13 +258,11 @@ export function buildRegistrySnapshot(
   return snapshots;
 }
 
-export type RouterScopePatternSource = ScopePatternSource;
-
 export type RouterScope = {
   /** `enabledModels` patterns. Empty means no scope is configured, so everything available is in scope. */
   patterns: readonly string[];
   /** Source of every pattern in `patterns`; scope precedence selects one complete pattern list. */
-  patternSource: RouterScopePatternSource;
+  patternSource: ScopePatternSource;
   health: EndpointHealthRecord | undefined;
   /** Validated per-provider weights, including source and contract/preference basis metadata. */
   providerWeights: ReadonlyMap<string, ResolvedProviderWeight>;
@@ -324,7 +322,7 @@ export async function readRouterScope(cwd: string, options: RouterScopeReadOptio
     userSettings: user,
   });
   const resolvedPatterns = overridePatterns ?? (patterns.length > 0 ? patterns : fallbackPatterns);
-  const patternSource: RouterScopePatternSource =
+  const patternSource: ScopePatternSource =
     overridePatterns !== undefined
       ? "environment"
       : patterns.length > 0

@@ -20,7 +20,7 @@ type RegistryIdentity = {
   modelId: string;
 };
 
-export type ScopeEndpointDiagnostic = {
+type ScopeEndpointDiagnostic = {
   provider: string;
   modelId: string;
   listCost?: number;
@@ -31,12 +31,12 @@ export type ScopeEndpointDiagnostic = {
   effectiveCost?: number;
 };
 
-export type ScopeLogicalModelDiagnostic = {
+type ScopeLogicalModelDiagnostic = {
   logicalModelId: string;
   endpoints: ScopeEndpointDiagnostic[];
 };
 
-export type ScopeDiagnosticExclusion = CandidateExclusion & {
+type ScopeDiagnosticExclusion = CandidateExclusion & {
   source: "scope" | "latest-route";
 };
 

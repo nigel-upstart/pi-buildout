@@ -50,7 +50,7 @@ export type RouteRequirements = {
   requiresTools: boolean;
 };
 
-export type ExclusionCode =
+type ExclusionCode =
   | "not_in_registry"
   | "not_in_scope"
   | "endpoint_unhealthy"
