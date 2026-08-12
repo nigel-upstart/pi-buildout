@@ -37,10 +37,14 @@ function markdownTable(headers, rows) {
   return [header, divider, ...rows.map((row) => `| ${row.join(" | ")} |`)].join("\n");
 }
 
+function compareText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function sortedRows(rows) {
   return [...rows].sort(
     (left, right) =>
-      left.modelId.localeCompare(right.modelId) ||
+      compareText(left.modelId, right.modelId) ||
       (effortOrder.get(left.effort) ?? Number.MAX_SAFE_INTEGER) -
         (effortOrder.get(right.effort) ?? Number.MAX_SAFE_INTEGER),
   );
@@ -132,7 +136,7 @@ function corroborationTable(rows) {
 function languageTable(rows) {
   const languageRows = rows.flatMap(({ modelId, effort, byLanguage }) =>
     Object.entries(byLanguage)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareText(left, right))
       .map(([language, values]) => [
         `\`${modelId}\``,
         `\`${effort}\``,
@@ -161,7 +165,7 @@ function frugalityTable(frugality) {
       "TypeScript calls",
       "Ruby calls",
     ],
-    frugality.rows.map(({ modelId, effort, medianApiCalls, resolveRate, perLanguageMedianApiCalls }) => [
+    sortedRows(frugality.rows).map(({ modelId, effort, medianApiCalls, resolveRate, perLanguageMedianApiCalls }) => [
       `\`${modelId}\``,
       `\`${effort}\``,
       decimal(medianApiCalls),

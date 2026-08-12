@@ -13,6 +13,10 @@ const policyPath = join(root, "extensions", "router", "core", "policy.ts");
 const registryPackagePath = join(root, "node_modules", "@earendil-works", "pi-ai", "package.json");
 const registryPath = join(root, "node_modules", "@earendil-works", "pi-ai", "dist", "models.generated.js");
 
+function compareText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function logicalModelsFromPolicy(source) {
   const declaration = /const MODEL_VENDOR:[^=]+=[^{]*\{(?<body>[\s\S]*?)\n\};/u.exec(source);
   if (!declaration?.groups?.body) throw new Error("could not find the MODEL_VENDOR declaration in core/policy.ts");
@@ -24,7 +28,7 @@ function logicalModelsFromPolicy(source) {
   if (entries.length !== nonemptyLines.length) {
     throw new Error("MODEL_VENDOR contains syntax the deterministic survey parser does not recognize");
   }
-  return entries.sort((left, right) => left.logicalModelId.localeCompare(right.logicalModelId));
+  return entries.sort((left, right) => compareText(left.logicalModelId, right.logicalModelId));
 }
 
 function round(value) {
@@ -64,7 +68,7 @@ const registryEndpoints = Object.entries(MODELS)
   .flatMap(([provider, models]) =>
     (Array.isArray(models) ? models : Object.values(models)).map((model) => ({ provider, model })),
   )
-  .sort((left, right) => left.provider.localeCompare(right.provider) || left.model.id.localeCompare(right.model.id));
+  .sort((left, right) => compareText(left.provider, right.provider) || compareText(left.model.id, right.model.id));
 
 const survey = {
   schemaVersion: 1,
