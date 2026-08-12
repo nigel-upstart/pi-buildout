@@ -247,7 +247,9 @@ describe("lease restoration and context estimates", () => {
     const withEffectiveCost = structuredClone(active);
     withEffectiveCost.selected.endpointEffectiveCost = 23.75;
     withEffectiveCost.fallbacks[0].endpointEffectiveCost = 20;
-    assert.equal(restore(withEffectiveCost)?.selected.endpointEffectiveCost, 23.75);
+    const restoredEffectiveCost = restore(withEffectiveCost);
+    assert.equal(restoredEffectiveCost?.selected.endpointEffectiveCost, 23.75);
+    assert.equal(restoredEffectiveCost?.fallbacks[0].endpointEffectiveCost, 20);
     for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
       const malformedCost = structuredClone(withEffectiveCost);
       malformedCost.selected.endpointEffectiveCost = invalid;
