@@ -205,6 +205,18 @@ const PROVIDER_WEIGHT = 1.0;
 /** Bedrock Sol exposes only its short-context rate; direct OpenAI changes tiers above this boundary. */
 const BEDROCK_SOL_SHORT_CONTEXT_LIMIT = 272_000;
 
+/** Applies the missing-price guard to both new route selection and persisted-lease revalidation. */
+export function bedrockSolLongContextPricingUnavailable(
+  model: Pick<RegistryModelSnapshot, "provider" | "modelId">,
+  estimatedFinishedTokens: number,
+): boolean {
+  return (
+    model.provider === "amazon-bedrock" &&
+    canonicalModelId(model.modelId) === "gpt-5.6-sol" &&
+    estimatedFinishedTokens > BEDROCK_SOL_SHORT_CONTEXT_LIMIT
+  );
+}
+
 /**
  * Task shape that modifies scoring without changing which models are policy-authorized. Derived
  * from trusted harness state and classifier features by the extension, never from route cost.
@@ -588,11 +600,7 @@ function evaluateCandidate(
   // Filter this pricing guard before resolution computes endpoint cost: a larger request must never
   // be compared at Bedrock Sol's short-context rate, even transiently before eligibility rejects it.
   const priceableEndpoints = scopedEndpoints.filter((model) => {
-    const longBedrockSolRequest =
-      model.provider === "amazon-bedrock" &&
-      canonicalModelId(model.modelId) === "gpt-5.6-sol" &&
-      requirements.estimatedFinishedTokens > BEDROCK_SOL_SHORT_CONTEXT_LIMIT;
-    if (!longBedrockSolRequest) return true;
+    if (!bedrockSolLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return true;
     const supported = model.supportedEfforts.includes(ref.effort);
     exclusions.push(
       supported
