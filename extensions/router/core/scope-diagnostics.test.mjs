@@ -269,5 +269,9 @@ describe("scope diagnostics", () => {
       renderScopeDiagnostics(result, 128),
       ["route scope", "patterns (1):", "... truncated: 6 additional lines omitted (128-byte budget)"].join("\n"),
     );
+    assert.equal(renderScopeDiagnostics(result, Number.NaN), "");
+    const oversizedBudgetOutput = renderScopeDiagnostics(result, MAX_ROUTE_SCOPE_BYTES * 10);
+    assert.ok(Buffer.byteLength(oversizedBudgetOutput, "utf8") <= MAX_ROUTE_SCOPE_BYTES);
+    assert.match(oversizedBudgetOutput, /\(8000-byte budget\)$/);
   });
 });

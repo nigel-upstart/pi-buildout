@@ -241,21 +241,22 @@ function scopeDiagnosticLines(diagnostics: ScopeDiagnostics): string[] {
 
 /** Renders complete lines up to a hard UTF-8 byte budget and states exactly how much was omitted. */
 export function renderScopeDiagnostics(diagnostics: ScopeDiagnostics, byteBudget = MAX_ROUTE_SCOPE_BYTES): string {
+  const budget = Number.isFinite(byteBudget) ? Math.min(MAX_ROUTE_SCOPE_BYTES, Math.max(0, Math.floor(byteBudget))) : 0;
   const lines = scopeDiagnosticLines(diagnostics);
   const complete = lines.join("\n");
-  if (Buffer.byteLength(complete, "utf8") <= byteBudget) return complete;
+  if (Buffer.byteLength(complete, "utf8") <= budget) return complete;
 
   const kept: string[] = [];
   for (let index = 0; index < lines.length; index++) {
     const omitted = lines.length - index - 1;
-    const marker = `... truncated: ${String(omitted)} additional lines omitted (${String(byteBudget)}-byte budget)`;
+    const marker = `... truncated: ${String(omitted)} additional lines omitted (${String(budget)}-byte budget)`;
     const candidate = [...kept, lines[index] ?? "", marker].join("\n");
-    if (Buffer.byteLength(candidate, "utf8") > byteBudget) break;
+    if (Buffer.byteLength(candidate, "utf8") > budget) break;
     kept.push(lines[index] ?? "");
   }
   const omitted = lines.length - kept.length;
-  const marker = `... truncated: ${String(omitted)} additional lines omitted (${String(byteBudget)}-byte budget)`;
-  while (kept.length > 0 && Buffer.byteLength([...kept, marker].join("\n"), "utf8") > byteBudget) kept.pop();
-  if (Buffer.byteLength(marker, "utf8") > byteBudget) return "";
+  const marker = `... truncated: ${String(omitted)} additional lines omitted (${String(budget)}-byte budget)`;
+  while (kept.length > 0 && Buffer.byteLength([...kept, marker].join("\n"), "utf8") > budget) kept.pop();
+  if (Buffer.byteLength(marker, "utf8") > budget) return "";
   return [...kept, marker].join("\n");
 }
