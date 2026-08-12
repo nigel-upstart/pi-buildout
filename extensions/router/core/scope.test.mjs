@@ -54,7 +54,7 @@ describe("endpoint metadata and tie-breaks", () => {
     assert.equal(endpointTierFor("bifrost"), "gateway");
     assert.equal(endpointTierFor("amazon-bedrock"), "resale");
     assert.equal(endpointTierFor("github-copilot"), "resale");
-    // A provider nobody has classified must not be promoted above a first-party route.
+    // An unclassified provider keeps the conservative diagnostic label; cost ordering is separate.
     assert.equal(endpointTierFor("some-new-broker"), "resale");
   });
 

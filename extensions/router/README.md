@@ -168,7 +168,7 @@ The built-in route weights are:
 | `google`, `google-vertex` |    1.0 | preference | neutral first-party routes                                      |
 | `bifrost`                 |    1.0 | preference | neutral self-operated gateway                                   |
 | `openai`                  |  1.001 | preference | just behind `openai-codex` when list rates match                |
-| unknown provider          |   1.01 | preference | cannot silently outrank a known route                           |
+| unknown provider          |   1.01 | preference | trails neutral known routes when list rates match               |
 | `github-copilot`          |    n/a | —          | excluded from token-cost comparison and ordered last; see below |
 
 A `contract` basis asserts an actual price adjustment; a `preference` basis asserts ordering only and makes no price
