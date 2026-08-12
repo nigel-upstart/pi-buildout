@@ -48,8 +48,8 @@ export function blendedEndpointCost(endpoint: EndpointPrice): number {
 }
 
 /**
- * Computes the token-billed ordering value. The caller supplies the provider weight explicitly;
- * routing passes exactly 1.0 until provider-weight policy is introduced in a later layer.
+ * Computes the token-billed ordering value. The caller supplies its already validated provider
+ * weight explicitly; flat-rate capability proxies remain excluded regardless of nominal weight.
  */
 export function calculateEndpointEffectiveCost(endpoint: EndpointPrice, providerWeight: number): number | undefined {
   if (isFlatRateProvider(endpoint.provider)) return undefined;

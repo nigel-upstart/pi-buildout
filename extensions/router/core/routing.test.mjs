@@ -274,7 +274,7 @@ describe("ordinary route selection", () => {
     ]);
   });
 
-  it("keeps a cheaper non-manufacturer endpoint behind the manufacturer route", () => {
+  it("keeps a weighted, discounted resale endpoint behind the manufacturer route", () => {
     const models = [
       ...registry(),
       {
@@ -286,16 +286,19 @@ describe("ordinary route selection", () => {
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.primary.provider, "anthropic");
     assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
+    assert.ok(decision.fallbacks[0].endpointEffectiveCost < decision.primary.endpointEffectiveCost);
   });
 
   it("uses identical effective-cost semantics in registry resolution and RouteChoice ordering", () => {
     const cheap = {
       ...model("openai", "gpt-5.6-sol", "openai"),
       costPerMillion: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1.25 },
+      providerWeight: { weight: 0.5, basis: "preference", source: "project" },
     };
     const expensive = {
       ...model("openai-codex", "gpt-5.6-sol", "openai"),
       costPerMillion: { input: 10, output: 10, cacheRead: 1, cacheWrite: 12.5 },
+      providerWeight: { weight: 1.5, basis: "preference", source: "user" },
     };
     const models = [...registry().filter((candidate) => candidate.modelId !== "gpt-5.6-sol"), expensive, cheap];
 
@@ -304,7 +307,7 @@ describe("ordinary route selection", () => {
     assert.equal(ordinary.kind, "ordinary");
     assert.equal(ordinary.primary.provider, "openai");
     assert.equal(ordinary.primary.endpointBlendedCost, 1);
-    assert.equal(ordinary.primary.endpointEffectiveCost, 1);
+    assert.equal(ordinary.primary.endpointEffectiveCost, 0.5);
 
     // Tracked review takes the first resolved endpoint before RouteChoice group ordering, exercising
     // the registry-snapshot call path independently.

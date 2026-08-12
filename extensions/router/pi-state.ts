@@ -17,6 +17,9 @@ import { ENDPOINT_TIERS, POLICY_VERSION, policyAbility } from "./core/policy.ts"
 import type { EndpointTier } from "./core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
 import type { EffortLevel } from "./core/profiles.ts";
+import { ownProperty } from "./core/object-property.ts";
+import { providerWeightFor, resolveProviderWeights, ROUTER_PROVIDER_WEIGHTS_ENV } from "./core/provider-weights.ts";
+import type { ProviderWeightRejection, ResolvedProviderWeight } from "./core/provider-weights.ts";
 import { findEndpointHealth, isEndpointHealthRecord } from "./core/health.ts";
 import type { EndpointHealthRecord } from "./core/health.ts";
 import { canonicalVendor, isStandaloneReviewRequest } from "./core/routing.ts";
@@ -248,6 +251,7 @@ export function buildRegistrySnapshot(
       inputTypes: model.input,
       toolCapable: !model.id.includes("realtime") && !model.id.includes("deep-research"),
       costPerMillion: { ...model.cost },
+      providerWeight: providerWeightFor(model.provider, scope.providerWeights),
     });
   }
   return snapshots;
@@ -257,19 +261,39 @@ export type RouterScope = {
   /** `enabledModels` patterns. Empty means no scope is configured, so everything available is in scope. */
   patterns: readonly string[];
   health: EndpointHealthRecord | undefined;
+  /** Validated per-provider weights, including source and contract/preference basis metadata. */
+  providerWeights: ReadonlyMap<string, ResolvedProviderWeight>;
+  /** Best-effort configuration failures retained for the later diagnostics layer. */
+  providerWeightRejections: readonly ProviderWeightRejection[];
 };
 
-export const EMPTY_SCOPE: RouterScope = { patterns: [], health: undefined };
+const DEFAULT_PROVIDER_WEIGHTS = resolveProviderWeights();
+export const EMPTY_SCOPE: RouterScope = Object.freeze({
+  patterns: Object.freeze([]),
+  health: undefined,
+  providerWeights: DEFAULT_PROVIDER_WEIGHTS.weights,
+  providerWeightRejections: DEFAULT_PROVIDER_WEIGHTS.rejections,
+});
+
+type RouterScopeReadOptions = {
+  /** Injectable for isolated tests; production reads `process.env`. */
+  environment?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>;
+  /** Injectable so tests never read the actual user's settings. */
+  userSettingsPath?: string;
+  /** Injectable so tests never read the actual endpoint-health record. */
+  healthPath?: string;
+};
 
 /**
- * Reads the operator's model scope and the endpoint health record. Project settings win over user
- * settings, matching how pi resolves configuration. Every read is best-effort: a missing or malformed
- * file yields no scope and no health, which is the permissive default rather than an empty registry.
+ * Reads model scope, endpoint health, and per-provider weights. Provider-weight precedence is
+ * environment JSON, then project settings, then user settings, then built-ins, resolved independently
+ * per provider. Every file read is best-effort.
  */
-export async function readRouterScope(cwd: string): Promise<RouterScope> {
+export async function readRouterScope(cwd: string, options: RouterScopeReadOptions = {}): Promise<RouterScope> {
+  const environment = object(options.environment ?? process.env);
   // An explicit override wins over settings. It exists so a run can be pinned to a known scope
   // without editing configuration, which tests rely on and operators can use for a one-off.
-  const override = process.env.PI_ROUTER_MODEL_SCOPE;
+  const override = string(ownProperty(environment, "PI_ROUTER_MODEL_SCOPE"));
   const overridePatterns =
     override === undefined
       ? undefined
@@ -277,18 +301,27 @@ export async function readRouterScope(cwd: string): Promise<RouterScope> {
           .split(",")
           .map((pattern) => pattern.trim())
           .filter((pattern) => pattern.length > 0);
-  const [project, user] = await Promise.all([
-    readJsonFile(join(cwd, CONFIG_DIR_NAME, "settings.json")),
-    readJsonFile(join(homedir(), ".pi", "agent", "settings.json")),
-  ]);
-  const patterns = stringArray(object(project)?.enabledModels);
-  const fallbackPatterns = stringArray(object(user)?.enabledModels);
+  const userSettingsPath = options.userSettingsPath ?? join(homedir(), ".pi", "agent", "settings.json");
+  const configuredHealthPath = string(ownProperty(environment, "PI_ROUTER_ENDPOINT_HEALTH_PATH"));
   const healthPath =
-    process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH ?? join(homedir(), ".pi", "agent", "router-endpoint-health.json");
-  const health = await readJsonFile(healthPath);
+    options.healthPath ?? configuredHealthPath ?? join(homedir(), ".pi", "agent", "router-endpoint-health.json");
+  const [project, user, health] = await Promise.all([
+    readJsonFile(join(cwd, CONFIG_DIR_NAME, "settings.json")),
+    readJsonFile(userSettingsPath),
+    readJsonFile(healthPath),
+  ]);
+  const patterns = stringArray(ownProperty(object(project), "enabledModels"));
+  const fallbackPatterns = stringArray(ownProperty(object(user), "enabledModels"));
+  const providerWeights = resolveProviderWeights({
+    environmentValue: string(ownProperty(environment, ROUTER_PROVIDER_WEIGHTS_ENV)),
+    projectSettings: project,
+    userSettings: user,
+  });
   return {
     patterns: overridePatterns ?? (patterns.length > 0 ? patterns : fallbackPatterns),
     health: isEndpointHealthRecord(health) ? health : undefined,
+    providerWeights: providerWeights.weights,
+    providerWeightRejections: providerWeights.rejections,
   };
 }
 
@@ -340,14 +373,6 @@ export async function resolveRouterRepoKey(pi: ExtensionAPI, cwd: string): Promi
 
 function lastModePath(agentDir: string): string {
   return process.env.PI_ROUTER_LAST_MODE_PATH ?? join(agentDir, ROUTER_LAST_MODE_FILE);
-}
-
-/**
- * Reads one key of a parsed JSON object without letting a repository whose identity happens to be
- * `__proto__` or `constructor` reach the prototype chain.
- */
-function ownProperty(source: ObjectLike | undefined, key: string): unknown {
-  return source ? Object.getOwnPropertyDescriptor(source, key)?.value : undefined;
 }
 
 type LastModeRecord = {

@@ -106,6 +106,12 @@ Ordering is by ascending weighted effective cost. Each entry declares a **basis*
 | `github-copilot`          |    n/a | —          | **excluded from cost comparison** and ordered last; see below      |
 | unknown provider          |   1.01 | preference | cannot silently outrank a known route                              |
 
+Configuration uses `routerProviderWeights` in project `.pi/settings.json` and user `~/.pi/agent/settings.json`, with
+`PI_ROUTER_PROVIDER_WEIGHTS` as a JSON-object override. Each provider value is either a number (basis `preference`) or
+an object with own `weight` and `basis` (`contract` or `preference`) properties. Precedence is resolved independently
+per provider in environment → project → user → built-in order. The inclusive validation band is **0.5 through 2.0**; an
+invalid selected entry records a rejection and uses neutral `1.0` rather than recovering a lower-precedence value.
+
 Measured result on the live registry: `gpt-5.6-sol` at Bedrock **19.712**, `openai-codex` **23.750**, `openai`
 **23.774**. `claude-sonnet-5` at Bedrock `us.`/`global.` **6.640**, Bedrock `eu.` **7.304**, `anthropic` **8.000**.
 
@@ -201,15 +207,15 @@ Branch `router/endpoint-comparator`. Depends on pr1 + pr2.
 
 Branch `router/provider-weights`. Depends on pr3.
 
-- [ ] `RouterScope` gains a validated weight map with `PI_ROUTER_PROVIDER_WEIGHTS` → project → user precedence,
+- [x] `RouterScope` gains a validated weight map with `PI_ROUTER_PROVIDER_WEIGHTS` → project → user precedence,
       best-effort reads.
-- [ ] Built-in defaults per the table above; each entry records `contract` or `preference`.
-- [ ] Validation rejects non-finite, zero, negative, and out-of-band values; keys read via the existing `ownProperty`
+- [x] Built-in defaults per the table above; each entry records `contract` or `preference`.
+- [x] Validation rejects non-finite, zero, negative, and out-of-band values; keys read via the existing `ownProperty`
       guard; rejected entries fall back to 1.0 and are recorded.
-- [ ] Weights feed **only** `endpointEffectiveCost`; `robustCostToDone` and `scoreEvidencePrior` untouched.
-- [ ] Golden test: no route selection changes, since ordering is still tier-first.
-- [ ] Unit test pinning the measured effective costs.
-- [ ] `npm run check` passes.
+- [x] Weights feed **only** `endpointEffectiveCost`; `robustCostToDone` and `scoreEvidencePrior` untouched.
+- [x] Golden test: no route selection changes, since ordering is still tier-first.
+- [x] Unit test pinning the measured effective costs.
+- [x] `npm run check` passes.
 
 ### pr5 — Cost-first ordering, retire tier-first, `router-policy-v6`
 

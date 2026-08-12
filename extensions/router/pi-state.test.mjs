@@ -1,20 +1,24 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import { createTaskLease } from "./core/lease.ts";
 import { selectReviewRoute } from "./core/routing.ts";
 import {
+  buildRegistrySnapshot,
   cacheEstimate,
+  EMPTY_SCOPE,
   estimateFinishedTokens,
   latestReportedContextTokens,
   modelAbility,
   normalizeSessionEntries,
   promptFingerprint,
   readRepositoryMetadata,
+  readRouterScope,
   readStartModeResolution,
   restoreLeaseState,
   writeLastKnownMode,
@@ -88,6 +92,136 @@ describe("modelAbility", () => {
     assert.equal(reviewers.get("google").modelId, "gemini-3.6-flash");
     assert.deepEqual(decision.ceilingMismatchVendors, ["google"]);
     assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
+  });
+});
+
+describe("router scope configuration", () => {
+  async function fixture(t) {
+    const root = await mkdtemp(join(tmpdir(), "pi-router-scope-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    return {
+      project: join(root, "project"),
+      projectSettings: join(root, "project", ".pi", "settings.json"),
+      userSettings: join(root, "user", "settings.json"),
+      health: join(root, "health.json"),
+    };
+  }
+
+  async function writeJson(path, value) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(value), "utf8");
+  }
+
+  it("reads isolated project and user settings with per-provider environment precedence", async (t) => {
+    const paths = await fixture(t);
+    await writeJson(paths.projectSettings, {
+      enabledModels: ["amazon-bedrock/*"],
+      routerProviderWeights: { "amazon-bedrock": 0.8, openai: { weight: 1.2, basis: "contract" } },
+    });
+    await writeJson(paths.userSettings, {
+      enabledModels: ["anthropic/*"],
+      routerProviderWeights: { "amazon-bedrock": 0.7, anthropic: 0.9 },
+    });
+    const environment = {
+      PI_ROUTER_PROVIDER_WEIGHTS: JSON.stringify({ "amazon-bedrock": 0.6 }),
+    };
+    const scope = await readRouterScope(paths.project, {
+      environment,
+      userSettingsPath: paths.userSettings,
+      healthPath: paths.health,
+    });
+
+    assert.deepEqual(scope.patterns, ["amazon-bedrock/*"]);
+    assert.deepEqual(scope.providerWeights.get("amazon-bedrock"), {
+      weight: 0.6,
+      basis: "preference",
+      source: "environment",
+    });
+    assert.deepEqual(scope.providerWeights.get("openai"), {
+      weight: 1.2,
+      basis: "contract",
+      source: "project",
+    });
+    assert.deepEqual(scope.providerWeights.get("anthropic"), {
+      weight: 0.9,
+      basis: "preference",
+      source: "user",
+    });
+    assert.deepEqual(scope.providerWeightRejections, []);
+
+    const registryModel = getModel("amazon-bedrock", "openai.gpt-5.6-sol");
+    assert.ok(registryModel);
+    const snapshots = buildRegistrySnapshot(
+      {
+        modelRegistry: {
+          getAll: () => [registryModel],
+          getAvailable: () => [registryModel],
+        },
+      },
+      scope,
+    );
+    assert.equal(snapshots.length, 1);
+    assert.deepEqual(snapshots[0].providerWeight, scope.providerWeights.get("amazon-bedrock"));
+  });
+
+  it("records malformed environment JSON while retaining best-effort file fallback", async (t) => {
+    const paths = await fixture(t);
+    await mkdir(dirname(paths.projectSettings), { recursive: true });
+    await writeFile(paths.projectSettings, "{not-json", "utf8");
+    await writeJson(paths.userSettings, {
+      enabledModels: ["anthropic/*"],
+      routerProviderWeights: { anthropic: 0.9 },
+    });
+    const scope = await readRouterScope(paths.project, {
+      environment: { PI_ROUTER_PROVIDER_WEIGHTS: "anthropic=0.5" },
+      userSettingsPath: paths.userSettings,
+      healthPath: paths.health,
+    });
+
+    assert.deepEqual(scope.patterns, ["anthropic/*"]);
+    assert.equal(scope.providerWeights.get("anthropic").weight, 0.9);
+    assert.equal(scope.providerWeights.get("anthropic").source, "user");
+    assert.equal(scope.providerWeightRejections.length, 1);
+    assert.equal(scope.providerWeightRejections[0].source, "environment");
+    assert.match(scope.providerWeightRejections[0].reason, /valid JSON/);
+  });
+
+  it("uses immutable built-ins when isolated settings files are missing or malformed", async (t) => {
+    assert.equal(Object.isFrozen(EMPTY_SCOPE), true);
+    assert.equal(Object.isFrozen(EMPTY_SCOPE.patterns), true);
+    assert.equal(typeof EMPTY_SCOPE.providerWeights.set, "undefined");
+    assert.deepEqual(EMPTY_SCOPE.providerWeights.get("amazon-bedrock"), {
+      weight: 0.83,
+      basis: "contract",
+      source: "built-in",
+    });
+
+    const missing = await fixture(t);
+    const missingScope = await readRouterScope(missing.project, {
+      environment: {},
+      userSettingsPath: missing.userSettings,
+      healthPath: missing.health,
+    });
+    assert.deepEqual(missingScope.patterns, []);
+    assert.deepEqual(missingScope.providerWeights.get("amazon-bedrock"), {
+      weight: 0.83,
+      basis: "contract",
+      source: "built-in",
+    });
+
+    const malformed = await fixture(t);
+    await mkdir(dirname(malformed.projectSettings), { recursive: true });
+    await mkdir(dirname(malformed.userSettings), { recursive: true });
+    await writeFile(malformed.projectSettings, "null", "utf8");
+    await writeFile(malformed.userSettings, "[", "utf8");
+    const malformedScope = await readRouterScope(malformed.project, {
+      environment: {},
+      userSettingsPath: malformed.userSettings,
+      healthPath: malformed.health,
+    });
+    assert.deepEqual(malformedScope.patterns, []);
+    assert.equal(malformedScope.providerWeights.get("openai").weight, 1.001);
+    assert.deepEqual(malformedScope.providerWeightRejections, []);
   });
 });
 
