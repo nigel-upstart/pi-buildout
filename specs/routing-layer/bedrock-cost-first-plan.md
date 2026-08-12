@@ -221,20 +221,20 @@ Branch `router/provider-weights`. Depends on pr3.
 
 Branch `router/cost-first-ordering`. Depends on pr4. **This is the behaviour change.**
 
-- [ ] Order by ascending weighted effective cost, then specificity, then ID. `ENDPOINT_TIERS` and `endpointTierFor` no
+- [x] Order by ascending weighted effective cost, then specificity, then ID. `ENDPOINT_TIERS` and `endpointTierFor` no
       longer participate; `endpointTier` retained as diagnostic metadata so `isRouteChoice` keeps validating it.
-- [ ] `github-copilot` excluded from cost comparison and ordered last, with the reason recorded in `decisions.md`.
-- [ ] Eligibility-before-ordering tests, including the `SOL_MAX` / `effort_unsupported` case.
-- [ ] `au.anthropic.claude-opus-4-6-v1` never takes the primary slot.
-- [ ] Cross-model ranking untouched; same-model grouping preserved; `validateFallbackTopology` and the tracked-review
+- [x] `github-copilot` excluded from cost comparison and ordered last, with the reason recorded in `decisions.md`.
+- [x] Eligibility-before-ordering tests, including the `SOL_MAX` / `effort_unsupported` case.
+- [x] `au.anthropic.claude-opus-4-6-v1` never takes the primary slot.
+- [x] Cross-model ranking untouched; same-model grouping preserved; `validateFallbackTopology` and the tracked-review
       two-non-builder-vendor invariant still pass.
-- [ ] `POLICY_VERSION` → `router-policy-v6`; test asserts a persisted v5 lease is rejected.
-- [ ] `decisions.md` dated decision superseding decision 1 of `router-policy-v5`; `SPEC.md` updated where it asserts
+- [x] `POLICY_VERSION` → `router-policy-v6`; test asserts a persisted v5 lease is rejected.
+- [x] `decisions.md` dated decision superseding decision 1 of `router-policy-v5`; `SPEC.md` updated where it asserts
       manufacturer-primary and within-tier-only pricing.
-- [ ] `README.md` documents the weight table, the discount scope, the Copilot exclusion, the zero-rate semantics, and
+- [x] `README.md` documents the weight table, the discount scope, the Copilot exclusion, the zero-rate semantics, and
       the residency guidance. `ATTRIBUTION.md` updated.
-- [ ] Golden test records the new expected primary per archetype.
-- [ ] `npm run check` passes.
+- [x] Golden test records the new expected primary per archetype.
+- [x] `npm run check` passes.
 
 ### pr6 — Scope-aware classifier
 
