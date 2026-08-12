@@ -10,6 +10,7 @@ import { canonicalModelId } from "../extensions/router/core/scope.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const policyPath = join(root, "extensions", "router", "core", "policy.ts");
+const registryPackagePath = join(root, "node_modules", "@earendil-works", "pi-ai", "package.json");
 const registryPath = join(root, "node_modules", "@earendil-works", "pi-ai", "dist", "models.generated.js");
 
 function logicalModelsFromPolicy(source) {
@@ -54,6 +55,10 @@ function endpointRecord(provider, model) {
 
 const policySource = await readFile(policyPath, "utf8");
 const logicalModels = logicalModelsFromPolicy(policySource);
+const registryPackage = JSON.parse(await readFile(registryPackagePath, "utf8"));
+if (typeof registryPackage.version !== "string" || registryPackage.version.length === 0) {
+  throw new TypeError("installed @earendil-works/pi-ai package must declare a version");
+}
 const { MODELS } = await import(pathToFileURL(registryPath).href);
 const registryEndpoints = Object.entries(MODELS)
   .flatMap(([provider, models]) =>
@@ -63,6 +68,8 @@ const registryEndpoints = Object.entries(MODELS)
 
 const survey = {
   schemaVersion: 1,
+  registryPackage: "@earendil-works/pi-ai",
+  registryVersion: registryPackage.version,
   registrySource: "node_modules/@earendil-works/pi-ai/dist/models.generated.js",
   policySource: "extensions/router/core/policy.ts#MODEL_VENDOR",
   models: logicalModels.map(({ logicalModelId, vendor }) => ({

@@ -185,7 +185,7 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.82.0`, `0.82.1`, `0.83.0`, and `0.84.1`
+- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, and `0.84.1`
 - License declared by the package: MIT
 
 Ideas and API patterns used:
@@ -197,6 +197,9 @@ Ideas and API patterns used:
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
   resource inheritance.
+- The `@earendil-works/pi-ai@0.80.7` generated registry's endpoint rates and capabilities, plus its `calculateCost`
+  cache-accounting behavior, as versioned evidence for the offline endpoint survey and routing evidence document. No
+  registry generator or cost-calculation code was copied or adopted into the router runtime.
 - Pi's thinking-level clamp policy (prefer the nearest supported level above the request, fall back downward only when
   necessary) is a conceptual adaptation, reimplemented in `extensions/subagents/helpers.ts`; no Pi code was copied.
   `supportedThinkingLevels` additionally narrows OpenAI's direct GPT-5.6 levels beyond what Pi's generated model

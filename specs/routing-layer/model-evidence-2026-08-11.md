@@ -466,9 +466,16 @@ levels, and the `0.25 * input + 0.75 * output` blend. A logical model absent fro
 still emitted with an empty endpoint list. This matters because the installed development registry can lag the runtime
 registry.
 
-The survey is an observation of the installed `@earendil-works/pi-ai` registry, not a contractual source. Published list
-rates come from the [Amazon Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/); the private 17% term below
-is operator-confirmed and is not claimed to appear on that public page.
+The measurements and model counts in this review were captured from the pinned `@earendil-works/pi-ai@0.80.7`
+development registry at `node_modules/@earendil-works/pi-ai/dist/models.generated.js`; the survey emits that package
+name, version, and path in its output. That pinned registry does **not** contain `claude-opus-5`, so the survey emits an
+empty endpoint list for that logical model. The operator's runtime registry does contain direct and Bedrock Opus 5
+endpoints, but its package revision was not captured; no numeric observation in this review is attributed to that
+unversioned registry.
+
+The survey is a registry observation, not a contractual source. Published list rates come from the
+[Amazon Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/); the private 17% term below is operator-confirmed
+and is not claimed to appear on that public page.
 
 ### Contract terms and the order-preserving construction
 

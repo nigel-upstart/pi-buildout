@@ -10,8 +10,11 @@ endpoint ordering with one cost-first comparator driven by a configurable per-pr
 
 ## Confirmed evidence
 
-Every item below was verified against this repository, the installed `@earendil-works/pi-ai` registry, or vendor
-documentation. Nothing here is an assumption.
+Every item below was verified against this repository, an identified `@earendil-works/pi-ai` registry, or vendor
+documentation. Unless explicitly labelled as a live-runtime measurement, registry observations use the pinned
+`@earendil-works/pi-ai@0.80.7` development package. That version does not contain `claude-opus-5`; the operator's live
+runtime does, but its package revision was not captured. Nothing below silently treats those two registries as the same
+source.
 
 ### Scope is already resolved; three things break it
 
