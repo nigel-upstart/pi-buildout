@@ -47,6 +47,7 @@ import {
   selectStandaloneReviewRoute,
 } from "./core/routing.ts";
 import { canonicalModelId } from "./core/scope.ts";
+import { buildScopeDiagnostics, renderScopeDiagnostics } from "./core/scope-diagnostics.ts";
 import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
@@ -2007,7 +2008,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("route", {
-    description: "Show or change model-router mode; record outcomes or trigger deterministic fallback",
+    description: "Show model-router mode or scope diagnostics; record outcomes or trigger deterministic fallback",
     handler: async (args, ctx) => {
       const [command, value] = args.trim().split(/\s+/, 2);
       if (command === "active" || command === "shadow" || command === "off") {
@@ -2037,6 +2038,21 @@ export default function routerExtension(pi: ExtensionAPI): void {
         // Recorded immediately so `startMode: "last"` survives a crash, not just a clean exit.
         await rememberMode(state.mode);
         ctx.ui.notify(`Model router mode set to ${command}`, "info");
+        return;
+      }
+      if (command === "scope") {
+        const registry = buildRegistrySnapshot(ctx, scope);
+        const diagnostics = buildScopeDiagnostics({
+          patterns: scope.patterns,
+          patternSource: scope.patternSource,
+          registry,
+          allRegistryEndpoints: ctx.modelRegistry
+            .getAll()
+            .map((model) => ({ provider: model.provider, modelId: model.id })),
+          providerWeightRejections: scope.providerWeightRejections,
+          ...(lastRoute.decision ? { latestRouteExclusions: lastRoute.decision.exclusions } : {}),
+        });
+        ctx.ui.notify(renderScopeDiagnostics(diagnostics), "info");
         return;
       }
       if (command === "reset") {

@@ -284,6 +284,51 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_safety_review"), true);
   });
 
+  it("renders /route scope from the scoped registry in endpoint selection order", async () => {
+    const commands = new Map();
+    const notifications = [];
+    routerExtension({
+      on: () => {},
+      registerCommand: (name, command) => commands.set(name, command),
+      registerTool: () => {},
+    });
+    const makeModel = (provider, id) => ({
+      provider,
+      id,
+      name: id,
+      api: "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
+    const models = [makeModel("openai-codex", "gpt-5.6-sol"), makeModel("amazon-bedrock", "openai.gpt-5.6-sol")];
+    await commands.get("route").handler("scope", {
+      modelRegistry: { getAll: () => models, getAvailable: () => models },
+      ui: { notify: (message, type) => notifications.push({ message, type }) },
+    });
+
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].type, "info");
+    assert.equal(
+      notifications[0].message,
+      [
+        "route scope",
+        "patterns (0):",
+        "  - source=default pattern=<all registry models>",
+        "unmatched patterns (0):",
+        "logical models (1):",
+        "  gpt-5.6-sol (2 eligible endpoints):",
+        "    1. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=0.830000 weightBasis=contract weightSource=built-in cacheWrite=priced_write effectiveCost=19.712500",
+        "    2. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "excluded endpoints (0):",
+        "provider-weight rejections (0):",
+      ].join("\n"),
+    );
+  });
+
   it("uses one scoped registry snapshot for classification and the resulting route decision", async () => {
     const hooks = new Map();
     const notifications = [];

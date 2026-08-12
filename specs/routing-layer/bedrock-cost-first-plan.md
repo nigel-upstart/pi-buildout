@@ -252,9 +252,9 @@ Branch `router/scope-aware-classifier`. Depends on pr5.
 
 Branch `router/scope-observability`. Depends on pr6.
 
-- [ ] `/route scope` reports patterns and their source, resolved logical models, and per model each eligible endpoint in
+- [x] `/route scope` reports patterns and their source, resolved logical models, and per model each eligible endpoint in
       selection order with list cost, applied weight, basis, cache classification, and effective cost.
-- [ ] Excluded endpoints listed with their `ExclusionCode` and detail.
+- [x] Excluded endpoints listed with their `ExclusionCode` and detail.
 - [ ] Telemetry gains `endpointEffectiveCost`, applied weight, basis, and cache classification; store stays append-only
       and older records still parse.
 - [ ] Attempt outcomes record observed `cacheRead` / `cacheWrite` token counts per endpoint.
