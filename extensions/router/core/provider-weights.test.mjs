@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   PROVIDER_WEIGHT_MAX,
   PROVIDER_WEIGHT_MIN,
+  PROVIDER_WEIGHT_REJECTION_LIMIT,
   providerWeightFor,
   resolveProviderWeights,
 } from "./provider-weights.ts";
@@ -96,7 +97,8 @@ describe("provider route weights", () => {
       assert.equal(result.rejections.length, 1);
       assert.equal(result.rejections[0].provider, "amazon-bedrock");
       assert.equal(result.rejections[0].source, "project");
-      assert.equal(Object.is(result.rejections[0].rejectedValue, invalid), true);
+      assert.equal(result.rejections[0].rejectedValueType, "number");
+      assert.equal("rejectedValue" in result.rejections[0], false);
     }
   });
 
@@ -128,6 +130,7 @@ describe("provider route weights", () => {
     assert.equal(malformed.rejections.length, 1);
     assert.equal(malformed.rejections[0].provider, undefined);
     assert.equal(malformed.rejections[0].source, "environment");
+    assert.equal(malformed.rejections[0].rejectedValueType, "string");
     assert.match(malformed.rejections[0].reason, /valid JSON/);
 
     const wrongShape = resolveProviderWeights({
@@ -136,6 +139,26 @@ describe("provider route weights", () => {
     });
     assert.equal(providerWeightFor("anthropic", wrongShape.weights).source, "user");
     assert.match(wrongShape.rejections[0].reason, /JSON object/);
+  });
+
+  it("bounds rejection records without retaining rejected values or large provider names", () => {
+    const secret = "super-secret-provider-token";
+    const invalidEntries = Object.fromEntries(
+      Array.from({ length: PROVIDER_WEIGHT_REJECTION_LIMIT + 20 }, (_, index) => [
+        `${"p".repeat(200)}-${String(index)}`,
+        { weight: secret, basis: "preference" },
+      ]),
+    );
+    const result = resolveProviderWeights({
+      environmentValue: secret,
+      projectSettings: settings(invalidEntries),
+    });
+
+    assert.equal(result.rejections.length, PROVIDER_WEIGHT_REJECTION_LIMIT);
+    assert.ok(result.rejections.every((rejection) => (rejection.provider?.length ?? 0) <= 160));
+    assert.ok(result.rejections.every((rejection) => !("rejectedValue" in rejection)));
+    assert.doesNotMatch(JSON.stringify(result.rejections), new RegExp(secret));
+    assert.equal(providerWeightFor(`${"p".repeat(200)}-119`, result.weights).source, "rejection-fallback");
   });
 
   it("reads hostile and nested keys only through own data-property descriptors", () => {

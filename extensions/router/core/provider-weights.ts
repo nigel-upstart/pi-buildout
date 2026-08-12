@@ -3,6 +3,8 @@ const ROUTER_PROVIDER_WEIGHTS_SETTING = "routerProviderWeights";
 
 export const PROVIDER_WEIGHT_MIN = 0.5;
 export const PROVIDER_WEIGHT_MAX = 2.0;
+export const PROVIDER_WEIGHT_REJECTION_LIMIT = 100;
+const REJECTION_PROVIDER_MAX_LENGTH = 160;
 
 type ProviderWeightBasis = "contract" | "preference";
 type ProviderWeightSource = "environment" | "project" | "user" | "built-in" | "rejection-fallback";
@@ -18,7 +20,8 @@ export type ProviderWeightRejection = {
   /** Absent when the whole environment value or settings map was malformed. */
   provider?: string;
   source: ConfiguredProviderWeightSource;
-  rejectedValue: unknown;
+  /** A non-sensitive summary; rejected configuration values are never retained. */
+  rejectedValueType: string;
   reason: string;
 };
 
@@ -58,12 +61,45 @@ function hasOwnProperty(source: ObjectLike, key: string): boolean {
   return Object.getOwnPropertyDescriptor(source, key) !== undefined;
 }
 
+function rejectedValueType(value: unknown): string {
+  if (value === null) return "null";
+  try {
+    if (Array.isArray(value)) return "array";
+  } catch {
+    return "uninspectable";
+  }
+  return typeof value;
+}
+
+function boundedProvider(provider: string): string {
+  if (provider.length <= REJECTION_PROVIDER_MAX_LENGTH) return provider;
+  return `${provider.slice(0, REJECTION_PROVIDER_MAX_LENGTH - 3)}...`;
+}
+
+function recordRejection(
+  rejections: ProviderWeightRejection[],
+  rejection: {
+    provider?: string;
+    source: ConfiguredProviderWeightSource;
+    rejectedValue: unknown;
+    reason: string;
+  },
+): void {
+  if (rejections.length >= PROVIDER_WEIGHT_REJECTION_LIMIT) return;
+  rejections.push({
+    ...(rejection.provider === undefined ? {} : { provider: boundedProvider(rejection.provider) }),
+    source: rejection.source,
+    rejectedValueType: rejectedValueType(rejection.rejectedValue),
+    reason: rejection.reason,
+  });
+}
+
 function rejectMap(
   rejections: ProviderWeightRejection[],
   source: ConfiguredProviderWeightSource,
   rejectedValue: unknown,
 ): void {
-  rejections.push({
+  recordRejection(rejections, {
     source,
     rejectedValue,
     reason: "provider weights must be a JSON object keyed by provider",
@@ -90,7 +126,7 @@ function environmentMap(value: string | undefined, rejections: ProviderWeightRej
   try {
     parsed = JSON.parse(value);
   } catch {
-    rejections.push({
+    recordRejection(rejections, {
       source: "environment",
       rejectedValue: value,
       reason: `${ROUTER_PROVIDER_WEIGHTS_ENV} must contain valid JSON`,
@@ -156,7 +192,7 @@ export function resolveProviderWeights(
       const rejectedValue = ownProperty(selected.value, provider);
       const validated = validateConfiguredWeight(rejectedValue);
       if (typeof validated === "string") {
-        rejections.push({ provider, source: selected.source, rejectedValue, reason: validated });
+        recordRejection(rejections, { provider, source: selected.source, rejectedValue, reason: validated });
         weights.set(provider, { weight: 1.0, basis: "preference", source: "rejection-fallback" });
       } else {
         weights.set(provider, { ...validated, source: selected.source });
