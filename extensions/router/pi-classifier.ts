@@ -171,8 +171,13 @@ async function callClassifierModel(
       onPayload: (payload) => requireToolCall(payload, model.api, CLASSIFIER_TOOL_NAME),
     },
   );
-  if (response.stopReason === "error" || response.stopReason === "aborted") {
-    throw new Error(response.errorMessage ?? `Classifier stopped with ${response.stopReason}`);
+  if (response.stopReason === "aborted") {
+    const error = new Error(response.errorMessage ?? "Classifier stopped with aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+  if (response.stopReason === "error") {
+    throw new Error(response.errorMessage ?? "Classifier stopped with error");
   }
   const toolCall = response.content.find(
     (content) => content.type === "toolCall" && content.name === CLASSIFIER_TOOL_NAME,

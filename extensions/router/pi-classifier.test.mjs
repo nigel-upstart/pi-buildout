@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { classifyTaskWithPi, selectClassifierModels, transportFromCandidates } from "./pi-classifier.ts";
 
 function model(provider, id) {
@@ -176,6 +177,39 @@ describe("selectClassifierModels", () => {
     assert.equal(registryLookups, 0);
     assert.equal(result.attempts.length, 4);
     assert.ok(result.attempts.every((attempt) => attempt.valid === false));
+  });
+
+  it("does not call an alternate endpoint when the provider returns an aborted response", async () => {
+    const faux = registerFauxProvider({
+      api: "router-classifier-abort-test",
+      provider: "router-classifier-abort-test",
+      models: [{ id: "abort-fixture" }],
+    });
+    faux.setResponses([
+      fauxAssistantMessage([], { stopReason: "aborted" }),
+      fauxAssistantMessage([], { stopReason: "aborted" }),
+    ]);
+    const registryLookups = [];
+    try {
+      const result = await classifyTaskWithPi({
+        ctx: {
+          modelRegistry: {
+            find: (provider, modelId) => {
+              registryLookups.push(`${provider}/${modelId}`);
+              return faux.getModel();
+            },
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
+          },
+        },
+        registry: [snapshot("a-primary", "gpt-5.6-luna"), snapshot("z-alternate", "gpt-5.6-luna")],
+        prompt: "Implement the change",
+        synopsis: {},
+      });
+      assert.equal(result.failedClosed, true);
+      assert.deepEqual(registryLookups, ["a-primary/gpt-5.6-luna", "a-primary/gpt-5.6-luna"]);
+    } finally {
+      faux.unregister();
+    }
   });
 });
 
