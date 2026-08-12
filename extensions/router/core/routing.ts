@@ -59,6 +59,7 @@ type ExclusionCode =
   | "unavailable"
   | "context_headroom"
   | "context_headroom_prior"
+  | "long_context_pricing_unavailable"
   | "image_unsupported"
   | "tools_unsupported"
   | "effort_unsupported"
@@ -200,6 +201,9 @@ const DEFAULT_NEAR_TIE_FRACTION = 0.05;
 
 /** Provider weighting is deliberately neutral until the provider-weight policy layer. */
 const PROVIDER_WEIGHT = 1.0;
+
+/** Bedrock Sol exposes only its short-context rate; direct OpenAI changes tiers above this boundary. */
+const BEDROCK_SOL_SHORT_CONTEXT_LIMIT = 272_000;
 
 /**
  * Task shape that modifies scoring without changing which models are policy-authorized. Derived
@@ -476,6 +480,12 @@ function evaluateEndpoint(
     exclusions.push({ candidate: key, code: "effort_unauthorized", detail: authorization.reason });
     return undefined;
   }
+  const bedrockSol = model.provider === "amazon-bedrock" && model.modelId === "openai.gpt-5.6-sol";
+  // Keep the endpoint's existing effort guard authoritative when both guards apply.
+  if (bedrockSol && !model.supportedEfforts.includes(ref.effort)) {
+    exclusions.push({ candidate: key, code: "effort_unsupported", detail: `${ref.effort} effort is unsupported` });
+    return undefined;
+  }
   const headroom = Math.floor(model.contextWindow * 0.7);
   if (requirements.estimatedFinishedTokens > headroom) {
     exclusions.push({
@@ -580,13 +590,32 @@ function evaluateCandidate(
   exclusions: CandidateExclusion[],
   context: RoutingContext = DEFAULT_ROUTING_CONTEXT,
 ): RouteChoice[] {
-  const endpoints = resolveEndpoints(ref, registry);
-  if (endpoints.length === 0) {
+  const scopedEndpoints = registry.filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId);
+  // Filter this pricing guard before resolution computes endpoint cost: a larger request must never
+  // be compared at Bedrock Sol's short-context rate, even transiently before eligibility rejects it.
+  const priceableEndpoints = scopedEndpoints.filter((model) => {
+    const unavailable =
+      model.provider === "amazon-bedrock" &&
+      model.modelId === "openai.gpt-5.6-sol" &&
+      model.supportedEfforts.includes(ref.effort) &&
+      requirements.estimatedFinishedTokens > BEDROCK_SOL_SHORT_CONTEXT_LIMIT;
+    if (!unavailable) return true;
     exclusions.push({
-      candidate: `${ref.logicalModelId}@${ref.effort}`,
-      code: "not_in_scope",
-      detail: "no scoped registry endpoint serves this model",
+      candidate: `${model.provider}/${model.modelId}`,
+      code: "long_context_pricing_unavailable",
+      detail: `Bedrock Sol has no registered price above ${String(BEDROCK_SOL_SHORT_CONTEXT_LIMIT)} estimated tokens`,
     });
+    return false;
+  });
+  const endpoints = resolveEndpoints(ref, priceableEndpoints);
+  if (endpoints.length === 0) {
+    if (scopedEndpoints.length === 0) {
+      exclusions.push({
+        candidate: `${ref.logicalModelId}@${ref.effort}`,
+        code: "not_in_scope",
+        detail: "no scoped registry endpoint serves this model",
+      });
+    }
     return [];
   }
   return endpoints

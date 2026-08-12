@@ -392,6 +392,73 @@ describe("ordinary route selection", () => {
     assert.ok(decision.exclusions.some((exclusion) => exclusion.code === "context_headroom"));
   });
 
+  it("excludes Bedrock Sol only above its registered short-context pricing boundary", () => {
+    const bedrockSol = {
+      ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
+      // The real endpoint does not expose max effort; high remains eligible for this boundary test.
+      supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+      costPerMillion: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const models = [...registry(), bedrockSol];
+    const atBoundary = selectOrdinaryRoute("median_repository_implementation", models, {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 272_000,
+    });
+    assert.equal(atBoundary.kind, "ordinary");
+    assert.ok(
+      [atBoundary.primary, ...atBoundary.fallbacks].some(
+        (choice) => choice.provider === "amazon-bedrock" && choice.modelId === "openai.gpt-5.6-sol",
+      ),
+    );
+
+    // Poison the short-context price for the larger request. Eligibility must remove this endpoint
+    // before registry resolution attempts to compute or compare that rate.
+    const aboveBoundaryModels = models.map((candidate) =>
+      candidate === bedrockSol
+        ? { ...candidate, costPerMillion: { ...candidate.costPerMillion, input: Number.NaN } }
+        : candidate,
+    );
+    const aboveBoundary = selectOrdinaryRoute("median_repository_implementation", aboveBoundaryModels, {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 272_001,
+    });
+    assert.equal(aboveBoundary.kind, "ordinary");
+    assert.ok(
+      [aboveBoundary.primary, ...aboveBoundary.fallbacks].every(
+        (choice) => choice.provider !== "amazon-bedrock" || choice.modelId !== "openai.gpt-5.6-sol",
+      ),
+    );
+    assert.ok(
+      aboveBoundary.exclusions.some(
+        (exclusion) =>
+          exclusion.candidate === "amazon-bedrock/openai.gpt-5.6-sol" &&
+          exclusion.code === "long_context_pricing_unavailable" &&
+          /no registered price above 272000 estimated tokens/.test(exclusion.detail),
+      ),
+    );
+  });
+
+  it("preserves Bedrock Sol's max-effort exclusion", () => {
+    const bedrockSol = {
+      ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
+      supportedEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+    };
+    const decision = selectOrdinaryRoute("highest_risk_advisory", [...registry(), bedrockSol], REQUIREMENTS);
+    assert.equal(decision.kind, "ordinary");
+    assert.ok(
+      decision.exclusions.some(
+        (exclusion) =>
+          exclusion.candidate === "amazon-bedrock/openai.gpt-5.6-sol" && exclusion.code === "effort_unsupported",
+      ),
+    );
+    assert.ok(
+      [decision.primary, ...decision.fallbacks].every(
+        (choice) =>
+          choice.provider !== "amazon-bedrock" || choice.modelId !== "openai.gpt-5.6-sol" || choice.effort !== "max",
+      ),
+    );
+  });
+
   it("rejects candidates whose measured peak context exceeds the window headroom", () => {
     // A 272K window leaves 190K of headroom, below the measured p90 peak context of max-effort
     // OpenAI configurations, so those endpoints are excluded before scoring.

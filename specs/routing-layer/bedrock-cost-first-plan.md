@@ -192,10 +192,10 @@ Branch `router/endpoint-comparator`. Depends on pr1 + pr2.
 - [x] Test pinning the generational finding so a registry bump that flattens it fails loudly.
 - [x] `RouteChoice.endpointEffectiveCost` optional, absent for flat-rate, so no lease-shape break.
 - [x] Comparator is a **total order**: cost, then `endpointSpecificity`, then exact provider/ID string.
-- [ ] Bedrock GPT-5.6 Sol requests above 272,000 estimated finished tokens are rejected until that endpoint exposes a
+- [x] Bedrock GPT-5.6 Sol requests above 272,000 estimated finished tokens are rejected until that endpoint exposes a
       long-context rate; the short-context rate must never price larger requests.
 - [x] Golden test: ordered endpoints and selected primary byte-identical before and after.
-- [ ] `npm run check` passes.
+- [x] `npm run check` passes.
 
 ### pr4 — Configurable per-provider route weights
 
