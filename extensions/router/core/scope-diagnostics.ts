@@ -167,8 +167,27 @@ export function buildScopeDiagnostics(input: {
   };
 }
 
-function singleLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+function safeDiagnosticText(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b(Authorization\s*:\s*)(?:Bearer|Basic)\s+[^\s,;]+/giu, "$1[REDACTED]")
+    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/giu, "$1 [REDACTED]")
+    .replace(
+      /\b((?:api[ _-]?key|access[ _-]?token|credential|password|secret|token)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+      "$1[REDACTED]",
+    )
+    .replace(/(https?:\/\/)[^/\s@]+@/giu, "$1[REDACTED]@")
+    .replace(
+      /\b(?:A(?:KI|SI)A[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|gh[opusr]_[0-9A-Za-z]{20,}|sk-[0-9A-Za-z_-]{20,})\b/gu,
+      "[REDACTED]",
+    )
+    .replace(/\beyJ[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\b/gu, "[REDACTED]")
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----.*$/giu, "[REDACTED PRIVATE KEY]");
+}
+
+function displayEndpointKey(endpoint: Pick<RegistryIdentity, "provider" | "modelId">): string {
+  return `${safeDiagnosticText(endpoint.provider)}/${safeDiagnosticText(endpoint.modelId)}`;
 }
 
 function cost(value: number | undefined, flatRate: boolean): string {
@@ -182,22 +201,24 @@ function scopeDiagnosticLines(diagnostics: ScopeDiagnostics): string[] {
     lines.push(`  - source=${diagnostics.patternSource} pattern=<all registry models>`);
   } else {
     for (const pattern of diagnostics.patterns) {
-      lines.push(`  - source=${diagnostics.patternSource} pattern=${singleLine(pattern)}`);
+      lines.push(`  - source=${diagnostics.patternSource} pattern=${safeDiagnosticText(pattern)}`);
     }
   }
 
   lines.push(`unmatched patterns (${String(diagnostics.unmatchedPatterns.length)}):`);
   for (const pattern of diagnostics.unmatchedPatterns) {
-    lines.push(`  - source=${diagnostics.patternSource} pattern=${singleLine(pattern)}`);
+    lines.push(`  - source=${diagnostics.patternSource} pattern=${safeDiagnosticText(pattern)}`);
   }
 
   lines.push(`logical models (${String(diagnostics.logicalModels.length)}):`);
   for (const logical of diagnostics.logicalModels) {
-    lines.push(`  ${logical.logicalModelId} (${String(logical.endpoints.length)} eligible endpoints):`);
+    lines.push(
+      `  ${safeDiagnosticText(logical.logicalModelId)} (${String(logical.endpoints.length)} eligible endpoints):`,
+    );
     for (const [index, endpoint] of logical.endpoints.entries()) {
       const flatRate = isFlatRateProvider(endpoint.provider);
       lines.push(
-        `    ${String(index + 1)}. endpoint=${endpointKey(endpoint)} listCost=${cost(endpoint.listCost, flatRate)} appliedWeight=${cost(endpoint.appliedWeight, flatRate)} weightBasis=${endpoint.weightBasis ?? "n/a"} weightSource=${endpoint.weightSource ?? "n/a"} cacheWrite=${endpoint.cacheWriteClassification ?? "n/a"} effectiveCost=${cost(endpoint.effectiveCost, flatRate)}`,
+        `    ${String(index + 1)}. endpoint=${displayEndpointKey(endpoint)} listCost=${cost(endpoint.listCost, flatRate)} appliedWeight=${cost(endpoint.appliedWeight, flatRate)} weightBasis=${endpoint.weightBasis ?? "n/a"} weightSource=${endpoint.weightSource ?? "n/a"} cacheWrite=${endpoint.cacheWriteClassification ?? "n/a"} effectiveCost=${cost(endpoint.effectiveCost, flatRate)}`,
       );
     }
   }
@@ -205,14 +226,14 @@ function scopeDiagnosticLines(diagnostics: ScopeDiagnostics): string[] {
   lines.push(`excluded endpoints (${String(diagnostics.exclusions.length)}):`);
   for (const exclusion of diagnostics.exclusions) {
     lines.push(
-      `  - source=${exclusion.source} candidate=${singleLine(exclusion.candidate)} code=${exclusion.code} detail=${singleLine(exclusion.detail)}`,
+      `  - source=${exclusion.source} candidate=${safeDiagnosticText(exclusion.candidate)} code=${exclusion.code} detail=${safeDiagnosticText(exclusion.detail)}`,
     );
   }
 
   lines.push(`provider-weight rejections (${String(diagnostics.providerWeightRejections.length)}):`);
   for (const rejection of diagnostics.providerWeightRejections) {
     lines.push(
-      `  - provider=${singleLine(rejection.provider ?? "<map>")} source=${rejection.source} reason=${singleLine(rejection.reason)}`,
+      `  - provider=${safeDiagnosticText(rejection.provider ?? "<map>")} source=${rejection.source} reason=${safeDiagnosticText(rejection.reason)}`,
     );
   }
   return lines;

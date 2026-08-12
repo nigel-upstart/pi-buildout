@@ -167,6 +167,42 @@ describe("scope diagnostics", () => {
     assert.match(output, /provider=amazon-bedrock source=environment reason=weight must be between/);
   });
 
+  it("redacts credentials from configured and observed diagnostic text", () => {
+    const secret = ["super", "sensitive", "value"].join("-");
+    const registry = [
+      model("openai", "gpt-5.6-sol", {
+        health: {
+          provider: "openai",
+          modelId: "gpt-5.6-sol",
+          status: "failed",
+          detail: `Authorization: Bearer ${secret}; api_key=${secret}; https://user:${secret}@example.invalid`,
+        },
+      }),
+    ];
+    const result = diagnostics({
+      patterns: [`provider/token=${secret}`],
+      registry,
+      allRegistryEndpoints: registry,
+      providerWeightRejections: [
+        {
+          provider: "amazon-bedrock",
+          source: "environment",
+          rejectedValueType: "string",
+          reason: `credential=${secret} is not a valid weight`,
+          rejectedValue: secret,
+        },
+      ],
+    });
+    const output = renderScopeDiagnostics(result);
+
+    assert.equal(output.includes(secret), false);
+    assert.match(output, /pattern=provider\/token=\[REDACTED\]/);
+    assert.match(output, /Authorization: \[REDACTED\]/);
+    assert.match(output, /api_key=\[REDACTED\]/);
+    assert.match(output, /https:\/\/\[REDACTED\]@example\.invalid/);
+    assert.match(output, /reason=credential=\[REDACTED\] is not a valid weight/);
+  });
+
   it("caps rendered UTF-8 output and reports omitted complete lines", () => {
     const registry = Array.from({ length: 100 }, (_, index) =>
       model(`provider-${String(index)}`, `gpt-5.6-sol-${String(index)}`),
