@@ -45,7 +45,41 @@ export type AttemptOutcome = {
   wallTimeMs: number;
   humanIntervention: boolean;
   retried: boolean;
+  /** Optional so labeled outcomes written before PR7 remain valid samples. */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 };
+
+export type AttemptTokenCounts = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+function observedTokenCount(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+/** Sums provider-reported usage for one exact endpoint attempt. */
+export function aggregateAttemptTokenCounts(
+  usages: readonly {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite?: number;
+  }[],
+): AttemptTokenCounts {
+  return usages.reduce<AttemptTokenCounts>(
+    (total, usage) => ({
+      inputTokens: total.inputTokens + observedTokenCount(usage.input),
+      outputTokens: total.outputTokens + observedTokenCount(usage.output),
+      cacheReadTokens: total.cacheReadTokens + observedTokenCount(usage.cacheRead),
+      cacheWriteTokens: total.cacheWriteTokens + observedTokenCount(usage.cacheWrite),
+    }),
+    { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  );
+}
 
 function optionalFiniteNonnegative(value: unknown): boolean {
   return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);

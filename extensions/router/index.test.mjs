@@ -1115,8 +1115,9 @@ describe("routerExtension", () => {
     const selectedModels = [];
     const notifications = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-auth-failover-"));
+    const telemetryPath = join(telemetryDirectory, "events.jsonl");
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
-    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
     const now = new Date().toISOString();
     const choices = [
       {
@@ -1241,7 +1242,7 @@ describe("routerExtension", () => {
               provider: model.provider,
               model: model.id,
               stopReason: "error",
-              usage: { input: 100, output: 0, cacheRead: 0, cost: { total: 0 } },
+              usage: { input: 100, output: 0, cacheRead: 25, cacheWrite: 10, cost: { total: 0 } },
             },
           ],
         },
@@ -1263,6 +1264,19 @@ describe("routerExtension", () => {
         ["openai", "anthropic"],
       );
       assert.match(notifications[0].message, /all authorized ordinary provider choices exhausted/);
+      const attempts = (await readFile(telemetryPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((event) => event.kind === "attempt_completed");
+      assert.deepEqual(
+        attempts.map((event) => [event.provider, event.data.cacheReadTokens, event.data.cacheWriteTokens]),
+        [
+          ["openai-codex", 25, 10],
+          ["openai", 25, 10],
+          ["anthropic", 25, 10],
+        ],
+      );
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;

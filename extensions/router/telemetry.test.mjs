@@ -6,6 +6,7 @@ import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { providerWeightFor } from "./core/provider-weights.ts";
 import {
+  aggregateAttemptTokenCounts,
   aggregateRouteSamples,
   endpointTelemetryFields,
   JsonlTelemetryStore,
@@ -88,6 +89,27 @@ describe("endpoint telemetry fields", () => {
       ),
       { cacheWriteClassification: "no_write_line_item" },
     );
+  });
+});
+
+describe("attempt token outcomes", () => {
+  it("records observed cache-read and cache-write counts independently", () => {
+    assert.deepEqual(
+      aggregateAttemptTokenCounts([
+        { input: 100, output: 20, cacheRead: 80, cacheWrite: 10 },
+        { input: 50, output: 5, cacheRead: 40, cacheWrite: 0 },
+      ]),
+      {
+        inputTokens: 150,
+        outputTokens: 25,
+        cacheReadTokens: 120,
+        cacheWriteTokens: 10,
+      },
+    );
+  });
+
+  it("tolerates a missing legacy cache-write count", () => {
+    assert.equal(aggregateAttemptTokenCounts([{ input: 1, output: 1, cacheRead: 1 }]).cacheWriteTokens, 0);
   });
 });
 

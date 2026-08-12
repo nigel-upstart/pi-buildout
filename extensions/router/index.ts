@@ -73,7 +73,13 @@ import {
   writeLastKnownMode,
 } from "./pi-state.ts";
 import type { RouterScope } from "./pi-state.ts";
-import { aggregateRouteSamples, endpointTelemetryFields, JsonlTelemetryStore, withRouterSpan } from "./telemetry.ts";
+import {
+  aggregateAttemptTokenCounts,
+  aggregateRouteSamples,
+  endpointTelemetryFields,
+  JsonlTelemetryStore,
+  withRouterSpan,
+} from "./telemetry.ts";
 import type { AttemptOutcome, RouterTelemetryEvent } from "./telemetry.ts";
 
 const STATE_ENTRY = "model-router-state";
@@ -100,6 +106,8 @@ type AttemptMetrics = {
   modelAndToolCost: number;
   wallTimeMs: number;
   retried: boolean;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 };
 
 type AttemptDisposition = "unknown" | "pending" | "success" | "aborted" | "incomplete" | "failed";
@@ -311,7 +319,9 @@ function telemetryOutcomes(events: readonly RouterTelemetryEvent[]): AttemptOutc
       typeof data.modelAndToolCost !== "number" ||
       typeof data.wallTimeMs !== "number" ||
       typeof data.humanIntervention !== "boolean" ||
-      typeof data.retried !== "boolean"
+      typeof data.retried !== "boolean" ||
+      (data.cacheReadTokens !== undefined && typeof data.cacheReadTokens !== "number") ||
+      (data.cacheWriteTokens !== undefined && typeof data.cacheWriteTokens !== "number")
     ) {
       continue;
     }
@@ -1799,6 +1809,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
     const accumulatedStartedAt =
       taskStartedAt.get(active.taskId) ?? (attemptStartedAt > 0 ? attemptStartedAt : Date.now());
     const accumulatedWallTimeMs = Date.now() - accumulatedStartedAt;
+    const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = aggregateAttemptTokenCounts(
+      relevant.map((message) => message.usage),
+    );
     lastAttemptMetrics = isActiveAttempt
       ? {
           provider: attemptedProvider,
@@ -1807,10 +1820,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
           modelAndToolCost: accumulatedCost,
           wallTimeMs: Math.max(wallTimeMs, accumulatedWallTimeMs),
           retried: active.attemptIndex > 0,
+          cacheReadTokens,
+          cacheWriteTokens,
         }
       : undefined;
-    const inputTokens = relevant.reduce((total, message) => total + message.usage.input, 0);
-    const cachedInputTokens = relevant.reduce((total, message) => total + message.usage.cacheRead, 0);
     await record(
       ctx,
       "attempt_completed",
@@ -1821,9 +1834,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
         cost,
         wallTimeMs,
         inputTokens,
-        cachedInputTokens,
-        cacheHitRatio: inputTokens > 0 ? cachedInputTokens / inputTokens : 0,
-        outputTokens: relevant.reduce((total, message) => total + message.usage.output, 0),
+        // Retain the pre-PR7 name while adding the exact provider usage field names.
+        cachedInputTokens: cacheReadTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        cacheHitRatio: inputTokens > 0 ? cacheReadTokens / inputTokens : 0,
+        outputTokens,
         turns: attemptTurns,
         toolCalls: attemptToolCalls,
         deterministicChecksPassed: [...deterministicCheckResults.values()].filter(Boolean).length,
@@ -2097,7 +2113,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
             interactivity: state.active.features.interactivity,
             languageBucket: state.active.repositoryLanguageBucket ?? "unknown",
           },
-          { taskId: state.active.taskId, archetype: state.active.archetype },
+          {
+            taskId: state.active.taskId,
+            archetype: state.active.archetype,
+            provider: lastAttemptMetrics.provider,
+            modelId: lastAttemptMetrics.modelId,
+          },
         );
         ctx.ui.notify(`Recorded routed attempt as ${command === "accept" ? "accepted" : "rejected"}`, "info");
         return;
