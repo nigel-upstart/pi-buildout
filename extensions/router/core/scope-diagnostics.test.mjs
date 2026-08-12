@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { providerWeightFor } from "./provider-weights.ts";
+import { selectOrdinaryRoute } from "./routing.ts";
 import { buildScopeDiagnostics, MAX_ROUTE_SCOPE_BYTES, renderScopeDiagnostics } from "./scope-diagnostics.ts";
 
 function model(provider, modelId, overrides = {}) {
@@ -58,6 +59,36 @@ describe("scope diagnostics", () => {
     assert.equal(endpoints[0].cacheWriteClassification, "priced_write");
     assert.ok(Math.abs(endpoints[0].effectiveCost - 19.7125) < 1e-12);
     assert.equal(endpoints.at(-1).effectiveCost, undefined, "flat-rate endpoints remain last");
+  });
+
+  it("matches ordinary-route order for mixed Bedrock, direct, and flat-rate endpoints", () => {
+    const registry = [
+      model("openai", "gpt-5.6-sol"),
+      model("github-copilot", "gpt-5.6-sol", {
+        costPerMillion: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      }),
+      model("amazon-bedrock", "openai.gpt-5.6-sol"),
+      model("openai-codex", "gpt-5.6-sol"),
+    ];
+    const result = diagnostics({ registry, allRegistryEndpoints: registry });
+    const displayed = result.logicalModels[0].endpoints.map(({ provider, modelId }) => `${provider}/${modelId}`);
+    const decision = selectOrdinaryRoute("terminal_heavy_implementation", registry, {
+      estimatedFinishedTokens: 50_000,
+      requiresImages: false,
+      requiresTools: true,
+    });
+
+    assert.equal(decision.kind, "ordinary");
+    const selected = [decision.primary, ...decision.fallbacks]
+      .filter((choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high")
+      .map(({ provider, modelId }) => `${provider}/${modelId}`);
+    assert.deepEqual(displayed, [
+      "amazon-bedrock/openai.gpt-5.6-sol",
+      "openai-codex/gpt-5.6-sol",
+      "openai/gpt-5.6-sol",
+      "github-copilot/gpt-5.6-sol",
+    ]);
+    assert.deepEqual(selected, displayed);
   });
 
   it("keeps cache-only diagnostic failures out of routing eligibility", () => {
