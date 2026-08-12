@@ -262,7 +262,7 @@ Branch `router/scope-observability`. Depends on pr6.
       materially different observed `cacheRead` ratios despite both documenting a 30-minute minimum TTL for GPT-5.6. It
       cannot change Bedrock-versus-first-party ordering, and the pr3 invariant reads registry rates so it would not
       detect a behavioural divergence.
-- [ ] Output bounded; secretlint passes over the telemetry path.
+- [x] Output bounded; secretlint passes over the telemetry path.
 - [ ] `npm run check` passes.
 
 ## Rollout
