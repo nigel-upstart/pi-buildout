@@ -263,7 +263,7 @@ Branch `router/scope-observability`. Depends on pr6.
       cannot change Bedrock-versus-first-party ordering, and the pr3 invariant reads registry rates so it would not
       detect a behavioural divergence.
 - [x] Output bounded; secretlint passes over the telemetry path.
-- [ ] `npm run check` passes.
+- [x] `npm run check` passes.
 
 ## Rollout
 
