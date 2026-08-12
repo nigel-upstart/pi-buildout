@@ -137,7 +137,7 @@ Branch `router/evidence-replace`. No dependencies.
 - [x] Replace the former hand-maintained Markdown evidence narrative with a new dated document whose benchmark tables
       are **generated** from the checked-in `model-evidence-2026-07-25.json` rows, not transcribed.
 - [x] Remove the three endpoint-pricing statements sourced from the absent external corpus.
-- [ ] Add `scripts/survey-endpoint-prices.mjs`: per logical model in `MODEL_VENDOR`, emit provider, exact ID, canonical
+- [x] Add `scripts/survey-endpoint-prices.mjs`: per logical model in `MODEL_VENDOR`, emit provider, exact ID, canonical
       ID, input/output/cacheRead/cacheWrite rates, the two cache ratios, price tiers, thinking levels, and blended cost,
       deterministically and offline.
 - [x] Record the zero-cache-rate semantics rule with its evidence.

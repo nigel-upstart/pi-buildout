@@ -23,6 +23,7 @@
     "format:check": "prettier --check .",
     "evidence:generate": "node scripts/generate-model-evidence-tables.mjs",
     "evidence:check": "node scripts/generate-model-evidence-tables.mjs --check",
+    "survey:endpoint-prices": "node scripts/survey-endpoint-prices.mjs",
     "lint": "npm run lint:eslint && npm run lint:markdown && npm run lint:shell",
     "lint:eslint": "eslint . --max-warnings 0",
     "lint:markdown": "markdownlint-cli2 \"**/*.md\"",
