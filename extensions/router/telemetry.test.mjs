@@ -32,6 +32,42 @@ function event(id) {
 }
 
 describe("JsonlTelemetryStore", () => {
+  it("rejects persisted cache counts that are not finite and nonnegative", () => {
+    // These reach aggregation through the store, so a persisted NaN would poison the token totals.
+    const outcome = {
+      provider: "openai-codex",
+      modelId: "gpt-5.6-sol",
+      archetype: "median_repository_implementation",
+      accepted: true,
+      modelAndToolCost: 0.42,
+      wallTimeMs: 1_200,
+      humanIntervention: false,
+      retried: false,
+    };
+    const event = (data) => ({
+      version: 1,
+      eventId: "persisted",
+      timestamp: "2026-08-12T00:00:00.000Z",
+      kind: "outcome",
+      sessionId: "session",
+      data,
+    });
+
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      assert.deepEqual(
+        attemptOutcomesFromTelemetry([event({ ...outcome, cacheReadTokens: invalid })]),
+        [],
+        `cacheReadTokens ${String(invalid)} must be rejected`,
+      );
+      assert.deepEqual(
+        attemptOutcomesFromTelemetry([event({ ...outcome, cacheWriteTokens: invalid })]),
+        [],
+        `cacheWriteTokens ${String(invalid)} must be rejected`,
+      );
+    }
+    assert.equal(attemptOutcomesFromTelemetry([event({ ...outcome, cacheReadTokens: 0 })]).length, 1);
+  });
+
   it("parses a checked-in pre-PR7 record without optional endpoint fields", async () => {
     const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "telemetry-v1-pre-pr7.jsonl");
     const events = await new JsonlTelemetryStore(fixture).read();

@@ -168,22 +168,26 @@ export function buildScopeDiagnostics(input: {
 }
 
 function safeDiagnosticText(value: string): string {
-  return value
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b(Authorization\s*:\s*)(?:Bearer|Basic)\s+[^\s,;]+/giu, "$1[REDACTED]")
-    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/giu, "$1 [REDACTED]")
-    .replace(
-      /\b((?:api[ _-]?key|access[ _-]?token|credential|password|secret|token)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
-      "$1[REDACTED]",
-    )
-    .replace(/(https?:\/\/)[^/\s@]+@/giu, "$1[REDACTED]@")
-    .replace(
-      /\b(?:A(?:KI|SI)A[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|gh[opusr]_[0-9A-Za-z]{20,}|sk-[0-9A-Za-z_-]{20,})\b/gu,
-      "[REDACTED]",
-    )
-    .replace(/\beyJ[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\b/gu, "[REDACTED]")
-    .replace(/-----BEGIN [^-]*PRIVATE KEY-----.*$/giu, "[REDACTED PRIVATE KEY]");
+  return (
+    value
+      .replace(/\s+/g, " ")
+      .trim()
+      // The scheme is optional: `Authorization: <opaque-token>` must redact even when no Bearer or
+      // Basic prefix is present, and even when the token is too short to match a known key format.
+      .replace(/\b(Authorization\s*:\s*)(?:(?:Bearer|Basic)\s+)?[^\s,;]+/giu, "$1[REDACTED]")
+      .replace(/\b(Bearer|Basic)\s+[^\s,;]+/giu, "$1 [REDACTED]")
+      .replace(
+        /\b((?:api[ _-]?key|access[ _-]?token|credential|password|secret|token)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+        "$1[REDACTED]",
+      )
+      .replace(/(https?:\/\/)[^/\s@]+@/giu, "$1[REDACTED]@")
+      .replace(
+        /\b(?:A(?:KI|SI)A[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|gh[opusr]_[0-9A-Za-z]{20,}|sk-[0-9A-Za-z_-]{20,})\b/gu,
+        "[REDACTED]",
+      )
+      .replace(/\beyJ[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\b/gu, "[REDACTED]")
+      .replace(/-----BEGIN [^-]*PRIVATE KEY-----.*$/giu, "[REDACTED PRIVATE KEY]")
+  );
 }
 
 function displayEndpointKey(endpoint: Pick<RegistryIdentity, "provider" | "modelId">): string {

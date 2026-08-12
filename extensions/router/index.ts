@@ -731,6 +731,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
     await applyChoice(ctx, parent.selected);
     state = installLease(state, parent);
     const reviewMetrics = lastAttemptMetrics;
+    // Cost, wall time, and retry are task-level totals, so the review's share is added to the
+    // parent. Cache-token counts are deliberately NOT summed: they are a per-endpoint observation,
+    // and an independent review always runs on a different vendor's endpoint. Folding its counts in
+    // would attribute one endpoint's cache behavior to another and corrupt the Bedrock-versus-direct
+    // cache-ratio comparison that FW3 exists to measure.
     lastAttemptMetrics = reviewParentAttemptMetrics
       ? {
           ...reviewParentAttemptMetrics,

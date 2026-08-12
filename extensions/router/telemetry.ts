@@ -157,8 +157,10 @@ export function attemptOutcomesFromTelemetry(events: readonly RouterTelemetryEve
       typeof data.wallTimeMs !== "number" ||
       typeof data.humanIntervention !== "boolean" ||
       typeof data.retried !== "boolean" ||
-      (data.cacheReadTokens !== undefined && typeof data.cacheReadTokens !== "number") ||
-      (data.cacheWriteTokens !== undefined && typeof data.cacheWriteTokens !== "number")
+      // Validated the same way the event schema validates them, so a persisted NaN, Infinity, or
+      // negative count cannot reach the token aggregates through this path.
+      !optionalFiniteNonnegative(data.cacheReadTokens) ||
+      !optionalFiniteNonnegative(data.cacheWriteTokens)
     ) {
       continue;
     }

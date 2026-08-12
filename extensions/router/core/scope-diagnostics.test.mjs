@@ -175,7 +175,9 @@ describe("scope diagnostics", () => {
           provider: "openai",
           modelId: "gpt-5.6-sol",
           status: "failed",
-          detail: `Authorization: Bearer ${secret}; api_key=${secret}; https://user:${secret}@example.invalid`,
+          // The bare `Authorization:` form carries no scheme and a token too short to match any
+          // known key format, so only the header rule can redact it.
+          detail: `Authorization: Bearer ${secret}; Authorization: ${secret}; api_key=${secret}; https://user:${secret}@example.invalid`,
         },
       }),
     ];
@@ -198,6 +200,7 @@ describe("scope diagnostics", () => {
     assert.equal(output.includes(secret), false);
     assert.match(output, /pattern=provider\/token=\[REDACTED\]/);
     assert.match(output, /Authorization: \[REDACTED\]/);
+    assert.equal(/Authorization: (?!\[REDACTED\])/u.test(output), false, "every Authorization value is redacted");
     assert.match(output, /api_key=\[REDACTED\]/);
     assert.match(output, /https:\/\/\[REDACTED\]@example\.invalid/);
     assert.match(output, /reason=credential=\[REDACTED\] is not a valid weight/);
