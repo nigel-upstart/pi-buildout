@@ -494,14 +494,14 @@ export default function routerExtension(pi: ExtensionAPI): void {
 
   async function route(
     ctx: ExtensionContext,
+    registry: readonly RegistryModelSnapshot[],
     classification: ClassificationResult,
     hasImages: boolean,
     languageBucket: string,
     languageBuckets: readonly string[],
     contextBucket: string,
     explorationKey: string,
-  ): Promise<{ decision: RouteDecision; registry: RegistryModelSnapshot[] }> {
-    const registry = buildRegistrySnapshot(ctx, scope);
+  ): Promise<{ decision: RouteDecision; registry: readonly RegistryModelSnapshot[] }> {
     const blockReason = automaticRoutingBlockReason(classification);
     if (blockReason) {
       return {
@@ -1388,9 +1388,9 @@ export default function routerExtension(pi: ExtensionAPI): void {
         repository,
         Boolean(repository.reviewDelta) || isStandaloneReviewRequest(event.prompt),
       );
-      // Classification and route selection consume the same operator-scoped registry shape. The
+      // Classification and route selection consume the exact same operator-scoped snapshot. The
       // classifier never reconstructs candidates from the process-wide available-model list.
-      const classifierRegistry = buildRegistrySnapshot(ctx, scope);
+      const registry = buildRegistrySnapshot(ctx, scope);
       let active = state.active;
       let classification: ClassificationResult | undefined;
       let requiresNewLease = pending?.gate.action === "new_task";
@@ -1400,7 +1400,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           ctx.sessionManager.getSessionId(),
           "router.classify_continuity",
           { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, classifierRegistry, event.prompt, currentSynopsis),
+          () => classifyWithTimeout(ctx, registry, event.prompt, currentSynopsis),
         );
         classification = continuityResult.classification;
         if (continuityResult.timedOut) {
@@ -1425,7 +1425,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           ctx.sessionManager.getSessionId(),
           "router.classify",
           { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, classifierRegistry, event.prompt, currentSynopsis),
+          () => classifyWithTimeout(ctx, registry, event.prompt, currentSynopsis),
         );
         classification = freshResult.classification;
         classificationTimedOut = freshResult.timedOut;
@@ -1463,6 +1463,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           async (span) => {
             const result = await route(
               ctx,
+              registry,
               routedClassification,
               pending?.hasImages ?? Boolean(event.images?.length),
               languageBucket,

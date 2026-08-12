@@ -284,6 +284,64 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_safety_review"), true);
   });
 
+  it("uses one scoped registry snapshot for classification and the resulting route decision", async () => {
+    const hooks = new Map();
+    const notifications = [];
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-shared-snapshot-"));
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    const previousMode = process.env.PI_ROUTER_MODE;
+    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    process.env.PI_ROUTER_MODE = "shadow";
+    let activeTools = [];
+    let snapshotReads = 0;
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: () => {},
+      registerTool: () => {},
+      appendEntry: () => {},
+      exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+      getActiveTools: () => activeTools,
+      setActiveTools: (tools) => {
+        activeTools = tools;
+      },
+    };
+    const ctx = {
+      cwd: telemetryDirectory,
+      model: undefined,
+      modelRegistry: {
+        getAvailable: () => [],
+        getAll: () => {
+          snapshotReads++;
+          return [];
+        },
+      },
+      sessionManager: { getBranch: () => [], getSessionId: () => "shared-snapshot" },
+      getContextUsage: () => ({ tokens: 0, contextWindow: 128_000 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        setWorkingMessage: () => {},
+        setWorkingVisible: () => {},
+        notify: (message, type) => notifications.push({ message, type }),
+      },
+    };
+    try {
+      routerExtension(pi);
+      await hooks.get("input")({ text: "Implement the change", source: "interactive" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: "Implement the change", systemPrompt: "system", images: [] },
+        ctx,
+      );
+      assert.equal(snapshotReads, 1, "routing must reuse the snapshot that constrained classification");
+      assert.match(notifications.at(-1)?.message ?? "", /retained current model/i);
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+      if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
+      else process.env.PI_ROUTER_MODE = previousMode;
+    }
+  });
+
   it("carries routing enablement mode through /clear (session_shutdown → session_start)", async () => {
     const hooks = new Map();
     const commands = new Map();
