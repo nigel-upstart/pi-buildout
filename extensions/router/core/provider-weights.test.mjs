@@ -141,6 +141,36 @@ describe("provider route weights", () => {
     assert.match(wrongShape.rejections[0].reason, /JSON object/);
   });
 
+  it("does not expose mutable maps, entries, rejections, or shared built-in values", () => {
+    const first = resolveProviderWeights({ projectSettings: settings({ invalid: "secret" }) });
+    const second = resolveProviderWeights();
+    const bedrock = first.weights.get("amazon-bedrock");
+    const rejection = first.rejections[0];
+    assert.ok(bedrock);
+    assert.ok(rejection);
+
+    assert.equal(typeof first.weights.set, "undefined");
+    assert.equal(Object.isFrozen(first), true);
+    assert.equal(Object.isFrozen(first.weights), true);
+    assert.equal(Object.isFrozen(first.rejections), true);
+    assert.equal(Object.isFrozen(bedrock), true);
+    assert.equal(Object.isFrozen(rejection), true);
+    assert.throws(() => {
+      bedrock.weight = 0.5;
+    }, TypeError);
+    assert.throws(() => {
+      first.rejections.push({});
+    }, TypeError);
+    assert.equal(second.weights.get("amazon-bedrock").weight, 0.83);
+
+    const unknown = providerWeightFor("unknown", first.weights);
+    assert.equal(Object.isFrozen(unknown), true);
+    assert.throws(() => {
+      unknown.weight = 0.5;
+    }, TypeError);
+    assert.equal(providerWeightFor("unknown", second.weights).weight, 1.01);
+  });
+
   it("bounds rejection records without retaining rejected values or large provider names", () => {
     const secret = "super-secret-provider-token";
     const invalidEntries = Object.fromEntries(

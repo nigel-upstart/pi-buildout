@@ -10,43 +10,72 @@ type ProviderWeightBasis = "contract" | "preference";
 type ProviderWeightSource = "environment" | "project" | "user" | "built-in" | "rejection-fallback";
 type ConfiguredProviderWeightSource = Extract<ProviderWeightSource, "environment" | "project" | "user">;
 
-export type ResolvedProviderWeight = {
+export type ResolvedProviderWeight = Readonly<{
   weight: number;
   basis: ProviderWeightBasis;
   source: ProviderWeightSource;
-};
+}>;
 
-export type ProviderWeightRejection = {
+export type ProviderWeightRejection = Readonly<{
   /** Absent when the whole environment value or settings map was malformed. */
   provider?: string;
   source: ConfiguredProviderWeightSource;
   /** A non-sensitive summary; rejected configuration values are never retained. */
   rejectedValueType: string;
   reason: string;
-};
+}>;
 
-export type ProviderWeightResolution = {
+export type ProviderWeightResolution = Readonly<{
   weights: ReadonlyMap<string, ResolvedProviderWeight>;
   rejections: readonly ProviderWeightRejection[];
-};
+}>;
 
 type ObjectLike = Record<string, unknown>;
 type ConfiguredMap = { source: ConfiguredProviderWeightSource; value: ObjectLike };
 
-const BUILT_IN_PROVIDER_WEIGHTS = new Map<string, Omit<ResolvedProviderWeight, "source">>([
-  ["amazon-bedrock", { weight: 0.83, basis: "contract" }],
-  ["openai-codex", { weight: 1.0, basis: "preference" }],
-  ["anthropic", { weight: 1.0, basis: "preference" }],
-  ["google", { weight: 1.0, basis: "preference" }],
-  ["google-vertex", { weight: 1.0, basis: "preference" }],
-  ["bifrost", { weight: 1.0, basis: "preference" }],
-  ["openai", { weight: 1.001, basis: "preference" }],
+type ProviderWeightDefinition = Readonly<Omit<ResolvedProviderWeight, "source">>;
+
+function definition(weight: number, basis: ProviderWeightBasis): ProviderWeightDefinition {
+  return Object.freeze({ weight, basis });
+}
+
+const BUILT_IN_PROVIDER_WEIGHTS = new Map<string, ProviderWeightDefinition>([
+  ["amazon-bedrock", definition(0.83, "contract")],
+  ["openai-codex", definition(1.0, "preference")],
+  ["anthropic", definition(1.0, "preference")],
+  ["google", definition(1.0, "preference")],
+  ["google-vertex", definition(1.0, "preference")],
+  ["bifrost", definition(1.0, "preference")],
+  ["openai", definition(1.001, "preference")],
 ]);
 
-const UNKNOWN_PROVIDER_WEIGHT: Omit<ResolvedProviderWeight, "source"> = {
-  weight: 1.01,
-  basis: "preference",
-};
+const UNKNOWN_PROVIDER_WEIGHT = definition(1.01, "preference");
+
+function resolvedWeight(definition: ProviderWeightDefinition, source: ProviderWeightSource): ResolvedProviderWeight {
+  return Object.freeze({ ...definition, source });
+}
+
+/** A closure-backed map view with no mutator and no reachable mutable backing Map. */
+function immutableMap<K, V>(entries: Iterable<readonly [K, V]>): ReadonlyMap<K, V> {
+  const backing = new Map(entries);
+  const view: ReadonlyMap<K, V> = {
+    get size() {
+      return backing.size;
+    },
+    get: (key) => backing.get(key),
+    has: (key) => backing.has(key),
+    entries: () => backing.entries(),
+    keys: () => backing.keys(),
+    values: () => backing.values(),
+    forEach: (callback, thisArgument) => {
+      backing.forEach((value, key) => {
+        callback.call(thisArgument, value, key, view);
+      });
+    },
+    [Symbol.iterator]: () => backing[Symbol.iterator](),
+  };
+  return Object.freeze(view);
+}
 
 function object(value: unknown): ObjectLike | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as ObjectLike) : undefined;
@@ -86,12 +115,14 @@ function recordRejection(
   },
 ): void {
   if (rejections.length >= PROVIDER_WEIGHT_REJECTION_LIMIT) return;
-  rejections.push({
-    ...(rejection.provider === undefined ? {} : { provider: boundedProvider(rejection.provider) }),
-    source: rejection.source,
-    rejectedValueType: rejectedValueType(rejection.rejectedValue),
-    reason: rejection.reason,
-  });
+  rejections.push(
+    Object.freeze({
+      ...(rejection.provider === undefined ? {} : { provider: boundedProvider(rejection.provider) }),
+      source: rejection.source,
+      rejectedValueType: rejectedValueType(rejection.rejectedValue),
+      reason: rejection.reason,
+    }),
+  );
 }
 
 function rejectMap(
@@ -193,16 +224,19 @@ export function resolveProviderWeights(
       const validated = validateConfiguredWeight(rejectedValue);
       if (typeof validated === "string") {
         recordRejection(rejections, { provider, source: selected.source, rejectedValue, reason: validated });
-        weights.set(provider, { weight: 1.0, basis: "preference", source: "rejection-fallback" });
+        weights.set(provider, resolvedWeight(definition(1.0, "preference"), "rejection-fallback"));
       } else {
-        weights.set(provider, { ...validated, source: selected.source });
+        weights.set(provider, resolvedWeight(validated, selected.source));
       }
       continue;
     }
     const builtIn = BUILT_IN_PROVIDER_WEIGHTS.get(provider);
-    if (builtIn) weights.set(provider, { ...builtIn, source: "built-in" });
+    if (builtIn) weights.set(provider, resolvedWeight(builtIn, "built-in"));
   }
-  return { weights, rejections };
+  return Object.freeze({
+    weights: immutableMap(weights),
+    rejections: Object.freeze(rejections),
+  });
 }
 
 /** Resolves providers that were not present in configuration through the conservative unknown default. */
@@ -211,7 +245,7 @@ export function providerWeightFor(
   weights?: ReadonlyMap<string, ResolvedProviderWeight>,
 ): ResolvedProviderWeight {
   const configured = weights?.get(provider);
-  if (configured) return { ...configured };
+  if (configured) return resolvedWeight(configured, configured.source);
   const builtIn = BUILT_IN_PROVIDER_WEIGHTS.get(provider);
-  return builtIn ? { ...builtIn, source: "built-in" } : { ...UNKNOWN_PROVIDER_WEIGHT, source: "built-in" };
+  return resolvedWeight(builtIn ?? UNKNOWN_PROVIDER_WEIGHT, "built-in");
 }

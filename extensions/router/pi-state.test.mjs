@@ -11,6 +11,7 @@ import { selectReviewRoute } from "./core/routing.ts";
 import {
   buildRegistrySnapshot,
   cacheEstimate,
+  EMPTY_SCOPE,
   estimateFinishedTokens,
   latestReportedContextTokens,
   modelAbility,
@@ -184,7 +185,16 @@ describe("router scope configuration", () => {
     assert.match(scope.providerWeightRejections[0].reason, /valid JSON/);
   });
 
-  it("uses built-ins when isolated settings files are missing or malformed", async () => {
+  it("uses immutable built-ins when isolated settings files are missing or malformed", async () => {
+    assert.equal(Object.isFrozen(EMPTY_SCOPE), true);
+    assert.equal(Object.isFrozen(EMPTY_SCOPE.patterns), true);
+    assert.equal(typeof EMPTY_SCOPE.providerWeights.set, "undefined");
+    assert.deepEqual(EMPTY_SCOPE.providerWeights.get("amazon-bedrock"), {
+      weight: 0.83,
+      basis: "contract",
+      source: "built-in",
+    });
+
     const missing = await fixture();
     const missingScope = await readRouterScope(missing.project, {
       environment: {},

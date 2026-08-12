@@ -272,12 +272,12 @@ export type RouterScope = {
 };
 
 const DEFAULT_PROVIDER_WEIGHTS = resolveProviderWeights();
-export const EMPTY_SCOPE: RouterScope = {
-  patterns: [],
+export const EMPTY_SCOPE: RouterScope = Object.freeze({
+  patterns: Object.freeze([]),
   health: undefined,
   providerWeights: DEFAULT_PROVIDER_WEIGHTS.weights,
   providerWeightRejections: DEFAULT_PROVIDER_WEIGHTS.rejections,
-};
+});
 
 type RouterScopeReadOptions = {
   /** Injectable for isolated tests; production reads `process.env`. */
