@@ -114,9 +114,9 @@ function corroborationTable(rows) {
       "Cursor score",
       "Cursor cost/task",
       "Cursor rank",
-      "Consensus low",
-      "Consensus best",
-      "Consensus high",
+      "Consensus low (percentile points)",
+      "Consensus best (percentile points)",
+      "Consensus high (percentile points)",
       "Sources",
     ],
     rows.map(({ modelId, effort, cursorbench, consensus }) => [

@@ -46,7 +46,9 @@ Because the discount is a **uniform scalar across input, output, `cacheRead`, an
 `0.25 * input + 0.75 * output` blend is **order-preserving for each exact Bedrock/first-party pair whose complete
 list-rate vectors are equal**, not by approximation. Prefix alone does not establish parity: the surveyed
 `au.anthropic.claude-opus-4-6-v1` vector is markedly higher than first party and must retain its exact registry rates.
-No token mix and no cache hit rate can reverse a pair that satisfies the equality condition.
+For identical usage vectors under shared tokenization, cache eligibility, and applicable price tiers, no token mix or
+cache hit rate can reverse a pair that satisfies the equality condition. Provider-specific token counts, cache classes,
+eligibility, or tier boundaries require endpoint-specific pricing instead.
 
 Supporting parity, measured in the pinned registry: positive short-write rates use `cacheRead/input = 0.10` and
 `cacheWrite/input = 1.25` on the exact Anthropic and OpenAI model/provider pairs surveyed, including proportional
@@ -190,6 +192,8 @@ Branch `router/endpoint-comparator`. Depends on pr1 + pr2.
 - [ ] Test pinning the generational finding so a registry bump that flattens it fails loudly.
 - [ ] `RouteChoice.endpointEffectiveCost` optional, absent for flat-rate, so no lease-shape break.
 - [ ] Comparator is a **total order**: cost, then `endpointSpecificity`, then exact provider/ID string.
+- [ ] Bedrock GPT-5.6 Sol requests above 272,000 input tokens are rejected until that endpoint exposes a long-context
+      rate; the short-context rate must never price larger requests.
 - [ ] Golden test: ordered endpoints and selected primary byte-identical before and after.
 - [ ] `npm run check` passes.
 

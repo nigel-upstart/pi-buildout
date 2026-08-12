@@ -146,51 +146,51 @@ by model and semantic effort order. No table cell in the generated block is tran
 
 ### CursorBench and cross-source consensus
 
-| Model                    | Effort   | Cursor score | Cursor cost/task | Cursor rank | Consensus low | Consensus best | Consensus high | Sources |
-| ------------------------ | -------- | ------------ | ---------------- | ----------- | ------------- | -------------- | -------------- | ------- |
-| `claude-fable-5`         | `low`    | 62.1%        | $4.46            | 18          | 61.22         | 63.01          | 65.31          | 2       |
-| `claude-fable-5`         | `medium` | 65.2%        | $6.80            | 10          | 69.39         | 74.74          | 81.63          | 2       |
-| `claude-fable-5`         | `high`   | 66.5%        | $8.77            | 8           | 73.47         | 78.83          | 85.71          | 2       |
-| `claude-fable-5`         | `xhigh`  | —            | —                | —           | 89.80         | 91.58          | 93.88          | 2       |
-| `claude-fable-5`         | `max`    | 70.5%        | $17.32           | 1           | 79.59         | 90.82          | 100.00         | 3       |
-| `claude-opus-4-8`        | `low`    | 53.1%        | $2.02            | 37          | 24.49         | 25.38          | 26.53          | 2       |
-| `claude-opus-4-8`        | `medium` | 56.1%        | $2.81            | 31          | 36.73         | 37.18          | 37.76          | 2       |
-| `claude-opus-4-8`        | `high`   | 58.0%        | $3.15            | 27          | 41.84         | 44.07          | 46.94          | 2       |
-| `claude-opus-4-8`        | `xhigh`  | —            | —                | —           | 51.02         | 53.70          | 57.14          | 2       |
-| `claude-opus-4-8`        | `max`    | 62.3%        | $5.77            | 17          | 57.14         | 67.75          | 92.31          | 3       |
-| `claude-opus-5`          | `low`    | 62.8%        | $2.55            | 16          | 63.27         | 65.94          | 69.39          | 2       |
-| `claude-opus-5`          | `medium` | 64.3%        | $3.29            | 13          | 75.51         | 78.95          | 81.63          | 2       |
-| `claude-opus-5`          | `high`   | 66.7%        | $3.91            | 6           | 88.78         | 92.22          | 94.90          | 2       |
-| `claude-opus-5`          | `xhigh`  | —            | —                | —           | 95.92         | 97.07          | 97.96          | 2       |
-| `claude-opus-5`          | `max`    | 70.0%        | $8.23            | 2           | 97.96         | 99.11          | 100.00         | 2       |
-| `claude-sonnet-5`        | `low`    | 47.7%        | $1.30            | 46          | 9.18          | 10.91          | 12.24          | 2       |
-| `claude-sonnet-5`        | `medium` | 52.4%        | $2.16            | 39          | 22.45         | 22.45          | 22.45          | 2       |
-| `claude-sonnet-5`        | `high`   | 56.9%        | $3.19            | 29          | 32.65         | 37.12          | 42.86          | 2       |
-| `claude-sonnet-5`        | `xhigh`  | —            | —                | —           | 38.78         | 45.03          | 53.06          | 2       |
-| `claude-sonnet-5`        | `max`    | 61.5%        | $6.45            | 19          | 44.90         | 57.73          | 76.92          | 3       |
-| `gemini-3.1-pro-preview` | `high`   | —            | —                | —           | 4.08          | 4.08           | 4.08           | 1       |
-| `gemini-3.5-flash`       | `medium` | —            | —                | —           | 20.41         | 20.41          | 20.41          | 1       |
-| `gemini-3.6-flash`       | `high`   | 53.5%        | $1.56            | 36          | 28.57         | 35.72          | 65.38          | 3       |
-| `gpt-5.4`                | `xhigh`  | —            | —                | —           | 41.84         | 50.86          | 71.15          | 2       |
-| `gpt-5.5`                | `low`    | 46.6%        | $0.98            | 49          | 2.04          | 5.48           | 8.16           | 2       |
-| `gpt-5.5`                | `medium` | 53.8%        | $1.51            | 35          | 30.61         | 44.39          | 55.10          | 2       |
-| `gpt-5.5`                | `high`   | 58.4%        | $2.05            | 25          | 50.00         | 62.05          | 71.43          | 2       |
-| `gpt-5.5`                | `xhigh`  | —            | —                | —           | 50.00         | 68.79          | 86.54          | 3       |
-| `gpt-5.6-luna`           | `low`    | 37.6%        | $0.16            | 50          | 0.00          | 0.00           | 0.00           | 2       |
-| `gpt-5.6-luna`           | `medium` | 47.7%        | $0.39            | 45          | 2.04          | 5.17           | 9.18           | 2       |
-| `gpt-5.6-luna`           | `high`   | 56.8%        | $0.82            | 30          | 28.57         | 33.93          | 40.82          | 2       |
-| `gpt-5.6-luna`           | `xhigh`  | —            | —                | —           | 44.90         | 52.93          | 59.18          | 2       |
-| `gpt-5.6-luna`           | `max`    | 61.1%        | $1.97            | 20          | 61.22         | 70.56          | 77.55          | 3       |
-| `gpt-5.6-sol`            | `low`    | 52.6%        | $1.01            | 38          | 24.49         | 27.93          | 30.61          | 2       |
-| `gpt-5.6-sol`            | `medium` | 60.0%        | $1.95            | 21          | 59.18         | 63.78          | 67.35          | 2       |
-| `gpt-5.6-sol`            | `high`   | 63.5%        | $2.79            | 15          | 72.45         | 79.91          | 85.71          | 2       |
-| `gpt-5.6-sol`            | `xhigh`  | —            | —                | —           | 77.55         | 85.59          | 91.84          | 2       |
-| `gpt-5.6-sol`            | `max`    | 67.2%        | $5.69            | 5           | 91.84         | 94.08          | 96.15          | 3       |
-| `gpt-5.6-terra`          | `low`    | 46.9%        | $0.53            | 48          | 4.08          | 5.23           | 6.12           | 2       |
-| `gpt-5.6-terra`          | `medium` | 50.3%        | $0.61            | 42          | 16.33         | 16.33          | 16.33          | 2       |
-| `gpt-5.6-terra`          | `high`   | 54.2%        | $0.89            | 34          | 32.65         | 42.98          | 51.02          | 2       |
-| `gpt-5.6-terra`          | `xhigh`  | —            | —                | —           | 55.10         | 60.84          | 65.31          | 2       |
-| `gpt-5.6-terra`          | `max`    | 64.9%        | $2.89            | 11          | 79.59         | 84.65          | 87.76          | 3       |
+| Model                    | Effort   | Cursor score | Cursor cost/task | Cursor rank | Consensus low (percentile points) | Consensus best (percentile points) | Consensus high (percentile points) | Sources |
+| ------------------------ | -------- | ------------ | ---------------- | ----------- | --------------------------------- | ---------------------------------- | ---------------------------------- | ------- |
+| `claude-fable-5`         | `low`    | 62.1%        | $4.46            | 18          | 61.22                             | 63.01                              | 65.31                              | 2       |
+| `claude-fable-5`         | `medium` | 65.2%        | $6.80            | 10          | 69.39                             | 74.74                              | 81.63                              | 2       |
+| `claude-fable-5`         | `high`   | 66.5%        | $8.77            | 8           | 73.47                             | 78.83                              | 85.71                              | 2       |
+| `claude-fable-5`         | `xhigh`  | —            | —                | —           | 89.80                             | 91.58                              | 93.88                              | 2       |
+| `claude-fable-5`         | `max`    | 70.5%        | $17.32           | 1           | 79.59                             | 90.82                              | 100.00                             | 3       |
+| `claude-opus-4-8`        | `low`    | 53.1%        | $2.02            | 37          | 24.49                             | 25.38                              | 26.53                              | 2       |
+| `claude-opus-4-8`        | `medium` | 56.1%        | $2.81            | 31          | 36.73                             | 37.18                              | 37.76                              | 2       |
+| `claude-opus-4-8`        | `high`   | 58.0%        | $3.15            | 27          | 41.84                             | 44.07                              | 46.94                              | 2       |
+| `claude-opus-4-8`        | `xhigh`  | —            | —                | —           | 51.02                             | 53.70                              | 57.14                              | 2       |
+| `claude-opus-4-8`        | `max`    | 62.3%        | $5.77            | 17          | 57.14                             | 67.75                              | 92.31                              | 3       |
+| `claude-opus-5`          | `low`    | 62.8%        | $2.55            | 16          | 63.27                             | 65.94                              | 69.39                              | 2       |
+| `claude-opus-5`          | `medium` | 64.3%        | $3.29            | 13          | 75.51                             | 78.95                              | 81.63                              | 2       |
+| `claude-opus-5`          | `high`   | 66.7%        | $3.91            | 6           | 88.78                             | 92.22                              | 94.90                              | 2       |
+| `claude-opus-5`          | `xhigh`  | —            | —                | —           | 95.92                             | 97.07                              | 97.96                              | 2       |
+| `claude-opus-5`          | `max`    | 70.0%        | $8.23            | 2           | 97.96                             | 99.11                              | 100.00                             | 2       |
+| `claude-sonnet-5`        | `low`    | 47.7%        | $1.30            | 46          | 9.18                              | 10.91                              | 12.24                              | 2       |
+| `claude-sonnet-5`        | `medium` | 52.4%        | $2.16            | 39          | 22.45                             | 22.45                              | 22.45                              | 2       |
+| `claude-sonnet-5`        | `high`   | 56.9%        | $3.19            | 29          | 32.65                             | 37.12                              | 42.86                              | 2       |
+| `claude-sonnet-5`        | `xhigh`  | —            | —                | —           | 38.78                             | 45.03                              | 53.06                              | 2       |
+| `claude-sonnet-5`        | `max`    | 61.5%        | $6.45            | 19          | 44.90                             | 57.73                              | 76.92                              | 3       |
+| `gemini-3.1-pro-preview` | `high`   | —            | —                | —           | 4.08                              | 4.08                               | 4.08                               | 1       |
+| `gemini-3.5-flash`       | `medium` | —            | —                | —           | 20.41                             | 20.41                              | 20.41                              | 1       |
+| `gemini-3.6-flash`       | `high`   | 53.5%        | $1.56            | 36          | 28.57                             | 35.72                              | 65.38                              | 3       |
+| `gpt-5.4`                | `xhigh`  | —            | —                | —           | 41.84                             | 50.86                              | 71.15                              | 2       |
+| `gpt-5.5`                | `low`    | 46.6%        | $0.98            | 49          | 2.04                              | 5.48                               | 8.16                               | 2       |
+| `gpt-5.5`                | `medium` | 53.8%        | $1.51            | 35          | 30.61                             | 44.39                              | 55.10                              | 2       |
+| `gpt-5.5`                | `high`   | 58.4%        | $2.05            | 25          | 50.00                             | 62.05                              | 71.43                              | 2       |
+| `gpt-5.5`                | `xhigh`  | —            | —                | —           | 50.00                             | 68.79                              | 86.54                              | 3       |
+| `gpt-5.6-luna`           | `low`    | 37.6%        | $0.16            | 50          | 0.00                              | 0.00                               | 0.00                               | 2       |
+| `gpt-5.6-luna`           | `medium` | 47.7%        | $0.39            | 45          | 2.04                              | 5.17                               | 9.18                               | 2       |
+| `gpt-5.6-luna`           | `high`   | 56.8%        | $0.82            | 30          | 28.57                             | 33.93                              | 40.82                              | 2       |
+| `gpt-5.6-luna`           | `xhigh`  | —            | —                | —           | 44.90                             | 52.93                              | 59.18                              | 2       |
+| `gpt-5.6-luna`           | `max`    | 61.1%        | $1.97            | 20          | 61.22                             | 70.56                              | 77.55                              | 3       |
+| `gpt-5.6-sol`            | `low`    | 52.6%        | $1.01            | 38          | 24.49                             | 27.93                              | 30.61                              | 2       |
+| `gpt-5.6-sol`            | `medium` | 60.0%        | $1.95            | 21          | 59.18                             | 63.78                              | 67.35                              | 2       |
+| `gpt-5.6-sol`            | `high`   | 63.5%        | $2.79            | 15          | 72.45                             | 79.91                              | 85.71                              | 2       |
+| `gpt-5.6-sol`            | `xhigh`  | —            | —                | —           | 77.55                             | 85.59                              | 91.84                              | 2       |
+| `gpt-5.6-sol`            | `max`    | 67.2%        | $5.69            | 5           | 91.84                             | 94.08                              | 96.15                              | 3       |
+| `gpt-5.6-terra`          | `low`    | 46.9%        | $0.53            | 48          | 4.08                              | 5.23                               | 6.12                               | 2       |
+| `gpt-5.6-terra`          | `medium` | 50.3%        | $0.61            | 42          | 16.33                             | 16.33                              | 16.33                              | 2       |
+| `gpt-5.6-terra`          | `high`   | 54.2%        | $0.89            | 34          | 32.65                             | 42.98                              | 51.02                              | 2       |
+| `gpt-5.6-terra`          | `xhigh`  | —            | —                | —           | 55.10                             | 60.84                              | 65.31                              | 2       |
+| `gpt-5.6-terra`          | `max`    | 64.9%        | $2.89            | 11          | 79.59                             | 84.65                              | 87.76                              | 3       |
 
 ### Per-language and stack-proxy slices
 
@@ -500,7 +500,10 @@ For a list-rate vector `p` and any nonnegative usage vector `q`, a parity Bedroc
 where a Bedrock endpoint's exact list-rate vector equals its first-party model's exact vector—the surveyed bare and
 matching `us.`, `global.`, and some `jp.`/`au.` entries—the fixed blend is order-preserving for that exact pair **by
 construction, not approximation**. Prefix alone never establishes parity: `au.anthropic.claude-opus-4-6-v1` is a
-marked-up exception. No token mix and no cache hit rate can reverse the ordering of a pair that satisfies the condition.
+marked-up exception. For identical usage vectors under shared tokenization, cache eligibility, and applicable price
+tiers, no token mix or cache hit rate can reverse the ordering of a pair that satisfies the condition. Provider-specific
+token counts, cache classes, eligibility, or tier boundaries invalidate that proof and require endpoint-specific
+pricing.
 
 The parity condition is essential. Regional or model-specific list-rate exceptions must still use their exact registry
 rates: for example, the surveyed `au.anthropic.claude-opus-4-6-v1` is far above first-party list price and remains more
@@ -589,8 +592,10 @@ not a documented retention-policy difference.
 
 A separate rate asymmetry remains: direct `openai/gpt-5.6-sol` has a long-context tier above 272,000 input tokens (input
 10, output 45, `cacheRead` 1, `cacheWrite` 12.5), while `amazon-bedrock/openai.gpt-5.6-sol` has no corresponding
-registry tier. This is not a uniform scalar and must remain a per-endpoint guardrail. Bedrock Sol also lacks the `max`
-thinking level, so `max`-effort eligibility excludes it before endpoint ordering.
+registry tier. This is not a uniform scalar and must remain a per-endpoint guardrail: until the Bedrock long-context
+rate is known, requests above 272,000 input tokens must reject that endpoint rather than apply its short-context rate.
+PR3 owns that comparator/eligibility acceptance gate. Bedrock Sol also lacks the `max` thinking level, so `max`-effort
+eligibility excludes it before endpoint ordering.
 
 ## Refresh procedure
 

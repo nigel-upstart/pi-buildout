@@ -108,9 +108,9 @@ package is absent. No `pi-telemetry-otel` source was copied.
 
 Use: published per-token list rates; cache read/write billing ratios; default and one-hour TTL behavior; GPT-5.6's
 explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior; and the exclusion of cache-read tokens from
-input-token rate-limit quotas. The operator's private 17% discount was **not** derived from AWS documentation: it is a
-separately confirmed contract term, and this repository uses the public pricing page only as its list-price basis.
-Provisioned-throughput and commitment pricing were intentionally not adopted.
+input-token rate-limit quotas. The repository's operator-supplied routing adjustment was not derived from AWS
+documentation; the public pricing page is used only as its list-price basis. Provisioned-throughput and commitment
+pricing were intentionally not adopted.
 
 ### Anthropic prompt caching
 
