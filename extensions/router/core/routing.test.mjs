@@ -256,7 +256,7 @@ describe("ordinary route selection", () => {
     assert.deepEqual(opusEfforts, ["max", "high"]);
   });
 
-  it("puts the manufacturer endpoint first and same-model backups immediately after it", () => {
+  it("orders endpoints cost-first while keeping every selected-model endpoint contiguous", () => {
     const models = [
       ...registry(),
       model("openai", "gpt-5.6-sol", "openai"),
@@ -264,17 +264,29 @@ describe("ordinary route selection", () => {
     ];
     const decision = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
-    assert.equal(decision.primary.provider, "openai-codex");
-    assert.equal(decision.primary.endpointTier, "manufacturer");
-    const chain = [decision.primary, ...decision.fallbacks].map((choice) => `${choice.provider}/${choice.modelId}`);
-    assert.deepEqual(chain.slice(0, 3), [
-      "openai-codex/gpt-5.6-sol",
-      "openai/gpt-5.6-sol",
-      "amazon-bedrock/openai.gpt-5.6-sol",
-    ]);
+    assert.equal(decision.primary.logicalModelId, "gpt-5.6-sol");
+    assert.equal(decision.primary.provider, "amazon-bedrock");
+    // The tier remains diagnostic metadata and does not prevent the lower effective-cost resale route
+    // from becoming primary.
+    assert.equal(decision.primary.endpointTier, "resale");
+    const choices = [decision.primary, ...decision.fallbacks];
+    const selectedGroup = choices.filter(
+      (choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high",
+    );
+    assert.deepEqual(
+      selectedGroup.map((choice) => `${choice.provider}/${choice.modelId}`),
+      ["amazon-bedrock/openai.gpt-5.6-sol", "openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"],
+    );
+    assert.deepEqual(choices.slice(0, selectedGroup.length), selectedGroup);
+    assert.ok(
+      choices
+        .slice(selectedGroup.length)
+        .every((choice) => choice.logicalModelId !== "gpt-5.6-sol" || choice.effort !== "high"),
+      "a same-model endpoint appeared after a different-model fallback",
+    );
   });
 
-  it("keeps a weighted, discounted resale endpoint behind the manufacturer route", () => {
+  it("promotes a lower weighted-cost Bedrock endpoint over direct Anthropic", () => {
     const models = [
       ...registry(),
       {
@@ -284,9 +296,61 @@ describe("ordinary route selection", () => {
     ];
     const decision = selectOrdinaryRoute("implementation_planning", models, REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
-    assert.equal(decision.primary.provider, "anthropic");
-    assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
-    assert.ok(decision.fallbacks[0].endpointEffectiveCost < decision.primary.endpointEffectiveCost);
+    assert.equal(decision.primary.provider, "amazon-bedrock");
+    assert.equal(decision.fallbacks[0].provider, "anthropic");
+    assert.ok(decision.primary.endpointEffectiveCost < decision.fallbacks[0].endpointEffectiveCost);
+  });
+
+  it("uses provider weights and the comparator total order without hidden provider tiers", () => {
+    const equalPrice = { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 2.5 };
+    const openaiModels = [
+      ...registry().filter((candidate) => candidate.modelId !== "gpt-5.6-sol"),
+      { ...model("openai", "gpt-5.6-sol", "openai"), costPerMillion: equalPrice },
+      { ...model("openai-codex", "gpt-5.6-sol", "openai"), costPerMillion: equalPrice },
+      { ...model("new-token-provider", "gpt-5.6-sol", "openai"), costPerMillion: equalPrice },
+    ];
+    const openai = selectOrdinaryRoute("median_repository_implementation", openaiModels, REQUIREMENTS);
+    assert.equal(openai.kind, "ordinary");
+    const solProviders = [openai.primary, ...openai.fallbacks]
+      .filter((choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high")
+      .map((choice) => choice.provider);
+    assert.deepEqual(solProviders, ["openai-codex", "openai", "new-token-provider"]);
+
+    const anthropicModels = [
+      ...registry().filter((candidate) => candidate.modelId !== "claude-opus-5"),
+      { ...model("bifrost", "claude-opus-5", "anthropic"), costPerMillion: equalPrice },
+      { ...model("anthropic", "claude-opus-5", "anthropic"), costPerMillion: equalPrice },
+    ];
+    const anthropic = selectOrdinaryRoute("implementation_planning", anthropicModels, REQUIREMENTS);
+    assert.equal(anthropic.kind, "ordinary");
+    assert.equal(anthropic.primary.provider, "anthropic");
+    assert.equal(anthropic.fallbacks[0].provider, "bifrost");
+    assert.equal(anthropic.primary.endpointEffectiveCost, anthropic.fallbacks[0].endpointEffectiveCost);
+  });
+
+  it("keeps an exact high-markup AU Bedrock endpoint behind its cheaper direct route", () => {
+    const direct = {
+      ...model("anthropic", "claude-opus-4-6", "anthropic"),
+      costPerMillion: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    };
+    const auBedrock = {
+      ...model("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1", "anthropic"),
+      costPerMillion: { input: 15, output: 83, cacheRead: 1.5, cacheWrite: 18.75 },
+    };
+    const decision = selectOrdinaryRoute("median_repository_implementation", [...registry(), direct, auBedrock], {
+      ...REQUIREMENTS,
+      estimatedFinishedTokens: 600_000,
+    });
+    assert.equal(decision.kind, "ordinary");
+    const opus46 = [decision.primary, ...decision.fallbacks].filter(
+      (choice) => choice.logicalModelId === "claude-opus-4-6",
+    );
+    assert.deepEqual(
+      opus46.map((choice) => `${choice.provider}/${choice.modelId}`),
+      ["anthropic/claude-opus-4-6", "amazon-bedrock/au.anthropic.claude-opus-4-6-v1"],
+    );
+    assert.equal(opus46[0].endpointEffectiveCost, 20);
+    assert.ok(Math.abs(opus46[1].endpointEffectiveCost - 54.78) < 1e-12);
   });
 
   it("uses identical effective-cost semantics in registry resolution and RouteChoice ordering", () => {
@@ -319,11 +383,22 @@ describe("ordinary route selection", () => {
     assert.equal(openaiReviewer.endpointEffectiveCost, ordinary.primary.endpointEffectiveCost);
   });
 
-  it("fails closed per endpoint when registry pricing is malformed", () => {
+  it("filters broad endpoint eligibility and malformed pricing before cost comparison", () => {
+    const poisonedPrice = { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 };
     const unavailable = {
       ...model("openai", "gpt-5.6-sol", "openai"),
       available: false,
-      costPerMillion: { input: Number.NaN, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      costPerMillion: poisonedPrice,
+    };
+    const unhealthy = {
+      ...model("bifrost", "gpt-5.6-sol", "openai"),
+      health: { provider: "bifrost", modelId: "gpt-5.6-sol", status: "client_error", httpStatus: 401 },
+      costPerMillion: poisonedPrice,
+    };
+    const unsupported = {
+      ...model("new-token-provider", "gpt-5.6-sol", "openai"),
+      supportedEfforts: ["max"],
+      costPerMillion: poisonedPrice,
     };
     const malformed = {
       ...model("amazon-bedrock", "global.openai.gpt-5.6-sol", "openai"),
@@ -331,28 +406,25 @@ describe("ordinary route selection", () => {
     };
     const decision = selectOrdinaryRoute(
       "median_repository_implementation",
-      [...registry(), unavailable, malformed],
+      [...registry(), unavailable, unhealthy, unsupported, malformed],
       REQUIREMENTS,
     );
     assert.equal(decision.kind, "ordinary");
-    assert.ok(
-      decision.exclusions.some(
-        (exclusion) => exclusion.candidate === "openai/gpt-5.6-sol" && exclusion.code === "unavailable",
-      ),
-    );
+    const exclusions = new Map(decision.exclusions.map((exclusion) => [exclusion.candidate, exclusion.code]));
+    assert.equal(exclusions.get("openai/gpt-5.6-sol"), "unavailable");
+    assert.equal(exclusions.get("bifrost/gpt-5.6-sol"), "endpoint_unhealthy");
+    assert.equal(exclusions.get("new-token-provider/gpt-5.6-sol"), "effort_unsupported");
+    assert.equal(exclusions.get("amazon-bedrock/global.openai.gpt-5.6-sol"), "endpoint_pricing_invalid");
     assert.ok(
       decision.exclusions.some(
         (exclusion) =>
           exclusion.candidate === "amazon-bedrock/global.openai.gpt-5.6-sol" &&
-          exclusion.code === "endpoint_pricing_invalid" &&
           /finite and nonnegative/.test(exclusion.detail),
       ),
     );
     assert.ok(
       [decision.primary, ...decision.fallbacks].every(
-        (choice) =>
-          `${choice.provider}/${choice.modelId}` !== "openai/gpt-5.6-sol" &&
-          `${choice.provider}/${choice.modelId}` !== "amazon-bedrock/global.openai.gpt-5.6-sol",
+        (choice) => !exclusions.has(`${choice.provider}/${choice.modelId}`),
       ),
     );
   });
@@ -1189,16 +1261,16 @@ describe("scope and health drive the candidate pool", () => {
     assert.equal(decision.fallbacks[0].modelId, "us.anthropic.claude-opus-5");
   });
 
-  it("still prefers the manufacturer route when both exist", () => {
+  it("lets weighted cost outrank endpoint-tier metadata when direct and Bedrock both exist", () => {
     const both = [
       endpoint("amazon-bedrock", "global.anthropic.claude-opus-5", "anthropic"),
       endpoint("anthropic", "claude-opus-5", "anthropic"),
       endpoint("openai-codex", "gpt-5.6-sol", "openai"),
     ];
     const decision = selectOrdinaryRoute("implementation_planning", both, REQUIREMENTS);
-    assert.equal(decision.primary.provider, "anthropic");
-    assert.equal(decision.primary.endpointTier, "manufacturer");
-    assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
+    assert.equal(decision.primary.provider, "amazon-bedrock");
+    assert.equal(decision.primary.endpointTier, "resale");
+    assert.equal(decision.fallbacks[0].provider, "anthropic");
   });
 
   it("reports a model that is not in scope rather than pretending it was unavailable", () => {

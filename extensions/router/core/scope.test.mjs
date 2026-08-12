@@ -46,8 +46,8 @@ describe("canonical model identity", () => {
   });
 });
 
-describe("endpoint preference", () => {
-  it("ranks first-party routes above gateways and resale, and treats unknown providers as resale", () => {
+describe("endpoint metadata and tie-breaks", () => {
+  it("classifies first-party routes, gateways, resale, and unknown providers for diagnostics", () => {
     assert.equal(endpointTierFor("anthropic"), "manufacturer");
     assert.equal(endpointTierFor("openai-codex"), "manufacturer");
     assert.equal(endpointTierFor("google-vertex"), "manufacturer");

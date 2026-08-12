@@ -79,8 +79,8 @@ function compareCodePointText(left: string, right: string): number {
  * specificity, then the exact provider/model identity. Flat-rate endpoints have no effective cost
  * and sort after every token-billed endpoint.
  *
- * Eligibility and the temporary endpoint-tier wrapper remain outside this comparator. A later layer
- * can therefore call it directly when tier-first routing is retired.
+ * Callers filter eligibility and validate pricing before comparison. Endpoint tiers are diagnostic
+ * metadata only and deliberately remain outside this comparator.
  */
 export function compareEndpointEffectiveCost(
   left: EndpointEffectiveCostComparable,
