@@ -429,8 +429,19 @@ The generator exposed two one-token transcription differences in the outgoing "T
 - `claude-sonnet-5@max` p90 peak context was written as 557,026; the JSON value is **557,025**.
 - `gemini-3.1-pro-preview@high` p90 peak context was written as 817,099; the JSON value is **817,098**.
 
-The generated tables use the JSON values. The audit found no other disagreement in the outgoing benchmark table cells.
-This is documentation drift only: the JSON and `core/evidence-data.ts` did not change.
+The generated tables use the JSON values. The audit also found nine one-decimal boundary values that the outgoing
+selected-finding tables or prose rendered differently from the generator:
+
+- overall pass: `claude-opus-5@high` 72.3% → 72.4%, `gpt-5.6-sol@high` 69.2% → 69.3%, `gpt-5.6-sol@max` 72.3% → 72.4%,
+  `gpt-5.6-luna@low` 1.5% → 1.6%, `gpt-5.6-luna@high` 44.2% → 44.3%, and `claude-fable-5@medium` 63.1% → 63.0%;
+- Go hard-task pass: `gpt-5.6-sol@max` 31.2% → 31.3%;
+- TypeScript regression break: `claude-opus-5@high` 1.4% → 1.5%; and
+- overall regression break: `gpt-5.6-luna@medium` 23.5% → 23.4%.
+
+Those are display-rounding differences at the precision retained in the JSON, not additional changes to the checked-in
+source values. Apart from them and the two exact one-token differences above, the audit found no other changed numeric
+observation shared by the outgoing narrative and generated tables. This is documentation drift only: the JSON and
+`core/evidence-data.ts` did not change.
 
 ## Policy-relevant benchmark findings
 
