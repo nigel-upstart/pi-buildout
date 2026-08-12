@@ -27,7 +27,7 @@ type ScopeEndpointDiagnostic = {
   appliedWeight?: number;
   weightBasis?: ProviderWeightBasis;
   weightSource?: ProviderWeightSource;
-  cacheWriteClassification: CacheWriteClassification | "invalid";
+  cacheWriteClassification?: CacheWriteClassification;
   effectiveCost?: number;
 };
 
@@ -73,7 +73,7 @@ function diagnosticForEndpoint(
     return undefined;
   }
 
-  let cacheWriteClassification: CacheWriteClassification | "invalid" = "invalid";
+  let cacheWriteClassification: CacheWriteClassification | undefined;
   try {
     cacheWriteClassification = classifyCacheWriteRate(model.costPerMillion);
   } catch (error) {
@@ -81,7 +81,11 @@ function diagnosticForEndpoint(
     // Cache rates are diagnostic metadata, not an input to route eligibility or endpoint ordering.
   }
   if (isFlatRateProvider(model.provider)) {
-    return { provider: model.provider, modelId: model.modelId, cacheWriteClassification };
+    return {
+      provider: model.provider,
+      modelId: model.modelId,
+      ...(cacheWriteClassification ? { cacheWriteClassification } : {}),
+    };
   }
 
   try {
@@ -95,7 +99,7 @@ function diagnosticForEndpoint(
       appliedWeight: weight.weight,
       weightBasis: weight.basis,
       weightSource: weight.source,
-      cacheWriteClassification,
+      ...(cacheWriteClassification ? { cacheWriteClassification } : {}),
       effectiveCost,
     };
   } catch (error) {
@@ -193,7 +197,7 @@ function scopeDiagnosticLines(diagnostics: ScopeDiagnostics): string[] {
     for (const [index, endpoint] of logical.endpoints.entries()) {
       const flatRate = isFlatRateProvider(endpoint.provider);
       lines.push(
-        `    ${String(index + 1)}. endpoint=${endpointKey(endpoint)} listCost=${cost(endpoint.listCost, flatRate)} appliedWeight=${cost(endpoint.appliedWeight, flatRate)} weightBasis=${endpoint.weightBasis ?? "n/a"} weightSource=${endpoint.weightSource ?? "n/a"} cacheWrite=${endpoint.cacheWriteClassification} effectiveCost=${cost(endpoint.effectiveCost, flatRate)}`,
+        `    ${String(index + 1)}. endpoint=${endpointKey(endpoint)} listCost=${cost(endpoint.listCost, flatRate)} appliedWeight=${cost(endpoint.appliedWeight, flatRate)} weightBasis=${endpoint.weightBasis ?? "n/a"} weightSource=${endpoint.weightSource ?? "n/a"} cacheWrite=${endpoint.cacheWriteClassification ?? "n/a"} effectiveCost=${cost(endpoint.effectiveCost, flatRate)}`,
       );
     }
   }

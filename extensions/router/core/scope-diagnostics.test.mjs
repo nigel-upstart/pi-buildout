@@ -71,18 +71,20 @@ describe("scope diagnostics", () => {
     ];
     const result = diagnostics({ registry, allRegistryEndpoints: registry });
 
+    // An unclassifiable cache rate is reported as absent rather than as a fabricated
+    // classification, because "invalid" is not one of the registry's three real cache states.
     assert.deepEqual(
       result.logicalModels[0].endpoints.map(({ provider, cacheWriteClassification }) => [
         provider,
         cacheWriteClassification,
       ]),
       [
-        ["openai-codex", "invalid"],
-        ["github-copilot", "invalid"],
+        ["openai-codex", undefined],
+        ["github-copilot", undefined],
       ],
     );
     assert.deepEqual(result.exclusions, []);
-    assert.match(renderScopeDiagnostics(result), /cacheWrite=invalid/);
+    assert.match(renderScopeDiagnostics(result), /cacheWrite=n\/a/);
   });
 
   it("surfaces unmatched patterns, scope and route exclusions, and bounded weight rejections", () => {
