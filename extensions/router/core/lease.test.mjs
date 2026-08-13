@@ -22,6 +22,7 @@ function lease() {
       ...conservativeFeatures(),
       intent: "implement",
       workflowType: "coding_implementation",
+      actionMode: "reversible_mutation",
       horizon: "single_pr",
       risk: "medium",
       ambiguity: "low",
@@ -98,6 +99,24 @@ describe("task boundary gate", () => {
     }
   });
 
+  it("continues tightly anchored unambiguous confirmations", () => {
+    const active = lease();
+    for (const prompt of ["Sure", "Go ahead.", "Yes please!", "Please do"]) {
+      const result = deterministicBoundaryGate(
+        { mode: "active", active, manualOverride: false },
+        {
+          isUserInput: true,
+          source: "interactive",
+          prompt,
+          cachedTokens: 0,
+          expectedReuseRatio: 0,
+        },
+      );
+      assert.equal(result.action, "continue", prompt);
+      assert.equal(result.reason, "deterministic continuation signal", prompt);
+    }
+  });
+
   it("continues only tightly scoped same-task operational follow-ups", () => {
     const active = lease();
     const prompts = [
@@ -109,6 +128,8 @@ describe("task boundary gate", () => {
       "Fix the remaining test failures.",
       "Address the actionable review findings.",
       "Fix CodeRabbit findings.",
+      "Implement it.",
+      "Fix it.",
     ];
 
     for (const prompt of prompts) {
@@ -128,6 +149,79 @@ describe("task boundary gate", () => {
     }
   });
 
+  it("classifies mutation-oriented operations under planning, review, and read-only leases", () => {
+    const base = lease();
+    const incompatibleLeases = [
+      {
+        ...base,
+        archetype: "implementation_planning",
+        features: {
+          ...base.features,
+          intent: "plan",
+          workflowType: "implementation_planning",
+          actionMode: "reversible_mutation",
+        },
+      },
+      {
+        ...base,
+        archetype: "code_review",
+        features: {
+          ...base.features,
+          intent: "review",
+          workflowType: "code_review",
+          actionMode: "reversible_mutation",
+        },
+      },
+      {
+        ...base,
+        archetype: "median_repository_implementation",
+        features: { ...base.features, actionMode: "local_read" },
+      },
+      {
+        ...base,
+        archetype: "median_repository_implementation",
+        features: { ...base.features, actionMode: "information_only" },
+      },
+      {
+        ...base,
+        archetype: "terminal_heavy_implementation",
+        features: {
+          ...base.features,
+          intent: "diagnose",
+          workflowType: "research_or_analysis",
+          actionMode: "reversible_mutation",
+        },
+      },
+    ];
+    const prompts = [
+      "Fix the remaining test failures.",
+      "Address the actionable review findings.",
+      "Commit whatever makes sense to commit.",
+      "Implement it.",
+      "Fix it.",
+    ];
+
+    for (const active of incompatibleLeases) {
+      for (const prompt of prompts) {
+        const result = deterministicBoundaryGate(
+          { mode: "active", active, manualOverride: false },
+          {
+            isUserInput: true,
+            source: "interactive",
+            prompt,
+            cachedTokens: 100_000,
+            expectedReuseRatio: 1,
+          },
+        );
+        const expectedAction =
+          active.archetype === "implementation_planning" && prompt === "Implement it."
+            ? "new_task"
+            : "classify_continuity";
+        assert.equal(result.action, expectedAction, `${active.archetype}: ${prompt}`);
+      }
+    }
+  });
+
   it("classifies topic-bearing additions and operational near misses", () => {
     const active = lease();
     const prompts = [
@@ -139,6 +233,10 @@ describe("task boundary gate", () => {
       "Address the review findings and plan the next feature.",
       "Please commit the marketplace.json plugin changes.",
       "Continue with a separate task.",
+      "Sure, add a plugin.",
+      "Go ahead with the plugin changes.",
+      "Yes please, update the release tracker.",
+      "Please do the other task.",
       "Add a plugin.",
     ];
 
@@ -210,7 +308,7 @@ describe("task boundary gate", () => {
       archetype: "implementation_planning",
       features: { ...lease().features, intent: "plan", workflowType: "implementation_planning" },
     };
-    for (const prompt of ["Implement the plan.", "Start building PR one", "Now execute it"]) {
+    for (const prompt of ["Implement the plan.", "Implement it.", "Start building PR one", "Now execute it"]) {
       const result = deterministicBoundaryGate(
         { mode: "active", active, manualOverride: false },
         {

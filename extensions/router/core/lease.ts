@@ -1,5 +1,7 @@
 import type { Archetype } from "./archetype.ts";
+import { isCodeBuilder } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
+import { BOOTSTRAP_ROUTE_POLICIES } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
 import type { EffortLevel } from "./profiles.ts";
 import type { RouteChoice } from "./routing.ts";
@@ -59,11 +61,21 @@ export type BoundaryGateResult =
   | { action: "classify_continuity"; reason: string; lease: TaskLease };
 
 const CONTINUATION_PATTERN =
-  /^(?:yes|yep|ok(?:ay)?|continue|go on|proceed|do it|implement it|fix (?:it|that)|try again|run (?:it|them|the tests)|keep going|sounds good)(?:[.!])?$/i;
+  /^(?:yes|yep|sure|ok(?:ay)?|continue|go on|go ahead|proceed|do it|please do|try again|run (?:it|them|the tests)|keep going|sounds good|yes please)(?:[.!])?$/i;
 const DISCONTINUITY_PATTERN =
   /^(?:new task|separate task|unrelated|switch(?:ing)? topics?|instead[, :] |forget (?:that|the previous)|now (?:review|plan|implement|research)\b)/i;
 const OBVIOUS_SAME_TASK_OPERATION_PATTERN =
-  /^(?:please[, ]+)?(?:commit whatever makes sense(?: to commit)?|(?:run|re-?run) (?:(?:the )?(?:(?:focused|full) )?(?:tests?|checks?)|npm run check)|(?:fix|address) (?:the )?(?:(?:remaining|actionable) )?(?:test failures?|check failures?|review findings?|coderabbit findings?))(?:[.!])?$/i;
+  /^(?:please[, ]+)?(?:implement it|fix (?:it|that)|commit whatever makes sense(?: to commit)?|(?:run|re-?run) (?:(?:the )?(?:(?:focused|full) )?(?:tests?|checks?)|npm run check)|(?:fix|address) (?:the )?(?:(?:remaining|actionable) )?(?:test failures?|check failures?|review findings?|coderabbit findings?))(?:[.!])?$/i;
+
+function hasCompatibleMutatingImplementationLease(lease: TaskLease): boolean {
+  const mutationCapable =
+    lease.features.actionMode === "reversible_mutation" ||
+    lease.features.actionMode === "external_side_effect" ||
+    lease.features.actionMode === "destructive";
+  return (
+    BOOTSTRAP_ROUTE_POLICIES[lease.archetype].mutatesRepository && isCodeBuilder(lease.features) && mutationCapable
+  );
+}
 
 export function hasSignificantReusableCache(cachedTokens: number, expectedReuseRatio: number): boolean {
   return cachedTokens >= 20_000 && expectedReuseRatio >= 0.5;
@@ -103,7 +115,7 @@ export function deterministicBoundaryGate(state: LeaseState, input: BoundaryInpu
   if (CONTINUATION_PATTERN.test(prompt)) {
     return { action: "continue", reason: "deterministic continuation signal", lease: state.active };
   }
-  if (OBVIOUS_SAME_TASK_OPERATION_PATTERN.test(prompt)) {
+  if (OBVIOUS_SAME_TASK_OPERATION_PATTERN.test(prompt) && hasCompatibleMutatingImplementationLease(state.active)) {
     return { action: "continue", reason: "obvious same-task operational follow-up", lease: state.active };
   }
   const manualOverride = state.manualOverride || state.active.manualOverride;
