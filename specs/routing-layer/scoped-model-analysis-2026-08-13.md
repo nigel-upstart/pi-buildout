@@ -292,6 +292,10 @@ cost-to-done priors. The machine-readable capture is
 value for value, so drift fails the build. The capture holds ten rows: the five scoped models under inquiry plus the
 five non-scoped submissions that appear alongside them in the same sources and serve as anchors.
 
+**Reproduce with.** Run `npm run single-attempt:generate` to regenerate the JSON and `npm run single-attempt:check` to
+verify it. The corpus defaults to `/Users/nigel.stuke/outputs/llm-effectiveness`; override it with `-- --corpus <path>`
+or the `SINGLE_ATTEMPT_EVIDENCE_CORPUS` environment variable.
+
 **Why it is a separate class.** [`core/evidence.ts`](../../extensions/router/core/evidence.ts) ranks candidates with
 `scoreEvidencePrior`, which reads six terms. A single-attempt submission measures one of them, a verifier outcome, and
 cannot measure the other five: regression-break rate, partial credit on failure, repeat-all-pass and repeat-flaky rates,

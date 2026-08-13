@@ -222,11 +222,12 @@ cache or tool-call behavior.
 - License: the SWE-bench project declares MIT; the local derivation is internal
 
 Use: single-attempt resolve rates, each submission's own reported cost per attempted task, median API-call counts, and
-per-language resolve and cost-per-resolved slices for ten submissions were transcribed as numeric data into
+per-language resolve and cost-per-resolved slices for ten submissions were derived into
 [`specs/routing-layer/single-attempt-evidence-2026-08-13.json`](specs/routing-layer/single-attempt-evidence-2026-08-13.json)
-and mirrored into [`extensions/router/core/single-attempt-data.ts`](extensions/router/core/single-attempt-data.ts). This
-is the first runtime use of these numbers; the earlier entry above described a documentation-only record. No upstream
-prose or code was copied or modified.
+by [`scripts/generate-single-attempt-evidence.mjs`](scripts/generate-single-attempt-evidence.mjs) and mirrored into
+[`extensions/router/core/single-attempt-data.ts`](extensions/router/core/single-attempt-data.ts). This is the first
+runtime use of these numbers; the earlier entry above described a documentation-only record. No upstream prose or code
+was copied or modified.
 
 Intentionally not adopted: the leaderboard's own ranking and any percentile derived from it are not used as an ability
 scale, because the cost-bearing Verified population tops out at a prior-generation frontier model. The five terms the
