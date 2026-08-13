@@ -194,6 +194,69 @@ describe("classifier deadline", () => {
     assert.equal(run.summary.attemptCount, 3, "two primary schema attempts and one secondary attempt were observed");
     assert.ok(run.summary.wallLatencyMs < CLASSIFICATION_TIMEOUT_MS);
   });
+
+  it("stops endpoint iteration and secondary escalation once the injected deadline expires", async () => {
+    // The deadline is injected per invocation, so this exercises real expiration against a blocked
+    // endpoint instead of asserting that an immediately settling fixture stayed under 11 seconds.
+    const deadlineMs = 25;
+    const endpointCalls = [];
+    const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });
+    const blockUntilAborted = async (entry, request) => {
+      endpointCalls.push(`${request.stage}:${entry.model.provider}`);
+      await new Promise((_resolve, reject) => {
+        request.signal.addEventListener("abort", () => {
+          const abort = new Error("router deadline aborted the endpoint call");
+          abort.name = "AbortError";
+          reject(abort);
+        });
+      });
+      throw new Error("unreachable: the blocked endpoint must only end by abort");
+    };
+    const primary = transportFromCandidates(
+      [candidate("primary-a", "gpt-5.6-luna", "openai"), candidate("primary-b", "gpt-5.6-luna", "openai")],
+      blockUntilAborted,
+    );
+    const secondary = transportFromCandidates(
+      [candidate("secondary-a", "claude-sonnet-5", "anthropic")],
+      blockUntilAborted,
+    );
+
+    let classification;
+    const startedAt = performance.now();
+    const run = await runClassifierInvocation({
+      purpose: "continuity",
+      timeoutMs: deadlineMs,
+      invoke: (signal, onAttempt) => {
+        classification = classifyTask({
+          prompt: "Implement the change",
+          synopsis: {},
+          primary,
+          secondary,
+          primaryVendor: "openai",
+          secondaryVendor: "anthropic",
+          signal,
+          onAttempt,
+        });
+        return classification;
+      },
+    });
+
+    assert.equal(run.status, "failed");
+    assert.equal(run.summary.timedOut, true);
+    assert.equal(run.summary.cancelled, true);
+    assert.equal(run.summary.errorCategory, "deadline");
+    assert.ok(run.summary.wallLatencyMs >= deadlineMs, `expired after only ${String(run.summary.wallLatencyMs)}ms`);
+    assert.ok(
+      performance.now() - startedAt < CLASSIFICATION_TIMEOUT_MS,
+      "expiration must not wait for the full budget",
+    );
+    await assert.rejects(classification, (error) => error.name === "AbortError");
+    assert.deepEqual(
+      endpointCalls,
+      ["primary:primary-a"],
+      "an expired deadline must not try another endpoint or escalate to the secondary stage",
+    );
+  });
 });
 
 describe("automatic routing gate", () => {
@@ -274,6 +337,20 @@ function adapterLease() {
   };
 }
 
+/** Live registry entry for a leased choice, so an active-mode turn can actually apply that choice. */
+function registryModelForChoice(choice) {
+  return {
+    provider: choice.provider,
+    id: choice.modelId,
+    name: choice.modelId,
+    contextWindow: choice.contextWindow,
+    maxTokens: 64_000,
+    cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
+    reasoning: true,
+    input: ["text"],
+  };
+}
+
 async function runAdapterTurn({
   classifyTask: classifyTaskFixture,
   active,
@@ -281,6 +358,7 @@ async function runAdapterTurn({
   sessionId,
   source = "interactive",
   reason = "reload",
+  mode = "shadow",
 }) {
   const hooks = new Map();
   const commands = new Map();
@@ -294,7 +372,7 @@ async function runAdapterTurn({
     {
       type: "custom",
       customType: "model-router-state",
-      data: { mode: "shadow", manualOverride: false, ...(active ? { active } : {}) },
+      data: { mode, manualOverride: false, ...(active ? { active } : {}) },
     },
   ];
   const pi = {
@@ -320,10 +398,18 @@ async function runAdapterTurn({
     },
     read: async () => [],
   };
+  // Active mode only means something when the leased choice is reachable, so the registry and the
+  // current model mirror the lease. A retention assertion then proves the router left that selection
+  // alone rather than merely never reaching the apply step.
+  const registryModels = mode === "active" && active ? [registryModelForChoice(active.selected)] : [];
   const ctx = {
     cwd: "/repo",
-    model: undefined,
-    modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
+    model: registryModels[0],
+    modelRegistry: {
+      getAll: () => registryModels,
+      getAvailable: () => registryModels,
+      find: (provider, id) => registryModels.find((model) => model.provider === provider && model.id === id),
+    },
     sessionManager: { getBranch: () => branch, getSessionId: () => sessionId },
     getContextUsage: () => ({ tokens: 0, contextWindow: 128_000 }),
     ui: {
@@ -517,11 +603,19 @@ describe("routerExtension", () => {
           active,
           prompt: "New task: implement a separate change",
           sessionId: `fresh-failure-${errorName}`,
+          // Shadow mode never applies a selection at all, so retention is only observable in active mode.
+          mode: "active",
         });
 
+        assert.equal(
+          result.notifications.some(({ message }) => message.startsWith("Shadow route:")),
+          false,
+          "shadow mode would skip model application entirely, making the retention claim vacuous",
+        );
         assert.equal(result.selectedModels.length, 0, "classification failure must not select a model");
         assert.equal(result.selectedEfforts.length, 0, "classification failure must not change effort");
         await result.commands.get("route").handler("", result.ctx);
+        assert.ok((result.notifications.at(-1)?.message ?? "").includes("mode=active"));
         assert.ok((result.notifications.at(-1)?.message ?? "").includes(`task=${active.taskId}`));
         assert.ok(
           result.notifications.some(({ message }) => /keeping the current model selection/i.test(message)),
