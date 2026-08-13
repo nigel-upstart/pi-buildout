@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import {
@@ -19,6 +19,26 @@ import { EVIDENCE_CAPTURE, EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
 
 const specPath = fileURLToPath(new URL("../../../specs/routing-layer/model-evidence-2026-07-25.json", import.meta.url));
 const spec = JSON.parse(readFileSync(specPath, "utf8"));
+
+describe("generated-data provenance headers", () => {
+  // A generated module names the test that guards it against its JSON source. That pointer had rotted:
+  // evidence-data.ts named `evidence-data.test.mjs`, which has never existed, so a reader following it
+  // would conclude the module was unguarded. The guard is real and lives in this file. Asserting the
+  // pointer resolves keeps the two from drifting again.
+  it("names a test file that exists", () => {
+    for (const moduleName of ["evidence-data.ts", "single-attempt-data.ts"]) {
+      const source = readFileSync(fileURLToPath(new URL(moduleName, import.meta.url)), "utf8");
+      const named = [...source.matchAll(/([\w.-]+\.test\.mjs)/g)].map((match) => match[1]);
+      assert.ok(named.length > 0, `${moduleName} does not name the test that guards it`);
+      for (const testName of new Set(named)) {
+        assert.ok(
+          existsSync(fileURLToPath(new URL(testName, import.meta.url))),
+          `${moduleName} points at ${testName}, which does not exist`,
+        );
+      }
+    }
+  });
+});
 
 const WEIGHTS = {
   developerWaitValuePerMs: 0.000_001,
