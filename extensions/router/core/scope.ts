@@ -76,7 +76,13 @@ const DATE_SUFFIX = /-\d{8}$/;
  */
 export function canonicalModelId(modelId: string): string {
   // A gateway path such as `bedrock/anthropic.claude-sonnet-5` carries the real ID in its last segment.
-  let bare = modelId.split("/").at(-1) ?? modelId;
+  //
+  // Case is folded because catalogs disagree on it for the same model: Bedrock spells Z.ai's model
+  // `zai.glm-5` while the Hugging Face and Together catalogs spell it `zai-org/GLM-5`, and the same
+  // split affects Kimi, MiniMax, Qwen and DeepSeek entries. Folding is safe rather than merely
+  // convenient: across all 1,065 entries of the pinned registry no two IDs within one provider differ
+  // only by case, and every incumbent ID is already lower-case, so no incumbent identity moves.
+  let bare = (modelId.split("/").at(-1) ?? modelId).toLowerCase();
   bare = normalizeVendorPath(bare.replace(BEDROCK_REGION_PREFIX, ""));
   bare = bare.replace(VERSION_SUFFIX, "").replace(DATE_SUFFIX, "");
   if (bare.startsWith("claude-")) bare = bare.replace(/(\d)\.(\d)/g, "$1-$2");

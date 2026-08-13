@@ -79,22 +79,25 @@ describe("canonical model identity", () => {
     assert.equal(canonicalModelId("claude-opus-4.7"), "claude-opus-4-7");
   });
 
-  // Known and deliberately unfixed. VERSION_SUFFIX cannot distinguish a Bedrock version tag from a
-  // model name that ends in one, because Bedrock uses both bare (`claude-opus-4-6-v1`) and
-  // colon-qualified (`-v1:0`) tags. NVIDIA ships "Nemotron Nano 12B V2" and "9B V2", so the `-v2`
-  // here is part of the name and is being removed as though it were a tag.
+  // Two Bedrock IDs carry a version token that cannot be told apart from a Bedrock version tag, so
+  // canonicalization loses information. Both are recorded rather than repaired, because Bedrock uses
+  // bare (`-v1`) and colon-qualified (`-v1:0`) tags interchangeably and no rule separates a tag from
+  // a model name ending in one without inventing a convention no source supports.
   //
-  // Recorded rather than fixed for two reasons: the pinned registry contains no non-V2 sibling for
-  // either model, so nothing currently collides; and no policy candidate names any Nemotron model,
-  // so the ID is unreachable. Guessing a rule that splits the two meanings of `-vN` would be a local
-  // invention with no source behind it. This test exists so the conflation is visible and a future
-  // sibling entry breaks the build instead of silently grouping two models.
-  it("records the unresolved -vN ambiguity in the Nemotron IDs", () => {
+  // The guarantee that nothing currently collides is enforced by
+  // scope-identity-registry.test.mjs against the pinned registry, not by this test.
+  it("records the two known lossy canonicalizations", () => {
+    // NVIDIA ships "Nemotron Nano 12B V2" and "9B V2"; the `-v2` is part of the name.
     assert.equal(canonicalModelId("nvidia.nemotron-nano-12b-v2"), "nemotron-nano-12b");
     assert.equal(canonicalModelId("nvidia.nemotron-nano-9b-v2"), "nemotron-nano-9b");
-    // The unambiguous siblings are unaffected, which bounds the blast radius to the two IDs above.
+    // The unambiguous Nemotron siblings are unaffected, which bounds the blast radius.
     assert.equal(canonicalModelId("nvidia.nemotron-super-3-120b"), "nemotron-super-3-120b");
     assert.equal(canonicalModelId("nvidia.nemotron-nano-3-30b"), "nemotron-nano-3-30b");
+    // Bedrock's `deepseek.v3-v1:0` is named "DeepSeek-V3.1" in the registry, so the ID understates
+    // the version. Retaining the vendor segment is still an improvement on the previous bare `v3`,
+    // but it does not group with a `deepseek-v3.1` spelling on another catalog.
+    assert.equal(canonicalModelId("deepseek.v3-v1:0"), "deepseek-v3");
+    assert.notEqual(canonicalModelId("deepseek.v3-v1:0"), canonicalModelId("deepseek/deepseek-v3.1"));
   });
 
   it("keeps distinct scoped models in distinct logical groups", () => {
@@ -114,33 +117,45 @@ describe("canonical model identity", () => {
     assert.equal(new Set(distinct).size, distinct.length);
   });
 
-  // Behaviour lock for every incumbent spelling the router already routes. Canonicalization decides
-  // evidence-prior lookup, prompt-profile lookup and endpoint grouping, so a silent change here
-  // would mis-route a candidate rather than fail. This PR must not move any of these.
-  it("leaves every incumbent spelling byte-identical", () => {
+  // Behaviour lock for the incumbent spellings the router already routes, covering every logical
+  // model named by core/policy.ts across the operator's reachable providers, plus the resale and
+  // gateway spellings of those models. Canonicalization decides evidence-prior lookup,
+  // prompt-profile lookup and endpoint grouping, so a silent change here would mis-route a candidate
+  // rather than fail. This is a fixed baseline, not a registry enumeration; the registry-wide
+  // invariants live in scope-identity-registry.test.mjs.
+  it("locks canonical identity for every logical model the policy names", () => {
     const golden = {
       "claude-opus-5": "claude-opus-5",
       "anthropic.claude-opus-5": "claude-opus-5",
       "global.anthropic.claude-opus-5": "claude-opus-5",
       "us.anthropic.claude-opus-4-6-v1": "claude-opus-4-6",
+      "claude-haiku-4-5": "claude-haiku-4-5",
+      "claude-haiku-4-5-20251001": "claude-haiku-4-5",
+      "anthropic.claude-haiku-4-5-20251001": "claude-haiku-4-5",
       "us.anthropic.claude-haiku-4-5-20251001-v1:0": "claude-haiku-4-5",
       "us.anthropic.claude-opus-4-5-20251101-v1:0": "claude-opus-4-5",
       "eu.anthropic.claude-sonnet-5": "claude-sonnet-5",
       "jp.anthropic.claude-opus-4-8": "claude-opus-4-8",
       "au.anthropic.claude-sonnet-4-6": "claude-sonnet-4-6",
+      "claude-fable-5": "claude-fable-5",
       "anthropic.claude-fable-5": "claude-fable-5",
+      "global.anthropic.claude-fable-5": "claude-fable-5",
       "claude-opus-4.7": "claude-opus-4-7",
       "claude-sonnet-4.6": "claude-sonnet-4-6",
       "claude-haiku-4.5": "claude-haiku-4-5",
-      "openai.gpt-oss-120b-1:0": "gpt-oss-120b",
-      "openai.gpt-oss-120b": "gpt-oss-120b",
+      "gpt-5.6-sol": "gpt-5.6-sol",
+      "gpt-5.6-luna": "gpt-5.6-luna",
+      "gpt-5.6-terra": "gpt-5.6-terra",
+      "gpt-5.4-mini": "gpt-5.4-mini",
       "openai.gpt-5.6-sol": "gpt-5.6-sol",
       "openai.gpt-5.6-luna": "gpt-5.6-luna",
       "openai.gpt-5.6-terra": "gpt-5.6-terra",
-      "gpt-5.6-terra": "gpt-5.6-terra",
-      "gpt-5.4-mini": "gpt-5.4-mini",
-      "gemini-3.5-flash": "gemini-3.5-flash",
+      "openai.gpt-oss-120b": "gpt-oss-120b",
+      "openai.gpt-oss-120b-1:0": "gpt-oss-120b",
+      "gemini-3.6-flash": "gemini-3.6-flash",
       "gemini-2.5-pro": "gemini-2.5-pro",
+      "gemini-2.5-flash": "gemini-2.5-flash",
+      "gemini-3.5-flash": "gemini-3.5-flash",
       "gemini-3-flash-preview": "gemini-3-flash-preview",
       "amazon.nova-lite-v1:0": "nova-lite",
       "us.meta.llama4-scout-17b-instruct-v1:0": "llama4-scout-17b-instruct",
@@ -150,6 +165,21 @@ describe("canonical model identity", () => {
     for (const [spelling, expected] of Object.entries(golden)) {
       assert.equal(canonicalModelId(spelling), expected, `canonicalModelId(${spelling})`);
     }
+  });
+
+  it("folds catalog case differences onto one logical model", () => {
+    // The same models, spelled by different catalogs. Bedrock is lower-case; the Hugging Face and
+    // Together catalogs are mixed-case.
+    assert.equal(canonicalModelId("zai-org/GLM-5"), "glm-5");
+    assert.equal(canonicalModelId("zai.glm-5"), "glm-5");
+    assert.equal(canonicalModelId("moonshotai/Kimi-K2.5"), "kimi-k2.5");
+    assert.equal(canonicalModelId("moonshotai.kimi-k2.5"), "kimi-k2.5");
+    assert.equal(canonicalModelId("MiniMaxAI/MiniMax-M2.5"), "minimax-m2.5");
+    assert.equal(canonicalModelId("minimax.minimax-m2.5"), "minimax-m2.5");
+    assert.equal(canonicalModelId("deepseek-ai/DeepSeek-V3.2"), "deepseek-v3.2");
+    assert.equal(canonicalModelId("deepseek.v3.2"), "deepseek-v3.2");
+    assert.equal(canonicalModelId("moonshotai/Kimi-K2.7-Code"), "kimi-k2.7-code");
+    assert.equal(canonicalModelId("kimi-k2.7-code"), "kimi-k2.7-code");
   });
 });
 
