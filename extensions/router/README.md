@@ -66,9 +66,18 @@ same-task implementation operations such as rerunning checks, fixing reported fa
 completed change. The operation shortcut applies only to a mutation-capable code-builder lease whose policy archetype
 mutates the repository. Within that ordinary-input path, hard boundaries precede prompt matching; explicit topic
 changes, planning-to-implementation transitions, incompatible planning/review/read-only leases, and topic-bearing near
-matches still create or classify a boundary. Extension-generated input and queued steer/follow-up input are separate
-unconditional continuation paths evaluated before pending hard boundaries, because they remain part of the already
-running lease. These shortcuts retain a lease; they never create authorization or bypass its lifecycle/tool gates.
+matches still create or classify a boundary. Queued steer/follow-up input is a separate unconditional continuation path
+evaluated before pending hard boundaries, because it is delivered into a turn that is already running; that path is
+delivery-based and applies to queued input of any origin, including an extension's `sendUserMessage`. These shortcuts
+retain a lease; they never create authorization or bypass its lifecycle/tool gates.
+
+Extension-generated input is not privileged. pi marks a turn `source: "extension"` when any extension calls
+`sendUserMessage`, and while the agent is idle such input runs the ordinary prompt path with no `streamingBehavior`, so
+it is indistinguishable from typed input apart from the label. It is therefore evaluated exactly like ordinary input: it
+cannot outrank a pending hard boundary, cannot silently inherit the active lease, and invalidates a standing execution
+authorization the same way a typed message does. The router's own continuations (authorized execution, advisory, and
+post-fallback) are custom `model-router-context` messages, which never surface as an input event and so keep their lease
+without relying on any source exemption.
 
 Every router-level fresh-task or continuity classification has one router-owned **11-second wall-clock deadline**. The
 router passes one `AbortSignal` through schema attempts and concrete endpoint calls. A router deadline aborts the

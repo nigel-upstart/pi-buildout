@@ -1509,9 +1509,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       state.active &&
       (state.active.lifecycle.phase === "authorized_execution" ||
         (state.active.lifecycle.phase === "completed" &&
-          state.active.lifecycle.policy === "authorization_then_completion_review")) &&
-      event.source !== "extension"
+          state.active.lifecycle.policy === "authorization_then_completion_review"))
     ) {
+      // Every input event is new user-turn intent, whatever its source. An extension calling
+      // `sendUserMessage` is not the router continuing its own work: router continuations are custom
+      // messages that never reach this hook, so no source is exempt from invalidating an approval
+      // that was granted for a different exact plan.
       state = { ...state, active: invalidateAuthorization(state.active, "new user input") };
       persistState();
     }

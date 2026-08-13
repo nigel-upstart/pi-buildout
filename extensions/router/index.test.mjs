@@ -15,6 +15,7 @@ import { classifyTask } from "./classifier.ts";
 import { deriveArchetype } from "./core/archetype.ts";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
+import { validateActionPlan } from "./core/safety.ts";
 import { transportFromCandidates } from "./pi-classifier.ts";
 import { JsonlTelemetryStore, runClassifierInvocation } from "./telemetry.ts";
 import routerExtension, {
@@ -273,7 +274,14 @@ function adapterLease() {
   };
 }
 
-async function runAdapterTurn({ classifyTask: classifyTaskFixture, active, prompt, sessionId }) {
+async function runAdapterTurn({
+  classifyTask: classifyTaskFixture,
+  active,
+  prompt,
+  sessionId,
+  source = "interactive",
+  reason = "reload",
+}) {
   const hooks = new Map();
   const commands = new Map();
   const events = [];
@@ -327,8 +335,8 @@ async function runAdapterTurn({ classifyTask: classifyTaskFixture, active, promp
     },
   };
   routerExtension(pi, { telemetry, classifyTask: classifyTaskFixture });
-  await hooks.get("session_start")({ reason: "reload" }, ctx);
-  await hooks.get("input")({ text: prompt, source: "interactive" }, ctx);
+  await hooks.get("session_start")({ reason }, ctx);
+  await hooks.get("input")({ text: prompt, source }, ctx);
   await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
   return { commands, ctx, events, appended, selectedModels, selectedEfforts, notifications };
 }
@@ -523,6 +531,72 @@ describe("routerExtension", () => {
         assert.equal(result.events.filter(({ kind }) => kind === "classifier_attempt").length, 0);
       });
     }
+  });
+
+  it("treats idle extension-generated input as new user intent that cannot inherit an approval", async (t) => {
+    // pi labels a turn `source: "extension"` only when an extension called `sendUserMessage`, which
+    // runs the ordinary prompt path and carries no streamingBehavior while the agent is idle. The
+    // router's own continuations are custom messages that never reach the input hook, so extension
+    // input is treated exactly like typed input: it invalidates a standing authorization and it
+    // cannot outrank a pending hard boundary.
+    const sessionId = "extension-input-authorization";
+    const validated = validateActionPlan(irreversibleActionPlan());
+    assert.equal(validated.success, true, "the authorization fixture needs a valid plan fingerprint");
+    const plan = {
+      taskFingerprint: "task-fingerprint",
+      planFingerprint: validated.fingerprint,
+      submittedAt: "2026-08-13T00:00:00.000Z",
+      plan: irreversibleActionPlan(),
+    };
+    const authorizedLease = () => ({
+      ...adapterLease(),
+      lifecycle: {
+        phase: "authorized_execution",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: plan.taskFingerprint,
+        plan,
+        authorization: {
+          taskFingerprint: plan.taskFingerprint,
+          planFingerprint: plan.planFingerprint,
+          reviewTaskId: "review",
+          reviewerVendor: "anthropic",
+          sessionId,
+          approvedAt: "2026-08-13T00:01:00.000Z",
+        },
+      },
+    });
+
+    await t.test("invalidates the standing authorization", async () => {
+      const active = authorizedLease();
+      const result = await runAdapterTurn({
+        classifyTask: successfulClassifier(1, { taskContinuity: "clear_continuation" }),
+        active,
+        prompt: "Continue",
+        sessionId,
+        source: "extension",
+      });
+      const persisted = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data;
+      assert.ok(persisted, "extension input must persist the authorization invalidation");
+      assert.equal(persisted.active.taskId, active.taskId, "the lease itself is retained");
+      assert.equal(persisted.active.lifecycle.phase, "preflight", "an approval must not survive extension input");
+      assert.equal(persisted.active.lifecycle.authorization, undefined);
+      assert.match(persisted.active.lifecycle.lastAuthorizationReview.summary, /requires a fresh independent review/);
+    });
+
+    await t.test("does not outrank a pending hard boundary", async () => {
+      const result = await runAdapterTurn({
+        classifyTask: successfulClassifier(1),
+        active: authorizedLease(),
+        prompt: "Continue",
+        sessionId: `${sessionId}-boundary`,
+        source: "extension",
+        reason: "startup",
+      });
+      const boundary = result.events.find(({ kind }) => kind === "boundary");
+      assert.equal(boundary.data.source, "extension");
+      assert.equal(boundary.data.action, "new_task");
+      assert.match(boundary.data.reason, /hard boundary: new_session/);
+    });
   });
 
   it("enforces non-additive classifier invocation and legacy attempt cardinality", async (t) => {

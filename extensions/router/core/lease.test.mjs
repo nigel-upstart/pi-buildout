@@ -78,11 +78,15 @@ describe("task boundary gate", () => {
     }
   });
 
-  it("keeps extension and queued follow-up messages in the existing lease", () => {
+  it("keeps queued steering and follow-up messages of every source in the running lease", () => {
     const active = lease();
     for (const input of [
-      { source: "extension", streamingBehavior: undefined },
       { source: "interactive", streamingBehavior: "followUp" },
+      { source: "interactive", streamingBehavior: "steer" },
+      { source: "rpc", streamingBehavior: "followUp" },
+      // pi sets streamingBehavior only while the agent is streaming, so an extension message queued
+      // into a running turn is delivery-identical to queued interactive input.
+      { source: "extension", streamingBehavior: "followUp" },
     ]) {
       const result = deterministicBoundaryGate(
         { mode: "active", active, manualOverride: false },
@@ -95,8 +99,52 @@ describe("task boundary gate", () => {
         },
       );
       assert.equal(result.action, "continue");
+      assert.equal(result.reason, "queued steering/follow-up stays inside the running lease");
       assert.equal(result.lease.taskId, active.taskId);
     }
+  });
+
+  it("evaluates idle extension-generated input as ordinary input rather than an automatic continuation", () => {
+    const active = lease();
+    const idleExtensionInput = (prompt) => ({
+      isUserInput: true,
+      source: "extension",
+      streamingBehavior: undefined,
+      prompt,
+      cachedTokens: 100_000,
+      expectedReuseRatio: 1,
+    });
+
+    const afterBoundary = deterministicBoundaryGate(
+      setHardBoundary({ mode: "active", active, manualOverride: false }, "post_compaction"),
+      idleExtensionInput("Continue"),
+    );
+    assert.equal(afterBoundary.action, "new_task", "extension input must not outrank a pending hard boundary");
+    assert.equal(afterBoundary.hardBoundary, "post_compaction");
+
+    const unrelated = deterministicBoundaryGate(
+      { mode: "active", active, manualOverride: false },
+      idleExtensionInput("Do something unrelated"),
+    );
+    assert.equal(unrelated.action, "classify_continuity", "an idle extension prompt cannot assume continuity");
+
+    const explicitlyNew = deterministicBoundaryGate(
+      { mode: "active", active, manualOverride: false },
+      idleExtensionInput("New task: audit the release"),
+    );
+    assert.equal(explicitlyNew.action, "new_task");
+
+    const acknowledgement = deterministicBoundaryGate(
+      { mode: "active", active, manualOverride: false },
+      idleExtensionInput("Continue"),
+    );
+    assert.equal(acknowledgement.action, "continue", "the ordinary deterministic signals still apply");
+    assert.equal(acknowledgement.lease.taskId, active.taskId);
+
+    assert.equal(
+      deterministicBoundaryGate({ mode: "active", manualOverride: false }, idleExtensionInput("Continue")).action,
+      "new_task",
+    );
   });
 
   it("continues only the anchored pure-acknowledgement allowlist unconditionally", () => {

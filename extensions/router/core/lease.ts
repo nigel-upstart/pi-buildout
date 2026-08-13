@@ -47,7 +47,16 @@ export type LeaseState = {
 
 export type BoundaryInput = {
   isUserInput: boolean;
+  /**
+   * Origin pi assigned to this turn's input event. `extension` means some extension called
+   * `sendUserMessage`; it does not mean the router generated the message. The router's own
+   * continuations are custom messages (`sendMessage`), which never surface as an input event.
+   */
   source: "interactive" | "rpc" | "extension";
+  /**
+   * Set by pi only while the agent is already streaming, for every source. Its presence, not the
+   * source, is what identifies input queued into a turn that is already running.
+   */
   streamingBehavior?: "steer" | "followUp";
   prompt: string;
   cachedTokens: number;
@@ -83,11 +92,12 @@ export function hasSignificantReusableCache(cachedTokens: number, expectedReuseR
 
 export function deterministicBoundaryGate(state: LeaseState, input: BoundaryInput): BoundaryGateResult {
   if (!input.isUserInput) return { action: "ignore", reason: "lease evaluation is user-turn-only" };
-  if (input.source === "extension") {
-    return state.active
-      ? { action: "continue", reason: "extension-generated continuation cannot create a task", lease: state.active }
-      : { action: "new_task", reason: "extension input has no active lease" };
-  }
+  // Delivery, not origin, decides whether input belongs to work already in flight. pi sets
+  // `streamingBehavior` only while the agent is streaming, so this one branch covers steering and
+  // follow-ups from every source, including an extension's `sendUserMessage`. Input that arrives
+  // while the agent is idle starts its own turn and is therefore evaluated as ordinary input
+  // whatever its source: an extension-authored prompt carries no more task authority than a typed
+  // one, so it can neither outrank a pending hard boundary nor silently inherit the active lease.
   if (input.streamingBehavior) {
     return state.active
       ? { action: "continue", reason: "queued steering/follow-up stays inside the running lease", lease: state.active }
