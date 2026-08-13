@@ -79,6 +79,24 @@ describe("canonical model identity", () => {
     assert.equal(canonicalModelId("claude-opus-4.7"), "claude-opus-4-7");
   });
 
+  // Known and deliberately unfixed. VERSION_SUFFIX cannot distinguish a Bedrock version tag from a
+  // model name that ends in one, because Bedrock uses both bare (`claude-opus-4-6-v1`) and
+  // colon-qualified (`-v1:0`) tags. NVIDIA ships "Nemotron Nano 12B V2" and "9B V2", so the `-v2`
+  // here is part of the name and is being removed as though it were a tag.
+  //
+  // Recorded rather than fixed for two reasons: the pinned registry contains no non-V2 sibling for
+  // either model, so nothing currently collides; and no policy candidate names any Nemotron model,
+  // so the ID is unreachable. Guessing a rule that splits the two meanings of `-vN` would be a local
+  // invention with no source behind it. This test exists so the conflation is visible and a future
+  // sibling entry breaks the build instead of silently grouping two models.
+  it("records the unresolved -vN ambiguity in the Nemotron IDs", () => {
+    assert.equal(canonicalModelId("nvidia.nemotron-nano-12b-v2"), "nemotron-nano-12b");
+    assert.equal(canonicalModelId("nvidia.nemotron-nano-9b-v2"), "nemotron-nano-9b");
+    // The unambiguous siblings are unaffected, which bounds the blast radius to the two IDs above.
+    assert.equal(canonicalModelId("nvidia.nemotron-super-3-120b"), "nemotron-super-3-120b");
+    assert.equal(canonicalModelId("nvidia.nemotron-nano-3-30b"), "nemotron-nano-3-30b");
+  });
+
   it("keeps distinct scoped models in distinct logical groups", () => {
     const distinct = [
       "deepseek.v3.2",
