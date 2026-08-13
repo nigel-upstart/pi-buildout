@@ -214,6 +214,25 @@ Intentionally not adopted: the analysis makes no runtime policy change, transfer
 versions, does not treat single-attempt verifier outcomes as human acceptance, and does not infer unverified Bedrock
 cache or tool-call behavior.
 
+### Single-attempt evidence class
+
+- Sources: the same [SWE-bench Verified and SWE-bench Multilingual](https://www.swebench.com/) leaderboard captures
+  recorded above, taken from the local `llm-effectiveness` corpus capture with source data through 2026-08-13
+- Revision reviewed: that corpus capture; no independent public-page revision was pinned
+- License: the SWE-bench project declares MIT; the local derivation is internal
+
+Use: single-attempt resolve rates, each submission's own reported cost per attempted task, median API-call counts, and
+per-language resolve and cost-per-resolved slices for ten submissions were transcribed as numeric data into
+[`specs/routing-layer/single-attempt-evidence-2026-08-14.json`](specs/routing-layer/single-attempt-evidence-2026-08-14.json)
+and mirrored into [`extensions/router/core/single-attempt-data.ts`](extensions/router/core/single-attempt-data.ts). This
+is the first runtime use of these numbers; the earlier entry above described a documentation-only record. No upstream
+prose or code was copied or modified.
+
+Intentionally not adopted: the leaderboard's own ranking and any percentile derived from it are not used as an ability
+scale, because the cost-bearing Verified population tops out at a prior-generation frontier model. The five terms the
+router's cost-to-done model requires and single-attempt submissions cannot measure were not estimated or defaulted, and
+the data is structurally barred from that model rather than down-weighted within it. No model became routable.
+
 ## Pi documentation and examples
 
 - Source: `@earendil-works/pi-coding-agent`

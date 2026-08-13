@@ -1,5 +1,7 @@
 import { EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
 import type { EvidenceLanguagePrior, EvidencePriorRow } from "./evidence-data.ts";
+import { SINGLE_ATTEMPT_PRIOR_ROWS } from "./single-attempt-data.ts";
+import type { SingleAttemptPriorRow } from "./single-attempt-data.ts";
 
 export type { EvidencePriorRow } from "./evidence-data.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
@@ -171,6 +173,68 @@ export function evidenceAbility(modelId: string, effort: EffortLevel): AbilityTi
   const row = findEvidencePrior(modelId, effort);
   if (row?.consensusBest !== undefined) return abilityFromConsensus(row.consensusBest);
   return CONSENSUS_ONLY_ABILITY[modelId];
+}
+
+/**
+ * Ceiling on any band derived from single-attempt evidence alone.
+ *
+ * Both single-attempt sources anchor their comparisons on Claude 4.5/4.6-era Anthropic rows.
+ * `claude-opus-4-6` is band 2 in `CONSENSUS_ONLY_ABILITY`, and no scoped model in these sources is
+ * measured against `claude-opus-5` at all. So the strongest true statement the evidence supports is
+ * "reaches the prior-generation frontier", and this repository's generation-currency rule treats that
+ * as a different claim from "reaches the current frontier": it is the same rule that disqualifies
+ * `claude-opus-4-8` as superseded and admits `claude-opus-4-6` only as a narrow scoped candidate.
+ * A single-attempt row therefore cannot exceed band 2, no matter how high it ranks within its source.
+ *
+ * The clamp is stated separately from the anchor comparison below rather than left implicit in it,
+ * because the anchor table happens to top out at band 2 today and a future anchor addition must not
+ * silently raise this ceiling.
+ */
+const SINGLE_ATTEMPT_ABILITY_CAP: AbilityTier = 2;
+
+/**
+ * Anchors a single-attempt row may be banded against: the rows in the same capture that are NOT
+ * scoped-only, and that the router already bands from a retained source. Reusing the router's own
+ * bands, rather than declaring thresholds here, means an anchor's band cannot drift away from the
+ * band the rest of the router uses for that same model.
+ */
+function singleAttemptAnchors(): readonly { ability: AbilityTier; resolveRate: number }[] {
+  return SINGLE_ATTEMPT_PRIOR_ROWS.flatMap((row) => {
+    if (row.scoped || row.verified === undefined) return [];
+    // `effort` is a source label on these rows, and every retained anchor is banded by model rather
+    // than by effort, so the anchor's band is read at the effort the source actually ran.
+    const ability = CONSENSUS_ONLY_ABILITY[row.modelId];
+    return ability === undefined ? [] : [{ ability, resolveRate: row.verified.resolveRate }];
+  });
+}
+
+/**
+ * Band for a candidate whose only evidence is single-attempt. It is the highest band among the
+ * retained anchors in the same capture whose Verified resolve rate the candidate meets or exceeds,
+ * clamped by `SINGLE_ATTEMPT_ABILITY_CAP`.
+ *
+ * This is deliberately NOT a percentile mapping through `abilityFromConsensus`. A within-source
+ * SWE-bench percentile is not on that function's scale: the cost-bearing Verified population tops out
+ * at Claude Opus 4.5, so a high percentile within it means "near the top of a prior-generation field",
+ * whereas `abilityFromConsensus` consumes a multi-source percentile whose field includes the current
+ * frontier. Feeding one to the other would convert a bounded claim into an unbounded one.
+ *
+ * A row with no Verified block yields no band: the per-language splices alone give nothing to compare
+ * against the anchors, and the router must not guess.
+ */
+export function abilityFromSingleAttempt(row: SingleAttemptPriorRow): AbilityTier | undefined {
+  const resolveRate = row.verified?.resolveRate;
+  if (resolveRate === undefined) return undefined;
+  let band: AbilityTier = 1;
+  for (const anchor of singleAttemptAnchors()) {
+    if (resolveRate >= anchor.resolveRate && anchor.ability > band) band = anchor.ability;
+  }
+  return band > SINGLE_ATTEMPT_ABILITY_CAP ? SINGLE_ATTEMPT_ABILITY_CAP : band;
+}
+
+/** Convenience lookup by model id, since these rows carry one source effort per model. */
+export function findSingleAttemptPrior(modelId: string): SingleAttemptPriorRow | undefined {
+  return SINGLE_ATTEMPT_PRIOR_ROWS.find((row) => row.modelId === modelId);
 }
 
 export type EffortPolicy = {

@@ -272,6 +272,56 @@ Source B also exposes the step-frugality mechanism. Claude Opus 4.6 is the fruga
 every scoped model measured there is `1.8x`–`3.4x` more step-hungry. That is the mechanism by which the per-token
 discount is spent.
 
+## The single-attempt evidence class in the router
+
+The rows above are now carried in the router as a distinct evidence class rather than folded into the existing
+cost-to-done priors. The machine-readable capture is
+[`single-attempt-evidence-2026-08-14.json`](single-attempt-evidence-2026-08-14.json); the runtime mirror is
+[`core/single-attempt-data.ts`](../../extensions/router/core/single-attempt-data.ts), and a test asserts the two agree
+value for value, so drift fails the build. The capture holds ten rows: the five scoped models under inquiry plus the
+five non-scoped submissions that appear alongside them in the same sources and serve as anchors.
+
+**Why it is a separate class.** [`core/evidence.ts`](../../extensions/router/core/evidence.ts) ranks candidates with
+`scoreEvidencePrior`, which reads six terms. A single-attempt submission measures one of them, a verifier outcome, and
+cannot measure the other five: regression-break rate, partial credit on failure, repeat-all-pass and repeat-flaky rates,
+and the p90 wall-time and p90 peak-context tails. Those five need repeated trials on the same task, and the multi-trial
+DeepSWE pack supplies them over 452 trials. Supplying them here as zeros or estimates would let a single attempt per
+instance enter the same ranking with the same weight as that pack, which is the specific error this record exists to
+prevent. The class is therefore structurally barred from scoring: none of its field names coincides with a field
+`scoreEvidencePrior` reads, and a test asserts that absence at runtime rather than only in the type system.
+
+**Field naming follows the construct.** `resolveRate` is used rather than `passRate` because it is a verifier resolve
+outcome over a single attempt, not a repeated-trial pass rate. `costPerTaskUsd` is used rather than `costPerPassUsd`
+because it is each submission's own reported cost per _attempted_ task at whatever route it ran on; it is not a Bedrock
+rate and is not comparable to endpoint pricing without rescaling. Cost per _resolved_ task, quoted in the tables above,
+is a diagnostic a reader derives from the pair, not a router input.
+
+**Ability band, and its ceiling.** `abilityFromSingleAttempt` assigns a candidate the highest band among the retained
+anchors in the same capture whose Verified resolve rate the candidate meets or exceeds, and then clamps the result at
+band 2. The clamp is the recorded consequence of the bounded quality claim above: the anchors are Claude 4.5/4.6-era,
+`claude-opus-4-6` is band 2 in the router's own consensus table, and no scoped model in either source is measured
+against `claude-opus-5`. The evidence therefore cannot distinguish "reaches the prior-generation frontier" from "reaches
+the current frontier", and the generation-currency rule that disqualifies `claude-opus-4-8` and admits `claude-opus-4-6`
+only narrowly treats those as different claims. On this rule MiniMax M2.5 reaches band 2 at `75.8%` against the band-2
+anchor at `75.6%`; GLM-5, Kimi K2.5, DeepSeek V3.2, and Kimi K2 Thinking all sit below that anchor and reach band 1. A
+row with no Verified block receives no band at all, because the language splits alone give nothing to compare against
+the anchors.
+
+**The two percentile scales are not the same scale.** This is standing caveat 3 below, restated here because it is the
+reason `abilityFromSingleAttempt` exists as its own function instead of routing a percentile through
+`abilityFromConsensus`. The cost-bearing SWE-bench Verified population tops out at Claude Opus 4.5, so a high percentile
+within it means "near the top of a prior-generation field". `abilityFromConsensus` consumes a multi-source percentile
+whose field includes the current frontier, and band 3 there means something that field can express and the Verified
+field cannot. Passing one to the other would silently convert a bounded claim into an unbounded one, which is why
+GLM-5's high within-source standing must not reach band 3; a test pins that.
+
+**What this class does not do.** It makes no model routable. It adds no entry to any vendor map, bootstrap policy,
+prompt profile, or reviewer or classifier tier, and it changes no existing candidate's band: the anchors remain banded
+by their consensus source, so `claude-haiku-4-5` and `gpt-oss-120b` stay equal at band 1 despite a `40.6` point resolve
+gap in this capture. Nor does it re-open the per-token cost argument withdrawn in the correction below. Its sole
+function today is to give a scoped candidate a band derived from a named source, which matters because MiniMax M2.5 has
+no `model_consensus` row anywhere in the corpus and no multi-trial rollout row, so this is its only source of one.
+
 ## Standing caveats
 
 1. Single-attempt verifier outcomes are not human acceptance. They are ordering priors only.
