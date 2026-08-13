@@ -103,8 +103,10 @@ describe("task boundary gate", () => {
     const active = lease();
     for (const prompt of [
       "Yes",
+      "Yep",
       "Sure",
       "Ok",
+      "Okay",
       "Go ahead.",
       "Proceed",
       "Continue",

@@ -61,7 +61,7 @@ export type BoundaryGateResult =
   | { action: "classify_continuity"; reason: string; lease: TaskLease };
 
 const CONTINUATION_PATTERN =
-  /^(?:yes|sure|ok|go ahead|proceed|continue|keep going|sounds good|please do|do it|go on|yes please)(?:[.!])?$/i;
+  /^(?:yes|yep|sure|ok(?:ay)?|go ahead|proceed|continue|keep going|sounds good|please do|do it|go on|yes please)(?:[.!])?$/i;
 const DISCONTINUITY_PATTERN =
   /^(?:new task|separate task|unrelated|switch(?:ing)? topics?|instead[, :] |forget (?:that|the previous)|now (?:review|plan|implement|research)\b)/i;
 const OBVIOUS_SAME_TASK_OPERATION_PATTERN =
