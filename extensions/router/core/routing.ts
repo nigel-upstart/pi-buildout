@@ -973,7 +973,7 @@ export function selectReviewRoute(
       kind: "unroutable",
       policyVersion: POLICY_VERSION,
       archetype: "code_review",
-      reason: `tracked-work review requires at least ${String(MINIMUM_INDEPENDENT_REVIEWERS)} eligible non-builder vendors, and ${String(choices.length)} were eligible`,
+      reason: `tracked-work review requires at least ${String(MINIMUM_INDEPENDENT_REVIEWERS)} eligible non-builder vendors; ${String(choices.length)} eligible`,
       exclusions,
     };
   }
