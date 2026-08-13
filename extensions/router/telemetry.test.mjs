@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { conservativeFeatures } from "./core/features.ts";
+import { conservativeFeatures, validateTaskFeatures } from "./core/features.ts";
 import { providerWeightFor } from "./core/provider-weights.ts";
 import {
   aggregateAttemptTokenCounts,
@@ -254,8 +254,9 @@ describe("classifier invocation telemetry", () => {
     const sanitizedFeatures = sanitizeClassifierFeatures(
       conservativeFeatures("verbatim private prompt with credential=secret"),
     );
-    assert.deepEqual(sanitizedFeatures.evidence, []);
-    assert.equal(sanitizedFeatures.evidenceCount, 1);
+    assert.deepEqual(sanitizedFeatures.evidence, ["[redacted]"]);
+    assert.equal("evidenceCount" in sanitizedFeatures, false);
+    assert.equal(validateTaskFeatures(sanitizedFeatures).success, true, "legacy classifierOutput remains TaskFeatures");
     assert.doesNotMatch(JSON.stringify({ attempt, sanitizedFeatures }), /private prompt|credential=secret|prompt text/);
   });
 

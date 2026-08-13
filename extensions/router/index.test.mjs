@@ -568,6 +568,145 @@ describe("routerExtension", () => {
     }
   });
 
+  it("records timeout and cancellation continuity failures after retaining the active lease", async (t) => {
+    for (const expected of [
+      { errorName: "TimeoutError", outcome: "timeout", timedOut: true, cancelled: false },
+      { errorName: "AbortError", outcome: "error", timedOut: false, cancelled: true },
+    ]) {
+      await t.test(expected.errorName, async () => {
+        const hooks = new Map();
+        const commands = new Map();
+        const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-continuity-failure-"));
+        const telemetryPath = join(telemetryDirectory, "events.jsonl");
+        const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+        process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
+        const now = new Date().toISOString();
+        const choice = {
+          provider: "openai-codex",
+          modelId: "gpt-5.6-sol",
+          logicalModelId: "gpt-5.6-sol",
+          vendor: "openai",
+          effort: "high",
+          ability: 3,
+          profileId: "openai-gpt-5.6-agent-v1",
+          contextWindow: 1_000_000,
+          endpointTier: "manufacturer",
+          rankReason: "bootstrap",
+        };
+        const lease = {
+          version: 2,
+          taskId: `continuity-${expected.errorName}`,
+          startedAt: now,
+          updatedAt: now,
+          archetype: "median_repository_implementation",
+          features: conservativeFeatures("fixture"),
+          selected: choice,
+          fallbacks: [{ ...choice, provider: "openai" }],
+          attemptIndex: 0,
+          promptProfileId: choice.profileId,
+          modelSnapshotId: "snapshot",
+          policyVersion: POLICY_VERSION,
+          lastPromptFingerprint: "fingerprint",
+          lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task-fingerprint" },
+          safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+          manualOverride: false,
+        };
+        const branch = [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { mode: "shadow", manualOverride: false, active: lease },
+          },
+          {
+            type: "message",
+            message: {
+              role: "assistant",
+              usage: { input: 40_000, output: 100, cacheRead: 30_000, cost: { total: 0.01 } },
+            },
+          },
+        ];
+        const classifierModel = {
+          provider: "openai-codex",
+          id: "gpt-5.6-luna",
+          name: "gpt-5.6-luna",
+          api: "openai-responses",
+          baseUrl: "https://models.invalid",
+          reasoning: true,
+          input: ["text"],
+          cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1 },
+          contextWindow: 128_000,
+          maxTokens: 4_096,
+        };
+        let activeTools = [];
+        const pi = {
+          on: (event, handler) => hooks.set(event, handler),
+          registerCommand: (name, command) => commands.set(name, command),
+          registerTool: () => {},
+          appendEntry: () => {},
+          exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+          getActiveTools: () => activeTools,
+          setActiveTools: (tools) => {
+            activeTools = tools;
+          },
+          getThinkingLevel: () => "high",
+        };
+        const notifications = [];
+        const ctx = {
+          cwd: telemetryDirectory,
+          model: undefined,
+          modelRegistry: {
+            getAll: () => [classifierModel],
+            getAvailable: () => [classifierModel],
+            find: () => classifierModel,
+            getApiKeyAndHeaders: async () => {
+              const error = new Error("raw classifier credential=must-not-persist");
+              error.name = expected.errorName;
+              throw error;
+            },
+          },
+          sessionManager: { getBranch: () => branch, getSessionId: () => `session-${expected.errorName}` },
+          getContextUsage: () => ({ tokens: 40_100, contextWindow: 1_000_000, percent: 4 }),
+          ui: {
+            theme: { fg: (_color, text) => text },
+            setStatus: () => {},
+            setWorkingMessage: () => {},
+            setWorkingVisible: () => {},
+            notify: (message, type) => notifications.push({ message, type }),
+          },
+        };
+        try {
+          routerExtension(pi);
+          await hooks.get("session_start")({ reason: "reload" }, ctx);
+          const request = "Address the remaining verification details";
+          await hooks.get("input")({ text: request, source: "interactive" }, ctx);
+          await hooks.get("before_agent_start")({ prompt: request, systemPrompt: "system", images: [] }, ctx);
+          await commands.get("route").handler("", ctx);
+
+          assert.equal((notifications.at(-1)?.message ?? "").includes(`task=${lease.taskId}`), true);
+          assert.ok(
+            notifications.some(({ message }) => /keeping the current task and model selection/i.test(message)),
+            "failure policy must announce lease retention",
+          );
+          const events = (await readFile(telemetryPath, "utf8"))
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          const invocation = events.find((item) => item.kind === "classifier_invocation");
+          assert.equal(invocation.taskId, lease.taskId);
+          assert.equal(invocation.data.purpose, "continuity");
+          assert.equal(invocation.data.outcome, expected.outcome);
+          assert.equal(invocation.data.timedOut, expected.timedOut);
+          assert.equal(invocation.data.cancelled, expected.cancelled);
+          assert.equal(invocation.data.resolution, "retained_continuity");
+          assert.doesNotMatch(JSON.stringify(invocation), /must-not-persist|raw classifier|credential=/i);
+        } finally {
+          if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+          else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+        }
+      });
+    }
+  });
+
   it("carries routing enablement mode through /clear (session_shutdown → session_start)", async () => {
     const hooks = new Map();
     const commands = new Map();

@@ -270,9 +270,13 @@ export function sanitizeClassifierAttempt(attempt: ClassifierAttempt): Sanitized
   };
 }
 
-/** Evidence is classifier-authored free text and therefore reduced to a count before persistence. */
-export function sanitizeClassifierFeatures(features: TaskFeatures): TaskFeatures & { evidenceCount: number } {
-  return { ...features, evidence: [], evidenceCount: features.evidence.length };
+/**
+ * Evidence is classifier-authored free text and must not be persisted. Preserve the legacy
+ * `TaskFeatures` contract (including its non-empty evidence array) with one fixed marker per item;
+ * consumers can still infer the count without receiving classifier-authored content.
+ */
+export function sanitizeClassifierFeatures(features: TaskFeatures): TaskFeatures {
+  return { ...features, evidence: features.evidence.map(() => "[redacted]") };
 }
 
 export type ClassifierSpanLike = {

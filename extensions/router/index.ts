@@ -197,6 +197,9 @@ export function safetyToolBlockReason(
 // cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
 // selected instead of routing on a call that never returned.
 export const CLASSIFICATION_TIMEOUT_MS = 11_000;
+// Audit persistence remains part of the router's fail-safe policy, but a stuck filesystem must not
+// turn the bounded classifier request into an unbounded before-agent hook.
+const CLASSIFIER_TELEMETRY_TIMEOUT_MS = 250;
 
 async function classifyWithTimeout(
   ctx: ExtensionContext,
@@ -476,7 +479,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
     classification?: ClassificationResult,
     taskId?: string,
   ): Promise<void> {
-    await record(
+    // Start the append before routing continues so successful writes retain event order. Bound the
+    // wait so a stuck append cannot extend the classifier deadline indefinitely; after that point
+    // the normal telemetry-failure policy prevents later records from overtaking this one.
+    const recording = record(
       ctx,
       "classifier_invocation",
       {
@@ -489,7 +495,29 @@ export default function routerExtension(pi: ExtensionAPI): void {
         ...(taskId ? { taskId } : {}),
         ...(classification ? { archetype: classification.archetype.archetype } : {}),
       },
-    );
+    ).catch(() => {
+      // `record` applies the telemetry-failure policy. This final guard prevents an exceptional UI
+      // implementation in that policy from becoming an unhandled rejection after a timeout wins.
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      recording,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          try {
+            disableForTelemetryFailure(
+              ctx,
+              new Error(`classifier telemetry append exceeded ${String(CLASSIFIER_TELEMETRY_TIMEOUT_MS)}ms`),
+            );
+          } catch {
+            // Health is already marked failed before the policy updates UI; never throw from a timer.
+          } finally {
+            resolve();
+          }
+        }, CLASSIFIER_TELEMETRY_TIMEOUT_MS);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
   }
 
   async function classifyContinuityWithTelemetry(
@@ -515,7 +543,12 @@ export default function routerExtension(pi: ExtensionAPI): void {
             continuity.action === "new_task" ? "new_task" : "retained_continuity",
             invocation.value.failedClosed,
           );
+        } else {
+          // Timeout, cancellation, and unexpected failure all apply the same continuity policy:
+          // retain the active lease. Finalize that effective policy before emitting any summary.
+          summary = { ...summary, resolution: "retained_continuity" };
         }
+        invocation.summary = summary;
         annotateClassifierSpan(span, summary);
         await recordClassifierInvocation(
           ctx,
@@ -544,6 +577,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
           invocation.status === "completed"
             ? completeClassifierInvocation(invocation.summary, "classified", invocation.value.failedClosed)
             : invocation.summary;
+        invocation.summary = summary;
         annotateClassifierSpan(span, summary);
         await recordClassifierInvocation(
           ctx,
