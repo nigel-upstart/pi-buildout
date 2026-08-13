@@ -300,3 +300,70 @@ discount is spent.
 - CloudZero authenticated AWS cost data: the observed Bedrock token mix.
 - `/Users/nigel.stuke/outputs/llm-effectiveness`: local derivation location for the source capture and comparisons
   transcribed into this record.
+
+## Correction — registry re-pinned to 0.84.1
+
+Everything above the source inventory was captured against a locally installed `@earendil-works/pi-ai@0.80.7`, which was
+stale: `package.json` pins **0.84.1**. Re-running the audit against the pinned version leaves the scoped-model findings
+intact and changes three things that matter more than they look.
+
+**The scoped figures do not move.** All twelve scoped endpoint costs above reproduce exactly under 0.84.1, and the
+scoped models' thinking levels, context windows, and image support are unchanged. The reachability conclusion also
+holds: Amazon Bedrock remains the only token-billed route for every scoped model.
+
+**`claude-opus-5` is on Bedrock, so the discount is symmetric.** The record above stated that Opus 5 was absent from the
+pinned registry, which was an artifact of the stale install. 0.84.1 carries `us.`, `eu.`, `au.`, `jp.` and `global.`
+Bedrock profiles plus the direct route. Bedrock Opus 5 is `6.167` against `7.430` direct, so Bedrock wins by the 17%
+contract term, exactly as the parity construction predicts. The open question of whether the incumbent sits off Bedrock
+is therefore **resolved in the symmetric direction**: the scalar applies to incumbent and scoped model alike, so it
+changes absolute budget and no ordering, and the `1.2048` asymmetry described above does not apply to Opus 5 today.
+
+**The GPT-5.6 rungs were repriced, and that withdraws the scoped cost argument at the cheap end.** Bedrock rates moved:
+
+| Endpoint               | 0.80.7 ×0.83 | 0.84.1 ×0.83 |
+| ---------------------- | ------------ | ------------ |
+| `openai.gpt-5.6-luna`  | 1.352        | **0.298**    |
+| `openai.gpt-5.6-terra` | 3.380        | 2.977        |
+| `openai.gpt-5.6-sol`   | 6.759        | **7.442**    |
+
+Break-even token multipliers against the cheap incumbent rungs under 0.84.1, all ×0.83 at the observed mix:
+
+| Scoped                         | ×0.83 | vs Opus 5 | vs Sol | vs Luna | vs Haiku 4.5 |
+| ------------------------------ | ----- | --------- | ------ | ------- | ------------ |
+| `minimax.minimax-m2.5`         | 0.357 | 17.3      | 20.9   | **0.8** | 3.5          |
+| `qwen.qwen3-coder-next`        | 0.372 | 16.6      | 20.0   | **0.8** | 3.3          |
+| `moonshotai.kimi-k2.5`         | 0.785 | 7.9       | 9.5    | **0.4** | 1.6          |
+| `deepseek.v3.2`                | 0.662 | 9.3       | 11.2   | **0.4** | 1.9          |
+| `zai.glm-5`                    | 1.093 | 5.6       | 6.8    | **0.3** | 1.1          |
+| `nvidia.nemotron-super-3-120b` | 0.184 | 33.5      | 40.4   | 1.6     | 6.7          |
+| `openai.gpt-oss-120b`          | 0.178 | 34.6      | 41.7   | 1.7     | 6.9          |
+
+Every scoped model except Nemotron Super and `gpt-oss-120b` is now **more expensive per effective token than Bedrock
+GPT-5.6 Luna**, MiniMax M2.5 included at a break-even of 0.8. Against Claude Haiku 4.5 the scoped advantage survives
+unchanged, and against Opus 5 and Sol it is larger than before because Sol became dearer.
+
+The consequence is specific and it is a withdrawal, not a caveat. Any argument that admits a scoped model to the cheap
+bounded rungs **on per-token price** is void, because the cheapest rung in those ladders is Luna and no scoped model
+undercuts it. What survives is only the cost-per-resolved-task argument, and that argument is not yet made against Luna:
+the resolve rates recorded above compare scoped models to Claude 4.5/4.6-era anchors, not to a GPT-5.6 rung. Until a
+like-for-like completion-cost comparison against Luna exists, the evidence supports no scoped admission to
+`fast_classification` or `exact_extraction`.
+
+Two further observations follow from the same re-pin:
+
+- **Bedrock Sol is no longer a rate-parity endpoint.** It is `5.5/33` against `5/30` direct, a 10% markup, so the
+  order-preserving-by-construction argument recorded in [`model-evidence-2026-08-11.md`](model-evidence-2026-08-11.md)
+  does not cover the Sol pair under 0.84.1. Bedrock Sol still wins on effective cost, but now as an empirical comparison
+  rather than an identity. Bedrock Sol also still lacks the `max` thinking level and still exposes no long-context tier
+  above 272,000 input tokens, so both existing guards in [`core/routing.ts`](../../extensions/router/core/routing.ts)
+  remain correct and necessary.
+- **Sol is now dearer than Opus 5 on Bedrock**, `7.442` against `6.167`, which inverts the usual assumption that the
+  Anthropic top tier is the expensive one.
+- **Kimi K3 and Grok 4.5 are now reachable, but only on GitHub Copilot.** These are two of the versions the multi-trial
+  DeepSWE evidence actually measures. Copilot is flat-rate, so `isFlatRateProvider` excludes both from cost comparison
+  and orders them last, and no per-request cost exists for them. The reachable-versus-measured disjunction is therefore
+  narrower than stated above but not closed: the measured versions remain unavailable on any token-billed route.
+
+Standing caveat 6 above is unchanged and now has a companion: a locally installed dependency may lag the pinned
+manifest, so a registry observation is only as good as the installed tree it was taken from. The figures in this
+correction were taken from `@earendil-works/pi-ai@0.84.1` as pinned in `package.json`.
