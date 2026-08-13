@@ -33,28 +33,32 @@ valid boundary. Effort may change between turns within a lease without ending it
 
 ## Task boundaries
 
-The router may only reevaluate at a **user-input turn**. Hard boundaries (always reevaluate):
+The router may only reevaluate at a **user-input turn**. For ordinary nonqueued interactive input, hard boundaries
+always reevaluate:
 
 - a new session/window;
 - the first user turn after context compaction;
 - the first user turn after a remote push;
 - a user-authorized subagent execution (which gets its own child lease).
 
-At any other user turn, combine deterministic intent/state signals with expected cache value; escalate to a secondary
-"continuity" classification only when those signals are inconclusive. Significant reusable cache should resist a
-marginal switch; very strong semantic discontinuity can still override it. The significance test is
-`hasSignificantReusableCache` in [`core/lease.ts`](../../extensions/router/core/lease.ts): retained K/V cache only earns
-a continuation bias once it is both large enough and likely enough to be reused that discarding it would cost meaningful
-latency and tokens — below that a switch is nearly free, so cache must not veto a genuine new task. Do not reevaluate
-the lease at any non-user turn.
+Extension-generated input and queued steer/follow-up input are unconditional continuations of an active running lease;
+they are evaluated before pending hard boundaries and do not enter the ordinary interactive gate below. At any other
+user turn, combine deterministic intent/state signals with expected cache value; escalate to a secondary "continuity"
+classification only when those signals are inconclusive. Significant reusable cache should resist a marginal switch;
+very strong semantic discontinuity can still override it. The significance test is `hasSignificantReusableCache` in
+[`core/lease.ts`](../../extensions/router/core/lease.ts): retained K/V cache only earns a continuation bias once it is
+both large enough and likely enough to be reused that discarding it would cost meaningful latency and tokens — below
+that a switch is nearly free, so cache must not veto a genuine new task. Do not reevaluate the lease at any non-user
+turn.
 
 Before invoking the continuity classifier, the deterministic gate recognizes only anchored, content-free confirmations
 and a small allowlist of anchored same-task operations (rerun checks, fix known failures/findings, commit the completed
 change, or implement/fix `it`). The operation path is enabled only for a mutation-capable code-builder lease whose
-archetype is declared repository-mutating. Hard boundaries, explicit discontinuities, planning-to-implementation
-transitions, incompatible planning/review/read-only leases, and topic-bearing additions take precedence and therefore do
-not use the operation shortcut. A shortcut can only retain the current lease; it cannot create a lease, broaden task
-scope, grant safety authorization, or bypass lifecycle tool enforcement.
+archetype is declared repository-mutating. Within the ordinary nonqueued interactive path, hard boundaries, explicit
+discontinuities, planning-to-implementation transitions, incompatible planning/review/read-only leases, and
+topic-bearing additions take precedence and therefore do not use the operation shortcut. A shortcut can only retain the
+current lease; it cannot create a lease, broaden task scope, grant safety authorization, or bypass lifecycle tool
+enforcement.
 
 ## Classification pipeline
 

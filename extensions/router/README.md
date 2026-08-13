@@ -60,13 +60,15 @@ fresh lease and safety lifecycle while carrying the selected model/effort into t
 
 ## Continuity fast paths and classifier deadline
 
-With an existing lease, the boundary gate handles only two narrow classes without an LLM call: anchored confirmations
-such as `continue` or `go ahead`, and an anchored allowlist of same-task implementation operations such as rerunning
-checks, fixing reported failures/findings, or committing the completed change. The operation shortcut applies only to a
-mutation-capable code-builder lease whose policy archetype mutates the repository. Hard boundaries, explicit topic
+For ordinary, nonqueued interactive user input with an existing lease, the boundary gate handles only two narrow prompt
+classes without an LLM call: anchored confirmations such as `continue` or `go ahead`, and an anchored allowlist of
+same-task implementation operations such as rerunning checks, fixing reported failures/findings, or committing the
+completed change. The operation shortcut applies only to a mutation-capable code-builder lease whose policy archetype
+mutates the repository. Within that ordinary-input path, hard boundaries precede prompt matching; explicit topic
 changes, planning-to-implementation transitions, incompatible planning/review/read-only leases, and topic-bearing near
-matches still create or classify a boundary. These shortcuts retain a lease; they never create authorization or bypass
-its lifecycle/tool gates.
+matches still create or classify a boundary. Extension-generated input and queued steer/follow-up input are separate
+unconditional continuation paths evaluated before pending hard boundaries, because they remain part of the already
+running lease. These shortcuts retain a lease; they never create authorization or bypass its lifecycle/tool gates.
 
 Every router-level fresh-task or continuity classification has one router-owned **11-second wall-clock deadline**. The
 router passes one `AbortSignal` through schema attempts and concrete endpoint calls. A router deadline aborts the

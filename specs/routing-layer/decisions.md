@@ -183,13 +183,15 @@ continuity failure explicitly resolves as `retained_continuity`; a fresh-task fa
 the current model/effort is retained, along with the current lease when one exists, rather than interpreting missing
 classifier evidence as a reason to upgrade.
 
-Avoiding an LLM call is safe only for an intentionally narrow deterministic grammar. Anchored confirmations retain any
-active lease. Anchored operations such as rerunning checks, fixing already-reported failures/findings, committing the
-completed change, and `implement it`/`fix it` retain only a mutation-capable code-builder lease under an archetype that
-mutates the repository. Hard boundaries and explicit discontinuity run first; planning-to-implementation transitions
-create a new task; planning, review, read-only, and other incompatible leases do not receive the operation shortcut; and
-any topic-bearing addition falls through to continuity classification. These paths retain state only and never authorize
-mutation or bypass lifecycle tool enforcement.
+Avoiding an LLM call is safe only for an intentionally narrow deterministic grammar. For ordinary nonqueued interactive
+input, anchored confirmations retain any active lease. Anchored operations such as rerunning checks, fixing
+already-reported failures/findings, committing the completed change, and `implement it`/`fix it` retain only a
+mutation-capable code-builder lease under an archetype that mutates the repository. Within that ordinary-input path,
+hard boundaries and explicit discontinuity run first; planning-to-implementation transitions create a new task;
+planning, review, read-only, and other incompatible leases do not receive the operation shortcut; and any topic-bearing
+addition falls through to continuity classification. Extension-generated input and queued steer/follow-up input are
+separate unconditional continuation paths evaluated before pending hard boundaries so they remain in the already running
+lease. These paths retain state only and never authorize mutation or bypass lifecycle tool enforcement.
 
 The router now owns and specifies its outer classification deadline and cancellation policy. It does not yet configure
 or normalize every provider SDK's lower-level connect/read/retry timeout, nor prove cancellation at the remote service
