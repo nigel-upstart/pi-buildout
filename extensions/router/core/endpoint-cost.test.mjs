@@ -55,7 +55,7 @@ describe("endpoint effective cost", () => {
 
   it("pins weighted effective costs from the installed registry, including regional markup", () => {
     const cases = [
-      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 19.7125],
+      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 21.68375],
       [requiredModel("openai-codex", "gpt-5.6-sol"), 23.75],
       [requiredModel("openai", "gpt-5.6-sol"), 23.77375],
       [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 6.64],
@@ -161,24 +161,27 @@ describe("cache-write classification", () => {
       }
     }
 
-    for (const provider of billedProviders) {
+    for (const provider of [...billedProviders, "github-copilot"]) {
       const model = requiredModel(provider, modelId(provider, "gpt-5.6-sol"));
       assert.equal(classifyCacheWriteRate(model.cost), "priced_write", `${provider}/${model.id}`);
-      assert.equal(model.cost.cacheWrite / model.cost.input, 1.25, `${provider}/${model.id}`);
+      const writeMultiplier = model.cost.cacheWrite / model.cost.input;
+      assert.ok(Math.abs(writeMultiplier - 1.25) <= 0.001, `${provider}/${model.id}`);
     }
 
-    for (const provider of ["github-copilot", "cloudflare-ai-gateway"]) {
-      const model = requiredModel(provider, "gpt-5.6-sol");
-      assert.equal(classifyCacheWriteRate(model.cost), "no_write_line_item", `${provider}/${model.id}`);
-    }
+    const cloudflare = requiredModel("cloudflare-ai-gateway", "gpt-5.6-sol");
+    assert.equal(
+      classifyCacheWriteRate(cloudflare.cost),
+      "no_write_line_item",
+      `${cloudflare.provider}/${cloudflare.id}`,
+    );
   });
 
-  it("pins the 0.80.7 registry boundary and does not invent an Opus 5 observation", async () => {
+  it("pins the 0.84.1 registry boundary and its Opus 5 observation", async () => {
     const packageJson = JSON.parse(
       await readFile(new URL("../../../node_modules/@earendil-works/pi-ai/package.json", import.meta.url), "utf8"),
     );
-    assert.equal(packageJson.version, "0.80.7");
-    assert.equal(getModel("anthropic", "claude-opus-5"), undefined);
+    assert.equal(packageJson.version, "0.84.1");
+    assert.ok(getModel("anthropic", "claude-opus-5"));
   });
 });
 

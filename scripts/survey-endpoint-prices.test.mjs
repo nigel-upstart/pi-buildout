@@ -29,6 +29,6 @@ describe("endpoint price survey", () => {
       .filter((endpoint) => endpoint.cacheWriteClassification === "no_write_line_item")
       .map((endpoint) => endpoint.provider)
       .sort();
-    assert.deepEqual(exceptions, ["cloudflare-ai-gateway", "github-copilot"]);
+    assert.deepEqual(exceptions, ["cloudflare-ai-gateway"]);
   });
 });

@@ -9,6 +9,7 @@ import {
   formatModelCatalog,
   parseClassifierDecision,
   parseModelRequest,
+  safeTerminalText,
   supportedThinkingLevels,
   truncateMiddle,
 } from "./helpers.ts";
@@ -91,6 +92,20 @@ test("bounded text helpers retain useful tails without exceeding limits", () => 
   assert.match(compact, /^begin-/);
   assert.match(compact, /-end$/);
   assert.equal(appendBoundedTail("abcdef", "ghij", 5), "fghij");
+});
+
+test("terminal display text escapes controls without discarding safe surrounding lines", () => {
+  const safe = safeTerminalText(
+    "status: running\nchild: \u001b]8;;https://example.invalid\u0007link \u202e\nsummary: retained\n\0",
+  );
+  for (const codePoint of [0x1b, 0x07, 0x202e, 0x00]) {
+    assert.equal(safe.includes(String.fromCodePoint(codePoint)), false);
+  }
+  assert.match(safe, /status: running/);
+  assert.match(safe, /\[U\+001B\]/);
+  assert.match(safe, /\[U\+202E\]/);
+  assert.match(safe, /summary: retained/);
+  assert.match(safe, /\[U\+0000\]/);
 });
 
 test("current delegation turn is excluded from child context compaction", () => {

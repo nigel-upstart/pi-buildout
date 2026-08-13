@@ -13,7 +13,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
@@ -26,6 +26,7 @@ import {
   formatModelCatalog,
   parseClassifierDecision,
   parseModelRequest,
+  safeTerminalText,
   truncateMiddle,
 } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
@@ -96,6 +97,14 @@ function currentDepth(): number {
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   signal?.throwIfAborted();
+}
+
+function modelRuntimeFromContext(ctx: ExtensionContext): ModelRuntime {
+  // Pi 0.84.1 exposes a compatibility ModelRegistry facade to extensions while
+  // createAgentSession accepts its underlying canonical ModelRuntime.
+  const runtime = Reflect.get(ctx.modelRegistry, "runtime") as unknown;
+  if (!runtime) throw new Error("Pi did not expose the active model runtime.");
+  return runtime as ModelRuntime;
 }
 
 function textFromAssistant(response: { content: unknown }): string {
@@ -199,7 +208,7 @@ async function compactContextForTask(
       agentDir: getAgentDir(),
       ...(ctx.model ? { model: ctx.model } : {}),
       thinkingLevel: parentThinking(pi),
-      modelRegistry: ctx.modelRegistry,
+      modelRuntime: modelRuntimeFromContext(ctx),
       resourceLoader,
       sessionManager,
       settingsManager,
@@ -357,6 +366,14 @@ function resolvePiInvocation(args: string[]): { command: string; args: string[] 
   return { command: "pi", args };
 }
 
+function stringProviderHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const strings = Object.fromEntries(
+    Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null),
+  );
+  return Object.keys(strings).length > 0 ? strings : undefined;
+}
+
 function childEnvironment(
   depth: number,
   provider: string,
@@ -510,6 +527,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           const childAuth = await ctx.modelRegistry.getApiKeyAndHeaders(selection.model);
           throwIfAborted(signal);
           if (!childAuth.ok) throw new Error(`Could not resolve child model auth: ${childAuth.error}`);
+          const childHeaders = stringProviderHeaders(childAuth.headers);
           const id = shortId();
           const name = childName(params.name, id);
           const existingSessionId = ctx.sessionManager.getSessionId();
@@ -549,7 +567,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             args: invocation.args,
             env: childEnvironment(depth + 1, selection.model.provider, {
               ...(childAuth.apiKey ? { apiKey: childAuth.apiKey } : {}),
-              ...(childAuth.headers ? { headers: childAuth.headers } : {}),
+              ...(childHeaders ? { headers: childHeaders } : {}),
             }),
             ownsProcessGroup: depth === 0,
             classification: selection.source,
@@ -661,7 +679,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     },
 
     renderCall(args, theme) {
-      const target = args.id ? ` ${args.id}` : args.name ? ` ${args.name}` : "";
+      const rawTarget = args.id ? ` ${args.id}` : args.name ? ` ${args.name}` : "";
+      const target = safeTerminalText(rawTarget);
       return new Text(
         `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.action)}${theme.fg("muted", target)}`,
         0,
@@ -671,7 +690,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
     renderResult(result, _options, theme) {
       const content = result.content.find((entry) => entry.type === "text");
-      return new Text(theme.fg("toolOutput", content?.type === "text" ? content.text : "(no output)"), 0, 0);
+      return new Text(
+        theme.fg("toolOutput", safeTerminalText(content?.type === "text" ? content.text : "(no output)")),
+        0,
+        0,
+      );
     },
   });
 
