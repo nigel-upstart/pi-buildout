@@ -12,7 +12,7 @@ import {
 import { SINGLE_ATTEMPT_CAPTURE, SINGLE_ATTEMPT_PRIOR_ROWS } from "./single-attempt-data.ts";
 
 const specPath = fileURLToPath(
-  new URL("../../../specs/routing-layer/single-attempt-evidence-2026-08-14.json", import.meta.url),
+  new URL("../../../specs/routing-layer/single-attempt-evidence-2026-08-13.json", import.meta.url),
 );
 const spec = JSON.parse(readFileSync(specPath, "utf8"));
 

@@ -206,7 +206,7 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 
 Use: endpoint-rate observations, the CloudZero token mix, benchmark outcomes, and derived break-even and
 cost-per-resolved comparisons were transcribed as numeric data into
-[`specs/routing-layer/scoped-model-analysis-2026-08-14.md`](specs/routing-layer/scoped-model-analysis-2026-08-14.md).
+[`specs/routing-layer/scoped-model-analysis-2026-08-13.md`](specs/routing-layer/scoped-model-analysis-2026-08-13.md).
 The completion-cost, cache-sensitivity, generation-currency, and reachable-versus-measured interpretations were used as
 conceptual analysis. No upstream prose or code was copied or modified.
 
@@ -223,7 +223,7 @@ cache or tool-call behavior.
 
 Use: single-attempt resolve rates, each submission's own reported cost per attempted task, median API-call counts, and
 per-language resolve and cost-per-resolved slices for ten submissions were transcribed as numeric data into
-[`specs/routing-layer/single-attempt-evidence-2026-08-14.json`](specs/routing-layer/single-attempt-evidence-2026-08-14.json)
+[`specs/routing-layer/single-attempt-evidence-2026-08-13.json`](specs/routing-layer/single-attempt-evidence-2026-08-13.json)
 and mirrored into [`extensions/router/core/single-attempt-data.ts`](extensions/router/core/single-attempt-data.ts). This
 is the first runtime use of these numbers; the earlier entry above described a documentation-only record. No upstream
 prose or code was copied or modified.

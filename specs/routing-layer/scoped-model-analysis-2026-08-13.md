@@ -1,4 +1,4 @@
-# Scoped Bedrock model analysis — 2026-08-14
+# Scoped Bedrock model analysis — 2026-08-13
 
 This evidence record examines the MiniMax, Kimi, GLM, DeepSeek, Qwen, Nemotron, and Grok models in the pinned pi-ai
 registry that are within the router's scoped-model inquiry. It separates endpoint reachability and token-rate evidence
@@ -86,7 +86,7 @@ to `claude-opus-5`, which is absent from the pinned registry entirely, and every
 A break-even token multiplier is incumbent effective $/MTok divided by scoped effective $/MTok. It answers how many
 times more tokens the scoped model may consume, at equal quality, before it costs the same. This is the same analytical
 device that [`core/policy.ts`](../../extensions/router/core/policy.ts) applied to the `gpt-5.4-mini` unmeasured-peer
-rung, whose turn break-even was stated as `1.33x`. That rung was withdrawn on 2026-08-14: re-measured against the pinned
+rung, whose turn break-even was stated as `1.33x`. That rung was withdrawn on 2026-08-13: re-measured against the pinned
 registry its price relationship is inverted, so the break-even never favored it. The device is sound; that application
 of it rested on a stale rate.
 
@@ -278,7 +278,7 @@ discount is spent.
 
 The rows above are now carried in the router as a distinct evidence class rather than folded into the existing
 cost-to-done priors. The machine-readable capture is
-[`single-attempt-evidence-2026-08-14.json`](single-attempt-evidence-2026-08-14.json); the runtime mirror is
+[`single-attempt-evidence-2026-08-13.json`](single-attempt-evidence-2026-08-13.json); the runtime mirror is
 [`core/single-attempt-data.ts`](../../extensions/router/core/single-attempt-data.ts), and a test asserts the two agree
 value for value, so drift fails the build. The capture holds ten rows: the five scoped models under inquiry plus the
 five non-scoped submissions that appear alongside them in the same sources and serve as anchors.

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "capturedAt": "2026-08-14",
+  "capturedAt": "2026-08-13",
   "construct": {
     "sourceA": "SWE-bench Verified, mini-swe-agent, single attempt per instance. resolveRate is a deterministic verifier outcome, never an acceptance rate.",
     "sourceB": "SWE-bench Multilingual, mini-swe-agent, single attempt, 300 tasks across 8 language splits.",

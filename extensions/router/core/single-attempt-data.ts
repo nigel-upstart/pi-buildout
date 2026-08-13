@@ -1,8 +1,8 @@
 // GENERATED DATA — do not hand-edit individual numbers.
 //
-// Source of truth: specs/routing-layer/single-attempt-evidence-2026-08-14.json, whose provenance,
+// Source of truth: specs/routing-layer/single-attempt-evidence-2026-08-13.json, whose provenance,
 // construct limits, and forbidden inferences are documented in
-// specs/routing-layer/scoped-model-analysis-2026-08-14.md.
+// specs/routing-layer/scoped-model-analysis-2026-08-13.md.
 // single-attempt-data.test.mjs asserts this module and that JSON agree, so drift fails the build.
 //
 // This is a SEPARATE evidence class from evidence-data.ts, and the separation is the point. These rows
@@ -54,7 +54,7 @@ export type SingleAttemptPriorRow = {
   byLanguage?: Partial<Record<SingleAttemptLanguage, SingleAttemptLanguageSlice>>;
 };
 
-export const SINGLE_ATTEMPT_CAPTURE = "2026-08-14";
+export const SINGLE_ATTEMPT_CAPTURE = "2026-08-13";
 
 export const SINGLE_ATTEMPT_PRIOR_ROWS: readonly SingleAttemptPriorRow[] = [
   {

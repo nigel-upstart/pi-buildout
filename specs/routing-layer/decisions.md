@@ -442,7 +442,7 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     statistical — band 1 only, never a primary, ordered behind the rung it peered with, and refused outside read-only
     one-shot work.
 
-    Withdrawn 2026-08-14. Re-measured against the pinned `@earendil-works/pi-ai@0.84.1` registry, `gpt-5.4-mini` costs
+    Withdrawn 2026-08-13. Re-measured against the pinned `@earendil-works/pi-ai@0.84.1` registry, `gpt-5.4-mini` costs
     3.71x `gpt-5.6-luna` on the direct route and 4.07x the Bedrock route, not 0.75x. The price relationship is inverted,
     so the rung's only stated basis is false rather than merely weak: it would have to consume about a quarter fewer
     tokens than the model it was supposed to undercut, and nothing measures it at all. It also supplied no route or
@@ -512,6 +512,6 @@ model, effort, capability, evidence, and fallback decisions are unchanged.
 
 Open items deliberately not taken: per-language telemetry backfill for the unmeasured stacks remains the path to
 evidence for Kotlin, Ruby, and infrastructure work. The `gpt-5.4-mini` versus `claude-haiku-4-5` comparison is no longer
-an open item: the peer rung was withdrawn on 2026-08-14 when its price basis proved inverted, so only Haiku remains and
+an open item: the peer rung was withdrawn on 2026-08-13 when its price basis proved inverted, so only Haiku remains and
 there is nothing left to order. A bounded classification eval is still the missing measurement for that bucket, because
 every remaining rung in it is priced rather than measured for classification.
