@@ -183,6 +183,30 @@ incompatible benchmarks, no Artificial Analysis GitHub Copilot price is treated 
 unsupported-vendor model (Kimi, Grok, GLM, Muse) is made a routing candidate. Benchmark pass rates are treated strictly
 as pre-telemetry ordering priors and never as the router's acceptance signal.
 
+### Scoped-model analysis refresh
+
+- Source: local `llm-effectiveness` research corpus (`/Users/nigel.stuke/outputs/llm-effectiveness`), with data through
+  2026-08-13
+- Registry source: `@earendil-works/pi-ai@0.80.7` generated model registry
+- Upstream measurement and pricing sources: [DataCurve DeepSWE v1.1](https://deepswe.datacurve.ai/data/v1.1),
+  [SWE-bench Verified and SWE-bench Multilingual](https://www.swebench.com/), [CursorBench](https://cursor.com/evals),
+  [Artificial Analysis](https://artificialanalysis.ai/),
+  [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/), and CloudZero authenticated AWS cost data
+- Revision reviewed: corpus capture with source data through 2026-08-13 and the pinned pi-ai registry above; no
+  independent public-page revisions were pinned
+- Licenses: pi-ai and the SWE-bench project declare MIT; the local corpus and CloudZero observations are internal; no
+  license was identified for the DataCurve data, CursorBench, Artificial Analysis, or AWS documentation
+
+Use: endpoint-rate observations, the CloudZero token mix, benchmark outcomes, and derived break-even and
+cost-per-resolved comparisons were transcribed as numeric data into
+[`specs/routing-layer/scoped-model-analysis-2026-08-14.md`](specs/routing-layer/scoped-model-analysis-2026-08-14.md).
+The completion-cost, cache-sensitivity, generation-currency, and reachable-versus-measured interpretations were used as
+conceptual analysis. No upstream prose or code was copied or modified.
+
+Intentionally not adopted: the analysis makes no runtime policy change, transfers no evidence between unmatched model
+versions, does not treat single-attempt verifier outcomes as human acceptance, and does not infer unverified Bedrock
+cache or tool-call behavior.
+
 ## Pi documentation and examples
 
 - Source: `@earendil-works/pi-coding-agent`
