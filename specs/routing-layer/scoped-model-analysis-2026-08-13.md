@@ -45,6 +45,15 @@ submissions below; it does not establish harness equivalence.
 
 ## Cost at list and operator-adjusted rates
 
+> **Precision note, 2026-08-13.** The tables in this document were computed at a rounded cache-read share of `0.124` of
+> input-side tokens. `referenceMixEndpointCost` in
+> [`core/endpoint-cost.ts`](../../extensions/router/core/endpoint-cost.ts) uses the exact share,
+> `cacheRead / (input + cacheRead)` = `0.12587`, which reconstructs the observed `10.61%` cache-read share exactly. The
+> difference moves cache-priced endpoints down by `0.001` to `0.007` — `gpt-5.6-luna` `0.298` to `0.297`, Haiku 4.5
+> `1.233` to `1.232`, `gpt-5.6-terra` `2.977` to `2.974`, Opus 5 `6.167` to `6.161`, `gpt-5.6-sol` `7.442` to `7.435` —
+> and leaves every unpriced-cache endpoint unchanged, because those never touch the cache rates. No ordering, break-even
+> multiplier or conclusion in this document changes; the tests pin the exact-share values.
+
 The reference token mix is CloudZero authenticated AWS cost data for an observed 30-day Bedrock window: input 73.68%,
 output 14.42%, cache read 10.61%, and cache write 1.29%. Where the registry reports `cacheRead = 0` and
 `cacheWrite = 0`, this analysis reads caching as unpriced or unsupported and bills all input-side tokens at the input

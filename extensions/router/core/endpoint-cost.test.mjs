@@ -206,8 +206,12 @@ describe("installed pi cost semantics", () => {
 
 describe("reference-mix effective cost", () => {
   // Rates read from @earendil-works/pi-ai@0.84.1, amazon-bedrock, with the contract weight applied.
-  // These are the figures recorded in specs/routing-layer/scoped-model-analysis-2026-08-13.md, so a
+  // These track the figures recorded in specs/routing-layer/scoped-model-analysis-2026-08-13.md, so a
   // registry bump that moves a rate fails here rather than silently invalidating that record.
+  //
+  // The five cache-priced rows sit 0.001-0.007 below the recorded values because the record was
+  // computed at a rounded 0.124 cache-read share while this prices at the exact share that reproduces
+  // the observed mix. Unpriced-cache rows are identical, so no scoped comparison moves.
   const BEDROCK = {
     "minimax.minimax-m2.5": { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0, expected: 0.357 },
     "moonshotai.kimi-k2.5": { input: 0.6, output: 3, cacheRead: 0, cacheWrite: 0, expected: 0.785 },
@@ -215,11 +219,11 @@ describe("reference-mix effective cost", () => {
     "deepseek.v3.2": { input: 0.62, output: 1.85, cacheRead: 0, cacheWrite: 0, expected: 0.662 },
     "zai.glm-5": { input: 1, output: 3.2, cacheRead: 0, cacheWrite: 0, expected: 1.093 },
     "openai.gpt-oss-120b": { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0, expected: 0.178 },
-    "openai.gpt-5.6-luna": { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275, expected: 0.298 },
-    "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, expected: 1.233 },
-    "openai.gpt-5.6-terra": { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75, expected: 2.977 },
-    "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, expected: 6.167 },
-    "openai.gpt-5.6-sol": { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 6.88, expected: 7.442 },
+    "openai.gpt-5.6-luna": { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275, expected: 0.297 },
+    "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, expected: 1.232 },
+    "openai.gpt-5.6-terra": { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75, expected: 2.974 },
+    "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, expected: 6.161 },
+    "openai.gpt-5.6-sol": { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 6.88, expected: 7.435 },
   };
   const BEDROCK_WEIGHT = 0.83;
 

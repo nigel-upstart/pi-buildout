@@ -41,10 +41,16 @@ const REFERENCE_TOKEN_MIX = Object.freeze({
   cacheWrite: 0.0129,
 });
 
-/** Cache-read share of input-side tokens implied by REFERENCE_TOKEN_MIX. */
+/**
+ * Cache-read share among the tokens `referenceMixEndpointCost` treats as input-side.
+ *
+ * The denominator deliberately excludes `cacheWrite`, matching the `inputSide` split below, so that
+ * `inputSide * REFERENCE_CACHE_READ_SHARE` reproduces the observed `cacheRead` share of 0.1061
+ * exactly. Dividing by the write share as well yields 0.1240 and reconstructs only 0.1045, which
+ * would understate cache benefit for every cache-priced endpoint.
+ */
 const REFERENCE_CACHE_READ_SHARE =
-  REFERENCE_TOKEN_MIX.cacheRead /
-  (REFERENCE_TOKEN_MIX.input + REFERENCE_TOKEN_MIX.cacheRead + REFERENCE_TOKEN_MIX.cacheWrite);
+  REFERENCE_TOKEN_MIX.cacheRead / (REFERENCE_TOKEN_MIX.input + REFERENCE_TOKEN_MIX.cacheRead);
 
 export type EndpointEffectiveCostComparable = {
   provider: string;
