@@ -66,10 +66,11 @@ same-task implementation operations such as rerunning checks, fixing reported fa
 completed change. The operation shortcut applies only to a mutation-capable code-builder lease whose policy archetype
 mutates the repository. Within that ordinary-input path, hard boundaries precede prompt matching; explicit topic
 changes, planning-to-implementation transitions, incompatible planning/review/read-only leases, and topic-bearing near
-matches still create or classify a boundary. Queued steer/follow-up input is a separate unconditional continuation path
-evaluated before pending hard boundaries, because it is delivered into a turn that is already running; that path is
-delivery-based and applies to queued input of any origin, including an extension's `sendUserMessage`. These shortcuts
-retain a lease; they never create authorization or bypass its lifecycle/tool gates.
+matches still create or classify a boundary. Queued steer/follow-up input is a separate continuation path evaluated
+before pending hard boundaries, because it is delivered into a turn that is already running; that path is delivery-based
+and applies to queued input of any origin, including an extension's `sendUserMessage`. It skips semantic reevaluation,
+not capability checks: images that the leased model cannot accept still force a new task, because no route can serve
+that turn otherwise. These shortcuts retain a lease; they never create authorization or bypass its lifecycle/tool gates.
 
 Extension-generated input is not privileged. pi marks a turn `source: "extension"` when any extension calls
 `sendUserMessage`, and while the agent is idle such input runs the ordinary prompt path with no `streamingBehavior`, so
