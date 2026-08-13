@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import { extractTextContent, appendBoundedTail } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
 
-const MAX_JSONL_LINE_BYTES = 4 * 1024 * 1024;
+const MAX_JSONL_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_TRANSCRIPT_CHARS = 120_000;
 const MAX_STDERR_CHARS = 64_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -523,7 +523,7 @@ export class ManagedSubagent {
       this.stdoutLine = "";
       this.stdoutBytes = 0;
       this.proc.stdout.destroy();
-      this.fail("Child RPC output exceeded the 4 MiB JSONL line limit.");
+      this.fail("Child RPC output exceeded the 16 MiB JSONL line limit.");
       this.terminateProcess();
     };
     this.proc.stdout.on("data", (chunk: Buffer) => {
@@ -650,6 +650,9 @@ export class ManagedSubagent {
             this.fail(
               typeof message.errorMessage === "string" ? message.errorMessage : "Child model returned an error.",
             );
+            this.terminateProcess();
+          } else if (message.stopReason === "length" && !text.trim()) {
+            this.fail("Child model exhausted its output token limit without producing text.");
             this.terminateProcess();
           }
         }

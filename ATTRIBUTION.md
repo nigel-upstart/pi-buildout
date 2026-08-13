@@ -9,7 +9,8 @@ forward architectural ideas and operational lessons from both projects.
 ## `nicobailon/pi-subagents`
 
 - Repository: <https://github.com/nicobailon/pi-subagents>
-- Local revision reviewed: `315e1eb1482c4ac2d912a8d95aac4287dc7e60ac`
+- Initial revision reviewed: `315e1eb1482c4ac2d912a8d95aac4287dc7e60ac`
+- Latest revision reviewed: `1b64c35cc221a23a5b8293deb108a30c0646f520` (`0.48.0` plus unreleased changes)
 - License declared by its package: MIT
 
 Ideas and lessons used:
@@ -22,6 +23,10 @@ Ideas and lessons used:
   fleet.
 - Validate model choices against Pi's live model registry and preserve a clear fallback path.
 - Clean up child processes and extension-owned resources during Pi session shutdown/reload.
+- Keep the child JSONL protocol bounded while allowing Pi-sized resized-image events; this repository uses a 16 MiB
+  per-line ceiling.
+- Sanitize child-controlled transcript and diagnostic text before terminal rendering while retaining the original
+  bounded text in the model-facing tool result.
 
 We intentionally did **not** reproduce its agent profiles, chain/parallel workflow engine, intercom/supervisor channel,
 watchdog, artifact protocol, slash-command suite, or TUI fleet. This extension stays between that feature-rich design
@@ -49,7 +54,8 @@ classification, direct-child spying and control, and recursive child creation.
 ## `tintinweb/pi-subagents`
 
 - Repository: <https://github.com/tintinweb/pi-subagents>
-- Local revision reviewed: `c161865a0e8ca12f406041c263ea6c2ca35c74d5` (`0.14.1`)
+- Initial revision reviewed: `c161865a0e8ca12f406041c263ea6c2ca35c74d5` (`0.14.1`)
+- Latest revision reviewed: `4cc473855c2af4f12873c01dad130dd0b3d52639` (`0.15.1`)
 - License: MIT
 
 This package was reviewed after the initial implementation as a source of possible follow-up ideas. The review
@@ -57,8 +63,9 @@ considered its in-process SDK sessions, background concurrency queue, graceful t
 conversation viewer, context-usage statistics, compact tool-description mode, model-scope guardrail, and resumable
 sessions.
 
-Follow-up work adopted two conceptual patterns: explicit, bounded result waiting and richer inspection statistics
-(tokens, cost, context utilization, compactions, and active tool). They were implemented as original code inside the
+Follow-up work adopted three conceptual patterns: explicit, bounded result waiting; richer inspection statistics
+(tokens, cost, context utilization, compactions, and active tool); and treating an output-limit stop with no assistant
+text as a failed child run rather than a successful empty result. They were implemented as original code inside the
 existing single-tool RPC design. No tintinweb code was copied or modified. Major pieces intentionally not adopted
 include named/default agent types, custom agent frontmatter, proactive completion notifications, FleetView/widget UI,
 scheduling, event-bus RPC, persistent memory, worktree isolation, skill preloading, and its three-tool Claude
@@ -68,7 +75,8 @@ Code-compatible surface.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.82.0`, `0.82.1`, `0.83.0`, and `0.84.0`
+- Releases reviewed: `0.80.6`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, and `0.84.1`
+- Latest documentation and example revision reviewed: `9d2ec7ffabe927bfad2214c1cee25b6632a78dcf`
 - License declared by the package: MIT
 
 Ideas and API patterns used:
