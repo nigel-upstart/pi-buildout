@@ -2,7 +2,12 @@ import { complete, validateToolArguments } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, Tool } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CLASSIFIER_TOOL_NAME, classifyTask, isClassifierCancellationError } from "./classifier.ts";
-import type { ClassificationResult, ClassifierRequest, ClassifierTransport } from "./classifier.ts";
+import type {
+  ClassificationResult,
+  ClassifierAttemptObservation,
+  ClassifierRequest,
+  ClassifierTransport,
+} from "./classifier.ts";
 import { calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./core/endpoint-cost.ts";
 import type { EndpointEffectiveCostComparable } from "./core/endpoint-cost.ts";
 import { TaskFeaturesSchema } from "./core/features.ts";
@@ -212,6 +217,7 @@ export async function classifyTaskWithPi(input: {
   prompt: string;
   synopsis: SessionSynopsis;
   signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
 }): Promise<ClassificationResult> {
   const selected = selectClassifierModels(input.registry);
   const primaryVendor = selected.primary[0]?.vendor;
@@ -224,5 +230,6 @@ export async function classifyTaskWithPi(input: {
     ...(primaryVendor ? { primaryVendor } : {}),
     ...(secondaryVendor ? { secondaryVendor } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.onAttempt ? { onAttempt: input.onAttempt } : {}),
   });
 }

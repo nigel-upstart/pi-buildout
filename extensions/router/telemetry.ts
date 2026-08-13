@@ -1,13 +1,21 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { ClassifierAttempt, ClassifierAttemptObservation } from "./classifier.ts";
 import type { Archetype } from "./core/archetype.ts";
 import { calculateEndpointEffectiveCost, classifyCacheWriteRate } from "./core/endpoint-cost.ts";
 import type { CacheWriteClassification } from "./core/endpoint-cost.ts";
+import type { TaskFeatures } from "./core/features.ts";
 import type { ProviderWeightBasis, ResolvedProviderWeight } from "./core/provider-weights.ts";
 import type { RouteSample } from "./core/routing.ts";
 
 type TelemetryEventKind =
-  "boundary" | "classifier_attempt" | "route_decision" | "attempt_completed" | "fallback" | "outcome";
+  | "boundary"
+  | "classifier_invocation"
+  | "classifier_attempt"
+  | "route_decision"
+  | "attempt_completed"
+  | "fallback"
+  | "outcome";
 
 export type RouterTelemetryEvent = {
   version: 1;
@@ -31,6 +39,296 @@ export type RouterTelemetryEvent = {
   cacheWriteClassification?: CacheWriteClassification;
   data: Record<string, unknown>;
 };
+
+export type ClassifierInvocationPurpose = "continuity" | "fresh_task";
+type ClassifierInvocationOutcome = "success" | "timeout" | "error";
+type ClassifierInvocationResolution = "classified" | "failed_closed" | "retained_continuity" | "new_task" | "none";
+type ClassifierAttemptOutcome = "valid" | "invalid" | "error" | "cancelled" | "incomplete";
+
+type ClassifierInvocationAttempt = {
+  stage: "primary" | "secondary";
+  try: number;
+  outcome: ClassifierAttemptOutcome;
+  provider?: string;
+  modelId?: string;
+  latencyMs?: number;
+};
+
+type ClassifierInvocationStage = {
+  stage: "primary" | "secondary";
+  attemptCount: number;
+  completedAttemptCount: number;
+  validAttemptCount: number;
+};
+
+/**
+ * Exactly one summary is emitted per router-level classification request, whether it succeeds,
+ * times out, is cancelled, or fails unexpectedly. `classifier_attempt` remains a legacy lower-level
+ * diagnostic record for an individual completed schema/transport attempt. Consumers count only
+ * `classifier_invocation` for request rates and must never add the two event kinds together.
+ */
+export type ClassifierInvocationSummary = {
+  purpose: ClassifierInvocationPurpose;
+  outcome: ClassifierInvocationOutcome;
+  resolution: ClassifierInvocationResolution;
+  /** Total router-observed wall latency, including retries and secondary classification. */
+  wallLatencyMs: number;
+  timedOut: boolean;
+  cancelled: boolean;
+  failedClosed?: boolean;
+  attemptCount: number;
+  completedAttemptCount: number;
+  validAttemptCount: number;
+  stages: ClassifierInvocationStage[];
+  attempts: ClassifierInvocationAttempt[];
+  errorCategory?: "deadline" | "transport_timeout" | "cancelled" | "unexpected";
+};
+
+export type ClassifierInvocationRun<T> =
+  | { status: "completed"; value: T; summary: ClassifierInvocationSummary }
+  | { status: "failed"; error?: unknown; summary: ClassifierInvocationSummary };
+
+type TrackedClassifierAttempt = {
+  stage: "primary" | "secondary";
+  try: number;
+  outcome?: Exclude<ClassifierAttemptOutcome, "incomplete">;
+  provider?: string;
+  modelId?: string;
+  latencyMs?: number;
+};
+
+function telemetryIdentifier(value: string | undefined): string | undefined {
+  if (!value || value.length > 200 || !/^[a-zA-Z0-9._:/-]+$/.test(value)) return undefined;
+  return value;
+}
+
+function finiteNonnegative(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function classifierInvocationSummary(
+  purpose: ClassifierInvocationPurpose,
+  outcome: ClassifierInvocationOutcome,
+  wallLatencyMs: number,
+  timedOut: boolean,
+  cancelled: boolean,
+  tracked: ReadonlyMap<string, TrackedClassifierAttempt>,
+  errorCategory?: ClassifierInvocationSummary["errorCategory"],
+): ClassifierInvocationSummary {
+  const attempts = [...tracked.values()].map<ClassifierInvocationAttempt>((attempt) => {
+    const provider = telemetryIdentifier(attempt.provider);
+    const modelId = telemetryIdentifier(attempt.modelId);
+    const latencyMs = finiteNonnegative(attempt.latencyMs);
+    return {
+      stage: attempt.stage,
+      try: attempt.try,
+      outcome: attempt.outcome ?? "incomplete",
+      ...(provider ? { provider } : {}),
+      ...(modelId ? { modelId } : {}),
+      ...(latencyMs === undefined ? {} : { latencyMs }),
+    };
+  });
+  const stages = (["primary", "secondary"] as const)
+    .map<ClassifierInvocationStage>((stage) => {
+      const stageAttempts = attempts.filter((attempt) => attempt.stage === stage);
+      return {
+        stage,
+        attemptCount: stageAttempts.length,
+        completedAttemptCount: stageAttempts.filter((attempt) => attempt.outcome !== "incomplete").length,
+        validAttemptCount: stageAttempts.filter((attempt) => attempt.outcome === "valid").length,
+      };
+    })
+    .filter((stage) => stage.attemptCount > 0);
+  return {
+    purpose,
+    outcome,
+    resolution: "none",
+    wallLatencyMs,
+    timedOut,
+    cancelled,
+    attemptCount: attempts.length,
+    completedAttemptCount: attempts.filter((attempt) => attempt.outcome !== "incomplete").length,
+    validAttemptCount: attempts.filter((attempt) => attempt.outcome === "valid").length,
+    stages,
+    attempts,
+    ...(errorCategory ? { errorCategory } : {}),
+  };
+}
+
+/** Runs and measures one classifier invocation without ever persisting its prompt, synopsis, or errors. */
+export async function runClassifierInvocation<T>(input: {
+  purpose: ClassifierInvocationPurpose;
+  timeoutMs: number;
+  invoke: (signal: AbortSignal, onAttempt: (observation: ClassifierAttemptObservation) => void) => Promise<T>;
+}): Promise<ClassifierInvocationRun<T>> {
+  const startedAt = performance.now();
+  const controller = new AbortController();
+  const tracked = new Map<string, TrackedClassifierAttempt>();
+  const observe = (observation: ClassifierAttemptObservation): void => {
+    const key = `${observation.stage}:${String(observation.try)}`;
+    const existing = tracked.get(key) ?? { stage: observation.stage, try: observation.try };
+    if (observation.state === "completed") {
+      const provider = telemetryIdentifier(observation.provider);
+      const modelId = telemetryIdentifier(observation.modelId);
+      const latencyMs = finiteNonnegative(observation.latencyMs);
+      tracked.set(key, {
+        ...existing,
+        outcome: observation.outcome,
+        ...(provider ? { provider } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(latencyMs === undefined ? {} : { latencyMs }),
+      });
+    } else {
+      tracked.set(key, existing);
+    }
+  };
+
+  type Settled = { kind: "success"; value: T } | { kind: "error"; error: unknown } | { kind: "deadline" };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<Settled>((resolve) => {
+    timer = setTimeout(
+      () => {
+        controller.abort();
+        resolve({ kind: "deadline" });
+      },
+      Math.max(0, input.timeoutMs),
+    );
+  });
+  const operation: Promise<Settled> = Promise.resolve()
+    .then(() => input.invoke(controller.signal, observe))
+    .then<Settled, Settled>(
+      (value) => ({ kind: "success", value }),
+      (error: unknown) => ({ kind: "error", error }),
+    );
+  const settled = await Promise.race([operation, deadline]);
+  if (timer) clearTimeout(timer);
+  const wallLatencyMs = Math.max(0, Math.round(performance.now() - startedAt));
+
+  if (settled.kind === "success") {
+    return {
+      status: "completed",
+      value: settled.value,
+      summary: classifierInvocationSummary(input.purpose, "success", wallLatencyMs, false, false, tracked),
+    };
+  }
+  if (settled.kind === "deadline") {
+    return {
+      status: "failed",
+      summary: classifierInvocationSummary(input.purpose, "timeout", wallLatencyMs, true, true, tracked, "deadline"),
+    };
+  }
+
+  const name = settled.error instanceof Error ? settled.error.name : undefined;
+  const timedOut = name === "TimeoutError";
+  const cancelled = name === "AbortError" || controller.signal.aborted;
+  return {
+    status: "failed",
+    error: settled.error,
+    summary: classifierInvocationSummary(
+      input.purpose,
+      timedOut ? "timeout" : "error",
+      wallLatencyMs,
+      timedOut,
+      cancelled,
+      tracked,
+      timedOut ? "transport_timeout" : cancelled ? "cancelled" : "unexpected",
+    ),
+  };
+}
+
+/** Finalizes the safe router-level outcome after continuity resolution or failed-close handling. */
+export function completeClassifierInvocation(
+  summary: ClassifierInvocationSummary,
+  resolution: "classified" | "retained_continuity" | "new_task",
+  failedClosed: boolean,
+): ClassifierInvocationSummary {
+  if (summary.outcome !== "success") return summary;
+  return {
+    ...summary,
+    resolution: resolution === "classified" && failedClosed ? "failed_closed" : resolution,
+    failedClosed,
+  };
+}
+
+export type SanitizedClassifierAttempt = Omit<ClassifierAttempt, "provider" | "modelId"> & {
+  provider?: string;
+  modelId?: string;
+  errorCount: number;
+};
+
+/** Removes free-form errors while retaining the legacy empty `errors` array and adding a count. */
+export function sanitizeClassifierAttempt(attempt: ClassifierAttempt): SanitizedClassifierAttempt {
+  const { errors, provider: rawProvider, modelId: rawModelId, ...safe } = attempt;
+  const provider = telemetryIdentifier(rawProvider);
+  const modelId = telemetryIdentifier(rawModelId);
+  return {
+    ...safe,
+    ...(provider ? { provider } : {}),
+    ...(modelId ? { modelId } : {}),
+    errors: [],
+    errorCount: errors.length,
+  };
+}
+
+/** Evidence is classifier-authored free text and therefore reduced to a count before persistence. */
+export function sanitizeClassifierFeatures(features: TaskFeatures): TaskFeatures & { evidenceCount: number } {
+  return { ...features, evidence: [], evidenceCount: features.evidence.length };
+}
+
+export type ClassifierSpanLike = {
+  setAttribute(name: string, value: string | number | boolean): unknown;
+  addEvent(name: string, attributes?: Record<string, string | number | boolean>): unknown;
+};
+
+function safelyAnnotate(operation: () => unknown): void {
+  try {
+    operation();
+  } catch {
+    // Optional telemetry can never alter classification or routing.
+  }
+}
+
+/** Adds bounded invocation metrics and attempt events to an already-optional router classifier span. */
+export function annotateClassifierSpan(
+  span: ClassifierSpanLike | undefined,
+  summary: ClassifierInvocationSummary,
+): void {
+  if (!span) return;
+  const attributes: Record<string, string | number | boolean> = {
+    "router.classifier.purpose": summary.purpose,
+    "router.classifier.outcome": summary.outcome,
+    "router.classifier.resolution": summary.resolution,
+    "router.classifier.latency_ms": summary.wallLatencyMs,
+    "router.classifier.timed_out": summary.timedOut,
+    "router.classifier.cancelled": summary.cancelled,
+    "router.classifier.attempt_count": summary.attemptCount,
+    "router.classifier.completed_attempt_count": summary.completedAttemptCount,
+    "router.classifier.valid_attempt_count": summary.validAttemptCount,
+    ...(summary.failedClosed === undefined ? {} : { "router.classifier.failed_closed": summary.failedClosed }),
+    ...(summary.errorCategory ? { "router.classifier.error_category": summary.errorCategory } : {}),
+  };
+  for (const stage of summary.stages) {
+    attributes[`router.classifier.${stage.stage}.attempt_count`] = stage.attemptCount;
+    attributes[`router.classifier.${stage.stage}.completed_attempt_count`] = stage.completedAttemptCount;
+    attributes[`router.classifier.${stage.stage}.valid_attempt_count`] = stage.validAttemptCount;
+  }
+  for (const [name, value] of Object.entries(attributes)) {
+    safelyAnnotate(() => span.setAttribute(name, value));
+  }
+  for (const attempt of summary.attempts) {
+    safelyAnnotate(() =>
+      span.addEvent("router.classifier.attempt", {
+        stage: attempt.stage,
+        try: attempt.try,
+        outcome: attempt.outcome,
+        ...(attempt.provider ? { provider: attempt.provider } : {}),
+        ...(attempt.modelId ? { modelId: attempt.modelId } : {}),
+        ...(attempt.latencyMs === undefined ? {} : { latency_ms: attempt.latencyMs }),
+      }),
+    );
+  }
+  safelyAnnotate(() => span.addEvent("router.classifier.completed", attributes));
+}
 
 export type AttemptOutcome = {
   provider: string;

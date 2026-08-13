@@ -4,7 +4,6 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isClassifierCancellationError } from "./classifier.ts";
 import type { ClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
 import { isCodeBuilder } from "./core/features.ts";
@@ -77,12 +76,17 @@ import type { RouterScope } from "./pi-state.ts";
 import {
   aggregateAttemptTokenCounts,
   aggregateRouteSamples,
+  annotateClassifierSpan,
   attemptOutcomesFromTelemetry,
+  completeClassifierInvocation,
   endpointTelemetryFields,
   JsonlTelemetryStore,
+  runClassifierInvocation,
+  sanitizeClassifierAttempt,
+  sanitizeClassifierFeatures,
   withRouterSpan,
 } from "./telemetry.ts";
-import type { RouterTelemetryEvent } from "./telemetry.ts";
+import type { ClassifierInvocationPurpose, ClassifierInvocationSummary, RouterTelemetryEvent } from "./telemetry.ts";
 
 const STATE_ENTRY = "model-router-state";
 const CONTEXT_MESSAGE = "model-router-context";
@@ -199,26 +203,21 @@ async function classifyWithTimeout(
   registry: readonly RegistryModelSnapshot[],
   prompt: string,
   taskSynopsis: SessionSynopsis,
-): Promise<{ classification: ClassificationResult; timedOut: false } | { classification?: never; timedOut: true }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, CLASSIFICATION_TIMEOUT_MS);
-  try {
-    const classification = await classifyTaskWithPi({
-      ctx,
-      registry,
-      prompt,
-      synopsis: taskSynopsis,
-      signal: controller.signal,
-    });
-    return { classification, timedOut: false };
-  } catch (error) {
-    if (controller.signal.aborted || isClassifierCancellationError(error)) return { timedOut: true };
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  purpose: ClassifierInvocationPurpose,
+) {
+  return runClassifierInvocation<ClassificationResult>({
+    purpose,
+    timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+    invoke: (signal, onAttempt) =>
+      classifyTaskWithPi({
+        ctx,
+        registry,
+        prompt,
+        synopsis: taskSynopsis,
+        signal,
+        onAttempt,
+      }),
+  });
 }
 
 /**
@@ -469,6 +468,162 @@ export default function routerExtension(pi: ExtensionAPI): void {
     } catch (error) {
       disableForTelemetryFailure(ctx, error);
     }
+  }
+
+  async function recordClassifierInvocation(
+    ctx: ExtensionContext,
+    summary: ClassifierInvocationSummary,
+    classification?: ClassificationResult,
+    taskId?: string,
+  ): Promise<void> {
+    await record(
+      ctx,
+      "classifier_invocation",
+      {
+        ...summary,
+        // This count is a router-level request metric. Per-attempt diagnostics are intentionally
+        // non-additive and remain under the legacy classifier_attempt event kind.
+        invocationCount: 1,
+      },
+      {
+        ...(taskId ? { taskId } : {}),
+        ...(classification ? { archetype: classification.archetype.archetype } : {}),
+      },
+    );
+  }
+
+  async function classifyContinuityWithTelemetry(
+    ctx: ExtensionContext,
+    registry: readonly RegistryModelSnapshot[],
+    prompt: string,
+    taskSynopsis: SessionSynopsis,
+    lease: TaskLease,
+    cache: { cachedTokens: number; expectedReuseRatio: number },
+  ) {
+    return withRouterSpan(
+      ctx.sessionManager.getSessionId(),
+      "router.classify_continuity",
+      { "router.mode": state.mode },
+      async (span) => {
+        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "continuity");
+        let continuity: ReturnType<typeof resolveContinuity> | undefined;
+        let summary = invocation.summary;
+        if (invocation.status === "completed") {
+          continuity = resolveContinuity(lease, invocation.value.features, cache);
+          summary = completeClassifierInvocation(
+            summary,
+            continuity.action === "new_task" ? "new_task" : "retained_continuity",
+            invocation.value.failedClosed,
+          );
+        }
+        annotateClassifierSpan(span, summary);
+        await recordClassifierInvocation(
+          ctx,
+          summary,
+          invocation.status === "completed" ? invocation.value : undefined,
+          lease.taskId,
+        );
+        return { invocation, continuity };
+      },
+    );
+  }
+
+  async function classifyFreshTaskWithTelemetry(
+    ctx: ExtensionContext,
+    registry: readonly RegistryModelSnapshot[],
+    prompt: string,
+    taskSynopsis: SessionSynopsis,
+  ) {
+    return withRouterSpan(
+      ctx.sessionManager.getSessionId(),
+      "router.classify",
+      { "router.mode": state.mode },
+      async (span) => {
+        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "fresh_task");
+        const summary =
+          invocation.status === "completed"
+            ? completeClassifierInvocation(invocation.summary, "classified", invocation.value.failedClosed)
+            : invocation.summary;
+        annotateClassifierSpan(span, summary);
+        await recordClassifierInvocation(
+          ctx,
+          summary,
+          invocation.status === "completed" ? invocation.value : undefined,
+        );
+        return invocation;
+      },
+    );
+  }
+
+  async function classifyTurn(
+    ctx: ExtensionContext,
+    registry: readonly RegistryModelSnapshot[],
+    prompt: string,
+    taskSynopsis: SessionSynopsis,
+    pending: PendingInput | undefined,
+    initialActive: TaskLease | undefined,
+  ): Promise<{
+    active?: TaskLease;
+    classification?: ClassificationResult;
+    requiresNewLease: boolean;
+    boundaryReason?: string;
+  }> {
+    let active = initialActive;
+    let classification: ClassificationResult | undefined;
+    let requiresNewLease = pending?.gate.action === "new_task";
+    let boundaryReason: string | undefined;
+    const continuityGate = pending?.gate;
+
+    if (pending && continuityGate?.action === "classify_continuity") {
+      const result = await classifyContinuityWithTelemetry(
+        ctx,
+        registry,
+        prompt,
+        taskSynopsis,
+        continuityGate.lease,
+        pending.cache,
+      );
+      if (result.invocation.status === "completed" && result.continuity) {
+        classification = result.invocation.value;
+        requiresNewLease = result.continuity.action === "new_task";
+        boundaryReason = result.continuity.reason;
+        if (!requiresNewLease) active = continuityGate.lease;
+      } else {
+        const summary = result.invocation.summary;
+        const reason = summary.timedOut ? "timed out" : summary.cancelled ? "was cancelled" : "failed";
+        ctx.ui.notify(
+          summary.timedOut
+            ? `Router continuity classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current task and model selection`
+            : `Router continuity classification ${reason}; keeping the current task and model selection`,
+          "warning",
+        );
+        requiresNewLease = false;
+        active = continuityGate.lease;
+        boundaryReason = `classification ${reason}; retained current lease`;
+      }
+    }
+
+    if (requiresNewLease && !classification) {
+      const result = await classifyFreshTaskWithTelemetry(ctx, registry, prompt, taskSynopsis);
+      if (result.status === "completed") {
+        classification = result.value;
+      } else {
+        const reason = result.summary.timedOut ? "timed out" : result.summary.cancelled ? "was cancelled" : "failed";
+        ctx.ui.notify(
+          result.summary.timedOut
+            ? `Router classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current model selection`
+            : `Router classification ${reason}; keeping the current model selection`,
+          "warning",
+        );
+      }
+    }
+
+    return {
+      ...(active ? { active } : {}),
+      ...(classification ? { classification } : {}),
+      requiresNewLease,
+      ...(boundaryReason ? { boundaryReason } : {}),
+    };
   }
 
   function synopsis(
@@ -1410,58 +1565,30 @@ export default function routerExtension(pi: ExtensionAPI): void {
         Boolean(repository.reviewDelta) || isStandaloneReviewRequest(event.prompt),
         registry,
       );
-      let active = state.active;
-      let classification: ClassificationResult | undefined;
-      let requiresNewLease = pending?.gate.action === "new_task";
+      const turnClassification = await classifyTurn(
+        ctx,
+        registry,
+        event.prompt,
+        currentSynopsis,
+        pending,
+        state.active,
+      );
+      let active = turnClassification.active;
+      const classification = turnClassification.classification;
+      const requiresNewLease = turnClassification.requiresNewLease;
+      if (turnClassification.boundaryReason) lastRoute.boundaryReason = turnClassification.boundaryReason;
 
-      if (pending?.gate.action === "classify_continuity") {
-        const continuityResult = await withRouterSpan(
-          ctx.sessionManager.getSessionId(),
-          "router.classify_continuity",
-          { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, registry, event.prompt, currentSynopsis),
-        );
-        classification = continuityResult.classification;
-        if (continuityResult.timedOut) {
-          ctx.ui.notify(
-            `Router continuity classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current task and model selection`,
-            "warning",
-          );
-          requiresNewLease = false;
-          active = pending.gate.lease;
-          lastRoute.boundaryReason = "classification timed out; retained current lease";
-        } else {
-          const continuity = resolveContinuity(
-            pending.gate.lease,
-            continuityResult.classification.features,
-            pending.cache,
-          );
-          requiresNewLease = continuity.action === "new_task";
-          lastRoute.boundaryReason = continuity.reason;
-          if (!requiresNewLease) active = pending.gate.lease;
-        }
-      }
-
-      let classificationTimedOut = false;
-      if (requiresNewLease && !classification) {
-        const freshResult = await withRouterSpan(
-          ctx.sessionManager.getSessionId(),
-          "router.classify",
-          { "router.mode": state.mode },
-          () => classifyWithTimeout(ctx, registry, event.prompt, currentSynopsis),
-        );
-        classification = freshResult.classification;
-        classificationTimedOut = freshResult.timedOut;
-      }
-
-      if (requiresNewLease && classificationTimedOut) {
-        ctx.ui.notify(
-          `Router classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current model selection`,
-          "warning",
-        );
-      } else if (requiresNewLease && classification) {
+      if (requiresNewLease && classification) {
         const routedClassification = classification;
-        for (const attempt of routedClassification.attempts) {
+        const sanitizedClassifierOutput = sanitizeClassifierFeatures(routedClassification.features);
+        const sanitizedPrimaryClassifierOutput = routedClassification.primaryFeatures
+          ? sanitizeClassifierFeatures(routedClassification.primaryFeatures)
+          : undefined;
+        const sanitizedSecondaryClassifierOutput = routedClassification.secondaryFeatures
+          ? sanitizeClassifierFeatures(routedClassification.secondaryFeatures)
+          : undefined;
+        const sanitizedClassifierAttempts = routedClassification.attempts.map(sanitizeClassifierAttempt);
+        for (const attempt of sanitizedClassifierAttempts) {
           await record(
             ctx,
             "classifier_attempt",
@@ -1512,8 +1639,8 @@ export default function routerExtension(pi: ExtensionAPI): void {
               kind: "unroutable",
               reason: routed.decision.reason,
               exclusions: routed.decision.exclusions,
-              classifierOutput: routedClassification.features,
-              classifierAttempts: routedClassification.attempts,
+              classifierOutput: sanitizedClassifierOutput,
+              classifierAttempts: sanitizedClassifierAttempts,
             },
             {
               routeKey: routed.decision.archetype,
@@ -1595,10 +1722,10 @@ export default function routerExtension(pi: ExtensionAPI): void {
             telemetryMature: routed.decision.telemetryMature,
             controlledHoldout: routed.decision.kind === "ordinary" ? routed.decision.controlledHoldout : false,
             fallbacks: lease.fallbacks.map((choice) => `${choice.provider}/${choice.modelId}`),
-            classifierOutput: routedClassification.features,
-            primaryClassifierOutput: routedClassification.primaryFeatures,
-            secondaryClassifierOutput: routedClassification.secondaryFeatures,
-            classifierAttempts: routedClassification.attempts,
+            classifierOutput: sanitizedClassifierOutput,
+            primaryClassifierOutput: sanitizedPrimaryClassifierOutput,
+            secondaryClassifierOutput: sanitizedSecondaryClassifierOutput,
+            classifierAttempts: sanitizedClassifierAttempts,
           },
           {
             taskId: lease.taskId,

@@ -212,6 +212,7 @@ describe("selectClassifierModels", () => {
 
   it("fails closed without consulting the registry when scope leaves no classifier endpoint", async () => {
     let registryLookups = 0;
+    const observations = [];
     const result = await classifyTaskWithPi({
       ctx: {
         modelRegistry: {
@@ -224,11 +225,14 @@ describe("selectClassifierModels", () => {
       registry: [],
       prompt: "Implement the change",
       synopsis: {},
+      onAttempt: (observation) => observations.push(observation),
     });
     assert.equal(result.failedClosed, true);
     assert.equal(registryLookups, 0);
     assert.equal(result.attempts.length, 4);
     assert.ok(result.attempts.every((attempt) => attempt.valid === false));
+    assert.equal(observations.filter((observation) => observation.state === "started").length, 4);
+    assert.equal(observations.filter((observation) => observation.outcome === "error").length, 4);
   });
 
   it("does not call an alternate endpoint when the provider returns an aborted response", async () => {

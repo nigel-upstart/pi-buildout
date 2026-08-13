@@ -73,6 +73,57 @@ describe("classifier request", () => {
 });
 
 describe("classifyTask", () => {
+  it("reports bounded attempt lifecycle metadata for valid, invalid, and transport-error attempts", async () => {
+    const observations = [];
+    let calls = 0;
+    const result = await classifyTask({
+      prompt: "Implement it",
+      synopsis,
+      primary: async () => {
+        calls++;
+        if (calls === 1) {
+          return {
+            arguments: { invalid: true },
+            provider: "openai-codex",
+            modelId: "gpt-5.6-luna",
+            vendor: "openai",
+            latencyMs: 3,
+          };
+        }
+        throw new Error("raw credential and prompt must remain internal");
+      },
+      secondary: transport(features(), "anthropic"),
+      onAttempt: (observation) => observations.push(observation),
+    });
+
+    assert.equal(result.failedClosed, false);
+    assert.deepEqual(
+      observations.map(({ stage, try: attempt, state, outcome }) => [stage, attempt, state, outcome]),
+      [
+        ["primary", 1, "started", undefined],
+        ["primary", 1, "completed", "invalid"],
+        ["primary", 2, "started", undefined],
+        ["primary", 2, "completed", "error"],
+        ["secondary", 1, "started", undefined],
+        ["secondary", 1, "completed", "valid"],
+      ],
+    );
+    assert.doesNotMatch(JSON.stringify(observations), /credential|prompt must remain internal/);
+  });
+
+  it("keeps classification independent of a failing attempt observer", async () => {
+    const result = await classifyTask({
+      prompt: "Implement it",
+      synopsis,
+      primary: transport(features(), "openai"),
+      secondary: transport(features(), "anthropic"),
+      onAttempt: () => {
+        throw new Error("observer unavailable");
+      },
+    });
+    assert.equal(result.failedClosed, false);
+  });
+
   it("treats thrown cancellation errors as terminal before retry or secondary escalation", async () => {
     for (const errorName of ["AbortError", "TimeoutError"]) {
       let primaryCalls = 0;

@@ -38,7 +38,7 @@ export function isClassifierCancellationError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
-type ClassifierAttempt = {
+export type ClassifierAttempt = {
   stage: "primary" | "secondary";
   try: number;
   valid: boolean;
@@ -49,6 +49,22 @@ type ClassifierAttempt = {
   errors: string[];
   usage?: ClassifierTransportResult["usage"];
 };
+
+/**
+ * Privacy-safe lifecycle metadata for one schema-validation attempt. Free-form transport and
+ * validation errors deliberately never cross this observer boundary.
+ */
+export type ClassifierAttemptObservation =
+  | { stage: "primary" | "secondary"; try: number; state: "started" }
+  | {
+      stage: "primary" | "secondary";
+      try: number;
+      state: "completed";
+      outcome: "valid" | "invalid" | "error" | "cancelled";
+      provider?: string;
+      modelId?: string;
+      latencyMs?: number;
+    };
 
 export type ClassificationResult = {
   features: TaskFeatures;
@@ -136,6 +152,17 @@ export function buildClassifierRequest(
   };
 }
 
+function observeAttempt(
+  observer: ((observation: ClassifierAttemptObservation) => void) | undefined,
+  observation: ClassifierAttemptObservation,
+): void {
+  try {
+    observer?.(observation);
+  } catch {
+    // Invocation telemetry is best-effort and can never alter a classifier decision.
+  }
+}
+
 async function runStage(
   stage: "primary" | "secondary",
   transport: ClassifierTransport,
@@ -143,8 +170,10 @@ async function runStage(
   synopsis: SessionSynopsis,
   attempts: ClassifierAttempt[],
   signal?: AbortSignal,
+  onAttempt?: (observation: ClassifierAttemptObservation) => void,
 ): Promise<{ features?: TaskFeatures; vendor?: ModelVendor }> {
   for (let attempt = 1; attempt <= 2; attempt++) {
+    observeAttempt(onAttempt, { stage, try: attempt, state: "started" });
     try {
       signal?.throwIfAborted();
       const response = await transport(buildClassifierRequest(stage, prompt, synopsis, signal));
@@ -161,15 +190,28 @@ async function runStage(
         errors: validation.errors,
         ...(response.usage ? { usage: response.usage } : {}),
       });
+      observeAttempt(onAttempt, {
+        stage,
+        try: attempt,
+        state: "completed",
+        outcome: validation.success ? "valid" : "invalid",
+        provider: response.provider,
+        modelId: response.modelId,
+        latencyMs: response.latencyMs,
+      });
       if (validation.success) return { features: validation.value, vendor: response.vendor };
     } catch (error) {
-      if (signal?.aborted || isClassifierCancellationError(error)) throw error;
+      if (signal?.aborted || isClassifierCancellationError(error)) {
+        observeAttempt(onAttempt, { stage, try: attempt, state: "completed", outcome: "cancelled" });
+        throw error;
+      }
       attempts.push({
         stage,
         try: attempt,
         valid: false,
         errors: [error instanceof Error ? error.message : String(error)],
       });
+      observeAttempt(onAttempt, { stage, try: attempt, state: "completed", outcome: "error" });
     }
   }
   return {};
@@ -217,9 +259,18 @@ export async function classifyTask(input: {
   primaryVendor?: ModelVendor;
   secondaryVendor?: ModelVendor;
   signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
 }): Promise<ClassificationResult> {
   const attempts: ClassifierAttempt[] = [];
-  const primaryResult = await runStage("primary", input.primary, input.prompt, input.synopsis, attempts, input.signal);
+  const primaryResult = await runStage(
+    "primary",
+    input.primary,
+    input.prompt,
+    input.synopsis,
+    attempts,
+    input.signal,
+    input.onAttempt,
+  );
   const primaryFeatures = primaryResult.features ?? conservativeFeatures("Primary classifier failed schema validation");
   const shouldEscalate =
     !primaryResult.features ||
@@ -239,6 +290,7 @@ export async function classifyTask(input: {
       input.synopsis,
       attempts,
       input.signal,
+      input.onAttempt,
     );
     secondaryVendor = secondaryResult.vendor;
     secondaryFeatures = secondaryResult.features;

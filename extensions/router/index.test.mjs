@@ -391,9 +391,10 @@ describe("routerExtension", () => {
     const hooks = new Map();
     const notifications = [];
     const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-shared-snapshot-"));
+    const telemetryPath = join(telemetryDirectory, "events.jsonl");
     const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
     const previousMode = process.env.PI_ROUTER_MODE;
-    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+    process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
     process.env.PI_ROUTER_MODE = "shadow";
     let activeTools = [];
     let snapshotReads = 0;
@@ -440,11 +441,130 @@ describe("routerExtension", () => {
       );
       assert.equal(snapshotReads, 1, "classification, builder provenance, and routing must share one scoped snapshot");
       assert.match(notifications.at(-1)?.message ?? "", /retained current model/i);
+      const events = (await readFile(telemetryPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const invocations = events.filter((item) => item.kind === "classifier_invocation");
+      assert.equal(invocations.length, 1, "one fresh-task request emits one invocation metric");
+      assert.equal(invocations[0].data.purpose, "fresh_task");
+      assert.equal(invocations[0].data.outcome, "success");
+      assert.equal(invocations[0].data.resolution, "failed_closed");
+      assert.equal(invocations[0].data.invocationCount, 1);
+      assert.equal(invocations[0].data.attemptCount, 4);
+      assert.doesNotMatch(JSON.stringify(invocations[0]), /Implement the change|system|No configured/);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
       if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
       else process.env.PI_ROUTER_MODE = previousMode;
+    }
+  });
+
+  it("records retained continuity explicitly without persisting request or classifier errors", async () => {
+    const hooks = new Map();
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-continuity-telemetry-"));
+    const telemetryPath = join(telemetryDirectory, "events.jsonl");
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
+    const now = new Date().toISOString();
+    const choice = {
+      provider: "openai-codex",
+      modelId: "gpt-5.6-sol",
+      logicalModelId: "gpt-5.6-sol",
+      vendor: "openai",
+      effort: "high",
+      ability: 3,
+      profileId: "openai-gpt-5.6-agent-v1",
+      contextWindow: 1_000_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    };
+    const lease = {
+      version: 2,
+      taskId: "continuity-task",
+      startedAt: now,
+      updatedAt: now,
+      archetype: "median_repository_implementation",
+      features: conservativeFeatures("fixture"),
+      selected: choice,
+      fallbacks: [{ ...choice, provider: "openai" }],
+      attemptIndex: 0,
+      promptProfileId: choice.profileId,
+      modelSnapshotId: "snapshot",
+      policyVersion: POLICY_VERSION,
+      lastPromptFingerprint: "fingerprint",
+      lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task-fingerprint" },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+      manualOverride: false,
+    };
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "shadow", manualOverride: false, active: lease },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          usage: { input: 40_000, output: 100, cacheRead: 30_000, cost: { total: 0.01 } },
+        },
+      },
+    ];
+    let activeTools = [];
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: () => {},
+      registerTool: () => {},
+      appendEntry: () => {},
+      exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+      getActiveTools: () => activeTools,
+      setActiveTools: (tools) => {
+        activeTools = tools;
+      },
+      getThinkingLevel: () => "high",
+    };
+    const ctx = {
+      cwd: telemetryDirectory,
+      model: undefined,
+      modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
+      sessionManager: { getBranch: () => branch, getSessionId: () => "continuity-session" },
+      getContextUsage: () => ({ tokens: 40_100, contextWindow: 1_000_000, percent: 4 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        setWorkingMessage: () => {},
+        setWorkingVisible: () => {},
+        notify: () => {},
+      },
+    };
+    try {
+      routerExtension(pi);
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      const request = "Please address the remaining verification details credential=do-not-record";
+      await hooks.get("input")({ text: request, source: "interactive" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: request, systemPrompt: "private system prompt", images: [] },
+        ctx,
+      );
+
+      const events = (await readFile(telemetryPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const invocations = events.filter((item) => item.kind === "classifier_invocation");
+      assert.equal(invocations.length, 1);
+      assert.equal(invocations[0].taskId, lease.taskId);
+      assert.equal(invocations[0].data.purpose, "continuity");
+      assert.equal(invocations[0].data.outcome, "success");
+      assert.equal(invocations[0].data.resolution, "retained_continuity");
+      assert.equal(invocations[0].data.failedClosed, true);
+      assert.equal(invocations[0].data.attemptCount, 4);
+      assert.doesNotMatch(JSON.stringify(invocations[0]), /do-not-record|private system prompt|No configured/);
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
     }
   });
 

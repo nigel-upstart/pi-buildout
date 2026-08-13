@@ -4,14 +4,20 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { conservativeFeatures } from "./core/features.ts";
 import { providerWeightFor } from "./core/provider-weights.ts";
 import {
   aggregateAttemptTokenCounts,
   aggregateRouteSamples,
+  annotateClassifierSpan,
   attemptOutcomesFromTelemetry,
+  completeClassifierInvocation,
   endpointTelemetryFields,
   JsonlTelemetryStore,
   percentile,
+  runClassifierInvocation,
+  sanitizeClassifierAttempt,
+  sanitizeClassifierFeatures,
   withRouterSpan,
 } from "./telemetry.ts";
 
@@ -124,6 +130,197 @@ describe("JsonlTelemetryStore", () => {
       ["one", "two"],
     );
     assert.match(await readFile(path, "utf8"), /"eventId":"one"/);
+  });
+});
+
+describe("classifier invocation telemetry", () => {
+  it("summarizes one successful invocation and its sanitized stage attempts", async () => {
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 1_000,
+      invoke: async (_signal, observe) => {
+        observe({ stage: "primary", try: 1, state: "started" });
+        observe({
+          stage: "primary",
+          try: 1,
+          state: "completed",
+          outcome: "valid",
+          provider: "openai-codex",
+          modelId: "gpt-5.6-luna",
+          latencyMs: 7,
+        });
+        return 42;
+      },
+    });
+
+    assert.equal(run.status, "completed");
+    const summary = completeClassifierInvocation(run.summary, "classified", false);
+    assert.equal(summary.purpose, "fresh_task");
+    assert.equal(summary.outcome, "success");
+    assert.equal(summary.resolution, "classified");
+    assert.equal(summary.timedOut, false);
+    assert.equal(summary.cancelled, false);
+    assert.equal(summary.attemptCount, 1);
+    assert.equal(summary.completedAttemptCount, 1);
+    assert.equal(summary.validAttemptCount, 1);
+    assert.deepEqual(summary.stages, [
+      { stage: "primary", attemptCount: 1, completedAttemptCount: 1, validAttemptCount: 1 },
+    ]);
+    assert.deepEqual(summary.attempts, [
+      {
+        stage: "primary",
+        try: 1,
+        outcome: "valid",
+        provider: "openai-codex",
+        modelId: "gpt-5.6-luna",
+        latencyMs: 7,
+      },
+    ]);
+    assert.ok(summary.wallLatencyMs >= 0);
+  });
+
+  it("returns promptly at the deadline with an explicit timeout and cancellation", async () => {
+    const run = await runClassifierInvocation({
+      purpose: "continuity",
+      timeoutMs: 5,
+      invoke: (signal, observe) =>
+        new Promise((_resolve, reject) => {
+          observe({ stage: "primary", try: 1, state: "started" });
+          signal.addEventListener(
+            "abort",
+            () => {
+              observe({ stage: "primary", try: 1, state: "completed", outcome: "cancelled" });
+              const error = new Error("secret prompt and credential");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        }),
+    });
+
+    assert.equal(run.status, "failed");
+    assert.equal(run.summary.outcome, "timeout");
+    assert.equal(run.summary.resolution, "none");
+    assert.equal(run.summary.timedOut, true);
+    assert.equal(run.summary.cancelled, true);
+    assert.equal(run.summary.errorCategory, "deadline");
+    assert.equal(run.summary.attempts[0].outcome, "cancelled");
+    assert.doesNotMatch(JSON.stringify(run.summary), /secret|credential|prompt/i);
+  });
+
+  it("categorizes transport timeout, cancellation, and unexpected errors without retaining errors", async () => {
+    const cases = [
+      { name: "TimeoutError", outcome: "timeout", timedOut: true, cancelled: false, category: "transport_timeout" },
+      { name: "AbortError", outcome: "error", timedOut: false, cancelled: true, category: "cancelled" },
+      { name: "Error", outcome: "error", timedOut: false, cancelled: false, category: "unexpected" },
+    ];
+    for (const expected of cases) {
+      const run = await runClassifierInvocation({
+        purpose: "fresh_task",
+        timeoutMs: 1_000,
+        invoke: async () => {
+          const error = new Error("api-key=super-secret prompt=private");
+          error.name = expected.name;
+          throw error;
+        },
+      });
+      assert.equal(run.status, "failed");
+      assert.equal(run.summary.outcome, expected.outcome);
+      assert.equal(run.summary.timedOut, expected.timedOut);
+      assert.equal(run.summary.cancelled, expected.cancelled);
+      assert.equal(run.summary.errorCategory, expected.category);
+      assert.doesNotMatch(JSON.stringify(run.summary), /super-secret|api-key|private/);
+    }
+  });
+
+  it("removes free-form errors, evidence, and malformed identifiers from durable payloads", () => {
+    const attempt = sanitizeClassifierAttempt({
+      stage: "primary",
+      try: 1,
+      valid: false,
+      provider: "provider secret@example.com",
+      modelId: "model\ncredential=secret",
+      vendor: "openai",
+      latencyMs: 9,
+      errors: ["credential=secret", "prompt text"],
+      usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.01 },
+    });
+    assert.equal(attempt.provider, undefined);
+    assert.equal(attempt.modelId, undefined);
+    assert.equal(attempt.errorCount, 2);
+    assert.deepEqual(attempt.errors, [], "legacy readers retain the errors array without sensitive contents");
+
+    const sanitizedFeatures = sanitizeClassifierFeatures(
+      conservativeFeatures("verbatim private prompt with credential=secret"),
+    );
+    assert.deepEqual(sanitizedFeatures.evidence, []);
+    assert.equal(sanitizedFeatures.evidenceCount, 1);
+    assert.doesNotMatch(JSON.stringify({ attempt, sanitizedFeatures }), /private prompt|credential=secret|prompt text/);
+  });
+
+  it("enriches an optional span with bounded attributes and events only", () => {
+    const attributes = [];
+    const events = [];
+    const span = {
+      setAttribute: (name, value) => attributes.push([name, value]),
+      addEvent: (name, values) => events.push([name, values]),
+    };
+    const summary = {
+      purpose: "continuity",
+      outcome: "success",
+      resolution: "retained_continuity",
+      wallLatencyMs: 12,
+      timedOut: false,
+      cancelled: false,
+      failedClosed: false,
+      attemptCount: 1,
+      completedAttemptCount: 1,
+      validAttemptCount: 1,
+      stages: [{ stage: "primary", attemptCount: 1, completedAttemptCount: 1, validAttemptCount: 1 }],
+      attempts: [{ stage: "primary", try: 1, outcome: "valid", provider: "openai", modelId: "gpt-5.6-luna" }],
+    };
+    annotateClassifierSpan(span, summary);
+    assert.deepEqual(
+      attributes.find(([name]) => name === "router.classifier.outcome"),
+      ["router.classifier.outcome", "success"],
+    );
+    assert.deepEqual(
+      attributes.find(([name]) => name === "router.classifier.latency_ms"),
+      ["router.classifier.latency_ms", 12],
+    );
+    assert.equal(events.filter(([name]) => name === "router.classifier.attempt").length, 1);
+    assert.equal(events.filter(([name]) => name === "router.classifier.completed").length, 1);
+    assert.doesNotMatch(JSON.stringify({ attributes, events }), /prompt|synopsis|credential|error\.message/i);
+  });
+
+  it("keeps annotations best-effort when an optional span implementation throws", () => {
+    assert.doesNotThrow(() =>
+      annotateClassifierSpan(
+        {
+          setAttribute: () => {
+            throw new Error("broken exporter");
+          },
+          addEvent: () => {
+            throw new Error("broken exporter");
+          },
+        },
+        {
+          purpose: "fresh_task",
+          outcome: "error",
+          resolution: "none",
+          wallLatencyMs: 1,
+          timedOut: false,
+          cancelled: false,
+          attemptCount: 0,
+          completedAttemptCount: 0,
+          validAttemptCount: 0,
+          stages: [],
+          attempts: [],
+          errorCategory: "unexpected",
+        },
+      ),
+    );
   });
 });
 
