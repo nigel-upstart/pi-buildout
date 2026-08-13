@@ -97,8 +97,15 @@ automatic review. They may perform explicitly requested external operations such
 
 Enablement is sticky. The mode selected with `/route shadow|active|off` survives `/compact` and `/clear`, and by default
 it also survives quitting pi: the next session starts in the mode that was in force when the router last stopped. Only
-the mode is carried; the task lease, selected model, and effort are always discarded at those boundaries, so the next
-user message starts a new task.
+the mode is carried across a session boundary: `/clear`, a fork, and a fresh launch begin with no lease, model, or
+effort of their own.
+
+`/compact` is a deferred boundary rather than an immediate discard. Any standing execution authorization is invalidated
+at once, and the router records a pending `post_compaction` boundary while keeping the lease, model, and effort in
+place. The next ordinary user message hits that boundary and starts a new task; input queued into a turn that is still
+running continues the existing lease instead. If that first post-compaction classification fails or times out, the
+router keeps the existing lease and selection rather than routing on incomplete evidence, and the pending boundary stays
+in force for the next ordinary message.
 
 A session that already carries its own router state keeps it. Start-mode configuration only decides what a session with
 no router history starts in (a fresh launch, `/clear`, or a fork).

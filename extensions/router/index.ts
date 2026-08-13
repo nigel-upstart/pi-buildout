@@ -1480,10 +1480,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    // Compaction rewrites history, not enablement: the lease is dropped at the boundary while the
-    // mode stays in force, and re-persisting it puts the mode after the compaction cut so a later
-    // resume of this session still sees it. Invalidate authorization before dropping the lease so
-    // no approval can survive the compaction boundary.
+    // Compaction rewrites history, not enablement. The mode stays in force, and re-persisting it puts
+    // the mode after the compaction cut so a later resume of this session still sees it. The lease is
+    // kept and a pending post_compaction boundary is recorded instead, so the next ordinary user
+    // message re-routes while input queued into a running turn still finishes inside its own lease.
+    // Authorization is invalidated immediately, because no approval may survive compaction even
+    // though the lease itself does.
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "compaction boundary") };
     state = setHardBoundary(state, "post_compaction");
     persistState();
