@@ -11,9 +11,12 @@ process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH = "/nonexistent-router-health.json";
 // Recording the last known mode is a real filesystem write; keep every test out of the developer's
 // agent directory unless the test points it somewhere itself.
 process.env.PI_ROUTER_LAST_MODE_PATH = join(await mkdtemp(join(tmpdir(), "pi-router-last-mode-")), "last-mode.jsonl");
+import { classifyTask } from "./classifier.ts";
+import { deriveArchetype } from "./core/archetype.ts";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
-import { JsonlTelemetryStore } from "./telemetry.ts";
+import { transportFromCandidates } from "./pi-classifier.ts";
+import { JsonlTelemetryStore, runClassifierInvocation } from "./telemetry.ts";
 import routerExtension, {
   CLASSIFICATION_TIMEOUT_MS,
   activeToolsForSafetyLifecycle,
@@ -32,6 +35,72 @@ function deferred() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function implementationFeatures(overrides = {}) {
+  return {
+    ...conservativeFeatures("fixture"),
+    intent: "implement",
+    workflowType: "coding_implementation",
+    actionMode: "reversible_mutation",
+    horizon: "single_pr",
+    risk: "medium",
+    ambiguity: "low",
+    confidence: 0.95,
+    taskContinuity: "new_task",
+    independenceRequirement: "none",
+    interactivity: "developer_loop",
+    expectedAgentTurns: 3,
+    expectedFilesRead: 4,
+    expectedFilesChanged: 1,
+    expectedToolOutputTokens: 2_000,
+    verificationStrength: "unit_tests",
+    decompositionRecommended: false,
+    ...overrides,
+  };
+}
+
+function classificationResult(attempts = 1, overrides = {}) {
+  const features = implementationFeatures(overrides);
+  return {
+    features,
+    archetype: deriveArchetype(features),
+    escalated: attempts > 1,
+    failedClosed: false,
+    attempts: Array.from({ length: attempts }, (_, index) => ({
+      stage: index === 0 ? "primary" : "secondary",
+      try: 1,
+      valid: true,
+      provider: index === 0 ? "openai-codex" : "anthropic",
+      modelId: index === 0 ? "gpt-5.6-luna" : "claude-sonnet-5",
+      vendor: index === 0 ? "openai" : "anthropic",
+      latencyMs: 1,
+      errors: [],
+    })),
+    primaryVendor: "openai",
+    ...(attempts > 1 ? { secondaryVendor: "anthropic" } : {}),
+    primaryFeatures: features,
+    ...(attempts > 1 ? { secondaryFeatures: features } : {}),
+  };
+}
+
+function successfulClassifier(attempts = 1, overrides = {}) {
+  return async ({ onAttempt }) => {
+    for (let index = 0; index < attempts; index++) {
+      const stage = index === 0 ? "primary" : "secondary";
+      onAttempt?.({ stage, try: 1, state: "started" });
+      onAttempt?.({
+        stage,
+        try: 1,
+        state: "completed",
+        outcome: "valid",
+        provider: index === 0 ? "openai-codex" : "anthropic",
+        modelId: index === 0 ? "gpt-5.6-luna" : "claude-sonnet-5",
+        latencyMs: 1,
+      });
+    }
+    return classificationResult(attempts, overrides);
+  };
 }
 
 function irreversibleActionPlan() {
@@ -59,6 +128,70 @@ function irreversibleActionPlan() {
 describe("classifier deadline", () => {
   it("allows eleven seconds for classification", () => {
     assert.equal(CLASSIFICATION_TIMEOUT_MS, 11_000);
+  });
+
+  it("keeps retries, endpoint iteration, and secondary escalation inside one eleven-second budget", async () => {
+    const endpointCalls = [];
+    const signals = new Set();
+    const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });
+    const response = (entry, argumentsValue) => ({
+      arguments: argumentsValue,
+      provider: entry.model.provider,
+      modelId: entry.model.id,
+      vendor: entry.vendor,
+      latencyMs: 1,
+    });
+    const primary = transportFromCandidates(
+      [candidate("primary-a", "gpt-5.6-luna", "openai"), candidate("primary-b", "gpt-5.6-luna", "openai")],
+      async (entry, request) => {
+        endpointCalls.push(`${request.stage}:${entry.model.provider}`);
+        signals.add(request.signal);
+        if (entry.model.provider === "primary-a") throw new Error("retry endpoint");
+        return response(entry, { invalid: true });
+      },
+    );
+    const secondary = transportFromCandidates(
+      [
+        candidate("secondary-a", "claude-sonnet-5", "anthropic"),
+        candidate("secondary-b", "claude-sonnet-5", "anthropic"),
+      ],
+      async (entry, request) => {
+        endpointCalls.push(`${request.stage}:${entry.model.provider}`);
+        signals.add(request.signal);
+        if (entry.model.provider === "secondary-a") throw new Error("retry endpoint");
+        return response(entry, implementationFeatures({ risk: "high" }));
+      },
+    );
+
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+      invoke: (signal, onAttempt) =>
+        classifyTask({
+          prompt: "Implement the change",
+          synopsis: {},
+          primary,
+          secondary,
+          primaryVendor: "openai",
+          secondaryVendor: "anthropic",
+          signal,
+          onAttempt,
+        }),
+    });
+
+    assert.equal(run.status, "completed");
+    assert.equal(run.value.escalated, true);
+    assert.deepEqual(endpointCalls, [
+      "primary:primary-a",
+      "primary:primary-b",
+      "primary:primary-a",
+      "primary:primary-b",
+      "secondary:secondary-a",
+      "secondary:secondary-b",
+    ]);
+    assert.equal(signals.size, 1, "every nested layer must share the one router deadline signal");
+    assert.equal(run.summary.attemptCount, 3, "two primary schema attempts and one secondary attempt were observed");
+    assert.ok(run.summary.wallLatencyMs < CLASSIFICATION_TIMEOUT_MS);
   });
 });
 
@@ -103,6 +236,101 @@ async function startupRouterState(overrides = {}) {
     },
   );
   return appended.filter((entry) => entry.customType === "model-router-state");
+}
+
+function adapterLease() {
+  const now = new Date().toISOString();
+  const features = implementationFeatures();
+  const selected = {
+    provider: "openai-codex",
+    modelId: "gpt-5.6-sol",
+    logicalModelId: "gpt-5.6-sol",
+    vendor: "openai",
+    effort: "high",
+    ability: 3,
+    profileId: "openai-gpt-5.6-agent-v1",
+    contextWindow: 1_000_000,
+    endpointTier: "manufacturer",
+    rankReason: "bootstrap",
+  };
+  return {
+    version: 2,
+    taskId: "existing-task",
+    startedAt: now,
+    updatedAt: now,
+    archetype: "median_repository_implementation",
+    features,
+    selected,
+    fallbacks: [{ ...selected, provider: "openai" }],
+    attemptIndex: 0,
+    promptProfileId: selected.profileId,
+    modelSnapshotId: "snapshot",
+    policyVersion: POLICY_VERSION,
+    lastPromptFingerprint: "fingerprint",
+    lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task-fingerprint" },
+    safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+    manualOverride: false,
+  };
+}
+
+async function runAdapterTurn({ classifyTask: classifyTaskFixture, active, prompt, sessionId }) {
+  const hooks = new Map();
+  const commands = new Map();
+  const events = [];
+  const appended = [];
+  const selectedModels = [];
+  const selectedEfforts = [];
+  const notifications = [];
+  let activeTools = [];
+  const branch = [
+    {
+      type: "custom",
+      customType: "model-router-state",
+      data: { mode: "shadow", manualOverride: false, ...(active ? { active } : {}) },
+    },
+  ];
+  const pi = {
+    on: (event, handler) => hooks.set(event, handler),
+    registerCommand: (name, command) => commands.set(name, command),
+    registerTool: () => {},
+    appendEntry: (customType, data) => appended.push({ customType, data }),
+    exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+    getActiveTools: () => activeTools,
+    setActiveTools: (tools) => {
+      activeTools = tools;
+    },
+    getThinkingLevel: () => "high",
+    setThinkingLevel: (effort) => selectedEfforts.push(effort),
+    setModel: async (model) => {
+      selectedModels.push(model);
+      return true;
+    },
+  };
+  const telemetry = {
+    append: async (event) => {
+      events.push(event);
+    },
+    read: async () => [],
+  };
+  const ctx = {
+    cwd: "/repo",
+    model: undefined,
+    modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
+    sessionManager: { getBranch: () => branch, getSessionId: () => sessionId },
+    getContextUsage: () => ({ tokens: 0, contextWindow: 128_000 }),
+    ui: {
+      theme: { fg: (_color, text) => text },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+      setWorkingVisible: () => {},
+      notify: (message, type) => notifications.push({ message, type }),
+    },
+  };
+  routerExtension(pi, { telemetry, classifyTask: classifyTaskFixture });
+  await hooks.get("session_start")({ reason: "reload" }, ctx);
+  await hooks.get("input")({ text: prompt, source: "interactive" }, ctx);
+  await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
+  return { commands, ctx, events, appended, selectedModels, selectedEfforts, notifications };
 }
 
 function restoreEnv({ previousAgentDir, previousMode, previousLastModePath }) {
@@ -268,6 +496,88 @@ describe("safetyToolBlockReason", () => {
 });
 
 describe("routerExtension", () => {
+  it("retains the existing selection and lease for every fresh-task invocation failure class", async (t) => {
+    for (const errorName of ["AbortError", "TimeoutError", "Error"]) {
+      await t.test(errorName, async () => {
+        const active = adapterLease();
+        const failure = new Error(`${errorName} classifier fixture`);
+        failure.name = errorName;
+        const result = await runAdapterTurn({
+          classifyTask: async () => {
+            throw failure;
+          },
+          active,
+          prompt: "New task: implement a separate change",
+          sessionId: `fresh-failure-${errorName}`,
+        });
+
+        assert.equal(result.selectedModels.length, 0, "classification failure must not select a model");
+        assert.equal(result.selectedEfforts.length, 0, "classification failure must not change effort");
+        await result.commands.get("route").handler("", result.ctx);
+        assert.ok((result.notifications.at(-1)?.message ?? "").includes(`task=${active.taskId}`));
+        assert.ok(
+          result.notifications.some(({ message }) => /keeping the current model selection/i.test(message)),
+          `${errorName} must report fail-safe selection retention`,
+        );
+        assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 1);
+        assert.equal(result.events.filter(({ kind }) => kind === "classifier_attempt").length, 0);
+      });
+    }
+  });
+
+  it("enforces non-additive classifier invocation and legacy attempt cardinality", async (t) => {
+    const scenarios = [
+      {
+        name: "retained continuity",
+        active: adapterLease(),
+        prompt: "Please inspect the remaining details",
+        classifyTask: successfulClassifier(1, { taskContinuity: "clear_continuation" }),
+        legacyAttempts: 0,
+      },
+      {
+        name: "terminal failure",
+        active: adapterLease(),
+        prompt: "New task: inspect another change",
+        classifyTask: async () => {
+          const error = new Error("terminal fixture");
+          error.name = "AbortError";
+          throw error;
+        },
+        legacyAttempts: 0,
+      },
+      {
+        name: "single-attempt success",
+        prompt: "Implement one bounded change",
+        classifyTask: successfulClassifier(1),
+        legacyAttempts: 1,
+      },
+      {
+        name: "escalated classification",
+        prompt: "Implement one high-risk bounded change",
+        classifyTask: successfulClassifier(2, { risk: "high" }),
+        legacyAttempts: 2,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      await t.test(scenario.name, async () => {
+        const result = await runAdapterTurn({
+          ...scenario,
+          sessionId: `cardinality-${scenario.name.replaceAll(" ", "-")}`,
+        });
+        const invocations = result.events.filter(({ kind }) => kind === "classifier_invocation");
+        const legacyAttempts = result.events.filter(({ kind }) => kind === "classifier_attempt");
+        assert.equal(invocations.length, 1, "one router request must emit exactly one request metric");
+        assert.equal(invocations[0].data.invocationCount, 1);
+        assert.equal(legacyAttempts.length, scenario.legacyAttempts);
+        assert.equal(
+          invocations[0].data.attemptCount,
+          scenario.name === "terminal failure" ? 0 : scenario.name === "escalated classification" ? 2 : 1,
+        );
+      });
+    }
+  });
+
   it("registers the routing lifecycle and status command without starting background work", () => {
     const hooks = new Map();
     const commands = new Map();

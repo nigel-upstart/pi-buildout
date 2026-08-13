@@ -61,11 +61,11 @@ export type BoundaryGateResult =
   | { action: "classify_continuity"; reason: string; lease: TaskLease };
 
 const CONTINUATION_PATTERN =
-  /^(?:yes|yep|sure|ok(?:ay)?|continue|go on|go ahead|proceed|do it|please do|try again|run (?:it|them|the tests)|keep going|sounds good|yes please)(?:[.!])?$/i;
+  /^(?:yes|sure|ok|go ahead|proceed|continue|keep going|sounds good|please do|do it|go on|yes please)(?:[.!])?$/i;
 const DISCONTINUITY_PATTERN =
   /^(?:new task|separate task|unrelated|switch(?:ing)? topics?|instead[, :] |forget (?:that|the previous)|now (?:review|plan|implement|research)\b)/i;
 const OBVIOUS_SAME_TASK_OPERATION_PATTERN =
-  /^(?:please[, ]+)?(?:implement it|fix (?:it|that)|commit whatever makes sense(?: to commit)?|(?:run|re-?run) (?:(?:the )?(?:(?:focused|full) )?(?:tests?|checks?)|npm run check)|(?:fix|address) (?:the )?(?:(?:remaining|actionable) )?(?:test failures?|check failures?|review findings?|coderabbit findings?))(?:[.!])?$/i;
+  /^(?:please[, ]+)?(?:implement it|fix (?:it|that)|try again|(?:run|re-?run) (?:(?:it|them)|(?:the )?(?:(?:focused|full) )?(?:tests?|checks?)|npm run check)|commit whatever makes sense(?: to commit)?|(?:fix|address) (?:the )?(?:(?:remaining|actionable) )?(?:test failures?|check failures?|review findings?|coderabbit findings?))(?:[.!])?$/i;
 
 function hasCompatibleMutatingImplementationLease(lease: TaskLease): boolean {
   const mutationCapable =

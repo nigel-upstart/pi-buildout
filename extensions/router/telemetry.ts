@@ -292,6 +292,17 @@ function safelyAnnotate(operation: () => unknown): void {
   }
 }
 
+/** Adds bounded attributes to an optional router span without making the exporter a routing dependency. */
+export function annotateRouterSpan(
+  span: Pick<ClassifierSpanLike, "setAttribute"> | undefined,
+  attributes: Record<string, string | number | boolean>,
+): void {
+  if (!span) return;
+  for (const [name, value] of Object.entries(attributes)) {
+    safelyAnnotate(() => span.setAttribute(name, value));
+  }
+}
+
 /** Adds bounded invocation metrics and attempt events to an already-optional router classifier span. */
 export function annotateClassifierSpan(
   span: ClassifierSpanLike | undefined,
@@ -316,9 +327,7 @@ export function annotateClassifierSpan(
     attributes[`router.classifier.${stage.stage}.completed_attempt_count`] = stage.completedAttemptCount;
     attributes[`router.classifier.${stage.stage}.valid_attempt_count`] = stage.validAttemptCount;
   }
-  for (const [name, value] of Object.entries(attributes)) {
-    safelyAnnotate(() => span.setAttribute(name, value));
-  }
+  annotateRouterSpan(span, attributes);
   for (const attempt of summary.attempts) {
     safelyAnnotate(() =>
       span.addEvent("router.classifier.attempt", {
@@ -730,15 +739,20 @@ export async function withRouterSpan<T>(
   attributes: Record<string, string | number | boolean>,
   operation: (span: SpanLike | undefined) => Promise<T> | T,
 ): Promise<T> {
-  const runtime = symbolMap<RuntimeRegistryValue>(RUNTIME_REGISTRY)?.get(sessionId);
-  const span = runtime?.tracer.startSpan(name, { attributes }, parentContext(sessionId));
+  let span: SpanLike | undefined;
+  try {
+    const runtime = symbolMap<RuntimeRegistryValue>(RUNTIME_REGISTRY)?.get(sessionId);
+    span = runtime?.tracer.startSpan(name, { attributes }, parentContext(sessionId));
+  } catch {
+    // Span/context acquisition is optional and must not prevent the routed operation.
+  }
   try {
     return await operation(span);
   } catch (error) {
-    span?.recordException(error);
-    span?.setStatus({ code: 2, message: error instanceof Error ? error.message : String(error) });
+    safelyAnnotate(() => span?.recordException(error));
+    safelyAnnotate(() => span?.setStatus({ code: 2, message: error instanceof Error ? error.message : String(error) }));
     throw error;
   } finally {
-    span?.end();
+    safelyAnnotate(() => span?.end());
   }
 }

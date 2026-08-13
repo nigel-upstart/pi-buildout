@@ -99,9 +99,22 @@ describe("task boundary gate", () => {
     }
   });
 
-  it("continues tightly anchored unambiguous confirmations", () => {
+  it("continues only the anchored pure-acknowledgement allowlist unconditionally", () => {
     const active = lease();
-    for (const prompt of ["Sure", "Go ahead.", "Yes please!", "Please do"]) {
+    for (const prompt of [
+      "Yes",
+      "Sure",
+      "Ok",
+      "Go ahead.",
+      "Proceed",
+      "Continue",
+      "Keep going",
+      "Sounds good",
+      "Please do",
+      "Do it",
+      "Go on",
+      "Yes please!",
+    ]) {
       const result = deterministicBoundaryGate(
         { mode: "active", active, manualOverride: false },
         {
@@ -130,6 +143,10 @@ describe("task boundary gate", () => {
       "Fix CodeRabbit findings.",
       "Implement it.",
       "Fix it.",
+      "Run the tests.",
+      "Run it.",
+      "Run them.",
+      "Try again.",
     ];
 
     for (const prompt of prompts) {
@@ -199,6 +216,10 @@ describe("task boundary gate", () => {
       "Commit whatever makes sense to commit.",
       "Implement it.",
       "Fix it.",
+      "Run the tests.",
+      "Run it.",
+      "Run them.",
+      "Try again.",
     ];
 
     for (const active of incompatibleLeases) {

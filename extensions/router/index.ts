@@ -77,6 +77,7 @@ import {
   aggregateAttemptTokenCounts,
   aggregateRouteSamples,
   annotateClassifierSpan,
+  annotateRouterSpan,
   attemptOutcomesFromTelemetry,
   completeClassifierInvocation,
   endpointTelemetryFields,
@@ -203,12 +204,13 @@ async function classifyWithTimeout(
   prompt: string,
   taskSynopsis: SessionSynopsis,
   purpose: ClassifierInvocationPurpose,
+  classify: typeof classifyTaskWithPi,
 ) {
   return runClassifierInvocation<ClassificationResult>({
     purpose,
     timeoutMs: CLASSIFICATION_TIMEOUT_MS,
     invoke: (signal, onAttempt) =>
-      classifyTaskWithPi({
+      classify({
         ctx,
         registry,
         prompt,
@@ -311,6 +313,8 @@ function previousChoice(
 
 type RouterExtensionOptions = {
   telemetry?: Pick<JsonlTelemetryStore, "append" | "read">;
+  /** Test seam for deterministic adapter failure and telemetry-contract regressions. */
+  classifyTask?: typeof classifyTaskWithPi;
 };
 
 export default function routerExtension(pi: ExtensionAPI, options: RouterExtensionOptions = {}): void {
@@ -325,6 +329,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     new JsonlTelemetryStore(
       process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
     );
+  const classifyTask = options.classifyTask ?? classifyTaskWithPi;
   let state: LeaseState = { mode: provisionalMode(), manualOverride: false };
   // The replacement session has a new branch, so carry only the enablement mode
   // across /clear. The task lease must still be discarded at the new-session
@@ -510,7 +515,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "router.classify_continuity",
       { "router.mode": state.mode },
       async (span) => {
-        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "continuity");
+        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "continuity", classifyTask);
         let continuity: ReturnType<typeof resolveContinuity> | undefined;
         let summary = invocation.summary;
         if (invocation.status === "completed") {
@@ -549,7 +554,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "router.classify",
       { "router.mode": state.mode },
       async (span) => {
-        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "fresh_task");
+        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "fresh_task", classifyTask);
         const summary =
           invocation.status === "completed"
             ? completeClassifierInvocation(invocation.summary, "classified", invocation.value.failedClosed)
@@ -1632,12 +1637,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
               contextBucket,
               promptFingerprint(event.prompt),
             );
-            span?.setAttribute("router.decision", result.decision.kind);
-            if (result.decision.kind !== "unroutable") {
-              span?.setAttribute("router.provider", result.decision.primary.provider);
-              span?.setAttribute("router.model", result.decision.primary.modelId);
-              span?.setAttribute("router.profile", result.decision.primary.profileId);
-            }
+            annotateRouterSpan(span, {
+              "router.decision": result.decision.kind,
+              ...(result.decision.kind === "unroutable"
+                ? {}
+                : {
+                    "router.provider": result.decision.primary.provider,
+                    "router.model": result.decision.primary.modelId,
+                    "router.profile": result.decision.primary.profileId,
+                  }),
+            });
             return result;
           },
         );

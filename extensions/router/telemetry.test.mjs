@@ -10,6 +10,7 @@ import {
   aggregateAttemptTokenCounts,
   aggregateRouteSamples,
   annotateClassifierSpan,
+  annotateRouterSpan,
   attemptOutcomesFromTelemetry,
   completeClassifierInvocation,
   endpointTelemetryFields,
@@ -515,6 +516,90 @@ describe("withRouterSpan", () => {
       delete globalThis[runtimeSymbol];
       delete globalThis[activeSymbol];
       delete globalThis[apiSymbol];
+    }
+  });
+
+  it("fault-isolates hostile span acquisition, attributes, events, and lifecycle methods", async () => {
+    const runtimeSymbol = Symbol.for("pi.telemetry-otel.runtimeRegistry.v1");
+    const calls = [];
+    try {
+      globalThis[runtimeSymbol] = new Map([
+        [
+          "start-throws",
+          {
+            tracer: {
+              startSpan: () => {
+                calls.push("startSpan");
+                throw new Error("hostile startSpan");
+              },
+            },
+          },
+        ],
+      ]);
+      assert.equal(
+        await withRouterSpan("start-throws", "router.route", {}, (span) => {
+          assert.equal(span, undefined);
+          return "routed after startSpan failure";
+        }),
+        "routed after startSpan failure",
+      );
+
+      const hostileSpan = {
+        setAttribute: () => {
+          calls.push("setAttribute");
+          throw new Error("hostile setAttribute");
+        },
+        addEvent: () => {
+          calls.push("addEvent");
+          throw new Error("hostile addEvent");
+        },
+        recordException: () => {
+          calls.push("recordException");
+          throw new Error("hostile recordException");
+        },
+        setStatus: () => {
+          calls.push("setStatus");
+          throw new Error("hostile setStatus");
+        },
+        end: () => {
+          calls.push("end");
+          throw new Error("hostile end");
+        },
+      };
+      globalThis[runtimeSymbol] = new Map([["methods-throw", { tracer: { startSpan: () => hostileSpan } }]]);
+      assert.equal(
+        await withRouterSpan("methods-throw", "router.route", {}, (span) => {
+          annotateRouterSpan(span, { "router.decision": "ordinary" });
+          annotateClassifierSpan(span, {
+            purpose: "fresh_task",
+            outcome: "success",
+            resolution: "classified",
+            wallLatencyMs: 1,
+            timedOut: false,
+            cancelled: false,
+            attemptCount: 1,
+            completedAttemptCount: 1,
+            validAttemptCount: 1,
+            stages: [{ stage: "primary", attemptCount: 1, completedAttemptCount: 1, validAttemptCount: 1 }],
+            attempts: [{ stage: "primary", try: 1, outcome: "valid" }],
+          });
+          return "routed after annotation failure";
+        }),
+        "routed after annotation failure",
+      );
+
+      const routerError = new Error("real router failure");
+      await assert.rejects(
+        withRouterSpan("methods-throw", "router.route", {}, () => {
+          throw routerError;
+        }),
+        (error) => error === routerError,
+      );
+      for (const method of ["startSpan", "setAttribute", "addEvent", "recordException", "setStatus", "end"]) {
+        assert.ok(calls.includes(method), `${method} was not exercised`);
+      }
+    } finally {
+      delete globalThis[runtimeSymbol];
     }
   });
 
