@@ -88,8 +88,10 @@ describe("canonical identity across the pinned registry", () => {
   it("resolves every scoped Bedrock endpoint to a vendor-free logical model ID", () => {
     // The scoped families are reachable only on amazon-bedrock. Each must reduce to an ID that no
     // longer carries its vendor path segment, except DeepSeek, whose catalog names omit the brand.
+    // Anchored at a segment boundary rather than at the start, so region-prefixed profiles such as
+    // `us.deepseek.r1-v1:0` are covered too.
     const scoped = Object.keys(MODELS["amazon-bedrock"]).filter((modelId) =>
-      /^(?:minimax|moonshot|moonshotai|nvidia|xai|zai|qwen)\./.test(modelId),
+      /(?:^|\.)(?:minimax|moonshot|moonshotai|nvidia|xai|zai|qwen)\./.test(modelId),
     );
     assert.ok(scoped.length > 0, "the pinned registry no longer exposes scoped Bedrock endpoints");
     for (const modelId of scoped) {
@@ -101,7 +103,9 @@ describe("canonical identity across the pinned registry", () => {
       );
       assert.notEqual(canonical, "", `${modelId} canonicalized to an empty ID`);
     }
-    for (const modelId of Object.keys(MODELS["amazon-bedrock"]).filter((id) => id.startsWith("deepseek."))) {
+    const deepseek = Object.keys(MODELS["amazon-bedrock"]).filter((modelId) => /(?:^|\.)deepseek\./.test(modelId));
+    assert.ok(deepseek.length > 0, "the pinned registry no longer exposes DeepSeek Bedrock endpoints");
+    for (const modelId of deepseek) {
       assert.match(
         canonicalModelId(modelId),
         /^deepseek-/,
