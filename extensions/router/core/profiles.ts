@@ -111,25 +111,6 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     includeExamples: false,
   },
   {
-    // Replaces the retired gpt-5.4/gpt-5.5 profile. Those models are disqualified as
-    // generation-superseded, so their profile was unreachable; this one covers the small-model rung that
-    // took over their cheap slot. Unmeasured and lowest-band, so it is as narrow as the gpt-oss profile.
-    id: "openai-gpt-5.4-mini-bounded-v1",
-    version: 1,
-    vendor: "openai",
-    modelIds: ["gpt-5.4-mini"],
-    archetypes: ["fast_classification", "exact_extraction"],
-    efforts: ["low", "medium"],
-    executionSurface: "pi-coding-agent",
-    guidelines: [
-      "Answer the bounded question or produce the requested structure directly, with no exploratory tool work.",
-      "When a schema is supplied, emit exactly that schema and nothing else.",
-    ],
-    outputContract: "Return only the requested classification or structured record.",
-    criticalConstraints: SHARED_CONSTRAINTS,
-    includeExamples: false,
-  },
-  {
     id: "anthropic-claude-fast-agent-v1",
     version: 1,
     vendor: "anthropic",

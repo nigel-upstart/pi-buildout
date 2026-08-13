@@ -109,7 +109,9 @@ describe("prompt profile eligibility is declared in canonical logical model IDs"
       );
       if (!resolvable) unroutable.push(`${endpoint.provider}/${endpoint.modelId}`);
     }
-    assert.equal(named.length, 52, "the registry fixture no longer describes the surveyed policy endpoint set");
+    // 49, not 52: cutting gpt-5.4-mini removed its three fixture spellings (openai, openai-codex and
+    // github-copilot) from the policy-named set.
+    assert.equal(named.length, 49, "the registry fixture no longer describes the surveyed policy endpoint set");
     assert.deepEqual(unroutable, [], "policy-named endpoints resolve no profile and would be excluded");
   });
 

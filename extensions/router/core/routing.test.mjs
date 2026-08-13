@@ -1154,76 +1154,29 @@ describe("balanced tier and scoped frugal candidate", () => {
     }
   });
 
-  it("uses the unmeasured small peer for read-only bounded work and nowhere else", () => {
-    // One-shot read-only work is the only place the peer's per-token discount is real.
-    const oneShot = { ...FEATURES, actionMode: "information_only", horizon: "one_response", expectedAgentTurns: 1 };
-    const classification = selectOrdinaryRoute(
-      "fast_classification",
-      withExtras(),
-      REQUIREMENTS,
+  it("never routes gpt-5.4-mini, which is present in the registry but no longer a candidate", () => {
+    // The rung was admitted purely on a per-token-price argument: roughly 0.75 of gpt-5.6-luna, with a
+    // 1.33-turn break-even. The pinned registry inverted that relationship, so the argument and the
+    // rung were both withdrawn. The endpoint is still in the fixture registry, which is exactly why
+    // this guard exists: being reachable must not make it routable.
+    const readOnlyOneShot = deriveRoutingContext(
+      { ...FEATURES, actionMode: "information_only", horizon: "one_response", expectedAgentTurns: 1 },
       [],
-      undefined,
-      undefined,
-      deriveRoutingContext(oneShot, []),
     );
-    const peer = [classification.primary, ...classification.fallbacks].find(
-      (choice) => choice.logicalModelId === "gpt-5.4-mini",
-    );
-    assert.ok(peer, "the small peer must be reachable for read-only classification");
-    assert.equal(peer.unmeasuredPeer, true);
-    assert.equal(peer.ability, 1);
-    // It peers with the measured-by-consensus Haiku rung rather than outranking it.
-    const order = [classification.primary, ...classification.fallbacks].map((choice) => choice.logicalModelId);
-    assert.ok(order.indexOf("claude-haiku-4-5") < order.indexOf("gpt-5.4-mini"));
-
-    // Reversible mutation is not enough: an unmeasured candidate is read-only or nothing, so the
-    // ability floor alone (which permits band 1 here) must not be what decides it.
-    const mutating = selectOrdinaryRoute(
-      "fast_classification",
-      withExtras(),
-      REQUIREMENTS,
-      [],
-      undefined,
-      undefined,
-      deriveRoutingContext({ ...oneShot, actionMode: "reversible_mutation" }, []),
-    );
-    assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "gpt-5.4-mini"));
-    assert.ok(
-      mutating.exclusions.some(
-        (exclusion) =>
-          exclusion.candidate.includes("gpt-5.4-mini") && /read-only consequence only/.test(exclusion.detail),
-      ),
-      "the exclusion must say why the peer was refused",
-    );
-  });
-
-  it("refuses the peer once the work can take turns, because the per-token discount does not survive them", () => {
-    // At roughly 0.75 of the per-token price it undercuts, break-even is about 1.33x the turns. Nothing
-    // measures this model's turn count, so anything that can iterate is outside its case.
-    for (const iterating of [
-      { horizon: "one_response", expectedAgentTurns: 6 },
-      { horizon: "single_pr", expectedAgentTurns: 1 },
-    ]) {
+    for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
       const decision = selectOrdinaryRoute(
-        "fast_classification",
+        archetype,
         withExtras(),
         REQUIREMENTS,
         [],
         undefined,
         undefined,
-        deriveRoutingContext({ ...FEATURES, actionMode: "information_only", ...iterating }, []),
+        readOnlyOneShot,
       );
       assert.equal(decision.kind, "ordinary");
-      assert.ok(
-        [decision.primary, ...decision.fallbacks].every((choice) => choice.logicalModelId !== "gpt-5.4-mini"),
-        `peer routed for ${JSON.stringify(iterating)}`,
-      );
-      assert.ok(
-        decision.exclusions.some(
-          (exclusion) => exclusion.candidate.includes("gpt-5.4-mini") && /one-shot work only/.test(exclusion.detail),
-        ),
-        "the exclusion must name the turn-budget reason",
-      );
+      for (const choice of [decision.primary, ...decision.fallbacks]) {
+        assert.notEqual(choice.logicalModelId, "gpt-5.4-mini", `${archetype} routed the withdrawn peer rung`);
+      }
     }
   });
 

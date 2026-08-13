@@ -85,8 +85,10 @@ to `claude-opus-5`, which is absent from the pinned registry entirely, and every
 
 A break-even token multiplier is incumbent effective $/MTok divided by scoped effective $/MTok. It answers how many
 times more tokens the scoped model may consume, at equal quality, before it costs the same. This is the same analytical
-device already used by [`core/policy.ts`](../../extensions/router/core/policy.ts) for the `gpt-5.4-mini` unmeasured-peer
-rung, whose turn break-even is `1.33x`.
+device that [`core/policy.ts`](../../extensions/router/core/policy.ts) applied to the `gpt-5.4-mini` unmeasured-peer
+rung, whose turn break-even was stated as `1.33x`. That rung was withdrawn on 2026-08-14: re-measured against the pinned
+registry its price relationship is inverted, so the break-even never favored it. The device is sound; that application
+of it rested on a stale rate.
 
 **Table basis:** Source: the preceding reference-mix endpoint-rate construction and configured provider weights.
 Construct: equal-quality token-consumption break-even against an Opus-list incumbent, with Bedrock compared at ×0.83 and

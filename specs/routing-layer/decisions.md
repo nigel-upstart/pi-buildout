@@ -435,25 +435,28 @@ every number below. Benchmark pass rates are pre-telemetry ordering priors and n
     it was a number no source backed. With it removed, every candidate must carry an evidence-derived band, from either
     a rollout row for that exact (model, effort) pair or the consensus-only table.
 
-23. **A cheap small model is admitted as an explicitly unmeasured peer, not as a measured rung.** The bounded
-    classification bucket already runs on `claude-haiku-4-5`, which itself has only a consensus figure and no agentic
-    rollout row, so cheap unmeasured capability is not new there. `gpt-5.4-mini` is admitted beside it because per-token
-    price is real and the live registry prices it at decision time — but the pack contains no row for any mini or nano
-    model, so how it compares to Haiku is genuinely unresolved and is recorded as such rather than assumed favorable.
-    The guardrails are structural instead of statistical: band 1 only, `fast_classification` and `exact_extraction`
-    only, never a primary, ordered behind the rung it peers with, and refused outright by `core/routing.ts` whenever
-    consequence is anything other than read-only — because the ability floor permits band 1 on reversible mutation, and
-    there is no measurement here to argue a mutation is safe. `gpt-5.4-nano` is deliberately not admitted: the same
-    argument would allow it, but a second unmeasured rung in one bucket buys no availability the first does not.
+23. **A cheap small model was admitted as an explicitly unmeasured peer, and the rung has since been withdrawn.**
+    `gpt-5.4-mini` was admitted beside `claude-haiku-4-5` in `fast_classification` and `exact_extraction` on a purely
+    per-token-price argument: no source measured it, so the case rested entirely on it running at roughly 0.75 of
+    `gpt-5.6-luna`'s price, with a 1 / 0.75 break-even of about 1.33 turns. The guardrails were structural rather than
+    statistical — band 1 only, never a primary, ordered behind the rung it peered with, and refused outside read-only
+    one-shot work.
 
-    The price argument is itself conditional on turn count, and is gated as such rather than assumed. `gpt-5.4-mini`
-    runs at roughly 0.75 of `gpt-5.6-luna`'s per-token price, so break-even is 1 / 0.75 ≈ 1.33 turns: a run taking a
-    third more turns than the model it undercuts has spent the whole discount, and beyond that it costs more. Since
-    nothing measures how many turns it takes, the discount may only be spent where there is almost no room for turn
-    inflation. `RoutingContext.singleShot` therefore requires both a `one_response` horizon and an expected turn budget
-    of at most 2, and the peer is excluded with a stated reason otherwise. Both signals are required rather than either:
-    a one-response horizon with a large turn estimate is still work that will iterate, and a small turn estimate on a
-    longer horizon is a guess about only the first leg.
+    Withdrawn 2026-08-14. Re-measured against the pinned `@earendil-works/pi-ai@0.84.1` registry, `gpt-5.4-mini` costs
+    3.71x `gpt-5.6-luna` on the direct route and 4.07x the Bedrock route, not 0.75x. The price relationship is inverted,
+    so the rung's only stated basis is false rather than merely weak: it would have to consume about a quarter fewer
+    tokens than the model it was supposed to undercut, and nothing measures it at all. It also supplied no route or
+    vendor diversity, since Luna already covers the same vendor on the same providers.
+
+    The whole `unmeasuredPeer` mechanism was removed with it — the flag, `UNMEASURED_PEERS`, `PEER_ARCHETYPES`, the
+    read-only and one-shot guards in `core/routing.ts`, the `singleShot` routing-context signal, and the bounded prompt
+    profile. It existed solely for this rung, so retaining it would have preserved a false rationale as unreachable and
+    untestable machinery. A future restriction for candidates backed only by single-attempt evidence is a separate
+    mechanism on a separate basis — five unmeasured cost-to-done terms, not a price discount — and is not this one
+    revived.
+
+    `gpt-5.4-nano` was never admitted, on the reasoning that a second unmeasured rung in one bucket buys no availability
+    the first does not. That reasoning is unaffected.
 
 24. **No scenario-scoped effort allowlist was added, because the declared candidate refs already are one.** The
     considered change was a per-model list of the only efforts a model may be routed at, for models the corpus measures
@@ -507,7 +510,8 @@ model, effort, capability, evidence, and fallback decisions are unchanged.
    contract discount and leaves deterministic tie-breaks authoritative. Scope Bedrock out when it must be excluded. None
    of these mitigations restores tier-first behavior because v6 has no dual routing mode.
 
-Open items deliberately not taken: no unsupported-vendor candidates (Kimi, Grok, GLM, Muse) were added, and per-language
-telemetry backfill for the unmeasured stacks remains the path to evidence for Kotlin, Ruby, and infrastructure work. The
-unresolved comparison between `gpt-5.4-mini` and `claude-haiku-4-5` is the clearest next evidence gap: both are routed
-on price alone, and a bounded classification eval would settle which belongs in front.
+Open items deliberately not taken: per-language telemetry backfill for the unmeasured stacks remains the path to
+evidence for Kotlin, Ruby, and infrastructure work. The `gpt-5.4-mini` versus `claude-haiku-4-5` comparison is no longer
+an open item: the peer rung was withdrawn on 2026-08-14 when its price basis proved inverted, so only Haiku remains and
+there is nothing left to order. A bounded classification eval is still the missing measurement for that bucket, because
+every remaining rung in it is priced rather than measured for classification.

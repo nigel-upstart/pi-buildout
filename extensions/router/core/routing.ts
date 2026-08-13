@@ -107,8 +107,6 @@ export type RouteChoice = {
   escalationOnly?: boolean;
   /** Authorized only where step count rather than token cost is the binding constraint. */
   scopedFrugal?: boolean;
-  /** No source measures this candidate; authorized for read-only consequence only. */
-  unmeasuredPeer?: boolean;
   score?: number;
   scoreComponents?: RouteScoreComponents;
   evidenceScore?: number;
@@ -241,11 +239,6 @@ export type RoutingContext = {
   consequence: ConsequenceTier;
   /** Multiplier on the regression term, lowered when the task runs the tests that would catch it. */
   verificationDiscount: number;
-  /**
-   * One-shot or near-one-shot work: a single response with a turn budget small enough that a cheaper
-   * per-token model cannot lose its advantage by taking more turns. Gates the unmeasured peer rung.
-   */
-  singleShot: boolean;
 };
 
 /** Review produces findings rather than state changes, so it is evaluated as read-only work. */
@@ -255,8 +248,6 @@ const REVIEW_CONTEXT: RoutingContext = {
   foreground: false,
   consequence: "read_only",
   verificationDiscount: 1,
-  // Reading a diff and forming findings is not one-shot work.
-  singleShot: false,
 };
 
 const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
@@ -266,20 +257,7 @@ const DEFAULT_ROUTING_CONTEXT: RoutingContext = {
   // Conservative default: assume a wrong answer changes reversible state and that nothing verifies it.
   consequence: "reversible",
   verificationDiscount: 1,
-  singleShot: false,
 };
-
-/**
- * Turn budget under which a cheaper-per-token model is still cheaper in practice.
- *
- * The peer rung is admitted on per-token price: `gpt-5.4-mini` runs at roughly 0.75 of
- * `gpt-5.6-luna`'s per-token price on the reference catalog. That advantage is entirely conditional on
- * turn count, because the break-even multiplier is 1 / 0.75 ≈ 1.33 — a run that takes a third more
- * turns than the model it undercuts costs the same, and anything beyond that costs more. Since no
- * source measures how many turns this model actually takes, the only safe place to spend the discount
- * is work where there is almost no room for turn inflation: a single response, plus one turn of slack.
- */
-const SINGLE_SHOT_TURN_BUDGET = 2;
 
 /**
  * An archetype that always changes repository state cannot be softened to read-only by a classifier
@@ -313,9 +291,6 @@ export function deriveRoutingContext(
     foreground: features.interactivity === "developer_loop",
     consequence: consequenceOf(features),
     verificationDiscount: verificationDiscountOf(features),
-    // Both signals are required. A one-response horizon with a large turn estimate is still a task that
-    // will iterate, and a small turn estimate on a longer horizon is a guess about only the first leg.
-    singleShot: features.horizon === "one_response" && features.expectedAgentTurns <= SINGLE_SHOT_TURN_BUDGET,
   };
 }
 
@@ -455,34 +430,6 @@ function evaluateEndpoint(
     });
     return undefined;
   }
-  // A candidate no source measures is admitted only as a lowest-band price peer, and only where both
-  // of its justifications hold.
-  //
-  // Consequence: the ability floor alone is not enough, because it bars irreversible work but still
-  // permits reversible mutation, and there is no measurement here to argue that a mutation is safe.
-  //
-  // Turn budget: the rung exists for per-token price, and that saving is erased by roughly a third more
-  // turns (see SINGLE_SHOT_TURN_BUDGET). Outside one-shot work the discount is notional, so it is
-  // refused rather than left to a cost model that cannot price turns it has never measured.
-  if (ref.unmeasuredPeer === true) {
-    if (effectiveConsequence(archetype, context) !== "read_only") {
-      exclusions.push({
-        candidate: key,
-        code: "scope_unmet",
-        detail: "unmeasured peer candidate is authorized for read-only consequence only",
-      });
-      return undefined;
-    }
-    if (!context.singleShot) {
-      exclusions.push({
-        candidate: key,
-        code: "scope_unmet",
-        detail:
-          "unmeasured peer candidate is authorized for one-shot work only; its per-token discount does not survive extra turns",
-      });
-      return undefined;
-    }
-  }
   const authorization = authorizeEffort(ref.logicalModelId, ref.effort, {
     allowSuperSaturation: policy.allowSuperSaturation,
     consequence: effectiveConsequence(archetype, context),
@@ -582,7 +529,6 @@ function evaluateEndpoint(
         }),
     ...(ref.escalationOnly ? { escalationOnly: true } : {}),
     ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
-    ...(ref.unmeasuredPeer ? { unmeasuredPeer: true } : {}),
     rankReason: "bootstrap",
   };
 }

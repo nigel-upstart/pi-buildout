@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BOOTSTRAP_ROUTE_POLICIES, PEER_ARCHETYPES, reviewerRefs } from "./policy.ts";
+import { BOOTSTRAP_ROUTE_POLICIES, reviewerRefs } from "./policy.ts";
 import { authorizeEffort, disqualificationReason } from "./evidence.ts";
 import { MODEL_VENDORS } from "./profiles.ts";
 
@@ -28,9 +28,13 @@ describe("policy ability table invariants", () => {
   it("keeps every archetype routable for irreversible consequence", () => {
     for (const [archetype, policy] of Object.entries(BOOTSTRAP_ROUTE_POLICIES)) {
       const firstAttemptRefs = [...policy.primary, ...policy.fallback].filter(
-        // An escalation-only candidate cannot serve a first attempt, and an unmeasured peer is
-        // confined to read-only consequence, so neither can rescue an otherwise unroutable ladder.
-        (ref) => ref.escalationOnly !== true && ref.unmeasuredPeer !== true,
+        // An escalation-only candidate cannot serve a first attempt, so it cannot rescue an otherwise
+        // unroutable ladder.
+        //
+        // Any future flag that confines a candidate to read-only consequence must be excluded here too,
+        // or this test will certify a ladder that routing actually refuses. The previous such flag,
+        // unmeasuredPeer, was removed with its only member.
+        (ref) => ref.escalationOnly !== true,
       );
       const authorized = firstAttemptRefs.filter(
         (ref) =>
@@ -51,7 +55,7 @@ describe("policy ability table invariants", () => {
   it("keeps every archetype routable for reversible consequence", () => {
     for (const [archetype, policy] of Object.entries(BOOTSTRAP_ROUTE_POLICIES)) {
       const authorized = [...policy.primary, ...policy.fallback]
-        .filter((ref) => ref.escalationOnly !== true && ref.unmeasuredPeer !== true)
+        .filter((ref) => ref.escalationOnly !== true)
         .filter(
           (ref) =>
             authorizeEffort(ref.logicalModelId, ref.effort, {
@@ -73,19 +77,6 @@ describe("policy ability table invariants", () => {
         `${key} maps to conflicting abilities ${String(known)} and ${String(ref.ability)}`,
       );
       seen.set(key, ref.ability);
-    }
-  });
-
-  it("confines unmeasured peers to the bounded read-only ladders at band 1", () => {
-    const allowed = new Set(PEER_ARCHETYPES);
-    for (const [archetype, policy] of Object.entries(BOOTSTRAP_ROUTE_POLICIES)) {
-      for (const ref of [...policy.primary, ...policy.fallback]) {
-        if (ref.unmeasuredPeer !== true) continue;
-        assert.ok(allowed.has(archetype), `${ref.logicalModelId} is an unmeasured peer in ${archetype}`);
-        assert.equal(ref.ability, 1, `${ref.logicalModelId} must stay in the lowest band`);
-        // A peer is an availability and price alternative, never the declared first attempt.
-        assert.ok(!policy.primary.includes(ref), `${ref.logicalModelId} must not be the primary of ${archetype}`);
-      }
     }
   });
 

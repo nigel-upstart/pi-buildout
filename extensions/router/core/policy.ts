@@ -37,11 +37,6 @@ export type CandidateRef = {
    * a lower peak context.
    */
   scopedFrugal?: boolean;
-  /**
-   * No source measures this candidate. Admitted only as a lowest-band price peer of an equally
-   * unmeasured rung, and only for read-only consequence; see `UNMEASURED_PEERS`.
-   */
-  unmeasuredPeer?: boolean;
   allowAlias: boolean;
   restricted: boolean;
 };
@@ -54,7 +49,6 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "gpt-5.6-luna": "openai",
   "gpt-5.6-terra": "openai",
   "gpt-5.6-sol": "openai",
-  "gpt-5.4-mini": "openai",
   "gpt-oss-120b": "openai",
   "claude-opus-5": "anthropic",
   "claude-opus-4-6": "anthropic",
@@ -67,58 +61,19 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
 };
 
 /**
- * Candidates no source in the evidence pack measures at all, admitted only as a lowest-band peer of
- * an already-admitted lowest-band model, and only in the bounded read-only ladders. See
- * specs/routing-layer/model-evidence-2026-08-11.md for the pack's generated tables and source limits.
- *
- * This is deliberately not the same mechanism as an evidence band, and it is not a quality claim.
- * `claude-haiku-4-5` is itself admitted from a consensus figure with no agentic rollout row, so the
- * bounded classification bucket already runs on a model the corpus does not measure agentically. A
- * cheaper small model is a legitimate peer of that rung on price, which the live registry prices at
- * decision time, but nothing here asserts it matches it on quality: the pack contains no row for any
- * mini or nano model, so the comparison against Haiku is genuinely unresolved rather than favorable.
- *
- * The whole case for a peer is per-token price, and that case is conditional. `gpt-5.4-mini` runs at
- * roughly 0.75 of `gpt-5.6-luna`'s per-token price, so the break-even point is 1 / 0.75 ≈ 1.33 turns:
- * a model that needs a third more turns than the one it undercuts has already spent the discount, and
- * nothing measures how many turns it takes. A peer therefore belongs only on one-shot or near-one-shot
- * reasoning, never on anything that iterates.
- *
- * The guardrails are therefore structural, not statistical:
- *  - band 1 only, so consequence gating already bars irreversible work;
- *  - `unmeasuredPeer`, which core/routing.ts refuses outside read-only consequence, so a peer can
- *    never touch even reversible mutation;
- *  - the same flag also refuses it outside a one-shot turn budget, which is where the price argument
- *    holds;
- *  - allowed only in `PEER_ARCHETYPES`, enforced by a policy invariant test;
- *  - ordered after the measured rung it peers with, so it is reached on price or availability only.
- *
- * gpt-5.4-nano is intentionally absent: the same argument would admit it, but two unmeasured rungs in
- * one bucket buys no availability that the first does not already provide.
- */
-const UNMEASURED_PEERS: Readonly<Record<string, { peerOf: string; basis: string }>> = {
-  "gpt-5.4-mini": {
-    peerOf: "claude-haiku-4-5",
-    basis:
-      "no DeepSWE, CursorBench, or consensus row exists for any mini or nano model in the 2026-07-25 pack; admitted as a price peer of the equally unmeasured claude-haiku-4-5 rung at roughly 0.75 of gpt-5.6-luna's per-token price, restricted to read-only one-shot work because a 1.33x turn count erases that discount",
-  },
-};
-
-/** Archetypes an unmeasured peer may appear in: bounded, read-only, lowest-band work. */
-export const PEER_ARCHETYPES: readonly Archetype[] = ["fast_classification", "exact_extraction"];
-
-/**
  * Every candidate this policy can name must carry an evidence-derived ability band, either from a
  * DeepSWE rollout row for that exact (model, effort) pair or from the consensus-only table in
  * core/evidence.ts. Hand-declared bands are deliberately not supported: the one entry that used to
  * exist (`gpt-5.4@medium`) was never measured at that effort, and a policy-local number that no
- * source backs is indistinguishable from a guess. Unmeasured peers are the single exception, and they
- * are pinned to band 1 rather than given a number of their own.
+ * source backs is indistinguishable from a guess.
+ *
+ * There is no longer an exception to this rule. `gpt-5.4-mini` was admitted as an "unmeasured peer"
+ * pinned to band 1 on a purely per-token-price argument; that argument was withdrawn when the pinned
+ * registry showed the price relationship inverted, and the rung was removed with it.
  */
 function abilityFor(modelId: string, effort: EffortLevel): AbilityTier {
   const evidenceTier = evidenceAbility(modelId, effort);
   if (evidenceTier !== undefined) return evidenceTier;
-  if (UNMEASURED_PEERS[modelId]) return 1;
   throw new Error(`no evidence band exists for ${modelId}@${effort}`);
 }
 
@@ -126,14 +81,12 @@ function abilityFor(modelId: string, effort: EffortLevel): AbilityTier {
 function candidates(logicalModelId: string, effort: EffortLevel): CandidateRef[] {
   const vendor = MODEL_VENDOR[logicalModelId];
   if (!vendor) throw new Error(`no vendor is declared for ${logicalModelId}`);
-  const peer = UNMEASURED_PEERS[logicalModelId];
   return [
     {
       logicalModelId,
       vendor,
       effort,
       ability: abilityFor(logicalModelId, effort),
-      ...(peer ? { unmeasuredPeer: true } : {}),
       allowAlias: false,
       restricted: false,
     },
@@ -152,7 +105,6 @@ const SOL_MEDIUM = candidates("gpt-5.6-sol", "medium");
 const SOL_HIGH = candidates("gpt-5.6-sol", "high");
 const SOL_MAX = candidates("gpt-5.6-sol", "max");
 const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
-const MINI_LOW = candidates("gpt-5.4-mini", "low");
 const OPUS_LOW = candidates("claude-opus-5", "low");
 const OPUS_MEDIUM = candidates("claude-opus-5", "medium");
 const OPUS_HIGH = candidates("claude-opus-5", "high");
@@ -223,11 +175,6 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     // The cheap band-1 tiers serve ordinary classification. The two band-2+ entries exist so a
     // classification task carrying critical risk or an irreversible action mode is still routable.
     //
-    // gpt-5.4-mini is the unmeasured price peer of the claude-haiku-4-5 rung and sits directly behind
-    // it; both are lowest-band entries, and the live registry decides which is actually cheaper on the
-    // machine in hand. The peer is additionally confined to read-only one-shot work, because its only
-    // claim is a per-token discount that a third more turns would spend.
-    //
     // gpt-oss-120b at high effort precedes gpt-5.6-terra at medium: this archetype is not
     // evidence-ranked, so the declared order is the executed order, and on the only comparable
     // measurement the two share, gpt-oss leads (consensus performance_best 36.5 against terra@medium's
@@ -235,7 +182,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     // not rescue the comparison either: 35.1% pass with a 14.7% regression-break rate, the worst of
     // any tier in this ladder. It stays in the ladder only as the availability backup for gpt-oss,
     // which is reachable on a single Amazon Bedrock route and is therefore absent on most machines.
-    fallback: [...HAIKU_LOW, ...MINI_LOW, ...GPT_OSS_HIGH, ...TERRA_MEDIUM, ...SOL_MEDIUM, ...OPUS_MEDIUM],
+    fallback: [...HAIKU_LOW, ...GPT_OSS_HIGH, ...TERRA_MEDIUM, ...SOL_MEDIUM, ...OPUS_MEDIUM],
     qualityFloor: 0.96,
     deterministicPassFloor: 0.96,
     allowSuperSaturation: false,
@@ -245,7 +192,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   exact_extraction: {
     archetype: "exact_extraction",
     primary: TERRA_MEDIUM,
-    fallback: [...HAIKU_LOW, ...MINI_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
+    fallback: [...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
     qualityFloor: 0.98,
     deterministicPassFloor: 0.98,
     allowSuperSaturation: false,
