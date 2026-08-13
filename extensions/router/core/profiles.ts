@@ -3,6 +3,19 @@ import { canonicalModelId } from "./scope.ts";
 
 export const EFFORT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+/**
+ * Vendors the router supports. The set is deliberately open-ended: nothing in the routing or review
+ * machinery may assume how many entries it has.
+ *
+ * That constraint is not hypothetical. Review independence used to be implemented as "filter a
+ * hardcoded triple, then require exactly two survivors", which returns unroutable the moment a
+ * builder belongs to a vendor outside the triple. Reviewer tiers and secondary-classifier tiers were
+ * additionally declared as total records over this union, so adding a vendor was a compile-time
+ * obligation to invent tier data for it.
+ *
+ * Adding a vendor here is therefore safe on its own, and grants nothing: a vendor with no prompt
+ * profile and no policy candidate remains unroutable, which is the intended default.
+ */
 export const MODEL_VENDORS = ["openai", "anthropic", "google"] as const;
 export type ModelVendor = (typeof MODEL_VENDORS)[number];
 

@@ -399,6 +399,11 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
 /**
  * Reviewer ladders, ordered by evidence-derived ability.
  *
+ * Declared as a partial map rather than a total record over ModelVendor, so a newly supported vendor
+ * does not oblige anyone to invent reviewer tiers for it. A vendor absent here simply contributes no
+ * reviewer, which `reviewerRefs` reports as an empty list and `selectReviewRoute` handles by looking
+ * to the remaining vendors.
+ *
  * Claude Sonnet 5 is absent: at high effort it measures in the lowest ability band (48.2% pass, 138
  * median steps, p90 peak context 286,022), so it can no longer serve as a mid-tier reviewer.
  *
@@ -409,11 +414,16 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
  * its only eligible configuration; a builder above that band produces a recorded ceiling mismatch
  * rather than a silent downgrade.
  */
-const REVIEWER_TIERS: Record<ModelVendor, readonly (readonly CandidateRef[])[]> = {
+const REVIEWER_TIERS: Partial<Record<ModelVendor, readonly (readonly CandidateRef[])[]>> = {
   openai: [SOL_MEDIUM, SOL_HIGH, SOL_MAX],
   anthropic: [OPUS_LOW, OPUS_MEDIUM, OPUS_HIGH, FABLE_XHIGH],
   google: [GEMINI_HIGH],
 };
+
+/** Vendors that actually declare a reviewer ladder, in MODEL_VENDORS order. */
+export function reviewerVendors(): readonly ModelVendor[] {
+  return MODEL_VENDORS.filter((vendor) => (REVIEWER_TIERS[vendor]?.length ?? 0) > 0);
+}
 
 /**
  * Authorized hard-task escalation choice. Used only after a failed attempt on ambiguous or complex
@@ -431,7 +441,7 @@ export const HARD_TASK_ESCALATION_REFS: readonly CandidateRef[] = LUNA_MAX.map((
 // pi-state.ts.
 const ALL_CANDIDATE_REFS: readonly CandidateRef[] = [
   ...Object.values(BOOTSTRAP_ROUTE_POLICIES).flatMap((policy) => [...policy.primary, ...policy.fallback]),
-  ...MODEL_VENDORS.flatMap((vendor) => REVIEWER_TIERS[vendor].flat()),
+  ...MODEL_VENDORS.flatMap((vendor) => (REVIEWER_TIERS[vendor] ?? []).flat()),
   ...HARD_TASK_ESCALATION_REFS,
 ];
 
@@ -450,6 +460,9 @@ export function policyAbility(modelId: string, effort: EffortLevel): AbilityTier
 
 export function reviewerRefs(vendor: ModelVendor, minimumAbility: number): readonly CandidateRef[] {
   const tiers = REVIEWER_TIERS[vendor];
+  // A vendor with no declared ladder contributes no reviewer rather than throwing, so the review
+  // path stays defined for every member of an arbitrarily sized vendor set.
+  if (!tiers || tiers.length === 0) return [];
   const eligibleTiers = tiers.filter((tier) => (tier[0]?.ability ?? 0) >= minimumAbility);
   return eligibleTiers.length > 0 ? eligibleTiers.flat() : [...(tiers.at(-1) ?? [])];
 }

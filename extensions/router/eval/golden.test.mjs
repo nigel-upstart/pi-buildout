@@ -117,7 +117,7 @@ describe("routing golden corpus", () => {
               deriveRoutingContext(features, []),
             );
       assert.notEqual(decision.kind, "unroutable", decision.reason);
-      const fallbacks = decision.kind === "review" ? [decision.fallback] : decision.fallbacks;
+      const fallbacks = decision.fallbacks;
       if (fixture.expected.primaryModel) assert.equal(decision.primary.modelId, fixture.expected.primaryModel);
       if (fixture.expected.primaryEffort) assert.equal(decision.primary.effort, fixture.expected.primaryEffort);
       if (fixture.expected.fallbackModel) {

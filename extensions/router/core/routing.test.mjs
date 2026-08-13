@@ -518,7 +518,7 @@ describe("ordinary route selection", () => {
     const builder = models.find((candidate) => candidate.modelId === "claude-opus-5");
     const review = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
     assert.equal(review.kind, "review");
-    const openaiReviewer = [review.primary, review.fallback].find((choice) => choice.vendor === "openai");
+    const openaiReviewer = [review.primary, ...review.fallbacks].find((choice) => choice.vendor === "openai");
     assert.equal(openaiReviewer.provider, "openai");
     assert.equal(openaiReviewer.endpointEffectiveCost, ordinary.primary.endpointEffectiveCost);
   });
@@ -843,8 +843,11 @@ describe("review route selection", () => {
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
-    assert.deepEqual(new Set([decision.primary.vendor, decision.fallback.vendor]), new Set(["anthropic", "google"]));
-    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
+    assert.deepEqual(
+      new Set([decision.primary, ...decision.fallbacks].map((choice) => choice.vendor)),
+      new Set(["anthropic", "google"]),
+    );
+    assert.ok([decision.primary, ...decision.fallbacks].every((choice) => choice.vendor !== builder.vendor));
   });
 
   it("tries a stronger reviewer tier when the closest at-or-above model is unavailable", () => {
@@ -856,7 +859,7 @@ describe("review route selection", () => {
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-sol");
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
     assert.equal(decision.kind, "review");
-    const anthropic = [decision.primary, decision.fallback].find((choice) => choice.vendor === "anthropic");
+    const anthropic = [decision.primary, ...decision.fallbacks].find((choice) => choice.vendor === "anthropic");
     assert.equal(anthropic.modelId, "claude-fable-5");
   });
 
@@ -871,7 +874,65 @@ describe("review route selection", () => {
       2,
     );
     assert.equal(decision.kind, "review");
-    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
+    assert.ok([decision.primary, ...decision.fallbacks].every((choice) => choice.vendor !== builder.vendor));
+  });
+
+  // The review rule is "every vendor other than the builder's, and at least two must be eligible".
+  // It used to be "filter a hardcoded triple, then require exactly two survivors", which returns
+  // unroutable for a builder outside that triple. These four tests pin the rule that replaced it.
+  it("routes a builder from a vendor outside the historical triple", () => {
+    // A vendor the reviewer ladders know nothing about. Under the old exactly-two rule this yielded
+    // three candidate vendors and returned unroutable, silently disabling tracked review.
+    const models = registry();
+    const builder = { ...models.find((candidate) => candidate.modelId === "claude-opus-5"), vendor: "moonshot" };
+    const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
+    assert.equal(decision.kind, "review", "a builder outside the reviewer vendor set must still be reviewable");
+    const reviewers = [decision.primary, ...decision.fallbacks];
+    assert.ok(reviewers.length >= 2, "independence still requires at least two reviewers");
+    assert.ok(
+      reviewers.every((choice) => choice.vendor !== builder.vendor),
+      "no reviewer may share the builder's vendor",
+    );
+    // All three ladder vendors are non-builder here, so the chain is longer than the old fixed pair.
+    assert.equal(new Set(reviewers.map((choice) => choice.vendor)).size, reviewers.length);
+  });
+
+  it("keeps the chain sequential and ordered by closeness to the builder band", () => {
+    const models = registry();
+    const builder = { ...models.find((candidate) => candidate.modelId === "claude-opus-5"), vendor: "moonshot" };
+    const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
+    assert.equal(decision.kind, "review");
+    const distances = [decision.primary, ...decision.fallbacks].map((choice) => Math.abs(choice.ability - 3));
+    assert.deepEqual(
+      distances,
+      [...distances].sort((left, right) => left - right),
+      "reviewers must stay ordered by distance from the builder ability band",
+    );
+  });
+
+  it("fails closed below the independence floor rather than accepting one reviewer", () => {
+    // Only Anthropic can supply a reviewer, so the floor of two is unmet.
+    const models = registry().map((candidate) =>
+      candidate.vendor === "openai" || candidate.vendor === "google" ? { ...candidate, available: false } : candidate,
+    );
+    const builder = { ...models.find((candidate) => candidate.modelId === "claude-opus-5"), vendor: "moonshot" };
+    const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
+    assert.equal(decision.kind, "unroutable", "one independent reviewer must not satisfy tracked review");
+    assert.match(decision.reason, /at least 2 eligible non-builder vendors/);
+  });
+
+  it("records a ceiling mismatch per vendor without shortening the chain", () => {
+    const models = registry();
+    const builder = { ...models.find((candidate) => candidate.modelId === "claude-opus-5"), vendor: "moonshot" };
+    const decision = selectReviewRoute(models, REQUIREMENTS, builder, "max", 4);
+    assert.equal(decision.kind, "review");
+    // A vendor whose best eligible reviewer sits below the builder band is reported, not dropped.
+    for (const vendor of decision.ceilingMismatchVendors) {
+      assert.ok(
+        [decision.primary, ...decision.fallbacks].some((choice) => choice.vendor === vendor),
+        `${vendor} was reported as a ceiling mismatch but contributed no reviewer`,
+      );
+    }
   });
 });
 
@@ -1296,7 +1357,7 @@ describe("consequence gating invariants", () => {
     const builder = models.find((candidate) => candidate.modelId === "gpt-5.6-terra");
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "medium", 2);
     assert.equal(decision.kind, "review");
-    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
+    assert.ok([decision.primary, ...decision.fallbacks].every((choice) => choice.vendor !== builder.vendor));
   });
 });
 
@@ -1455,7 +1516,7 @@ describe("scope and health drive the candidate pool", () => {
     const builder = olderGemini.find((candidate) => candidate.modelId === "gpt-5.6-sol");
     const decision = selectReviewRoute(olderGemini, REQUIREMENTS, builder, "high", 3);
     assert.equal(decision.kind, "review");
-    const vendors = new Set([decision.primary.vendor, decision.fallback.vendor]);
+    const vendors = new Set([decision.primary, ...decision.fallbacks].map((choice) => choice.vendor));
     assert.deepEqual(vendors, new Set(["anthropic", "google"]));
   });
 

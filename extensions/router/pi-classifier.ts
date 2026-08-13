@@ -40,11 +40,25 @@ const PRIMARY_CLASSIFIER_TIERS = ["gpt-5.6-luna", "claude-haiku-4-5"] as const;
 // The key is the primary tier's canonical vendor; each logical secondary tier deliberately belongs
 // to a different vendor for independent reconciliation. Endpoint providers do not determine this:
 // an Amazon Bedrock endpoint serving Sonnet is still an Anthropic secondary, for example.
-const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Record<ModelVendor, readonly string[]> = {
+//
+// Declared as a partial map rather than a total record over ModelVendor, so supporting a new vendor
+// does not oblige anyone to invent a secondary tier for it. A primary whose vendor is absent falls
+// back to DEFAULT_SECONDARY_CLASSIFIER_TIERS, which preserves the provider-diversity rule because
+// resolveSecondary rejects any candidate sharing the primary's vendor.
+const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Partial<Record<ModelVendor, readonly string[]>> = {
   openai: ["claude-sonnet-5"],
   anthropic: ["gpt-5.6-terra"],
   google: ["gpt-5.6-terra"],
 };
+
+// Used when the primary's vendor declares no secondary tier of its own. Both entries are validated
+// logical model IDs drawn from the tiers above; vendor diversity is still enforced at selection time
+// rather than assumed here, so whichever entry shares the primary's vendor is skipped.
+const DEFAULT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["claude-sonnet-5", "gpt-5.6-terra"];
+
+function secondaryClassifierTiers(primaryVendor: ModelVendor): readonly string[] {
+  return SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR[primaryVendor] ?? DEFAULT_SECONDARY_CLASSIFIER_TIERS;
+}
 
 // Any thrown failure (rate limiting, transient 5xx, missing credentials, an unhealthy endpoint,
 // etc.) falls through to the next endpoint candidate. Cancellation is the one exception: retrying
@@ -108,7 +122,11 @@ export function selectClassifierModels(registry: readonly RegistryModelSnapshot[
   // before Haiku) means this reflects whichever logical tier has any eligible scoped endpoint.
   const primaryVendorGuess = primary[0]?.vendor;
   const secondary = primaryVendorGuess
-    ? resolveClassifierTiers(registry, SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR[primaryVendorGuess])
+    ? resolveClassifierTiers(registry, secondaryClassifierTiers(primaryVendorGuess)).filter(
+        // Independence is enforced here rather than assumed from the tier table, so a vendor that
+        // declares no secondary tier of its own still cannot reconcile against itself.
+        (candidate) => candidate.vendor !== primaryVendorGuess,
+      )
     : [];
   return { primary, secondary };
 }

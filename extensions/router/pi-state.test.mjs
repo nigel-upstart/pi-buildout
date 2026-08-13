@@ -84,14 +84,14 @@ describe("modelAbility", () => {
       modelAbility("gpt-5.6-sol", "high"),
     );
     assert.equal(decision.kind, "review");
-    const reviewers = new Map([decision.primary, decision.fallback].map((choice) => [choice.vendor, choice]));
+    const reviewers = new Map([decision.primary, ...decision.fallbacks].map((choice) => [choice.vendor, choice]));
     // An ability-3 builder draws the Anthropic rung at or above its band and Google's only rung,
     // which sits below it and is therefore recorded as a ceiling mismatch instead of passing silently.
     assert.equal(reviewers.get("anthropic").modelId, "claude-opus-5");
     assert.equal(reviewers.get("anthropic").ability, 3);
     assert.equal(reviewers.get("google").modelId, "gemini-3.6-flash");
     assert.deepEqual(decision.ceilingMismatchVendors, ["google"]);
-    assert.ok([decision.primary, decision.fallback].every((choice) => choice.vendor !== builder.vendor));
+    assert.ok([decision.primary, ...decision.fallbacks].every((choice) => choice.vendor !== builder.vendor));
   });
 });
 

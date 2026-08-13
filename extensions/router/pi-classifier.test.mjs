@@ -80,6 +80,38 @@ describe("selectClassifierModels", () => {
     assert.equal(selected.secondary.length, 0);
   });
 
+  it("still finds an independent secondary when the primary's vendor declares no tier", () => {
+    // The secondary tier table is a partial map, so a vendor added to MODEL_VENDORS without its own
+    // entry falls back to the shared tier list. Independence must still hold, which is enforced at
+    // selection time rather than assumed from the table.
+    const selected = selectClassifierModels([
+      snapshot("openai-codex", "gpt-5.6-luna", { vendor: "moonshot" }),
+      snapshot("anthropic", "claude-sonnet-5"),
+      snapshot("openai-codex", "gpt-5.6-terra"),
+    ]);
+    assert.equal(selected.primary[0].vendor, "moonshot");
+    assert.ok(selected.secondary.length > 0, "a vendor without its own tier must still get a secondary");
+    assert.ok(
+      selected.secondary.every((entry) => entry.vendor !== "moonshot"),
+      "the secondary must never share the primary's vendor",
+    );
+  });
+
+  it("never reconciles a primary against its own vendor", () => {
+    // Both shared-fallback tiers are present, but one of them is the primary's own vendor and must be
+    // filtered out rather than accepted as an independent second opinion.
+    const selected = selectClassifierModels([
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("anthropic", "claude-sonnet-5"),
+      snapshot("openai-codex", "gpt-5.6-terra"),
+    ]);
+    assert.equal(selected.primary[0].vendor, "anthropic");
+    assert.ok(
+      selected.secondary.every((entry) => entry.vendor !== "anthropic"),
+      "an Anthropic primary must not be reconciled by an Anthropic secondary",
+    );
+  });
+
   it("collects every configured Luna endpoint, including direct Amazon Bedrock, ahead of Haiku", () => {
     const selected = selectClassifierModels([
       snapshot("openai-codex", "gpt-5.6-luna"),

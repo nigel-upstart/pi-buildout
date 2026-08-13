@@ -14,7 +14,13 @@ import { healthVerdict } from "./health.ts";
 import type { EndpointHealth } from "./health.ts";
 import { providerWeightFor } from "./provider-weights.ts";
 import type { ResolvedProviderWeight } from "./provider-weights.ts";
-import { BOOTSTRAP_ROUTE_POLICIES, HARD_TASK_ESCALATION_REFS, POLICY_VERSION, reviewerRefs } from "./policy.ts";
+import {
+  BOOTSTRAP_ROUTE_POLICIES,
+  HARD_TASK_ESCALATION_REFS,
+  POLICY_VERSION,
+  reviewerRefs,
+  reviewerVendors,
+} from "./policy.ts";
 import type { CandidateRef, EndpointTier } from "./policy.ts";
 import { findPromptProfile } from "./profiles.ts";
 import { canonicalModelId, endpointTierFor } from "./scope.ts";
@@ -155,7 +161,12 @@ type ReviewRouteDecision = {
   policyVersion: string;
   archetype: "code_review";
   primary: RouteChoice;
-  fallback: RouteChoice;
+  /**
+   * Remaining independent reviewers in preference order. Sequential attempts, never a panel. The
+   * chain is not a fixed length: it holds one entry per eligible non-builder vendor beyond the
+   * primary, so a larger supported vendor set yields a longer chain rather than an unroutable review.
+   */
+  fallbacks: RouteChoice[];
   exclusions: CandidateExclusion[];
   telemetryMature: boolean;
   ceilingMismatchVendors: ModelVendor[];
@@ -914,6 +925,16 @@ export function selectStandaloneReviewRoute(
   return selectOrdinaryRoute("code_review", registry, requirements, samples, weights, explorationKey, context);
 }
 
+/**
+ * Independent reviewers a generated review must obtain before it can report a verdict.
+ *
+ * Two is a floor on independence, not a description of the vendor set. The rule is "every vendor
+ * other than the builder's, and at least two of them must be eligible"; it used to be implemented as
+ * an equality check against a hardcoded triple, which returned unroutable for any builder outside
+ * that triple and would have silently broken tracked review as soon as a fourth vendor was added.
+ */
+const MINIMUM_INDEPENDENT_REVIEWERS = 2;
+
 export function selectReviewRoute(
   registry: readonly RegistryModelSnapshot[],
   requirements: RouteRequirements,
@@ -922,7 +943,9 @@ export function selectReviewRoute(
   builderAbility: number,
 ): RouteDecision {
   const exclusions: CandidateExclusion[] = [];
-  const vendors = (["openai", "anthropic", "google"] as const).filter((vendor) => vendor !== builder.vendor);
+  // Derived from the supported vendor set rather than a literal, so the pool grows with MODEL_VENDORS.
+  // A vendor that declares no reviewer ladder is excluded here rather than contributing an empty slot.
+  const vendors = reviewerVendors().filter((vendor) => vendor !== builder.vendor);
   const ceilingMismatchVendors: ModelVendor[] = [];
   const choices: RouteChoice[] = [];
 
@@ -942,14 +965,15 @@ export function selectReviewRoute(
     const rightDistance = Math.abs(right.ability - builderAbility);
     return leftDistance - rightDistance;
   });
-  const primary = choices[0];
-  const fallback = choices[1];
-  if (choices.length !== 2 || !primary || !fallback) {
+  const [primary, ...fallbacks] = choices;
+  // Fails closed below the floor. It deliberately does not cap the chain from above: an extra
+  // independent reviewer is only ever attempted after the ones before it were unavailable.
+  if (!primary || choices.length < MINIMUM_INDEPENDENT_REVIEWERS) {
     return {
       kind: "unroutable",
       policyVersion: POLICY_VERSION,
       archetype: "code_review",
-      reason: "tracked-work review requires two eligible non-builder vendors",
+      reason: `tracked-work review requires at least ${String(MINIMUM_INDEPENDENT_REVIEWERS)} eligible non-builder vendors, and ${String(choices.length)} were eligible`,
       exclusions,
     };
   }
@@ -958,7 +982,7 @@ export function selectReviewRoute(
     policyVersion: POLICY_VERSION,
     archetype: "code_review",
     primary,
-    fallback,
+    fallbacks,
     exclusions,
     telemetryMature: false,
     ceilingMismatchVendors,

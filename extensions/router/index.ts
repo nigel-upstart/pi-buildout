@@ -1108,8 +1108,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       features: reviewFeatures,
       selected: decision.primary,
       // Generated reviews never fall back to the tracked builder. In particular, a builder verdict
-      // can never authorize its own potentially irreversible plan.
-      fallbacks: [decision.fallback],
+      // can never authorize its own potentially irreversible plan. The chain length follows the
+      // number of eligible non-builder vendors rather than being fixed at one.
+      fallbacks: decision.fallbacks,
       modelSnapshotId: registrySnapshotId(registry),
       policyVersion: decision.policyVersion,
       lastPromptFingerprint: promptFingerprint(`review:${reviewKind}:${parent.taskId}:${scopeFingerprint}`),
@@ -1684,7 +1685,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const preserveManualSelection = state.manualOverride || state.active?.manualOverride === true;
         const routeChoices = routeChoicesForNewLease(
           routed.decision.primary,
-          routed.decision.kind === "review" ? [routed.decision.fallback] : routed.decision.fallbacks,
+          routed.decision.fallbacks,
           priorSelection,
           preserveManualSelection,
         );
