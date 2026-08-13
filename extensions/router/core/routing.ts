@@ -933,7 +933,7 @@ export function selectStandaloneReviewRoute(
  * an equality check against a hardcoded triple, which returned unroutable for any builder outside
  * that triple and would have silently broken tracked review as soon as a fourth vendor was added.
  */
-const MINIMUM_INDEPENDENT_REVIEWERS = 2;
+export const MINIMUM_INDEPENDENT_REVIEWERS = 2;
 
 export function selectReviewRoute(
   registry: readonly RegistryModelSnapshot[],
