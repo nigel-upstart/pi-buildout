@@ -1,7 +1,7 @@
 import { complete, validateToolArguments } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, Tool } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CLASSIFIER_TOOL_NAME, classifyTask } from "./classifier.ts";
+import { CLASSIFIER_TOOL_NAME, classifyTask, isClassifierCancellationError } from "./classifier.ts";
 import type { ClassificationResult, ClassifierRequest, ClassifierTransport } from "./classifier.ts";
 import { calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./core/endpoint-cost.ts";
 import type { EndpointEffectiveCostComparable } from "./core/endpoint-cost.ts";
@@ -42,12 +42,8 @@ const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Record<ModelVendor, readonly
 };
 
 // Any thrown failure (rate limiting, transient 5xx, missing credentials, an unhealthy endpoint,
-// etc.) falls through to the next endpoint candidate. An aborted request is the one exception:
-// it means the caller cancelled the work, so retrying a different endpoint would be wasted and
-// user-surprising work rather than resilience.
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
-}
+// etc.) falls through to the next endpoint candidate. Cancellation is the one exception: retrying
+// a different endpoint would be wasted and user-surprising work rather than resilience.
 
 function candidateLabel(candidate: ClassifierModel): string {
   return `${candidate.model.provider}/${candidate.model.id}`;
@@ -132,7 +128,7 @@ export function transportFromCandidates(
       try {
         return await call(candidate, request);
       } catch (error) {
-        if (isAbortError(error)) throw error;
+        if (request.signal?.aborted || isClassifierCancellationError(error)) throw error;
         failures.push(`${candidateLabel(candidate)}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

@@ -237,28 +237,27 @@ describe("selectClassifierModels", () => {
       provider: "router-classifier-abort-test",
       models: [{ id: "abort-fixture" }],
     });
-    faux.setResponses([
-      fauxAssistantMessage([], { stopReason: "aborted" }),
-      fauxAssistantMessage([], { stopReason: "aborted" }),
-    ]);
+    faux.setResponses([fauxAssistantMessage([], { stopReason: "aborted" })]);
     const registryLookups = [];
     try {
-      const result = await classifyTaskWithPi({
-        ctx: {
-          modelRegistry: {
-            find: (provider, modelId) => {
-              registryLookups.push(`${provider}/${modelId}`);
-              return faux.getModel();
+      await assert.rejects(
+        classifyTaskWithPi({
+          ctx: {
+            modelRegistry: {
+              find: (provider, modelId) => {
+                registryLookups.push(`${provider}/${modelId}`);
+                return faux.getModel();
+              },
+              getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
             },
-            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
           },
-        },
-        registry: [snapshot("a-primary", "gpt-5.6-luna"), snapshot("z-alternate", "gpt-5.6-luna")],
-        prompt: "Implement the change",
-        synopsis: {},
-      });
-      assert.equal(result.failedClosed, true);
-      assert.deepEqual(registryLookups, ["a-primary/gpt-5.6-luna", "a-primary/gpt-5.6-luna"]);
+          registry: [snapshot("a-primary", "gpt-5.6-luna"), snapshot("z-alternate", "gpt-5.6-luna")],
+          prompt: "Implement the change",
+          synopsis: {},
+        }),
+        (error) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.deepEqual(registryLookups, ["a-primary/gpt-5.6-luna"]);
     } finally {
       faux.unregister();
     }
@@ -346,6 +345,23 @@ describe("transportFromCandidates", () => {
     });
 
     await assert.rejects(transport(request()), /aborted/i);
+    assert.deepEqual(attempted, ["openai-codex"]);
+  });
+
+  it("does not retry another endpoint after a transport timeout", async () => {
+    const attempted = [];
+    const candidates = [
+      candidate("openai-codex", "gpt-5.6-luna", "openai"),
+      candidate("openai", "gpt-5.6-luna", "openai"),
+    ];
+    const timeout = new Error("Classifier transport timed out");
+    timeout.name = "TimeoutError";
+    const transport = transportFromCandidates(candidates, async (candidateEntry) => {
+      attempted.push(candidateEntry.model.provider);
+      throw timeout;
+    });
+
+    await assert.rejects(transport(request()), (error) => error === timeout);
     assert.deepEqual(attempted, ["openai-codex"]);
   });
 

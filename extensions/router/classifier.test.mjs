@@ -73,6 +73,53 @@ describe("classifier request", () => {
 });
 
 describe("classifyTask", () => {
+  it("treats thrown cancellation errors as terminal before retry or secondary escalation", async () => {
+    for (const errorName of ["AbortError", "TimeoutError"]) {
+      let primaryCalls = 0;
+      let secondaryCalls = 0;
+      const cancellation = new Error(`${errorName} fixture`);
+      cancellation.name = errorName;
+
+      await assert.rejects(
+        classifyTask({
+          prompt: "Implement it",
+          synopsis,
+          primary: async () => {
+            primaryCalls++;
+            throw cancellation;
+          },
+          secondary: async () => {
+            secondaryCalls++;
+            return transport(features(), "anthropic")();
+          },
+        }),
+        (error) => error === cancellation,
+      );
+      assert.equal(primaryCalls, 1, `${errorName} must not retry the primary stage`);
+      assert.equal(secondaryCalls, 0, `${errorName} must not escalate to the secondary stage`);
+    }
+  });
+
+  it("does not retry the secondary stage after cancellation", async () => {
+    let secondaryCalls = 0;
+    const cancellation = new Error("Secondary classification timed out");
+    cancellation.name = "TimeoutError";
+
+    await assert.rejects(
+      classifyTask({
+        prompt: "Deploy the migration",
+        synopsis,
+        primary: transport(features({ risk: "high" }), "openai"),
+        secondary: async () => {
+          secondaryCalls++;
+          throw cancellation;
+        },
+      }),
+      (error) => error === cancellation,
+    );
+    assert.equal(secondaryCalls, 1);
+  });
+
   it("uses a high-confidence non-high-risk primary directly", async () => {
     let secondaryCalls = 0;
     const result = await classifyTask({

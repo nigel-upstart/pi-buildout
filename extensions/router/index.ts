@@ -4,6 +4,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isClassifierCancellationError } from "./classifier.ts";
 import type { ClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
 import { isCodeBuilder } from "./core/features.ts";
@@ -186,19 +187,19 @@ export function safetyToolBlockReason(
   return lifecycleToolBlockReason(lease?.lifecycle, toolName, input);
 }
 
-// A hung classifier/selection call must never block the agent turn indefinitely. Ten seconds is
-// generous for the cheap classifier models this extension targets; past that we abort the
-// in-flight request (via the shared AbortSignal, so the underlying network call is actually
+// A hung classifier/selection call must never block the agent turn indefinitely. Eleven seconds
+// accommodates observed classifier latency while keeping the deadline bounded; past that we abort
+// the in-flight request (via the shared AbortSignal, so the underlying network call is actually
 // cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
 // selected instead of routing on a call that never returned.
-export const CLASSIFICATION_TIMEOUT_MS = 10_000;
+export const CLASSIFICATION_TIMEOUT_MS = 11_000;
 
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
   prompt: string,
   taskSynopsis: SessionSynopsis,
-): Promise<{ classification: ClassificationResult; timedOut: boolean }> {
+): Promise<{ classification: ClassificationResult; timedOut: false } | { classification?: never; timedOut: true }> {
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort();
@@ -211,7 +212,10 @@ async function classifyWithTimeout(
       synopsis: taskSynopsis,
       signal: controller.signal,
     });
-    return { classification, timedOut: controller.signal.aborted };
+    return { classification, timedOut: false };
+  } catch (error) {
+    if (controller.signal.aborted || isClassifierCancellationError(error)) return { timedOut: true };
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -1427,7 +1431,11 @@ export default function routerExtension(pi: ExtensionAPI): void {
           active = pending.gate.lease;
           lastRoute.boundaryReason = "classification timed out; retained current lease";
         } else {
-          const continuity = resolveContinuity(pending.gate.lease, classification.features, pending.cache);
+          const continuity = resolveContinuity(
+            pending.gate.lease,
+            continuityResult.classification.features,
+            pending.cache,
+          );
           requiresNewLease = continuity.action === "new_task";
           lastRoute.boundaryReason = continuity.reason;
           if (!requiresNewLease) active = pending.gate.lease;

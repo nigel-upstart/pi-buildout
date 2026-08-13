@@ -34,6 +34,10 @@ type ClassifierTransportResult = {
 
 export type ClassifierTransport = (request: ClassifierRequest) => Promise<ClassifierTransportResult>;
 
+export function isClassifierCancellationError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
 type ClassifierAttempt = {
   stage: "primary" | "secondary";
   try: number;
@@ -142,7 +146,9 @@ async function runStage(
 ): Promise<{ features?: TaskFeatures; vendor?: ModelVendor }> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
+      signal?.throwIfAborted();
       const response = await transport(buildClassifierRequest(stage, prompt, synopsis, signal));
+      signal?.throwIfAborted();
       const validation = validateTaskFeatures(response.arguments);
       attempts.push({
         stage,
@@ -157,6 +163,7 @@ async function runStage(
       });
       if (validation.success) return { features: validation.value, vendor: response.vendor };
     } catch (error) {
+      if (signal?.aborted || isClassifierCancellationError(error)) throw error;
       attempts.push({
         stage,
         try: attempt,

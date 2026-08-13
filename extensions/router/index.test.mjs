@@ -14,6 +14,7 @@ process.env.PI_ROUTER_LAST_MODE_PATH = join(await mkdtemp(join(tmpdir(), "pi-rou
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import routerExtension, {
+  CLASSIFICATION_TIMEOUT_MS,
   activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
   deterministicCheckCommand,
@@ -43,6 +44,12 @@ function irreversibleActionPlan() {
     authorizedToolNames: ["bash"],
   };
 }
+
+describe("classifier deadline", () => {
+  it("allows eleven seconds for classification", () => {
+    assert.equal(CLASSIFICATION_TIMEOUT_MS, 11_000);
+  });
+});
 
 describe("automatic routing gate", () => {
   it("requires validated semantic evidence instead of promoting classifier failure to a premium route", () => {
