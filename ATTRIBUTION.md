@@ -187,7 +187,7 @@ as pre-telemetry ordering priors and never as the router's acceptance signal.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, and `0.84.1`
+- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, and `0.84.1`
 - License declared by the package: MIT
 
 Ideas and API patterns used:
@@ -256,3 +256,28 @@ Behavior of both libraries that this repository deliberately compensates for, ra
 
 The argv policy itself — the allowed binaries, git subcommands, and per-binary flag allowlists — is original code in
 this repository and is not derived from either package.
+
+## `pi-web-access` (local OpenAI auth patch)
+
+- Source: `pi-web-access`
+- Canonical repository: <https://github.com/nicobailon/pi-web-access>
+- Revision reviewed: published npm package `0.14.0`
+- License declared by the package: MIT (© 2025 Nico Bailon)
+
+This is **modified upstream code**, not conceptual inspiration. `patches/pi-web-access-0.14.0/openai-codex-auth.patch`
+is a one-hunk unified diff against that release's `openai-search.ts`. It removes `openai-codex` from
+`AUTH_MODEL_CANDIDATES` so `resolveOpenAIAuth` reaches a configured `openaiApiKey` or `OPENAI_API_KEY` instead of
+binding every web search to the Codex subscription JWT and exhausting one shared quota. The upstream package exposes no
+setting for that ordering, so the candidate list was edited directly.
+
+The patch is applied to the installed package tree, never vendored into this repository: no upstream source file is
+copied here, and the package retains its own `LICENSE`. What this directory tracks is the diff plus baseline and patched
+SHA-256 manifests, so the modification is reproducible and verifiable rather than an undocumented local edit.
+
+Deliberately not adopted: `isCodexJwt` and the `useCodexEndpoint` branch are left intact, so a deliberately supplied
+Codex-shaped credential still routes to the Codex endpoint.
+
+**Superseded.** The installed package has since moved to `0.22.0`, which restructured OpenAI auth resolution;
+`AUTH_MODEL_CANDIDATES` no longer exists in `openai-search.ts` and the recorded hunk no longer applies. The directory is
+retained as the record of what was changed and why. Do not reapply it to another version without regenerating both the
+diff and the checksum manifests from that version's clean package.
