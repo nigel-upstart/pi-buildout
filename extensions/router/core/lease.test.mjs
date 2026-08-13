@@ -98,6 +98,90 @@ describe("task boundary gate", () => {
     }
   });
 
+  it("continues only tightly scoped same-task operational follow-ups", () => {
+    const active = lease();
+    const prompts = [
+      "Commit whatever makes sense to commit.",
+      "Please commit whatever makes sense.",
+      "Re-run focused tests.",
+      "Run the full checks.",
+      "Run npm run check.",
+      "Fix the remaining test failures.",
+      "Address the actionable review findings.",
+      "Fix CodeRabbit findings.",
+    ];
+
+    for (const prompt of prompts) {
+      const result = deterministicBoundaryGate(
+        { mode: "active", active, manualOverride: false },
+        {
+          isUserInput: true,
+          source: "interactive",
+          prompt,
+          cachedTokens: 0,
+          expectedReuseRatio: 0,
+        },
+      );
+      assert.equal(result.action, "continue", prompt);
+      assert.equal(result.reason, "obvious same-task operational follow-up", prompt);
+      assert.equal(result.lease.taskId, active.taskId, prompt);
+    }
+  });
+
+  it("classifies topic-bearing additions and operational near misses", () => {
+    const active = lease();
+    const prompts = [
+      "also adding a plugin by modifying the marketplace.json and plugin.json",
+      'using gws CLI, let\'s update the Row "5" in the release tracker',
+      "Commit whatever makes sense to commit, then add a plugin.",
+      "Run the tests for the new plugin.",
+      "Fix the remaining test failures in another repository.",
+      "Address the review findings and plan the next feature.",
+      "Please commit the marketplace.json plugin changes.",
+      "Continue with a separate task.",
+      "Add a plugin.",
+    ];
+
+    for (const prompt of prompts) {
+      const result = deterministicBoundaryGate(
+        { mode: "active", active, manualOverride: false },
+        {
+          isUserInput: true,
+          source: "interactive",
+          prompt,
+          cachedTokens: 100_000,
+          expectedReuseRatio: 1,
+        },
+      );
+      assert.equal(result.action, "classify_continuity", prompt);
+    }
+  });
+
+  it("applies hard boundaries and explicit discontinuity before operational follow-ups", () => {
+    const active = lease();
+    const input = {
+      isUserInput: true,
+      source: "interactive",
+      prompt: "Commit whatever makes sense to commit.",
+      cachedTokens: 100_000,
+      expectedReuseRatio: 1,
+    };
+
+    const hardBoundary = deterministicBoundaryGate(
+      setHardBoundary({ mode: "active", active, manualOverride: false }, "post_push"),
+      input,
+    );
+    assert.equal(hardBoundary.action, "new_task");
+    assert.equal(hardBoundary.hardBoundary, "post_push");
+
+    const discontinuity = deterministicBoundaryGate(
+      { mode: "active", active, manualOverride: false },
+      { ...input, prompt: "New task: commit whatever makes sense to commit." },
+    );
+    assert.equal(discontinuity.action, "new_task");
+    assert.equal(discontinuity.reason, "explicit semantic discontinuity");
+  });
+
   it("lets strong discontinuity override cache but resists a marginal switch", () => {
     const active = lease();
     const marginal = resolveContinuity(

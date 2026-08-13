@@ -59,9 +59,11 @@ export type BoundaryGateResult =
   | { action: "classify_continuity"; reason: string; lease: TaskLease };
 
 const CONTINUATION_PATTERN =
-  /^(?:yes|yep|ok(?:ay)?|continue|go on|proceed|do it|implement it|fix (?:it|that)|try again|run (?:it|them|the tests)|keep going|sounds good)(?:[.!\s]|$)/i;
+  /^(?:yes|yep|ok(?:ay)?|continue|go on|proceed|do it|implement it|fix (?:it|that)|try again|run (?:it|them|the tests)|keep going|sounds good)(?:[.!])?$/i;
 const DISCONTINUITY_PATTERN =
   /^(?:new task|separate task|unrelated|switch(?:ing)? topics?|instead[, :] |forget (?:that|the previous)|now (?:review|plan|implement|research)\b)/i;
+const OBVIOUS_SAME_TASK_OPERATION_PATTERN =
+  /^(?:please[, ]+)?(?:commit whatever makes sense(?: to commit)?|(?:run|re-?run) (?:(?:the )?(?:(?:focused|full) )?(?:tests?|checks?)|npm run check)|(?:fix|address) (?:the )?(?:(?:remaining|actionable) )?(?:test failures?|check failures?|review findings?|coderabbit findings?))(?:[.!])?$/i;
 
 export function hasSignificantReusableCache(cachedTokens: number, expectedReuseRatio: number): boolean {
   return cachedTokens >= 20_000 && expectedReuseRatio >= 0.5;
@@ -98,8 +100,11 @@ export function deterministicBoundaryGate(state: LeaseState, input: BoundaryInpu
   if (DISCONTINUITY_PATTERN.test(prompt)) {
     return { action: "new_task", reason: "explicit semantic discontinuity" };
   }
-  if (CONTINUATION_PATTERN.test(prompt) || prompt.length <= 12) {
+  if (CONTINUATION_PATTERN.test(prompt)) {
     return { action: "continue", reason: "deterministic continuation signal", lease: state.active };
+  }
+  if (OBVIOUS_SAME_TASK_OPERATION_PATTERN.test(prompt)) {
+    return { action: "continue", reason: "obvious same-task operational follow-up", lease: state.active };
   }
   const manualOverride = state.manualOverride || state.active.manualOverride;
   return {
