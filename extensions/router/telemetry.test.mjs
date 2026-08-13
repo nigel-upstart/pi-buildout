@@ -26,6 +26,16 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function event(id) {
   return {
     version: 1,
@@ -130,6 +140,55 @@ describe("JsonlTelemetryStore", () => {
       ["one", "two"],
     );
     assert.match(await readFile(path, "utf8"), /"eventId":"one"/);
+  });
+
+  it("bounds queued callers while preserving one ordered append attempt per event", async () => {
+    const gates = new Map([
+      ["one", deferred()],
+      ["two", deferred()],
+    ]);
+    const attempts = [];
+    const store = new JsonlTelemetryStore("/unused/events.jsonl", {
+      appendTimeoutMs: 10,
+      persist: async (item) => {
+        attempts.push(item.eventId);
+        await gates.get(item.eventId).promise;
+      },
+    });
+
+    const firstTimeout = assert.rejects(store.append(event("one")), { name: "TelemetryAppendTimeoutError" });
+    const secondTimeout = assert.rejects(store.append(event("two")), { name: "TelemetryAppendTimeoutError" });
+    await Promise.all([firstTimeout, secondTimeout]);
+    assert.deepEqual(attempts, ["one"], "a queued event must not overtake the stalled append");
+
+    gates.get("one").resolve();
+    await new Promise(setImmediate);
+    assert.deepEqual(attempts, ["one", "two"]);
+    gates.get("two").resolve();
+    await new Promise(setImmediate);
+    assert.deepEqual(attempts, ["one", "two"], "late settlement must not retry either event");
+  });
+
+  it("clears a caller deadline when persistence settles before it", async () => {
+    const timers = new Map();
+    const deadline = {
+      set(callback) {
+        const handle = {};
+        timers.set(handle, callback);
+        return handle;
+      },
+      clear(handle) {
+        timers.delete(handle);
+      },
+    };
+    const store = new JsonlTelemetryStore("/unused/events.jsonl", {
+      appendTimeoutMs: 60_000,
+      persist: async () => {},
+      deadline,
+    });
+
+    await store.append(event("immediate"));
+    assert.equal(timers.size, 0, "a successful append must not retain its deadline timer");
   });
 });
 

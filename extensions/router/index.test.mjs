@@ -13,6 +13,7 @@ process.env.PI_ROUTER_ENDPOINT_HEALTH_PATH = "/nonexistent-router-health.json";
 process.env.PI_ROUTER_LAST_MODE_PATH = join(await mkdtemp(join(tmpdir(), "pi-router-last-mode-")), "last-mode.jsonl");
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
+import { JsonlTelemetryStore } from "./telemetry.ts";
 import routerExtension, {
   CLASSIFICATION_TIMEOUT_MS,
   activeToolsForSafetyLifecycle,
@@ -22,6 +23,16 @@ import routerExtension, {
   routeChoicesForNewLease,
   safetyToolBlockReason,
 } from "./index.ts";
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function irreversibleActionPlan() {
   return {
@@ -289,6 +300,105 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_implementation_plan"), true);
     assert.equal(tools.has("submit_action_plan"), true);
     assert.equal(tools.has("submit_safety_review"), true);
+  });
+
+  it("bounds stalled telemetry, fails active routing safe, and consumes late settlement", async (t) => {
+    for (const lateOutcome of ["resolve", "reject"]) {
+      await t.test(lateOutcome, async () => {
+        const hooks = new Map();
+        const appended = [];
+        const notifications = [];
+        const attempts = [];
+        const stalledInvocation = deferred();
+        const telemetryDirectory = await mkdtemp(join(tmpdir(), `pi-router-stalled-telemetry-${lateOutcome}-`));
+        const previousMode = process.env.PI_ROUTER_MODE;
+        process.env.PI_ROUTER_MODE = "active";
+        const telemetry = new JsonlTelemetryStore(join(telemetryDirectory, "events.jsonl"), {
+          appendTimeoutMs: 20,
+          persist: async (item) => {
+            attempts.push(item);
+            if (item.kind === "classifier_invocation") await stalledInvocation.promise;
+          },
+        });
+        let activeTools = [];
+        const pi = {
+          on: (event, handler) => hooks.set(event, handler),
+          registerCommand: () => {},
+          registerTool: () => {},
+          appendEntry: (customType, data) => appended.push({ customType, data }),
+          exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+          getActiveTools: () => activeTools,
+          setActiveTools: (tools) => {
+            activeTools = tools;
+          },
+          getThinkingLevel: () => "high",
+        };
+        const ctx = {
+          cwd: telemetryDirectory,
+          model: undefined,
+          modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
+          sessionManager: { getBranch: () => [], getSessionId: () => `stalled-telemetry-${lateOutcome}` },
+          getContextUsage: () => ({ tokens: 0, contextWindow: 128_000 }),
+          ui: {
+            theme: { fg: (_color, text) => text },
+            setStatus: () => {},
+            setWorkingMessage: () => {},
+            setWorkingVisible: () => {},
+            notify: (message, type) => notifications.push({ message, type }),
+          },
+        };
+        const unhandled = [];
+        const onUnhandledRejection = (reason) => unhandled.push(reason);
+        process.on("unhandledRejection", onUnhandledRejection);
+        try {
+          routerExtension(pi, { telemetry });
+          const prompt = "Implement the bounded telemetry regression";
+          hooks.get("input")({ text: prompt, source: "interactive" }, ctx);
+          const startedAt = Date.now();
+          await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
+          const elapsedMs = Date.now() - startedAt;
+
+          assert.ok(elapsedMs < 1_000, `before_agent_start remained blocked for ${String(elapsedMs)}ms`);
+          assert.equal(
+            appended.findLast((entry) => entry.customType === "model-router-state")?.data.mode,
+            "shadow",
+            "a telemetry deadline must disable active routing",
+          );
+          assert.deepEqual(
+            attempts.map((item) => item.kind),
+            ["boundary", "classifier_invocation"],
+            "later diagnostics must not overtake the stalled invocation",
+          );
+          assert.equal(new Set(attempts.map((item) => item.eventId)).size, attempts.length);
+          assert.equal(attempts.filter((item) => item.kind === "classifier_invocation").length, 1);
+          assert.equal(attempts[1].data.invocationCount, 1);
+          const telemetryFailureNotifications = notifications.filter(({ message }) =>
+            message.includes("Router telemetry failed"),
+          ).length;
+          assert.equal(telemetryFailureNotifications, 1);
+
+          if (lateOutcome === "resolve") stalledInvocation.resolve();
+          else stalledInvocation.reject(new Error("late persistence failure"));
+          await new Promise(setImmediate);
+          await new Promise(setImmediate);
+
+          assert.deepEqual(
+            attempts.map((item) => item.kind),
+            ["boundary", "classifier_invocation"],
+          );
+          assert.equal(unhandled.length, 0, "late persistence rejection must be consumed by the queue");
+          assert.equal(
+            notifications.filter(({ message }) => message.includes("Router telemetry failed")).length,
+            telemetryFailureNotifications,
+            "late settlement must not apply the failure policy twice",
+          );
+        } finally {
+          process.off("unhandledRejection", onUnhandledRejection);
+          if (previousMode === undefined) delete process.env.PI_ROUTER_MODE;
+          else process.env.PI_ROUTER_MODE = previousMode;
+        }
+      });
+    }
   });
 
   it("renders /route scope from the scoped registry in endpoint selection order", async () => {

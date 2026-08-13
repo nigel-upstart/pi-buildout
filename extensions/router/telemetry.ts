@@ -471,16 +471,89 @@ export function attemptOutcomesFromTelemetry(events: readonly RouterTelemetryEve
   return outcomes;
 }
 
+const TELEMETRY_APPEND_TIMEOUT_MS = 250;
+
+class TelemetryAppendTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`telemetry append exceeded ${String(timeoutMs)}ms`);
+    this.name = "TelemetryAppendTimeoutError";
+  }
+}
+
+type JsonlTelemetryStoreOptions = {
+  appendTimeoutMs?: number;
+  persist?: (event: RouterTelemetryEvent) => Promise<void>;
+  deadline?: {
+    set(callback: () => void, delayMs: number): unknown;
+    clear(handle: unknown): void;
+  };
+};
+
+const systemDeadline = {
+  set: (callback: () => void, delayMs: number): ReturnType<typeof setTimeout> => setTimeout(callback, delayMs),
+  clear: (handle: unknown): void => {
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
+  },
+};
+
 export class JsonlTelemetryStore {
   readonly path: string;
+  readonly appendTimeoutMs: number;
+  private readonly persist: (event: RouterTelemetryEvent) => Promise<void>;
+  private readonly deadline: NonNullable<JsonlTelemetryStoreOptions["deadline"]>;
+  private appendTail: Promise<void> = Promise.resolve();
 
-  constructor(path: string) {
+  constructor(path: string, options: JsonlTelemetryStoreOptions = {}) {
     this.path = path;
+    this.appendTimeoutMs = options.appendTimeoutMs ?? TELEMETRY_APPEND_TIMEOUT_MS;
+    if (!Number.isFinite(this.appendTimeoutMs) || this.appendTimeoutMs < 0) {
+      throw new RangeError("telemetry append timeout must be a finite nonnegative number");
+    }
+    this.persist =
+      options.persist ??
+      (async (event) => {
+        await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+        await appendFile(this.path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+      });
+    this.deadline = options.deadline ?? systemDeadline;
   }
 
-  async append(event: RouterTelemetryEvent): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-    await appendFile(this.path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
+  append(event: RouterTelemetryEvent): Promise<void> {
+    // Keep the persistence operation in the queue after its caller's deadline. That gives each
+    // accepted event one append attempt, prevents a later event from overtaking a stalled write,
+    // and consumes any rejection that arrives after the caller has already failed safe.
+    const persistence = this.appendTail.then(() => this.persist(event));
+    this.appendTail = persistence.catch(() => {
+      // Keep the queue live; the caller-facing handler below receives the same failure if still waiting.
+    });
+
+    return new Promise((resolve, reject) => {
+      let waiting = true;
+      let timer: unknown = this.deadline.set(() => {
+        if (!waiting) return;
+        waiting = false;
+        timer = undefined;
+        reject(new TelemetryAppendTimeoutError(this.appendTimeoutMs));
+      }, this.appendTimeoutMs);
+
+      const settle = (complete: () => void): void => {
+        if (!waiting) return;
+        waiting = false;
+        if (timer !== undefined) this.deadline.clear(timer);
+        timer = undefined;
+        complete();
+      };
+      void persistence.then(
+        () => {
+          settle(resolve);
+        },
+        (error: unknown) => {
+          settle(() => {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          });
+        },
+      );
+    });
   }
 
   async read(limit = 10_000): Promise<RouterTelemetryEvent[]> {

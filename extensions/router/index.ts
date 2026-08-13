@@ -197,10 +197,6 @@ export function safetyToolBlockReason(
 // cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
 // selected instead of routing on a call that never returned.
 export const CLASSIFICATION_TIMEOUT_MS = 11_000;
-// Audit persistence remains part of the router's fail-safe policy, but a stuck filesystem must not
-// turn the bounded classifier request into an unbounded before-agent hook.
-const CLASSIFIER_TELEMETRY_TIMEOUT_MS = 250;
-
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
@@ -313,16 +309,22 @@ function previousChoice(
   };
 }
 
-export default function routerExtension(pi: ExtensionAPI): void {
+type RouterExtensionOptions = {
+  telemetry?: Pick<JsonlTelemetryStore, "append" | "read">;
+};
+
+export default function routerExtension(pi: ExtensionAPI, options: RouterExtensionOptions = {}): void {
   /**
    * The operator's model scope and last probe results, read once per session. Routing derives its
    * candidate endpoints from this rather than from a table in the repository, so enabling or disabling
    * a model in settings changes what the router can pick without a code change.
    */
   let scope: RouterScope = EMPTY_SCOPE;
-  const telemetry = new JsonlTelemetryStore(
-    process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
-  );
+  const telemetry =
+    options.telemetry ??
+    new JsonlTelemetryStore(
+      process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
+    );
   let state: LeaseState = { mode: provisionalMode(), manualOverride: false };
   // The replacement session has a new branch, so carry only the enablement mode
   // across /clear. The task lease must still be discarded at the new-session
@@ -479,10 +481,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
     classification?: ClassificationResult,
     taskId?: string,
   ): Promise<void> {
-    // Start the append before routing continues so successful writes retain event order. Bound the
-    // wait so a stuck append cannot extend the classifier deadline indefinitely; after that point
-    // the normal telemetry-failure policy prevents later records from overtaking this one.
-    const recording = record(
+    await record(
       ctx,
       "classifier_invocation",
       {
@@ -495,29 +494,7 @@ export default function routerExtension(pi: ExtensionAPI): void {
         ...(taskId ? { taskId } : {}),
         ...(classification ? { archetype: classification.archetype.archetype } : {}),
       },
-    ).catch(() => {
-      // `record` applies the telemetry-failure policy. This final guard prevents an exceptional UI
-      // implementation in that policy from becoming an unhandled rejection after a timeout wins.
-    });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      recording,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(() => {
-          try {
-            disableForTelemetryFailure(
-              ctx,
-              new Error(`classifier telemetry append exceeded ${String(CLASSIFIER_TELEMETRY_TIMEOUT_MS)}ms`),
-            );
-          } catch {
-            // Health is already marked failed before the policy updates UI; never throw from a timer.
-          } finally {
-            resolve();
-          }
-        }, CLASSIFIER_TELEMETRY_TIMEOUT_MS);
-      }),
-    ]);
-    if (timer) clearTimeout(timer);
+    );
   }
 
   async function classifyContinuityWithTelemetry(

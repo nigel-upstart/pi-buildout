@@ -119,9 +119,11 @@ The lease is persisted as pi custom session entries. Local audit events are appe
 ~/.pi/agent/router-telemetry/events.jsonl
 ```
 
-Set `PI_ROUTER_TELEMETRY_PATH` to override the JSONL location (useful for isolated tests). When `pi-telemetry-otel` is
-installed separately, router spans attach through its global Symbol registries. The router has no additional runtime
-dependencies and works without OTel.
+Set `PI_ROUTER_TELEMETRY_PATH` to override the JSONL location (useful for isolated tests). Writes are serialized in
+event order and each awaited write has a 250 ms deadline. A rejection or deadline disables automatic routing for the
+session (`active` falls back to `shadow`); the single queued append attempt is still allowed to settle safely so later
+events cannot overtake it. When `pi-telemetry-otel` is installed separately, router spans attach through its global
+Symbol registries. The router has no additional runtime dependencies and works without OTel.
 
 ## Real Bifrost evaluation
 
