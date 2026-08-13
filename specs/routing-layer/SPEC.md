@@ -48,6 +48,14 @@ a continuation bias once it is both large enough and likely enough to be reused 
 latency and tokens — below that a switch is nearly free, so cache must not veto a genuine new task. Do not reevaluate
 the lease at any non-user turn.
 
+Before invoking the continuity classifier, the deterministic gate recognizes only anchored, content-free confirmations
+and a small allowlist of anchored same-task operations (rerun checks, fix known failures/findings, commit the completed
+change, or implement/fix `it`). The operation path is enabled only for a mutation-capable code-builder lease whose
+archetype is declared repository-mutating. Hard boundaries, explicit discontinuities, planning-to-implementation
+transitions, incompatible planning/review/read-only leases, and topic-bearing additions take precedence and therefore do
+not use the operation shortcut. A shortcut can only retain the current lease; it cannot create a lease, broaden task
+scope, grant safety authorization, or bypass lifecycle tool enforcement.
+
 ## Classification pipeline
 
 ```text
@@ -126,6 +134,21 @@ arguments — never accept free-form JSON parsed out of prose.
 - If the required classifier stages do not yield sufficient validated output, fail closed by declining automatic routing
   and retaining the current selection. In particular, classifier failure is never positive evidence for the premium
   large-program or highest-risk routes.
+
+### Deadline, cancellation, and fail-safe selection
+
+Each fresh-task or continuity request is owned by one router-level **11-second wall-clock deadline**, measured across
+all schema attempts, endpoint fallback, and any secondary stage. One `AbortSignal` is passed through those layers to the
+underlying `complete()` call. At the deadline the router aborts the request and returns without waiting indefinitely for
+a provider transport to settle.
+
+Cancellation is terminal at every classifier layer. An aborted signal or an `AbortError`/`TimeoutError` stops the
+current schema-attempt loop, concrete endpoint fallback, and primary-to-secondary escalation; it is not treated as an
+ordinary availability failure. A continuity timeout, cancellation, or unexpected failure resolves to retained continuity
+and keeps the existing lease and its model/effort/profile. A fresh-task failure creates no semantic evidence, no route,
+and no new lease: the current model/effort and any pre-existing lease remain in force. Router-owned deadline and
+provider-transport timeout ownership are deliberately distinct; the remaining provider-specific limitations are tracked
+in [`future-work.md`](future-work.md).
 
 ## Eligibility, ranking, and fallback
 
@@ -351,19 +374,64 @@ pass untrusted context as system instructions.
 
 ## Telemetry
 
-Record every attempt (success, failure, and fallback): route key, model, endpoint version, effort, prompt profile,
-provider; input/cached-input/output tokens, cache-hit ratio, billed cost; turns, tool calls, wall time, retries,
-fallback chain; test/check outcome, reviewer outcome, human intervention, accepted completion; context-size bucket,
-risk, interactivity type, repo/language bucket, classifier confidence.
+Record every routed attempt (success, failure, and fallback): route key, model, endpoint version, effort, prompt
+profile, provider; input/cached-input/output tokens, cache-hit ratio, billed cost; turns, tool calls, wall time,
+retries, fallback chain; test/check outcome, reviewer outcome, human intervention, accepted completion; context-size
+bucket, risk, interactivity type, repo/language bucket, classifier confidence.
 
-Compute p50/p75/p90 distributions, not averages, compared only within similar route/context/risk/ interactivity strata.
+A separate `classifier_invocation` event is the sole request-level classifier metric. While telemetry is healthy, the
+router makes exactly one append attempt per fresh-task or continuity request and sets `invocationCount` to `1`. Its
+durable data contains:
+
+- `purpose`, `outcome`, `resolution`, `wallLatencyMs`, `timedOut`, and `cancelled`;
+- request totals `attemptCount`, `completedAttemptCount`, and `validAttemptCount`;
+- the same three counts grouped into `primary`/`secondary` stage entries;
+- an attempt list containing only stage, try number, bounded outcome, and sanitized optional provider/model/latency;
+- optional `failedClosed` and bounded `errorCategory` values.
+
+`attemptCount` counts unique observed stage/try starts, including a call still `incomplete` when the router returns;
+`completedAttemptCount` counts `valid`, `invalid`, `error`, or `cancelled` observer completions; and `validAttemptCount`
+counts only `valid`. The request outcome/resolution contract is:
+
+| Situation                       | `outcome` | `resolution`                            | `timedOut` | `cancelled` |
+| ------------------------------- | --------- | --------------------------------------- | ---------- | ----------- |
+| successful fresh classification | `success` | `classified` or `failed_closed`         | `false`    | `false`     |
+| successful continuity check     | `success` | `new_task` or `retained_continuity`     | `false`    | `false`     |
+| router deadline, fresh          | `timeout` | `none`                                  | `true`     | `true`      |
+| router deadline, continuity     | `timeout` | `retained_continuity`                   | `true`     | `true`      |
+| transport `TimeoutError`        | `timeout` | `none` (fresh) or retained (continuity) | `true`     | `false`     |
+| transport `AbortError`          | `error`   | `none` (fresh) or retained (continuity) | `false`    | `true`      |
+| other invocation failure        | `error`   | `none` (fresh) or retained (continuity) | `false`    | `false`     |
+
+Here `retained` means the persisted value `retained_continuity`. The summary never contains the prompt, synopsis,
+classifier-authored evidence, credentials, or free-form validation/transport errors. Identifier-like fields are admitted
+only by a length/character allowlist.
+
+The existing `classifier_attempt` event remains a legacy downstream diagnostic. It is emitted per attempt in a completed
+classification result only when that result proceeds into new-lease routing; retained continuity and terminal invocation
+failure do not emit it. It can therefore have zero, one, or several records for one request and must not be used as a
+request denominator. It is non-additive with `classifier_invocation`: request rates and timeout rates count only
+`classifier_invocation`, never the sum of both kinds.
+
+All event kinds use one store-wide append queue. Calls are ordered, each accepted event receives one persistence
+attempt, and every caller has a **250 ms awaited deadline** that includes queue time. A caller deadline does not cancel
+or duplicate the queued persistence: the operation remains in the queue, later events cannot overtake it, and late
+resolution or rejection is consumed without retry or an unhandled rejection. A rejection or caller deadline makes
+telemetry unhealthy for that session and disables automatic routing; `active` fails safe to `shadow`, no further events
+are accepted, and late settlement cannot apply the transition twice.
+
+Compute p50/p75/p90 distributions, not averages, compared only within similar route/context/risk/interactivity strata.
 Telemetry becomes routing authority only after minimum sample count and quality floor are met, using holdouts/controlled
 exploration so a former second choice can be promoted.
 
-The local store backing these computations is **append-only JSONL** (matching pi's own session-storage idiom — pi has no
-embedded database), read back and aggregated in-process; the retained history is small (one row per task boundary), so
-percentiles are computed in-memory rather than via a query engine. See `decisions.md` for how this composes with OTel
-export.
+The local source of truth is **append-only JSONL** (matching pi's session-storage idiom — pi has no embedded database),
+read back and aggregated in-process. When the separately installed `pi-telemetry-otel` companion is present, classifier
+spans are parented through its Symbol registries. Summary attributes include purpose, outcome, resolution, latency,
+timeout/cancellation flags, aggregate counts, optional failed-close/error category, and per-stage counts under the
+`router.classifier.*` namespace. Each observed attempt adds `router.classifier.attempt` with stage, try, outcome, and
+sanitized optional provider/model/latency; `router.classifier.completed` repeats the bounded summary. OTel is optional
+and best-effort, emits none of the excluded free text above, and is not read back for routing. See
+[`decisions.md`](decisions.md) for the integration details.
 
 ## Evaluation
 
@@ -398,6 +466,10 @@ under another model family's prompt profile.
 - Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.
+- Classifier work is bounded by the router-owned 11-second deadline; abort/timeout is terminal across attempts,
+  endpoints, and escalation, and classification failure cannot replace the retained selection.
+- A telemetry append rejection or 250 ms caller deadline disables active routing for the session and cannot be hidden by
+  a late persistence settlement.
 - Every decision records the policy version, model snapshot, classifier output, exclusion reasons, score components,
   fallback reason, and prompt-profile ID.
 

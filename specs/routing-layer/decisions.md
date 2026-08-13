@@ -119,12 +119,13 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
   - **Local JSONL remains the source of truth regardless of OTel configuration:** the spec's telemetry-promoted cost
     ranking requires the router to read its own history back in-process, and an OTel export is fire-and-forget to an
     external backend — it cannot be queried back for that purpose. No sqlite: nothing in pi's dependency tree uses it,
-    and the retained history is small enough (one row per task boundary) that in-memory percentile computation over
-    JSONL is sufficient.
-  - Signal mapping: one **span** per routing decision (route key, archetype, model, effort, provider, confidence,
-    boundary type, cache estimate), with child spans around each classifier LLM call (where the latency actually lives —
-    this workload is I/O-bound, not compute-bound); span events for the audit ledger (every boundary signal, exclusion,
-    score, fallback).
+    and the retained event ledger is small enough for in-memory percentile computation over labeled outcome rows.
+  - Signal mapping: a `router.classify` or `router.classify_continuity` span covers one router-level classifier request,
+    while `router.route` covers deterministic selection. Classifier spans carry bounded `router.classifier.*` summary
+    attributes, one `router.classifier.attempt` event per observed stage attempt, and a final
+    `router.classifier.completed` event. They intentionally omit the prompt, synopsis, classifier evidence, credentials,
+    and free-form errors. Routing spans carry route/model/profile decision attributes. All span creation and annotation
+    no-op when the companion is absent and annotation failures cannot change routing.
 - **Lint/format:** use the repository-wide Prettier formatter and ESLint rules. Biome was removed after the repository
   adopted this toolchain so formatting and linting have one authority each.
 - **Packaging:** install via the existing `scripts/install-extensions.sh`; `/reload` after reinstalling. Use the repo's
@@ -165,6 +166,63 @@ extensions/router/
 4. `telemetry.ts` — local JSONL store (router reads this back in-process for ranking), plus `pi-telemetry-otel` spans
    via the Symbol-registry (falling back to no-op if that package isn't present/configured).
 5. Ship in **shadow mode** first (log decisions without acting on them), per `SPEC.md`'s implementation sequence.
+
+## Decision: router-owned classifier deadline and conservative fast paths
+
+The router owns one **11-second** wall-clock deadline for each fresh-task or continuity classification. It wraps the
+whole request rather than resetting a timer for each retry, endpoint, or secondary stage, because those are all one
+user-visible routing decision. One `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and pi-ai
+`complete()` call. The deadline races the whole operation, aborts the signal, and returns the fail-safe result promptly;
+the operation promise has rejection handlers attached so a transport settling after the race cannot create an unhandled
+rejection.
+
+`AbortError` and `TimeoutError` are terminal control outcomes, not availability errors. The schema layer does not retry,
+the endpoint iterator does not advance, and primary cancellation never escalates to the provider-diverse secondary (nor
+does a cancelled secondary retry). This avoids spending more time or money after the request has been cancelled. A
+continuity failure explicitly resolves as `retained_continuity`; a fresh-task failure produces no route. In both cases
+the current model/effort is retained, along with the current lease when one exists, rather than interpreting missing
+classifier evidence as a reason to upgrade.
+
+Avoiding an LLM call is safe only for an intentionally narrow deterministic grammar. Anchored confirmations retain any
+active lease. Anchored operations such as rerunning checks, fixing already-reported failures/findings, committing the
+completed change, and `implement it`/`fix it` retain only a mutation-capable code-builder lease under an archetype that
+mutates the repository. Hard boundaries and explicit discontinuity run first; planning-to-implementation transitions
+create a new task; planning, review, read-only, and other incompatible leases do not receive the operation shortcut; and
+any topic-bearing addition falls through to continuity classification. These paths retain state only and never authorize
+mutation or bypass lifecycle tool enforcement.
+
+The router now owns and specifies its outer classification deadline and cancellation policy. It does not yet configure
+or normalize every provider SDK's lower-level connect/read/retry timeout, nor prove cancellation at the remote service
+after an adapter acknowledges the signal; that transport-specific ownership remains tracked in
+[`future-work.md`](future-work.md).
+
+## Decision: ordered, bounded, privacy-safe telemetry
+
+Every event kind shares a single `JsonlTelemetryStore` append tail. An accepted event is enqueued once and receives one
+persistence attempt in invocation order. Its caller waits no longer than **250 ms**, including queue delay. Timing out a
+caller deliberately does not remove that persistence promise from the tail: allowing it to settle prevents a later
+record from overtaking a potentially successful earlier append. Success or rejection after the caller deadline is
+consumed, never retried, and cannot apply adapter fail-safe behavior a second time.
+
+The adapter treats either persistence rejection or caller deadline as a session-level telemetry failure. `active` moves
+to `shadow`, the mode transition is persisted best-effort, the operator is notified once, and later record requests are
+ignored for the session. Shadow mode remains shadow. This favors an inspectable ordered ledger over continuing to make
+automatic decisions with an unknown audit trail.
+
+Classifier accounting is request-based. While telemetry is healthy, one `classifier_invocation` append is attempted per
+router-level request, with `invocationCount: 1`, purpose/outcome/resolution, `wallLatencyMs`, timeout/cancellation
+flags, aggregate and per-stage counts, and sanitized attempt metadata. Provider/model strings must pass the identifier
+allowlist; no prompt, synopsis, classifier evidence, credential, or free-form error crosses this observer boundary. The
+legacy `classifier_attempt` event is a non-additive downstream diagnostic emitted only when a completed classification
+proceeds into new-lease routing, so a request can have zero or several such rows. Dashboards count only
+`classifier_invocation` for request and timeout denominators.
+
+The same bounded summary is attached best-effort to optional classifier OTel spans. Fixed attributes are
+`router.classifier.purpose`, `outcome`, `resolution`, `latency_ms`, `timed_out`, `cancelled`, `attempt_count`,
+`completed_attempt_count`, and `valid_attempt_count` (all with the `router.classifier.` prefix), plus optional
+`failed_closed`/`error_category` and equivalent primary/secondary count prefixes. Attempts use
+`router.classifier.attempt`; completion uses `router.classifier.completed`. JSONL remains authoritative because OTel
+export is optional and is not queried by the ranking engine.
 
 ## Decision: explicit review kinds and irreversible-action authorization
 

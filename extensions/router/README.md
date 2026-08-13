@@ -58,6 +58,23 @@ Manual model/effort selection preserves that explicit selection, not the semanti
 nontrivial subsequent request still receives continuity classification; when it is a new task, the router creates a
 fresh lease and safety lifecycle while carrying the selected model/effort into that lease.
 
+## Continuity fast paths and classifier deadline
+
+With an existing lease, the boundary gate handles only two narrow classes without an LLM call: anchored confirmations
+such as `continue` or `go ahead`, and an anchored allowlist of same-task implementation operations such as rerunning
+checks, fixing reported failures/findings, or committing the completed change. The operation shortcut applies only to a
+mutation-capable code-builder lease whose policy archetype mutates the repository. Hard boundaries, explicit topic
+changes, planning-to-implementation transitions, incompatible planning/review/read-only leases, and topic-bearing near
+matches still create or classify a boundary. These shortcuts retain a lease; they never create authorization or bypass
+its lifecycle/tool gates.
+
+Every router-level fresh-task or continuity classification has one router-owned **11-second wall-clock deadline**. The
+router passes one `AbortSignal` through schema attempts and concrete endpoint calls. A router deadline aborts the
+in-flight call; any `AbortError` or `TimeoutError` is terminal, so the classifier does not retry the attempt, try
+another endpoint, or start/continue secondary escalation. On a continuity failure the current lease, model, effort, and
+profile remain selected. On a fresh-task failure the router does not create a route from synthetic evidence and keeps
+the current model/effort (and an existing lease, if present).
+
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
 builder, and two non-builder-vendor attempts; they never fall back to the builder for a verdict. Standalone
 user-requested reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta, classify its
@@ -119,11 +136,27 @@ The lease is persisted as pi custom session entries. Local audit events are appe
 ~/.pi/agent/router-telemetry/events.jsonl
 ```
 
-Set `PI_ROUTER_TELEMETRY_PATH` to override the JSONL location (useful for isolated tests). Writes are serialized in
-event order and each awaited write has a 250 ms deadline. A rejection or deadline disables automatic routing for the
-session (`active` falls back to `shadow`); the single queued append attempt is still allowed to settle safely so later
-events cannot overtake it. When `pi-telemetry-otel` is installed separately, router spans attach through its global
-Symbol registries. The router has no additional runtime dependencies and works without OTel.
+Set `PI_ROUTER_TELEMETRY_PATH` to override the JSONL location (useful for isolated tests). All event kinds share one
+store-wide queue, preserving invocation order and making exactly one persistence attempt per accepted event. Each
+`append()` caller waits at most **250 ms**, including time queued behind an earlier write. A deadline does not start a
+second write or abandon the queued persistence promise: the attempt may settle later, its rejection is consumed, and no
+later event can overtake it. A persistence rejection or caller deadline disables telemetry-driven automatic routing for
+the session; `active` fails safe to `shadow`, while `shadow` stays observational. The failure is reported once and late
+settlement cannot retry the event, re-enable routing, or apply the fail-safe twice.
+
+While telemetry is healthy, each router-level classification request makes one privacy-safe `classifier_invocation`
+append attempt with `invocationCount: 1`. Its request fields are `purpose` (`fresh_task` or `continuity`), `outcome`,
+`resolution`, `wallLatencyMs`, `timedOut`, and `cancelled`, plus aggregate attempt counts, per-stage counts, sanitized
+attempt entries, and an optional bounded error category. Attempt entries can contain only stage/try/outcome and
+validated provider/model/latency identifiers; prompts, synopses, classifier evidence, and free-form errors are never
+included. Count request volume and rates only from `classifier_invocation`. The legacy `classifier_attempt` event is a
+non-additive downstream diagnostic emitted only when a completed classification proceeds into new-lease routing; zero or
+several can belong to one request. Never sum the two kinds.
+
+When `pi-telemetry-otel` is installed separately, `router.classify` and `router.classify_continuity` spans attach
+through its global Symbol registries. They receive bounded `router.classifier.*` summary attributes, one
+`router.classifier.attempt` event per observed attempt, and a `router.classifier.completed` event, with no prompt,
+synopsis, evidence, or free-form error text. The router has no additional runtime dependencies and works without OTel.
 
 ## Real Bifrost evaluation
 

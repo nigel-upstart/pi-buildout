@@ -20,8 +20,16 @@ Add a per-endpoint circuit breaker that:
 - preserves the existing exact-ID, provider-diversity, and bounded-fallback policy;
 - has deterministic clock/probe tests, restart behavior, and operator controls.
 
-Before implementation, specify timeout ownership between pi, the provider transport, and the router so cancellation does
-not leave a slow agent running after the lease has moved on.
+Classifier timeout ownership at the router boundary is now specified and implemented: one 11-second wall-clock deadline
+covers the complete fresh-task or continuity request; its `AbortSignal` reaches pi-ai; `AbortError`/`TimeoutError` stops
+schema retries, endpoint fallback, and secondary escalation; and failure retains the current lease/model rather than
+moving on. This is not part of the deferred circuit breaker.
+
+The remaining timeout work is below that boundary. Before implementing active endpoint health recovery, inventory and
+normalize provider-adapter connect/read/retry timeouts, verify which transports actually terminate remote work after
+abort, and define how a transport timeout contributes to circuit state without double-counting the router deadline. This
+lower-level ownership and remote-cancellation observability is still provider-specific; the router must not infer a
+healthy or fully cancelled remote endpoint merely because its own deadline returned.
 
 ## FW2 — Workflow-specific horizon semantics
 

@@ -86,6 +86,15 @@ classification, and route work runs.
 Exit: every decision has policy/model/profile/classifier/exclusion/score data and fallback invariants are covered by
 tests.
 
+Reliability follow-up (completed after the original slice): the classifier now has one router-owned 11-second deadline,
+terminal abort/timeout propagation across attempts/endpoints/escalation, and retained-selection failure behavior.
+Narrow, policy-gated continuation/operation fast paths avoid unnecessary classification without becoming broad lexical
+task retention. Classifier telemetry now adds exactly one privacy-safe `classifier_invocation` request metric alongside
+the non-additive legacy `classifier_attempt` diagnostics, with optional bounded OTel annotations. The JSONL store
+serializes all append attempts, bounds each caller to 250 ms, fails active mode safe to shadow, and consumes late
+settlement without overtaking or retrying. Provider-adapter timeout normalization and endpoint circuit breakers remain
+deferred.
+
 ### 5. Evaluation and rollout gates
 
 - Golden corpus with at least one fixture per archetype plus boundary/escalation cases.
