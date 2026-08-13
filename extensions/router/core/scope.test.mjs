@@ -44,6 +44,95 @@ describe("canonical model identity", () => {
     ].map(canonicalModelId);
     assert.equal(new Set(opus5).size, 1);
   });
+
+  it("reduces scoped Bedrock vendor paths whose model name self-identifies", () => {
+    // Every one of these is reachable only on amazon-bedrock, and each used to pass through with its
+    // vendor segment still attached, so it matched no logical model ID at all.
+    assert.equal(canonicalModelId("zai.glm-5"), "glm-5");
+    assert.equal(canonicalModelId("zai.glm-4.7"), "glm-4.7");
+    assert.equal(canonicalModelId("zai.glm-4.7-flash"), "glm-4.7-flash");
+    assert.equal(canonicalModelId("moonshotai.kimi-k2.5"), "kimi-k2.5");
+    assert.equal(canonicalModelId("moonshot.kimi-k2-thinking"), "kimi-k2-thinking");
+    assert.equal(canonicalModelId("minimax.minimax-m2.5"), "minimax-m2.5");
+    assert.equal(canonicalModelId("nvidia.nemotron-super-3-120b"), "nemotron-super-3-120b");
+    assert.equal(canonicalModelId("xai.grok-4.3"), "grok-4.3");
+    assert.equal(canonicalModelId("qwen.qwen3-coder-next"), "qwen3-coder-next");
+    assert.equal(canonicalModelId("qwen.qwen3-235b-a22b-2507-v1:0"), "qwen3-235b-a22b-2507");
+  });
+
+  it("retains the DeepSeek vendor segment, whose catalog names carry no brand token", () => {
+    // Dropping the segment produced a bare `v3.2`, which identifies no vendor and would collide with
+    // any other catalog's `v3.2`.
+    assert.equal(canonicalModelId("deepseek.v3.2"), "deepseek-v3.2");
+    assert.equal(canonicalModelId("deepseek.v3-v1:0"), "deepseek-v3");
+    // Dropping the segment and then the version suffix produced a bare `r1`.
+    assert.equal(canonicalModelId("deepseek.r1-v1:0"), "deepseek-r1");
+    assert.equal(canonicalModelId("us.deepseek.r1-v1:0"), "deepseek-r1");
+    // The regional and bare DeepSeek profiles must still group together.
+    assert.equal(new Set(["deepseek.r1-v1:0", "us.deepseek.r1-v1:0"].map(canonicalModelId)).size, 1);
+  });
+
+  it("does not mistake a dotted model name for a vendor path segment", () => {
+    // The leading segment of each of these is `gpt-5`, `gemini-3` and `claude-opus-4`, none a vendor.
+    assert.equal(canonicalModelId("gpt-5.6-terra"), "gpt-5.6-terra");
+    assert.equal(canonicalModelId("gemini-3.5-flash"), "gemini-3.5-flash");
+    assert.equal(canonicalModelId("claude-opus-4.7"), "claude-opus-4-7");
+  });
+
+  it("keeps distinct scoped models in distinct logical groups", () => {
+    const distinct = [
+      "deepseek.v3.2",
+      "deepseek.v3-v1:0",
+      "deepseek.r1-v1:0",
+      "moonshotai.kimi-k2.5",
+      "moonshot.kimi-k2-thinking",
+      "minimax.minimax-m2",
+      "minimax.minimax-m2.1",
+      "minimax.minimax-m2.5",
+      "zai.glm-5",
+      "zai.glm-4.7",
+      "zai.glm-4.7-flash",
+    ].map(canonicalModelId);
+    assert.equal(new Set(distinct).size, distinct.length);
+  });
+
+  // Behaviour lock for every incumbent spelling the router already routes. Canonicalization decides
+  // evidence-prior lookup, prompt-profile lookup and endpoint grouping, so a silent change here
+  // would mis-route a candidate rather than fail. This PR must not move any of these.
+  it("leaves every incumbent spelling byte-identical", () => {
+    const golden = {
+      "claude-opus-5": "claude-opus-5",
+      "anthropic.claude-opus-5": "claude-opus-5",
+      "global.anthropic.claude-opus-5": "claude-opus-5",
+      "us.anthropic.claude-opus-4-6-v1": "claude-opus-4-6",
+      "us.anthropic.claude-haiku-4-5-20251001-v1:0": "claude-haiku-4-5",
+      "us.anthropic.claude-opus-4-5-20251101-v1:0": "claude-opus-4-5",
+      "eu.anthropic.claude-sonnet-5": "claude-sonnet-5",
+      "jp.anthropic.claude-opus-4-8": "claude-opus-4-8",
+      "au.anthropic.claude-sonnet-4-6": "claude-sonnet-4-6",
+      "anthropic.claude-fable-5": "claude-fable-5",
+      "claude-opus-4.7": "claude-opus-4-7",
+      "claude-sonnet-4.6": "claude-sonnet-4-6",
+      "claude-haiku-4.5": "claude-haiku-4-5",
+      "openai.gpt-oss-120b-1:0": "gpt-oss-120b",
+      "openai.gpt-oss-120b": "gpt-oss-120b",
+      "openai.gpt-5.6-sol": "gpt-5.6-sol",
+      "openai.gpt-5.6-luna": "gpt-5.6-luna",
+      "openai.gpt-5.6-terra": "gpt-5.6-terra",
+      "gpt-5.6-terra": "gpt-5.6-terra",
+      "gpt-5.4-mini": "gpt-5.4-mini",
+      "gemini-3.5-flash": "gemini-3.5-flash",
+      "gemini-2.5-pro": "gemini-2.5-pro",
+      "gemini-3-flash-preview": "gemini-3-flash-preview",
+      "amazon.nova-lite-v1:0": "nova-lite",
+      "us.meta.llama4-scout-17b-instruct-v1:0": "llama4-scout-17b-instruct",
+      "mistral.devstral-2-123b": "devstral-2-123b",
+      "bedrock/anthropic.claude-sonnet-5": "claude-sonnet-5",
+    };
+    for (const [spelling, expected] of Object.entries(golden)) {
+      assert.equal(canonicalModelId(spelling), expected, `canonicalModelId(${spelling})`);
+    }
+  });
 });
 
 describe("endpoint metadata and tie-breaks", () => {

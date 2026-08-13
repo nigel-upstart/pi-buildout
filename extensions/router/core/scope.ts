@@ -17,9 +17,48 @@ export type ScopePatternSource = "environment" | "project" | "user" | "default";
 /** Amazon Bedrock cross-region inference-profile prefixes. */
 const BEDROCK_REGION_PREFIX = /^(?:us|eu|au|jp|apac|global)\./;
 
-/** Vendor path segment used by resale catalogs, e.g. `anthropic.claude-sonnet-5`. */
-const VENDOR_PATH_PREFIX =
-  /^(?:anthropic|openai|google|meta|amazon|mistral|deepseek|qwen|ai21|cohere|writer|stability|twelvelabs)\./;
+/**
+ * Vendor path segments that resale catalogs prefix onto a model ID, e.g. `anthropic.claude-sonnet-5`
+ * or `zai.glm-5`, and that may be dropped because what remains still identifies the model.
+ *
+ * Membership is a claim about the vendor's naming, not a list of vendors we like. Dropping a segment
+ * is only correct when the remainder self-identifies: `zai.glm-5` reduces to `glm-5`,
+ * `minimax.minimax-m2.5` to `minimax-m2.5`, `nvidia.nemotron-super-3-120b` to
+ * `nemotron-super-3-120b`. A vendor whose catalog names omit the brand belongs in
+ * VENDOR_PATH_REWRITE instead.
+ */
+const VENDOR_PATH_SEGMENTS = new Set([
+  "anthropic",
+  "openai",
+  "google",
+  "meta",
+  "amazon",
+  "mistral",
+  "qwen",
+  "ai21",
+  "cohere",
+  "writer",
+  "stability",
+  "twelvelabs",
+  "minimax",
+  "moonshot",
+  "moonshotai",
+  "nvidia",
+  "xai",
+  "zai",
+]);
+
+/**
+ * Vendor path segments that carry part of the model's identity and are rewritten rather than
+ * dropped.
+ *
+ * DeepSeek's catalog names are `v3.2`, `v3` and `r1`, with no brand token. Dropping the segment
+ * reduces `deepseek.v3.2` to a bare `v3.2`, which identifies no vendor and collides with any other
+ * catalog's `v3.2`, and reduces `us.deepseek.r1-v1:0` to a bare `r1` once the version suffix is also
+ * removed. Both were live defects: the resulting IDs matched no policy candidate and could have
+ * grouped unrelated endpoints together.
+ */
+const VENDOR_PATH_REWRITE = new Map([["deepseek", "deepseek-"]]);
 
 /** Bedrock model-version suffixes: `-v1`, `-v1:0`, `-1:0`, `:0`. */
 const VERSION_SUFFIX = /(?:-v\d+(?::\d+)?|-\d+:\d+|:\d+)$/;
@@ -38,10 +77,28 @@ const DATE_SUFFIX = /-\d{8}$/;
 export function canonicalModelId(modelId: string): string {
   // A gateway path such as `bedrock/anthropic.claude-sonnet-5` carries the real ID in its last segment.
   let bare = modelId.split("/").at(-1) ?? modelId;
-  bare = bare.replace(BEDROCK_REGION_PREFIX, "").replace(VENDOR_PATH_PREFIX, "");
+  bare = normalizeVendorPath(bare.replace(BEDROCK_REGION_PREFIX, ""));
   bare = bare.replace(VERSION_SUFFIX, "").replace(DATE_SUFFIX, "");
   if (bare.startsWith("claude-")) bare = bare.replace(/(\d)\.(\d)/g, "$1-$2");
   return bare;
+}
+
+/**
+ * Resolves the leading vendor path segment, if there is one.
+ *
+ * Exact segment equality is deliberate. A prefix regex over the same names would misparse dotted
+ * model IDs whose first dot falls inside the model name: `gpt-5.6-terra` has a leading segment of
+ * `gpt-5`, `gemini-3.5-flash` has `gemini-3`, and `claude-opus-4.7` has `claude-opus-4`. None is a
+ * vendor, so all three are returned untouched and their own catalogs' dotted spelling survives.
+ */
+function normalizeVendorPath(modelId: string): string {
+  const separator = modelId.indexOf(".");
+  if (separator <= 0) return modelId;
+  const segment = modelId.slice(0, separator);
+  const remainder = modelId.slice(separator + 1);
+  const rewrite = VENDOR_PATH_REWRITE.get(segment);
+  if (rewrite !== undefined) return `${rewrite}${remainder}`;
+  return VENDOR_PATH_SEGMENTS.has(segment) ? remainder : modelId;
 }
 
 /**
