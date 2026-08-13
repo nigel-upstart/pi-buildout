@@ -284,9 +284,27 @@ export type ClassifierSpanLike = {
   addEvent(name: string, attributes?: Record<string, string | number | boolean>): unknown;
 };
 
+/**
+ * Optional OTel implementations may return promises. A rejected thenable that nobody consumes
+ * terminates the process under Node's default unhandled-rejection policy, so every telemetry return
+ * value has its rejection consumed here without ever being awaited: telemetry must not add latency
+ * to, or take the process down after, a routed operation.
+ *
+ * @returns true when the value was a thenable whose rejection is now consumed.
+ */
+function consumeThenableRejection(value: unknown): boolean {
+  const thenable = value as { then?: unknown } | null | undefined;
+  if (typeof thenable?.then !== "function") return false;
+  void Promise.resolve(value as PromiseLike<unknown>).then(
+    () => undefined,
+    () => undefined,
+  );
+  return true;
+}
+
 function safelyAnnotate(operation: () => unknown): void {
   try {
-    operation();
+    consumeThenableRejection(operation());
   } catch {
     // Optional telemetry can never alter classification or routing.
   }
@@ -742,7 +760,10 @@ export async function withRouterSpan<T>(
   let span: SpanLike | undefined;
   try {
     const runtime = symbolMap<RuntimeRegistryValue>(RUNTIME_REGISTRY)?.get(sessionId);
-    span = runtime?.tracer.startSpan(name, { attributes }, parentContext(sessionId));
+    const acquired = runtime?.tracer.startSpan(name, { attributes }, parentContext(sessionId));
+    // A tracer that hands back a promise is not a usable span; consume its rejection and route
+    // without instrumentation rather than calling span methods on a thenable.
+    span = consumeThenableRejection(acquired) ? undefined : acquired;
   } catch {
     // Span/context acquisition is optional and must not prevent the routed operation.
   }

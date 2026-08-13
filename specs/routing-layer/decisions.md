@@ -125,7 +125,9 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
     attributes, one `router.classifier.attempt` event per observed stage attempt, and a final
     `router.classifier.completed` event. They intentionally omit the prompt, synopsis, classifier evidence, credentials,
     and free-form errors. Routing spans carry route/model/profile decision attributes. All span creation and annotation
-    no-op when the companion is absent and annotation failures cannot change routing.
+    no-op when the companion is absent and annotation failures cannot change routing. Isolation covers both synchronous
+    throws and rejected thenables: a tracer method that returns a promise has its rejection consumed without being
+    awaited, so a broken exporter can neither delay a routed turn nor terminate the process after it succeeded.
 - **Lint/format:** use the repository-wide Prettier formatter and ESLint rules. Biome was removed after the repository
   adopted this toolchain so formatting and linting have one authority each.
 - **Packaging:** install via the existing `scripts/install-extensions.sh`; `/reload` after reinstalling. Use the repo's

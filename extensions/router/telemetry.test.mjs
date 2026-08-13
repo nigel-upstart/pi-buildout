@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { conservativeFeatures, validateTaskFeatures } from "./core/features.ts";
 import { providerWeightFor } from "./core/provider-weights.ts";
 import {
@@ -22,6 +24,25 @@ import {
   withRouterSpan,
 } from "./telemetry.ts";
 
+const execute = promisify(execFile);
+
+/** One representative request-level classifier summary shared by the span enrichment probes. */
+function classifierInvocationSummary() {
+  return {
+    purpose: "continuity",
+    outcome: "success",
+    resolution: "retained_continuity",
+    wallLatencyMs: 12,
+    timedOut: false,
+    cancelled: false,
+    failedClosed: false,
+    attemptCount: 1,
+    completedAttemptCount: 1,
+    validAttemptCount: 1,
+    stages: [{ stage: "primary", attemptCount: 1, completedAttemptCount: 1, validAttemptCount: 1 }],
+    attempts: [{ stage: "primary", try: 1, outcome: "valid", provider: "openai", modelId: "gpt-5.6-luna" }],
+  };
+}
 const temporaryDirectories = [];
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -327,20 +348,7 @@ describe("classifier invocation telemetry", () => {
       setAttribute: (name, value) => attributes.push([name, value]),
       addEvent: (name, values) => events.push([name, values]),
     };
-    const summary = {
-      purpose: "continuity",
-      outcome: "success",
-      resolution: "retained_continuity",
-      wallLatencyMs: 12,
-      timedOut: false,
-      cancelled: false,
-      failedClosed: false,
-      attemptCount: 1,
-      completedAttemptCount: 1,
-      validAttemptCount: 1,
-      stages: [{ stage: "primary", attemptCount: 1, completedAttemptCount: 1, validAttemptCount: 1 }],
-      attempts: [{ stage: "primary", try: 1, outcome: "valid", provider: "openai", modelId: "gpt-5.6-luna" }],
-    };
+    const summary = classifierInvocationSummary();
     annotateClassifierSpan(span, summary);
     assert.deepEqual(
       attributes.find(([name]) => name === "router.classifier.outcome"),
@@ -605,5 +613,52 @@ describe("withRouterSpan", () => {
 
   it("no-ops cleanly when the companion telemetry extension is absent", async () => {
     assert.equal(await withRouterSpan("missing", "router.route", {}, (span) => span ?? "no span"), "no span");
+  });
+
+  it("survives a tracer whose methods reject asynchronously under strict unhandled-rejection semantics", async () => {
+    // A rejected telemetry thenable that nobody consumes terminates the process under Node's default
+    // policy, and it settles after the routed operation has already returned. Only a real child
+    // process with --unhandled-rejections=strict can prove the process stays healthy, so the probe
+    // runs there rather than behind an in-process listener that would itself defuse the policy.
+    const telemetryModule = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "telemetry.ts")).href;
+    const probe = [
+      `const telemetry = await import(${JSON.stringify(telemetryModule)});`,
+      `const reject = () => Promise.reject(new Error("hostile async telemetry"));`,
+      `const asyncSpan = { setAttribute: reject, addEvent: reject, recordException: reject, setStatus: reject, end: reject };`,
+      `globalThis[Symbol.for("pi.telemetry-otel.runtimeRegistry.v1")] = new Map([`,
+      `  ["async-span", { tracer: { startSpan: () => asyncSpan } }],`,
+      `  ["async-start", { tracer: { startSpan: reject } }],`,
+      `]);`,
+      `const summary = ${JSON.stringify(classifierInvocationSummary())};`,
+      `const routed = await telemetry.withRouterSpan("async-span", "router.route", { "router.mode": "active" }, (span) => {`,
+      `  telemetry.annotateRouterSpan(span, { "router.decision": "ordinary" });`,
+      `  telemetry.annotateClassifierSpan(span, summary);`,
+      `  return "routed";`,
+      `});`,
+      `const startRejected = await telemetry.withRouterSpan("async-start", "router.route", {}, (span) =>`,
+      `  span === undefined ? "no span" : "unusable span leaked",`,
+      `);`,
+      `let propagated = "swallowed";`,
+      `try {`,
+      `  await telemetry.withRouterSpan("async-span", "router.route", {}, () => {`,
+      `    throw new Error("real router failure");`,
+      `  });`,
+      `} catch (error) {`,
+      `  propagated = error.message;`,
+      `}`,
+      `await new Promise((resolve) => setTimeout(resolve, 50));`,
+      `console.log(JSON.stringify({ routed, startRejected, propagated }));`,
+    ].join("\n");
+    const { stdout } = await execute(process.execPath, [
+      "--unhandled-rejections=strict",
+      "--input-type=module",
+      "-e",
+      probe,
+    ]);
+    assert.deepEqual(JSON.parse(stdout.trim().split("\n").at(-1)), {
+      routed: "routed",
+      startRejected: "no span",
+      propagated: "real router failure",
+    });
   });
 });
