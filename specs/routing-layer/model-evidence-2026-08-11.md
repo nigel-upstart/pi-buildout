@@ -510,6 +510,24 @@ rates: for example, the surveyed `au.anthropic.claude-opus-4-6-v1` is far above 
 expensive after the 17% discount. The `eu.` Claude profiles also carry proportional markups. A provider-wide scalar must
 never replace per-endpoint list rates.
 
+#### Two limits on the parity argument, recorded 2026-08-13
+
+**The proof covers one logical model, never two.** It establishes that the fixed blend orders endpoints _of the same
+model_ whose exact rate vectors match. It says nothing about comparing two different models, and the router does not use
+the blend that way: cross-model ranking runs through `costPerPassUsd` in the evidence priors, not through endpoint
+rates. Any future comparison of different models by blended rate is outside this argument, and is additionally unsound
+where the two carry different cache classes — every scoped Bedrock endpoint except `xai.grok-4.3` prices no cache at
+all, while every Anthropic and GPT-5.6 Bedrock endpoint does. `core/endpoint-cost.ts` provides
+`referenceMixEndpointCost` for that comparison; it is a diagnostic and does not order routes.
+
+**`gpt-5.6-sol` is no longer a parity pair.** Under the pinned `@earendil-works/pi-ai@0.84.1` registry,
+`amazon-bedrock/openai.gpt-5.6-sol` is input `5.5` and output `33` against direct `5` and `30`: a 10% markup, not
+parity. Bedrock Sol still wins on effective cost after the contract term, but as an empirical comparison rather than by
+construction, so it belongs with the `au.`/`eu.` exceptions above rather than in the parity set. The two existing Sol
+guards in [`core/routing.ts`](../../extensions/router/core/routing.ts) were re-verified against 0.84.1 and remain
+correct and necessary: Bedrock Sol still exposes no `max` thinking level, and still publishes no long-context tier above
+272,000 input tokens where the direct route does.
+
 ### Cache-rate parity and vendor terms
 
 For surveyed model/provider pairs that carry a positive short-write rate, the pinned registry reports

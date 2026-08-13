@@ -61,3 +61,36 @@ is a uniform scalar over every billed token class, so it remains order-preservin
 already identified. The pr3 invariant would not detect this behavioural divergence: it reads registry rates and
 cache-rate classifications, not observed `cacheRead` outcomes. Use the PR7 per-endpoint `cacheRead` and `cacheWrite`
 telemetry to answer the operational question without turning it into a selection rule.
+
+## FW4 — Cache-class eligibility, blocked on a measured cache-read share
+
+**Status:** deferred; the mechanism is deliberately absent rather than present and disabled.
+
+`core/endpoint-cost.ts` can now price an endpoint under the operator's observed token mix (`referenceMixEndpointCost`)
+and express the result as a break-even token multiplier (`breakEvenTokenMultiplier`). Both are diagnostics. Neither
+orders routes, and no eligibility guard reads them.
+
+The obvious next step is a guard that refuses a `caching_unpriced` endpoint on cache-heavy work, because such an
+endpoint pays its full input rate on every reused token while a cache-priced peer does not. The measured erosion is
+large: against Bedrock Claude Haiku 4.5, MiniMax M2.5's break-even falls from 3.5x to 2.4x as the cache-read share of
+input-side tokens rises from 12% to 70%, and GLM-5 crosses below 1.0, meaning it becomes more expensive per token than
+the rung it was supposed to undercut.
+
+That guard is not implemented, for one reason: the cache-read share it would key on is **assumed, not measured**. The
+10.61% figure is an estate-wide CloudZero observation across all Bedrock traffic, and this router deliberately holds
+leases to preserve K/V cache (`hasSignificantReusableCache` in `core/lease.ts`), so its own share should be materially
+higher — but nothing measures it. Shipping a guard whose threshold rests on a modelled number would repeat the failure
+mode this repository criticises elsewhere, and shipping it disabled behind a knob would add a tuning surface that no
+observation can yet set.
+
+Today the guard would affect exactly two endpoints, the `amazon-bedrock/openai.gpt-oss-120b` spellings, which are the
+cost-floor availability tail of the bounded read-only ladders. Excluding the cheapest tail on an assumed number is a
+poor trade.
+
+Prerequisites, in order:
+
+1. Per-endpoint observed `cacheRead` and `cacheWrite` token telemetry, stratified by archetype — the same measurement
+   FW3 requires. Report distribution and sample counts, not a point estimate.
+2. A decision on whether the share is a property of the archetype, of the lease's reusable-cache signal, or of both.
+3. Only then a guard, with its threshold derived from the observed distribution and its exclusion recorded with the
+   classification and threshold that produced it.

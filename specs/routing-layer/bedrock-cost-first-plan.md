@@ -42,6 +42,14 @@ effect, so it legitimately affects route choice.
 
 ### Why omitting cache terms from the blend is safe
 
+> **Amended 2026-08-13.** The argument below is sound for its stated scope and two limits are now recorded explicitly.
+> It covers endpoints of one logical model whose exact rate vectors match; it is not a licence to compare two different
+> models by blended rate, and it is unsound across differing cache classes. Under `@earendil-works/pi-ai@0.84.1`
+> `amazon-bedrock/openai.gpt-5.6-sol` is `5.5`/`33` against direct `5`/`30`, so Sol is a marked-up exception rather than
+> a parity pair. See the corresponding section in [`model-evidence-2026-08-11.md`](model-evidence-2026-08-11.md) and
+> `referenceMixEndpointCost` in [`core/endpoint-cost.ts`](../../extensions/router/core/endpoint-cost.ts), which prices
+> cache classes honestly for diagnostics without ordering routes.
+
 Because the discount is a **uniform scalar across input, output, `cacheRead`, and `cacheWrite`**, the fixed
 `0.25 * input + 0.75 * output` blend is **order-preserving for each exact Bedrock/first-party pair whose complete
 list-rate vectors are equal**, not by approximation. Prefix alone does not establish parity: the surveyed

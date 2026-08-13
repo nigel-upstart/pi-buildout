@@ -5,9 +5,11 @@ import { calculateCost } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   blendedEndpointCost,
+  breakEvenTokenMultiplier,
   calculateEndpointEffectiveCost,
   classifyCacheWriteRate,
   compareEndpointEffectiveCost,
+  referenceMixEndpointCost,
 } from "./endpoint-cost.ts";
 import { providerWeightFor, resolveProviderWeights } from "./provider-weights.ts";
 
@@ -199,5 +201,85 @@ describe("installed pi cost semantics", () => {
     const result = calculateCost(model, usage({ cacheWrite: 100_000, cacheWrite1h: 100_000, totalTokens: 100_000 }));
     assert.equal(result.cacheWrite, (model.cost.input * 2 * 100_000) / 1_000_000);
     assert.equal(result.cacheWrite, 0.5);
+  });
+});
+
+describe("reference-mix effective cost", () => {
+  // Rates read from @earendil-works/pi-ai@0.84.1, amazon-bedrock, with the contract weight applied.
+  // These are the figures recorded in specs/routing-layer/scoped-model-analysis-2026-08-13.md, so a
+  // registry bump that moves a rate fails here rather than silently invalidating that record.
+  const BEDROCK = {
+    "minimax.minimax-m2.5": { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0, expected: 0.357 },
+    "moonshotai.kimi-k2.5": { input: 0.6, output: 3, cacheRead: 0, cacheWrite: 0, expected: 0.785 },
+    "moonshot.kimi-k2-thinking": { input: 0.6, output: 2.5, cacheRead: 0, cacheWrite: 0, expected: 0.725 },
+    "deepseek.v3.2": { input: 0.62, output: 1.85, cacheRead: 0, cacheWrite: 0, expected: 0.662 },
+    "zai.glm-5": { input: 1, output: 3.2, cacheRead: 0, cacheWrite: 0, expected: 1.093 },
+    "openai.gpt-oss-120b": { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0, expected: 0.178 },
+    "openai.gpt-5.6-luna": { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275, expected: 0.298 },
+    "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, expected: 1.233 },
+    "openai.gpt-5.6-terra": { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75, expected: 2.977 },
+    "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, expected: 6.167 },
+    "openai.gpt-5.6-sol": { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 6.88, expected: 7.442 },
+  };
+  const BEDROCK_WEIGHT = 0.83;
+
+  function rates(modelId) {
+    const { input, output, cacheRead, cacheWrite } = BEDROCK[modelId];
+    return { provider: "amazon-bedrock", costPerMillion: { input, output, cacheRead, cacheWrite } };
+  }
+
+  it("reproduces the recorded weighted figures for every audited endpoint", () => {
+    for (const [modelId, row] of Object.entries(BEDROCK)) {
+      const actual = referenceMixEndpointCost(rates(modelId)) * BEDROCK_WEIGHT;
+      assert.ok(
+        Math.abs(actual - row.expected) < 0.0006,
+        `${modelId} priced ${actual.toFixed(4)}, recorded ${String(row.expected)}`,
+      );
+    }
+  });
+
+  it("charges an unpriced cache at the input rate rather than treating zero as free", () => {
+    // The whole point. A zero cache rate means caching is unpriced or unsupported, so cache-read
+    // tokens are billed as ordinary input. Reading zero as a discount would rank an endpoint that
+    // cannot cache ahead of one that can.
+    const unpriced = rates("minimax.minimax-m2.5");
+    assert.equal(classifyCacheWriteRate(unpriced.costPerMillion), "caching_unpriced");
+    // Its price is therefore flat in the cache-read share.
+    for (const share of [0, 0.3, 0.7, 1]) {
+      assert.equal(referenceMixEndpointCost(unpriced, share), referenceMixEndpointCost(unpriced, 0));
+    }
+    // A cache-priced endpoint gets cheaper as reuse rises.
+    const priced = rates("openai.gpt-5.6-luna");
+    assert.ok(referenceMixEndpointCost(priced, 0.7) < referenceMixEndpointCost(priced, 0.124));
+  });
+
+  it("shows the scoped cost advantage eroding as cache reuse rises", () => {
+    // Recorded in the analysis: against Bedrock Haiku 4.5 the break-even for MiniMax M2.5 falls from
+    // 3.5x to 2.4x between a 12% and a 70% cache-read share, and GLM-5 crosses below 1.0, meaning it
+    // becomes more expensive per token than the rung it was supposed to undercut.
+    const haiku = { rates: rates("claude-haiku-4-5"), weight: BEDROCK_WEIGHT };
+    const minimax = { rates: rates("minimax.minimax-m2.5"), weight: BEDROCK_WEIGHT };
+    const glm5 = { rates: rates("zai.glm-5"), weight: BEDROCK_WEIGHT };
+
+    assert.ok(Math.abs(breakEvenTokenMultiplier(haiku, minimax, 0.124) - 3.5) < 0.05);
+    assert.ok(Math.abs(breakEvenTokenMultiplier(haiku, minimax, 0.7) - 2.4) < 0.05);
+    assert.ok(breakEvenTokenMultiplier(haiku, glm5, 0.124) > 1);
+    assert.ok(
+      breakEvenTokenMultiplier(haiku, glm5, 0.7) < 1,
+      "GLM-5 must be shown as more expensive than Haiku once cache reuse is high",
+    );
+  });
+
+  it("does not disturb the fixed blend or the endpoint comparator", () => {
+    // The reference mix is diagnostic. Endpoint ordering within one logical model still uses the fixed
+    // 25/75 blend, so adding this function must not change any route.
+    const sol = rates("openai.gpt-5.6-sol");
+    assert.equal(blendedEndpointCost(sol), 0.25 * 5.5 + 0.75 * 33);
+    assert.notEqual(blendedEndpointCost(sol), referenceMixEndpointCost(sol));
+  });
+
+  it("rejects a nonsensical cache-read share instead of extrapolating", () => {
+    assert.throws(() => referenceMixEndpointCost(rates("claude-opus-5"), 1.5), RangeError);
+    assert.throws(() => referenceMixEndpointCost(rates("claude-opus-5"), -0.1), RangeError);
   });
 });
