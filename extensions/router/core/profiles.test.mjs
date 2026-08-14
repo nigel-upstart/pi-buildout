@@ -109,9 +109,11 @@ describe("prompt profile eligibility is declared in canonical logical model IDs"
       );
       if (!resolvable) unroutable.push(`${endpoint.provider}/${endpoint.modelId}`);
     }
-    // 49, not 52: cutting gpt-5.4-mini removed its three fixture spellings (openai, openai-codex and
-    // github-copilot) from the policy-named set.
-    assert.equal(named.length, 49, "the registry fixture no longer describes the surveyed policy endpoint set");
+    // 50: cutting gpt-5.4-mini removed its three fixture spellings (openai, openai-codex and
+    // github-copilot) from the policy-named set, taking 52 to 49; declaring minimax-m2.5 adds back the
+    // one Bedrock spelling that canonicalizes to it. minimax.minimax-m2 and minimax.minimax-m2.1 are in
+    // the fixture but are not policy-named, so they are correctly skipped.
+    assert.equal(named.length, 50, "the registry fixture no longer describes the surveyed policy endpoint set");
     assert.deepEqual(unroutable, [], "policy-named endpoints resolve no profile and would be excluded");
   });
 
@@ -194,5 +196,74 @@ describe("canonical eligibility does not over-admit", () => {
         ?.id,
       findPromptProfile("anthropic", "anthropic.claude-opus-5", "median_repository_implementation", "medium")?.id,
     );
+  });
+});
+
+describe("the scoped MiniMax rung is declared but not yet routable", () => {
+  // P5 supplies vendor identity and a bounded prompt profile. It deliberately supplies no policy
+  // candidate, so nothing routes here. These assertions pin that boundary in both directions: the
+  // plumbing works, and the model is still unreachable.
+  it("resolves a vendor for every reachable MiniMax spelling", () => {
+    // buildRegistrySnapshot drops any endpoint whose vendor is unknown, and a dropped endpoint is
+    // invisible rather than excluded with a reason, so an unresolved vendor is the quietest failure.
+    for (const modelId of ["minimax.minimax-m2.5", "minimax.minimax-m2", "minimax.minimax-m2.1"]) {
+      assert.equal(canonicalVendor("amazon-bedrock", modelId), "minimax", modelId);
+    }
+    // Bedrock repeats the brand as both vendor segment and model token; the bare form has only one.
+    assert.equal(canonicalVendor("amazon-bedrock", "minimax-m2.5"), "minimax");
+    assert.equal(canonicalModelId("minimax.minimax-m2.5"), "minimax-m2.5");
+  });
+
+  it("resolves the same bounded profile for the logical ID and the Bedrock spelling", () => {
+    for (const archetype of ["fast_classification", "exact_extraction"]) {
+      const viaLogical = findPromptProfile("minimax", "minimax-m2.5", archetype, "low");
+      assert.equal(viaLogical?.id, "minimax-m2.5-bounded-v1", `${archetype} via logical ID`);
+      assert.equal(
+        findPromptProfile("minimax", "minimax.minimax-m2.5", archetype, "low")?.id,
+        viaLogical?.id,
+        `${archetype} via the amazon-bedrock spelling`,
+      );
+    }
+  });
+
+  it("confines the profile to bounded read-only archetypes and the efforts the endpoint exposes", () => {
+    const profile = PROMPT_PROFILES.find((entry) => entry.id === "minimax-m2.5-bounded-v1");
+    assert.ok(profile);
+    assert.deepEqual([...profile.archetypes].sort(), ["exact_extraction", "fast_classification"]);
+    // Nothing above `high` exists on the endpoint, so the profile must not offer it.
+    for (const effort of ["xhigh", "max"]) {
+      assert.ok(!profile.efforts.includes(effort), `profile offers ${effort}, which the endpoint lacks`);
+      assert.equal(findPromptProfile("minimax", "minimax-m2.5", "fast_classification", effort), undefined);
+    }
+    // And it must not resolve for work it has no evidence for.
+    for (const archetype of ["median_repository_implementation", "code_review", "implementation_planning"]) {
+      assert.equal(findPromptProfile("minimax", "minimax-m2.5", archetype, "low"), undefined, archetype);
+    }
+  });
+
+  it("gives the refused scoped models no profile at all", () => {
+    // GLM-5, DeepSeek V3.2, Kimi and Grok were each refused on a recorded axis, so each must stay
+    // structurally ineligible rather than merely unlisted in a ladder.
+    for (const modelId of ["glm-5", "deepseek-v3.2", "kimi-k2.5", "kimi-k2-thinking", "grok-4.3"]) {
+      for (const vendor of ["minimax", "openai", "anthropic", "google"]) {
+        for (const archetype of ARCHETYPES) {
+          for (const effort of EFFORT_LEVELS) {
+            assert.equal(findPromptProfile(vendor, modelId, archetype, effort), undefined, `${vendor}/${modelId}`);
+          }
+        }
+      }
+    }
+  });
+
+  it("names no MiniMax candidate in any ladder, so it cannot be routed yet", () => {
+    const named = new Set(
+      [
+        ...Object.values(BOOTSTRAP_ROUTE_POLICIES).flatMap((policy) => [...policy.primary, ...policy.fallback]),
+        ...HARD_TASK_ESCALATION_REFS,
+      ].map((ref) => ref.logicalModelId),
+    );
+    assert.ok(!named.has("minimax-m2.5"), "P5 must not make MiniMax routable; that is P6's decision");
+    // It is nonetheless declared, which is what lets P6 name it without also opening the vendor union.
+    assert.equal(MODEL_VENDOR["minimax-m2.5"], "minimax");
   });
 });

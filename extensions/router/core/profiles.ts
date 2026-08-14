@@ -14,9 +14,11 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
  * obligation to invent tier data for it.
  *
  * Adding a vendor here is therefore safe on its own, and grants nothing: a vendor with no prompt
- * profile and no policy candidate remains unroutable, which is the intended default.
+ * profile and no policy candidate remains unroutable, which is the intended default. `minimax` is the
+ * first entry admitted on that basis — it carries a bounded prompt profile but no reviewer ladder, no
+ * secondary-classifier tier and, until policy names one of its models, no route.
  */
-export const MODEL_VENDORS = ["openai", "anthropic", "google"] as const;
+export const MODEL_VENDORS = ["openai", "anthropic", "google", "minimax"] as const;
 export type ModelVendor = (typeof MODEL_VENDORS)[number];
 
 export type PromptProfile = {
@@ -107,6 +109,34 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
       "Inspect the relevant evidence before changing files, then verify the change without repeating the full survey.",
     ],
     outputContract: "Complete the requested change and return a compact verification receipt.",
+    criticalConstraints: SHARED_CONSTRAINTS,
+    includeExamples: false,
+  },
+  {
+    // Bounded, non-agentic work only, and text-only because the Bedrock endpoint accepts no images.
+    //
+    // MiniMax M2.5's only quality evidence is single-attempt: 75.8% resolve on SWE-bench Verified over
+    // 500 instances, and a 68.6% mean over the eight SWE-bench Multilingual language splits. That is
+    // measured at the submission's "high reasoning" setting, and it measures agentic repository work
+    // rather than bounded classification, so it establishes a capability floor for this profile's
+    // archetypes and not a per-effort curve. Nothing here is measured for schema emission.
+    //
+    // The profile is therefore as narrow as the gpt-oss one: two read-only archetypes, no tool work,
+    // and no claim beyond emitting exactly what was asked for.
+    id: "minimax-m2.5-bounded-v1",
+    version: 1,
+    vendor: "minimax",
+    modelIds: ["minimax-m2.5"],
+    archetypes: ["fast_classification", "exact_extraction"],
+    // The Bedrock endpoint exposes off/minimal/low/medium/high and no higher tier, so this list cannot
+    // reach xhigh or max. A test pins that against the installed registry.
+    efforts: ["low", "medium", "high"],
+    executionSurface: "pi-coding-agent",
+    guidelines: [
+      "Answer the bounded question or produce the requested structure directly, with no exploratory tool work.",
+      "When a schema is supplied, emit exactly that schema and nothing else.",
+    ],
+    outputContract: "Return only the requested classification or structured record.",
     criticalConstraints: SHARED_CONSTRAINTS,
     includeExamples: false,
   },

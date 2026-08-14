@@ -58,6 +58,8 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "gemini-3.6-flash": "google",
   "gemini-2.5-pro": "google",
   "gemini-2.5-flash": "google",
+  // Carries a bounded prompt profile but no policy candidate yet, so it is declared and unroutable.
+  "minimax-m2.5": "minimax",
 };
 
 /**

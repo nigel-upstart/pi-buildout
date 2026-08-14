@@ -25,8 +25,14 @@ function logicalModelsFromPolicy(source) {
   const entries = [...declaration.groups.body.matchAll(/^\s*"(?<modelId>[^"]+)":\s*"(?<vendor>[^"]+)",\s*$/gmu)].map(
     ({ groups }) => ({ logicalModelId: groups.modelId, vendor: groups.vendor }),
   );
-  const nonemptyLines = declaration.groups.body.split("\n").filter((line) => line.trim() !== "");
-  if (entries.length !== nonemptyLines.length) {
+  // Line-comment lines are skipped so an entry may carry a note beside it, which the policy does for
+  // any model that is declared but deliberately unroutable. Everything else still fails closed: the
+  // count check below is what stops this parser from silently surveying a subset of the real table.
+  const unaccountedLines = declaration.groups.body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("//"));
+  if (entries.length !== unaccountedLines.length) {
     throw new Error("MODEL_VENDOR contains syntax the deterministic survey parser does not recognize");
   }
   return entries.sort((left, right) => compareText(left.logicalModelId, right.logicalModelId));

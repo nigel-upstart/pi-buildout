@@ -357,6 +357,11 @@ export function canonicalVendor(provider: string, modelId: string): ModelVendor 
   }
   if (bareId.startsWith("claude-") || bareId.startsWith("anthropic.claude-")) return "anthropic";
   if (bareId.startsWith("gemini-")) return "google";
+  // Bedrock spells MiniMax models `minimax.minimax-m2.5`, so the vendor segment and the model's own
+  // brand token are the same word; the bare form `minimax-m2.5` carries only the latter. Both must
+  // resolve, because buildRegistrySnapshot drops any endpoint whose vendor is unknown, and a dropped
+  // endpoint is invisible rather than excluded with a reason.
+  if (bareId.startsWith("minimax-") || bareId.startsWith("minimax.minimax-")) return "minimax";
   if (provider === "openai" || provider === "openai-codex") return "openai";
   if (provider === "anthropic") return "anthropic";
   if (provider === "google" || provider === "google-vertex") return "google";
