@@ -1,36 +1,26 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 97af6cd..70c90f4 100644
+index 97af6cd..c76a43b 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
-@@ -10,7 +10,8 @@ import { findGitPaths } from "./footer-data-provider.js";
+@@ -10,6 +10,7 @@ import { findGitPaths } from "./footer-data-provider.js";
  import { DefaultPackageManager } from "./package-manager.js";
  import { loadPromptTemplates } from "./prompt-templates.js";
  import { SettingsManager } from "./settings-manager.js";
--import { loadSkills } from "./skills.js";
-+import { getActiveSkillEntries, getSkillCatalog, getSkillCatalogDirs } from "./skill-management.js";
-+import { loadSkills, loadSkillsFromDir } from "./skills.js";
++import { getActiveSkillEntries, getSkillCatalog, sourceOf } from "./skill-management.js";
+ import { loadSkills } from "./skills.js";
  import { createSourceInfo } from "./source-info.js";
  import { resetTimings } from "./timings.js";
- function resolvePromptInput(input, description) {
-@@ -28,6 +29,17 @@ function resolvePromptInput(input, description) {
+@@ -28,6 +29,9 @@ function resolvePromptInput(input, description) {
      }
      return input;
  }
-+function entrySource(entry) {
-+    if (typeof entry === "string")
-+        return entry;
-+    if (!entry || typeof entry !== "object")
-+        return undefined;
-+    const source = entry.source ?? entry.path ?? entry.name;
-+    return typeof source === "string" ? source : undefined;
-+}
 +function looksLikePath(value) {
 +    return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
 +}
  function loadContextFileFromDir(dir) {
      const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
      for (const filename of candidates) {
-@@ -326,9 +338,10 @@ export class DefaultResourceLoader {
+@@ -326,11 +330,13 @@ export class DefaultResourceLoader {
          }
          this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
          this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
@@ -39,30 +29,50 @@ index 97af6cd..70c90f4 100644
 -            : this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
 +        // Skills are now opt-in. Package/settings/discovered skills form a catalog, but are not
 +        // active unless explicitly enabled globally, for this repo, or for this session/CLI.
-+        const activeSkillPaths = this.noSkills ? [] : this.getActiveSkillPaths();
-+        const skillPaths = this.mergePaths([...cliEnabledSkills, ...activeSkillPaths], this.additionalSkillPaths);
++        const activeSkills = this.noSkills ? { paths: [], diagnostics: [] } : this.getActiveSkillPaths();
++        const skillPaths = this.mergePaths([...cliEnabledSkills, ...activeSkills.paths], this.additionalSkillPaths);
          this.lastSkillPaths = skillPaths;
          this.updateSkillsFromPaths(skillPaths, metadataByPath);
++        this.skillDiagnostics.push(...activeSkills.diagnostics);
          for (const p of this.additionalSkillPaths) {
-@@ -496,6 +509,38 @@ export class DefaultResourceLoader {
+             if (isLocalPath(p)) {
+                 const resolved = this.resolveResourcePath(p);
+@@ -496,6 +502,48 @@ export class DefaultResourceLoader {
              };
          });
      }
 +    getActiveSkillPaths() {
 +        const paths = [];
-+        const catalogPaths = new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
-+        for (const entry of getActiveSkillEntries({ cwd: this.cwd, agentDir: this.agentDir })) {
-+            const source = entrySource(entry);
++        const diagnostics = [];
++        let catalogPaths;
++        const entries = getActiveSkillEntries({
++            cwd: this.cwd,
++            agentDir: this.agentDir,
++            onWarn: (message) => diagnostics.push({ type: "warning", message }),
++        });
++        for (const entry of entries) {
++            const source = sourceOf(entry);
 +            if (!source)
 +                continue;
-+            const resolved = looksLikePath(source) ? this.resolveResourcePath(source) : catalogPaths.get(source);
-+            if (resolved)
++            let resolved;
++            if (looksLikePath(source)) {
++                resolved = this.resolveResourcePath(source);
++            }
++            else {
++                catalogPaths ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
++                resolved = catalogPaths.get(source);
++            }
++            if (resolved) {
 +                paths.push(resolved);
++            }
++            else {
++                diagnostics.push({ type: "warning", message: "Active skill could not be resolved", path: source });
++            }
 +        }
-+        return paths;
++        return { paths, diagnostics };
 +    }
 +    resolveSkillEntry(entry) {
-+        const source = entrySource(entry);
++        const source = sourceOf(entry);
 +        if (!source)
 +            return undefined;
 +        if (looksLikePath(source)) {
@@ -71,24 +81,17 @@ index 97af6cd..70c90f4 100644
 +        return this.findCatalogSkillPath(source);
 +    }
 +    findCatalogSkillPath(name) {
-+        const dirs = getSkillCatalogDirs({ cwd: this.cwd, agentDir: this.agentDir });
-+        for (const dir of dirs) {
-+            const result = loadSkillsFromDir({ dir, source: "path" });
-+            const skill = result.skills.find((s) => s.name === name);
-+            if (skill)
-+                return skill.filePath;
-+        }
-+        return undefined;
++        return getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).find((skill) => skill.name === name)?.filePath;
 +    }
      updateSkillsFromPaths(skillPaths, metadataByPath) {
          let skillsResult;
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..537eaad
+index 0000000..d84b2cc
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,215 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -157,7 +160,7 @@ index 0000000..537eaad
 +    const rel = relative(homedir(), root).split(sep).join("/");
 +    return rel && !rel.startsWith("..") && rel !== "." ? `local:~/${rel}` : `local:${root}`;
 +}
-+function sourceOf(entry) {
++export function sourceOf(entry) {
 +    if (typeof entry === "string")
 +        return entry;
 +    if (!entry || typeof entry !== "object")
@@ -168,10 +171,11 @@ index 0000000..537eaad
 +function enabledEntries(value) {
 +    return Array.isArray(value?.enabled) ? value.enabled : [];
 +}
-+function scopeFromArgs(args) {
-+    const scopes = args.filter((arg) => arg === "--global" || arg === "--repo" || arg === "--session");
-+    if (scopes.length !== 1 || new Set(scopes).size !== 1)
-+        throw new Error("Specify exactly one scope: --global, --repo, or --session.");
++function scopeFromArgs(args, allowSession = false) {
++    const allowed = allowSession ? ["--global", "--repo", "--session"] : ["--global", "--repo"];
++    const scopes = args.filter((arg) => allowed.includes(arg));
++    if (scopes.length !== 1)
++        throw new Error(`Specify exactly one scope: ${allowSession ? "--global, --repo, or --session" : "--global or --repo"}.`);
 +    return scopes[0].slice(2);
 +}
 +function configLocation(scope, cwd, agentDir) {
@@ -198,7 +202,7 @@ index 0000000..537eaad
 +        config[location.key] = target;
 +    writeJson(location.path, config);
 +}
-+export function getActiveSkillEntries({ cwd, agentDir, strict = false }) {
++export function getActiveSkillEntries({ cwd, agentDir, strict = false, onWarn }) {
 +    const entries = [];
 +    const safeRead = (path) => {
 +        try {
@@ -207,7 +211,7 @@ index 0000000..537eaad
 +        catch (error) {
 +            if (strict)
 +                throw error;
-+            console.warn(`Ignoring skill configuration: ${error instanceof Error ? error.message : String(error)}`);
++            onWarn?.(`Ignoring skill configuration: ${error instanceof Error ? error.message : String(error)}`);
 +            return {};
 +        }
 +    };
@@ -271,7 +275,11 @@ index 0000000..537eaad
 +        const [command, ...rest] = args;
 +        if (command === "active") {
 +            const entries = getActiveSkillEntries({ ...options, strict: true });
-+            return { exitCode: 0, lines: entries.length ? ["Active skills:", ...entries.map((entry) => `  ${entry.scope}: ${entry.source}`)] : ["Skills: none"] };
++            return {
++                exitCode: 0,
++                lines: entries.length ? ["Active skills:", ...entries.map((entry) => `  ${entry.scope}: ${entry.source}`)] : ["Skills: none"],
++                activeEntries: entries,
++            };
 +        }
 +        if (command === "list" || command === "search") {
 +            const query = command === "search" ? rest.join(" ").trim().toLowerCase() : "";
@@ -282,7 +290,7 @@ index 0000000..537eaad
 +        }
 +        if (command === "add" || command === "remove") {
 +            const source = rest.find((arg) => !arg.startsWith("--"));
-+            const scope = scopeFromArgs(rest);
++            const scope = scopeFromArgs(rest, options.allowSession);
 +            if (!source || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
 +                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            if (scope === "session") {
@@ -313,7 +321,7 @@ index 68ca0c3..0456af2 100644
  //# sourceMappingURL=slash-commands.js.map
 \ No newline at end of file
 diff --git a/dist/main.js b/dist/main.js
-index 5ff9c80..32cffdf 100644
+index 5ff9c80..7f5ba25 100644
 --- a/dist/main.js
 +++ b/dist/main.js
 @@ -28,6 +28,7 @@ import { resolveCliModel, resolveModelScope } from "./core/model-resolver.js";
@@ -328,7 +336,7 @@ index 5ff9c80..32cffdf 100644
      if (await handleConfigCommand(args, { extensionFactories })) {
          return;
      }
-+    if (args[0] === "skills") {
++    if (args[0] === "skills" && (args.length === 1 || ["active", "list", "search", "add", "remove"].includes(args[1]))) {
 +        const result = runSkillsCommand(args.slice(1), { cwd, agentDir });
 +        const output = result.lines.join("\n");
 +        if (result.exitCode === 0) {
@@ -344,7 +352,7 @@ index 5ff9c80..32cffdf 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 42e655d..9501095 100644
+index 42e655d..01d5035 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -23,6 +23,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -404,13 +412,13 @@ index 42e655d..9501095 100644
 +            result.lines = [`${result.session.action === "add" ? "Enabled" : "Disabled"} ${result.session.source} for this session.`];
 +        }
 +        if (args[0] === "active") {
-+            const sessionSkills = this.session.resourceLoader.additionalSkillPaths;
-+            if (sessionSkills.length > 0) {
-+                if (result.lines[0] === "Skills: none") {
-+                    result.lines[0] = "Active skills:";
-+                }
-+                result.lines.push(...sessionSkills.map((path) => `  session: ${path}`));
-+            }
++            const activeEntries = [
++                ...(result.activeEntries ?? []),
++                ...this.session.resourceLoader.additionalSkillPaths.map((source) => ({ scope: "session", source })),
++            ];
++            result.lines = activeEntries.length
++                ? ["Active skills:", ...activeEntries.map((entry) => `  ${entry.scope}: ${entry.source}`)]
++                : ["Skills: none"];
 +        }
 +        if (args[0] === "add" || args[0] === "remove") {
 +            await this.handleReloadCommand();
@@ -425,7 +433,7 @@ index 42e655d..9501095 100644
          if (this.session.isStreaming) {
              this.showWarning("Wait for the current response to finish before reloading.");
 diff --git a/docs/skills.md b/docs/skills.md
-index d3ffeea..665cbb2 100644
+index d3ffeea..7861eae 100644
 --- a/docs/skills.md
 +++ b/docs/skills.md
 @@ -21,7 +21,15 @@ Pi implements the [Agent Skills standard](https://agentskills.io/specification),
@@ -527,7 +535,7 @@ index d3ffeea..665cbb2 100644
 +pi skills remove browser-testing-with-devtools --repo
 +```
 +
-+`--session` is interactive-only and lasts until the session ends. `--global` and `--repo` persist to their respective JSON configuration. `list` and `search` show file-based catalog skills; `active` shows the currently configured global and repository entries.
++`--session` is interactive-only and lasts until the session ends. `--global` and `--repo` persist to their respective JSON configuration. `list` and `search` show file-based catalog skills. `pi skills active` shows the configured global and repository entries; `/skills active` also shows session entries.
 +
 +Active skills also register as `/skill:name` commands:
  
