@@ -106,6 +106,7 @@ function classifierSystemPrompt(stage: "primary" | "secondary"): string {
     "Never return or recommend a model, provider, route, prompt profile, or price.",
     "Classify only the immediate requested task; repository size or available tools do not imply implementation scope.",
     "Use information_only when the request can be answered from supplied text; use local_read only when it asks to inspect local artifacts.",
+    "Use reversible_mutation when the immediate request asks you to change, create, or delete anything on disk, including editing files, writing tests, committing, or creating a branch or worktree.",
     "Set reviewIntent only when the immediate request asks to review, audit, or critique existing work; never set it merely because risky work should later receive independent verification.",
     "Treat a live log, container, process, or terminal failure as incident_or_operations when operational diagnosis is the core task; logs used as evidence for a repository-code change do not make that change an incident.",
     "Treat release checklists, publish checkpoints, worktree creation, and environment inspection as noncoding_tool_workflow unless the immediate request explicitly changes repository content.",
