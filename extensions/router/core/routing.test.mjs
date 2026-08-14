@@ -1209,7 +1209,7 @@ describe("balanced tier and scoped frugal candidate", () => {
       assert.ok(scoped, `${archetype} did not reach minimax-m2.5 on read-only work`);
       assert.equal(scoped.singleAttemptEvidence, true);
       assert.equal(scoped.effort, "low");
-      // Never the first attempt: its evidence is a single attempt per instance.
+      // Not the first attempt while a declared rung ahead of it is eligible.
       assert.notEqual(decision.primary.logicalModelId, "minimax-m2.5");
       // Ahead of the rung it displaces, which it beats on resolve rate, cost per resolved task and
       // median API calls in the one source measuring both.
@@ -1219,6 +1219,58 @@ describe("balanced tier and scoped frugal candidate", () => {
         `${archetype} ordered minimax-m2.5 behind claude-haiku-4-5`,
       );
     }
+  });
+
+  it("lets minimax-m2.5 lead a read-only route when every rung ahead of it is ineligible", () => {
+    // It is declared in the fallback chain, not as a primary, but it is deliberately not force-demoted
+    // the way escalationOnly candidates are. With gpt-5.6-luna unavailable it becomes the selected
+    // primary of fast_classification, and that is the intended outcome: the only alternative in that
+    // state is claude-haiku-4-5, which it beats on mean resolve, cost per resolved task and median API
+    // calls in the one source measuring both. Forcing a non-single-attempt primary would mean choosing
+    // the worse-measured model on purpose.
+    const lunaDown = withExtras().map((candidate) =>
+      candidate.modelId.includes("gpt-5.6-luna") ? { ...candidate, available: false } : candidate,
+    );
+    const readOnly = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
+    const decision = selectOrdinaryRoute(
+      "fast_classification",
+      lunaDown,
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      readOnly,
+    );
+    assert.equal(decision.kind, "ordinary");
+    assert.equal(decision.primary.logicalModelId, "minimax-m2.5");
+    assert.equal(decision.primary.singleAttemptEvidence, true);
+    // The confinement is what bounds the damage, not the position in the chain, so it must still hold.
+    const mutating = selectOrdinaryRoute(
+      "fast_classification",
+      lunaDown,
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "reversible_mutation" }, []),
+    );
+    assert.equal(mutating.kind, "ordinary");
+    assert.ok(
+      [mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "minimax-m2.5"),
+      "leading a read-only route must not let it lead a mutating one",
+    );
+
+    // exact_extraction is unaffected, because its declared primary is not Luna.
+    const extraction = selectOrdinaryRoute(
+      "exact_extraction",
+      lunaDown,
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      readOnly,
+    );
+    assert.equal(extraction.primary.logicalModelId, "gpt-5.6-terra");
   });
 
   it("refuses minimax-m2.5 the moment consequence leaves read-only, whatever its ability band", () => {

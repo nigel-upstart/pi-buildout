@@ -261,10 +261,11 @@ describe("the scoped MiniMax rung", () => {
       if (named.length === 0) continue;
       laddersNaming += 1;
       assert.ok(bounded.has(archetype), `minimax-m2.5 must not appear in ${archetype}`);
-      // Its evidence is single-attempt, so it can never be the declared first attempt.
+      // Never the DECLARED primary. It may still be selected as the primary when every rung ahead of it
+      // is ineligible, which routing.test.mjs covers; that is intended and explained in core/policy.ts.
       assert.ok(
         !policy.primary.some((ref) => ref.logicalModelId === "minimax-m2.5"),
-        `minimax-m2.5 must not be the primary of ${archetype}`,
+        `minimax-m2.5 must not be the declared primary of ${archetype}`,
       );
       for (const ref of named) {
         assert.equal(ref.singleAttemptEvidence, true, `${archetype} names it without the read-only confinement flag`);

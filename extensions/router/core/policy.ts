@@ -127,6 +127,17 @@ const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
  * That flag, not its ability band, is what keeps it away from mutating work: the band derived from
  * this source is 2, which would otherwise clear the irreversible floor.
  *
+ * It is declared in the fallback chain and never as a declared primary. It is deliberately NOT
+ * forcibly demoted at selection time, so if every rung ahead of it is ineligible - Luna unavailable,
+ * for instance - it can become the selected primary of a read-only route. That is intended, and the
+ * contrast with `escalationOnly` is the reason: that flag is demoted unconditionally because its
+ * candidate has a *measured* unfitness for a first attempt, 52.7% same-task flakiness. Here the
+ * problem is absence of evidence, not measured unreliability, and the only alternative in that state
+ * is the rung this one displaced - which measures worse on every axis the sources share. Forcing a
+ * non-single-attempt primary would mean deliberately choosing the worse-measured model. Being first on
+ * read-only work is also no more dangerous than being second on it, because the confinement above is
+ * what bounds the damage, not the position in the chain.
+ *
  * Haiku is retained behind it rather than replaced. The reason is availability, not capability: this
  * endpoint is text-only, so an image-bearing bounded task excludes it on the capability gate, and
  * Haiku is then the cheapest image-capable rung before the ladder jumps to gpt-5.6-terra at roughly
