@@ -161,8 +161,15 @@ describe("single-attempt rows are structurally barred from cost-to-done ranking"
 describe("abilityFromSingleAttempt", () => {
   it("gives minimax-m2.5 a band, which no other source can", () => {
     // MiniMax M2.5 has no `model_consensus` row anywhere in the corpus and no DeepSWE rollout row, so
-    // this class is its only source of a band. Without it `abilityFor` would have nothing to read.
-    assert.equal(evidenceAbility("minimax-m2.5", "low"), undefined);
+    // this class is its only source of a band. `evidenceAbility` consults it last, after the rollout
+    // rows and the consensus-only table, so a model measured by a stronger source can never be banded
+    // from this one.
+    assert.equal(evidenceAbility("minimax-m2.5", "low"), 2);
+    // The effort is irrelevant to the result, because the source has no per-effort curve to read.
+    assert.equal(evidenceAbility("minimax-m2.5", "high"), 2);
+    // Precedence check: a model with a rollout row keeps the band that row implies.
+    assert.equal(evidenceAbility("claude-opus-5", "high"), 4);
+    assert.equal(evidenceAbility("claude-haiku-4-5", "low"), 1);
     const row = findSingleAttemptPrior("minimax-m2.5");
     assert.ok(row);
     assert.equal(abilityFromSingleAttempt(row), 2);

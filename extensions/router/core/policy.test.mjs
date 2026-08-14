@@ -31,10 +31,10 @@ describe("policy ability table invariants", () => {
         // An escalation-only candidate cannot serve a first attempt, so it cannot rescue an otherwise
         // unroutable ladder.
         //
-        // Any future flag that confines a candidate to read-only consequence must be excluded here too,
-        // or this test will certify a ladder that routing actually refuses. The previous such flag,
-        // unmeasuredPeer, was removed with its only member.
-        (ref) => ref.escalationOnly !== true,
+        // A candidate confined to read-only consequence cannot serve high-consequence work either, so
+        // it must not count toward the floor. singleAttemptEvidence is such a flag; the earlier
+        // unmeasuredPeer was another, removed with its only member.
+        (ref) => ref.escalationOnly !== true && ref.singleAttemptEvidence !== true,
       );
       const authorized = firstAttemptRefs.filter(
         (ref) =>
@@ -43,9 +43,17 @@ describe("policy ability table invariants", () => {
             consequence: "irreversible",
           }).authorized,
       );
+      // Two, not one. selectOrdinaryRoute returns unroutable unless it has a primary AND at least one
+      // fallback, so a single surviving logical candidate only routes if that model happens to expose
+      // two scoped endpoints on the machine in hand. Requiring two logical candidates keeps
+      // safety-relevant routability independent of how an operator scoped their registry.
+      //
+      // This assertion was originally written as `> 0` and missed exactly that: cutting gpt-5.6-sol at
+      // medium from fast_classification left claude-opus-5 at medium as the only survivor, and the
+      // route became unroutable for critical-risk work while this test still passed.
       assert.ok(
-        authorized.length > 0,
-        `${archetype} has no candidate authorized for irreversible consequence, so critical-risk work routed here would be unroutable. Candidates: ${firstAttemptRefs
+        authorized.length >= 2,
+        `${archetype} has ${String(authorized.length)} candidate(s) authorized for irreversible consequence and needs at least 2, so critical-risk work routed here would be unroutable. Candidates: ${firstAttemptRefs
           .map((ref) => `${ref.logicalModelId}@${ref.effort}(band ${String(ref.ability)})`)
           .join(", ")}`,
       );
@@ -55,7 +63,7 @@ describe("policy ability table invariants", () => {
   it("keeps every archetype routable for reversible consequence", () => {
     for (const [archetype, policy] of Object.entries(BOOTSTRAP_ROUTE_POLICIES)) {
       const authorized = [...policy.primary, ...policy.fallback]
-        .filter((ref) => ref.escalationOnly !== true)
+        .filter((ref) => ref.escalationOnly !== true && ref.singleAttemptEvidence !== true)
         .filter(
           (ref) =>
             authorizeEffort(ref.logicalModelId, ref.effort, {

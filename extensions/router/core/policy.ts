@@ -5,7 +5,7 @@ import { MODEL_VENDORS } from "./profiles.ts";
 import { canonicalModelId } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
-export const POLICY_VERSION = "router-policy-v6";
+export const POLICY_VERSION = "router-policy-v7";
 
 /**
  * Backward-compatible endpoint classification retained for lease validation and diagnostics. Tiers
@@ -37,6 +37,13 @@ export type CandidateRef = {
    * a lower peak context.
    */
   scopedFrugal?: boolean;
+  /**
+   * Backed only by single-attempt benchmark evidence. `core/routing.ts` refuses such a candidate
+   * outside read-only consequence, because the source never measured regression breakage, partial
+   * credit, repeat determinism, wall time or peak context — five of the six terms the cost-to-done
+   * model consumes. An ability band derived from that source is therefore not permission to mutate.
+   */
+  singleAttemptEvidence?: boolean;
   allowAlias: boolean;
   restricted: boolean;
 };
@@ -95,7 +102,7 @@ function candidates(logicalModelId: string, effort: EffortLevel): CandidateRef[]
   ];
 }
 
-const LUNA_LOW = candidates("gpt-5.6-luna", "low");
+const LUNA_MEDIUM = candidates("gpt-5.6-luna", "medium");
 const LUNA_HIGH = candidates("gpt-5.6-luna", "high");
 const LUNA_MAX = candidates("gpt-5.6-luna", "max");
 const TERRA_MEDIUM = candidates("gpt-5.6-terra", "medium");
@@ -107,6 +114,30 @@ const SOL_MEDIUM = candidates("gpt-5.6-sol", "medium");
 const SOL_HIGH = candidates("gpt-5.6-sol", "high");
 const SOL_MAX = candidates("gpt-5.6-sol", "max");
 const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
+/**
+ * MiniMax M2.5, admitted to the bounded read-only ladders only.
+ *
+ * It displaces Claude Haiku 4.5 as the cheap rung on measurement rather than on price. On SWE-bench
+ * Multilingual, the one source measuring both, it leads Haiku by 3.8 points of mean resolve over eight
+ * languages (68.6% against 64.8%), costs 3.9x less per resolved task ($0.155 against $0.612), and uses
+ * fewer median API calls (62.6 against 67.6). On SWE-bench Verified it leads gpt-oss-120b by 49.8
+ * points at 2.3x lower cost per resolved task.
+ *
+ * Its evidence is single-attempt, so `singleAttemptEvidence` confines it to read-only consequence.
+ * That flag, not its ability band, is what keeps it away from mutating work: the band derived from
+ * this source is 2, which would otherwise clear the irreversible floor.
+ *
+ * Haiku is retained behind it rather than replaced. The reason is availability, not capability: this
+ * endpoint is text-only, so an image-bearing bounded task excludes it on the capability gate, and
+ * Haiku is then the cheapest image-capable rung before the ladder jumps to gpt-5.6-terra at roughly
+ * 2.4x its effective rate. Ordering MiniMax first is safe precisely because that gate handles the
+ * exception without ordering having to.
+ *
+ * `low` follows the rung it displaces. No source measures this model per effort — the submissions ran
+ * at a "high reasoning" setting and measured agentic repository work, not bounded classification — so
+ * the effort is chosen to match the rung rather than claimed as measured.
+ */
+const MINIMAX_LOW = candidates("minimax-m2.5", "low").map((ref) => ({ ...ref, singleAttemptEvidence: true }));
 const OPUS_LOW = candidates("claude-opus-5", "low");
 const OPUS_MEDIUM = candidates("claude-opus-5", "medium");
 const OPUS_HIGH = candidates("claude-opus-5", "high");
@@ -173,9 +204,29 @@ export type BootstrapRoutePolicy = {
 export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> = {
   fast_classification: {
     archetype: "fast_classification",
-    primary: LUNA_LOW,
-    // The cheap band-1 tiers serve ordinary classification. The two band-2+ entries exist so a
-    // classification task carrying critical risk or an irreversible action mode is still routable.
+    // gpt-5.6-luna at medium, not low. Both are authorized for read-only consequence and both bill at
+    // the same rate, so the choice is token volume: medium takes 22 median steps against low's 12, but
+    // low is the worst-measured configuration in the corpus (1.6% pass, 27.7% regression breakage,
+    // consensus 0.0) and measures below the claude-haiku-4-5 rung behind it. Nothing justifies leading
+    // with it.
+    //
+    // Medium being the primary is safe without an effort-policy exception, and deliberately relies on a
+    // gate that already exists rather than a new one. gpt-5.6-luna declares an agentic minimum of high,
+    // which authorizeEffort applies whenever consequence reaches reversible, so a classification-shaped
+    // task that actually mutates or carries critical risk has medium refused for it and falls through to
+    // luna@high. The refusal is measured, not assumed: 23.5% regression breakage at medium against 9.1%
+    // at high. See decisions.md for the tradeoff this accepts.
+    primary: LUNA_MEDIUM,
+    // The cheap band-1 tiers serve ordinary classification. The band-2+ entry exists so a
+    // classification task carrying critical risk or an irreversible action mode is still routable;
+    // core/policy.test.mjs enforces that it stays.
+    //
+    // luna@high sits directly behind luna@medium so the first response to rising consequence is more
+    // effort on the same model rather than a different model, which is both cheaper and the only
+    // transition in this ladder backed by a per-effort measurement.
+    //
+    // minimax-m2.5 displaces claude-haiku-4-5 as the cheap rung and Haiku is retained behind it as the
+    // cheapest image-capable fallback; see MINIMAX_LOW for why that ordering is safe.
     //
     // gpt-oss-120b at high effort precedes gpt-5.6-terra at medium: this archetype is not
     // evidence-ranked, so the declared order is the executed order, and on the only comparable
@@ -184,7 +235,28 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     // not rescue the comparison either: 35.1% pass with a 14.7% regression-break rate, the worst of
     // any tier in this ladder. It stays in the ladder only as the availability backup for gpt-oss,
     // which is reachable on a single Amazon Bedrock route and is therefore absent on most machines.
-    fallback: [...HAIKU_LOW, ...GPT_OSS_HIGH, ...TERRA_MEDIUM, ...SOL_MEDIUM, ...OPUS_MEDIUM],
+    //
+    // gpt-5.6-sol at medium is gone. Under the pinned registry it is strictly dominated by the
+    // claude-opus-5 medium rung behind it, which is a higher ability band (3 against 2) and a lower
+    // effective rate (6.161 against 7.442), so it added a rung without adding a reason.
+    //
+    // claude-opus-5 at high replaces it as the second high-consequence rung, and the reason is
+    // routability rather than capability. Irreversible consequence bars every band-1 rung here and the
+    // read-only confinement bars minimax-m2.5, so without a second survivor this ladder had exactly one
+    // eligible logical candidate for critical-risk work. selectOrdinaryRoute requires a primary AND at
+    // least one fallback, so one survivor is unroutable unless that model happens to expose two scoped
+    // endpoints - which makes safety-relevant routability depend on how an operator scoped their
+    // registry. Opus 5 at high is the same model one effort up, keeping this ladder's rule that rising
+    // consequence buys more effort before it buys a different model.
+    fallback: [
+      ...LUNA_HIGH,
+      ...MINIMAX_LOW,
+      ...HAIKU_LOW,
+      ...GPT_OSS_HIGH,
+      ...TERRA_MEDIUM,
+      ...OPUS_MEDIUM,
+      ...OPUS_HIGH,
+    ],
     qualityFloor: 0.96,
     deterministicPassFloor: 0.96,
     allowSuperSaturation: false,
@@ -194,7 +266,11 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   exact_extraction: {
     archetype: "exact_extraction",
     primary: TERRA_MEDIUM,
-    fallback: [...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
+    // minimax-m2.5 joins on the same basis as in fast_classification and sits ahead of the rung it
+    // displaces. The rest of this ladder is deliberately untouched: gpt-5.6-sol was removed only from
+    // fast_classification, because schema-emission fidelity is what orders this archetype and no source
+    // measures it, so there is no evidence here to justify dropping a rung.
+    fallback: [...MINIMAX_LOW, ...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
     qualityFloor: 0.98,
     deterministicPassFloor: 0.98,
     allowSuperSaturation: false,

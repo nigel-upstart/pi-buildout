@@ -515,3 +515,81 @@ evidence for Kotlin, Ruby, and infrastructure work. The `gpt-5.4-mini` versus `c
 an open item: the peer rung was withdrawn on 2026-08-13 when its price basis proved inverted, so only Haiku remains and
 there is nothing left to order. A bounded classification eval is still the missing measurement for that bucket, because
 every remaining rung in it is priced rather than measured for classification.
+
+## Scoped-model admission, 2026-08-13 (`router-policy-v7`)
+
+Admits one Amazon Bedrock scoped model to the bounded read-only ladders and re-derives the classification tiering around
+it. The evidence is recorded in [`scoped-model-analysis-2026-08-13.md`](scoped-model-analysis-2026-08-13.md); this
+section records only the decisions and the tradeoffs they accept.
+
+1. **MiniMax M2.5 displaces Claude Haiku 4.5 as the cheap rung, on measurement rather than price.** On SWE-bench
+   Multilingual, the one source measuring both, it leads Haiku by 3.8 points of mean resolve over eight language splits
+   (68.6% against 64.8%), costs 3.9x less per resolved task (`$0.155` against `$0.612`), and uses fewer median API calls
+   (62.6 against 67.6). On SWE-bench Verified it leads `gpt-oss-120b` by 49.8 points at 2.3x lower cost per resolved
+   task. It is never a primary, appears in `fast_classification` and `exact_extraction` only, and is ordered ahead of
+   the rung it displaces.
+
+   Price is deliberately not the basis. Under the pinned registry `gpt-5.6-luna` costs `0.298` effective against
+   MiniMax's `0.357`, so a per-token argument would have failed: the cheapest rung in these ladders is Luna and no
+   scoped model undercuts it. The admission rests on cost per _resolved_ task against the rung it replaces, which is the
+   axis the corpus's own highest-confidence finding names.
+
+2. **Claude Haiku 4.5 is retained behind it for availability, not capability.** An earlier draft claimed Haiku had to
+   stay because it was the only image-capable rung and MiniMax is text-only. That was wrong: `gpt-5.6-luna` accepts
+   images, as do `gpt-5.6-terra` and `claude-opus-5`. Haiku's real role is narrower — it is the cheapest image-capable
+   rung, so an image-bearing bounded task that cannot use MiniMax or `gpt-oss-120b` reaches Haiku at `1.232` rather than
+   jumping to `gpt-5.6-terra` at `2.974`. Ordering MiniMax ahead of it is safe precisely because `requiresImages` is a
+   hard capability gate: the exception is handled by eligibility, so ordering does not have to encode it.
+
+3. **A candidate backed only by single-attempt evidence is confined to read-only consequence, and the ability band is
+   explicitly not what confines it.** MiniMax M2.5 derives band 2 from that source, which clears the irreversible
+   ability floor outright, so band gating alone would admit it to exactly the work its evidence cannot speak to: a
+   single attempt per instance never observed regression breakage, partial credit, repeat determinism, wall time or peak
+   context — five of the six terms the cost-to-done model consumes.
+
+   The `singleAttemptEvidence` flag in [`core/policy.ts`](../../extensions/router/core/policy.ts) is therefore checked
+   in `core/routing.ts` before `authorizeEffort`, and it was verified by disabling it and confirming that the band-2
+   floor alone lets the model route for `reversible_mutation`. This is a separate mechanism from the withdrawn
+   `unmeasuredPeer` rung and rests on a different basis: five unmeasured scoring terms rather than a per-token discount.
+
+4. **The classification primary is `gpt-5.6-luna` at medium, and rising consequence buys more effort on the same model
+   before it buys a different model.** `luna@low` is no longer declared: it is the worst-measured configuration in the
+   corpus (1.6% pass, 27.7% regression breakage, consensus `0.0`) and measures below the Haiku rung behind it, so
+   nothing justified leading with it. Medium and low bill at the same rate, so the difference is token volume — 22
+   median steps against 12 — and that is a cheap price for not leading with the corpus's worst row.
+
+   **The tradeoff this accepts, stated plainly.** `gpt-5.6-luna` declares an agentic minimum of high, measured at 23.5%
+   regression breakage at medium against 9.1% at high. `authorizeEffort` applies that minimum whenever consequence
+   reaches `reversible`, so `luna@medium` is authorized for read-only work and refused for anything that changes state,
+   with `luna@high` directly behind it taking over.
+
+   No effort-policy exception was added, and that is the decision. The alternative considered was to declare `luna@high`
+   as the primary unconditionally, which would be uniform regardless of what the classifier concludes about action mode,
+   at roughly twice the reasoning tokens on every bounded classification. Medium was chosen because the gate that
+   protects it already exists, is derived from measurement rather than judgement, and is already exercised by tests.
+
+   The residual risk is precise and worth naming: if the classifier mis-reads a task that mutates state as
+   `information_only`, `consequenceOf` returns `read_only` and `luna@medium` runs on mutating work at its measured 23.5%
+   breakage rate. The archetype floor cannot catch this, because `fast_classification` genuinely is non-mutating, so
+   `mutatesRepository` is correctly `false` and provides no backstop. The exposure is therefore bounded by classifier
+   action-mode accuracy, which [`eval.md`](eval.md) already tracks as a first-class metric. If that accuracy proves
+   worse than the 9.1%-to-23.5% gap this trades on, the correct response is to promote the primary to `luna@high` rather
+   than to add an exception.
+
+5. **`gpt-5.6-sol` at medium is cut from classification and `claude-opus-5` at high replaces it, for routability rather
+   than capability.** Sol at medium is dominated by the Opus 5 medium rung behind it: a lower ability band (2 against 3)
+   at a higher effective rate (`7.442` against `6.161`).
+
+   Cutting it exposed a defect in the invariant this repository documents. `SPEC.md` requires each archetype to keep a
+   candidate above the lowest ability band, and the test added earlier asserted exactly that — at least one. But
+   `selectOrdinaryRoute` returns `unroutable` without a primary **and** at least one fallback, so one surviving logical
+   candidate only routes when that model happens to expose two scoped endpoints, which makes safety-relevant routability
+   depend on how an operator scoped their registry. Removing Sol left `claude-opus-5@medium` as the sole survivor of
+   irreversible gating in `fast_classification`, and the route became unroutable for critical-risk work while the
+   invariant test still passed.
+
+   The test now requires at least two authorized candidates and excludes any candidate confined to read-only
+   consequence, and `claude-opus-5@high` is the second survivor — the same model one effort up, consistent with decision
+   29's rule. `exact_extraction` was left alone: Sol's removal was justified by a cost-and-band comparison specific to
+   the classification ladder, and schema-emission fidelity, which is what should order extraction, is measured by no
+   retained source.

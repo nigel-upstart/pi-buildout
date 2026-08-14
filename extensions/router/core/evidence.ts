@@ -172,7 +172,18 @@ const CONSENSUS_ONLY_ABILITY: Readonly<Record<string, AbilityTier>> = {
 export function evidenceAbility(modelId: string, effort: EffortLevel): AbilityTier | undefined {
   const row = findEvidencePrior(modelId, effort);
   if (row?.consensusBest !== undefined) return abilityFromConsensus(row.consensusBest);
-  return CONSENSUS_ONLY_ABILITY[modelId];
+  const consensusOnly = CONSENSUS_ONLY_ABILITY[modelId];
+  if (consensusOnly !== undefined) return consensusOnly;
+  // Single-attempt evidence is the weakest source and is therefore consulted last. The precedence is
+  // load-bearing: a model with a DeepSWE rollout row or a consensus figure must never be banded from a
+  // single-attempt submission, because that would let the weaker construct override the stronger one
+  // for the same model. This is also why the band is capped at SINGLE_ATTEMPT_ABILITY_CAP.
+  //
+  // A band from this source is not on its own permission to route. `singleAttemptEvidence` in
+  // core/policy.ts confines such a candidate to read-only consequence, because the band says nothing
+  // about the five cost-to-done terms the source never measured.
+  const singleAttempt = findSingleAttemptPrior(modelId);
+  return singleAttempt ? abilityFromSingleAttempt(singleAttempt) : undefined;
 }
 
 /**

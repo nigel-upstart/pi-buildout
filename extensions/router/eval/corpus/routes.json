@@ -14,8 +14,8 @@
     "expected": {
       "archetype": "fast_classification",
       "primaryModel": "gpt-5.6-luna",
-      "primaryEffort": "low",
-      "fallbackModel": "claude-haiku-4-5"
+      "primaryEffort": "medium",
+      "fallbackModel": "gpt-5.6-luna"
     }
   },
   {

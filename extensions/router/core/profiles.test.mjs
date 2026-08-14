@@ -199,10 +199,7 @@ describe("canonical eligibility does not over-admit", () => {
   });
 });
 
-describe("the scoped MiniMax rung is declared but not yet routable", () => {
-  // P5 supplies vendor identity and a bounded prompt profile. It deliberately supplies no policy
-  // candidate, so nothing routes here. These assertions pin that boundary in both directions: the
-  // plumbing works, and the model is still unreachable.
+describe("the scoped MiniMax rung", () => {
   it("resolves a vendor for every reachable MiniMax spelling", () => {
     // buildRegistrySnapshot drops any endpoint whose vendor is unknown, and a dropped endpoint is
     // invisible rather than excluded with a reason, so an unresolved vendor is the quietest failure.
@@ -255,15 +252,28 @@ describe("the scoped MiniMax rung is declared but not yet routable", () => {
     }
   });
 
-  it("names no MiniMax candidate in any ladder, so it cannot be routed yet", () => {
-    const named = new Set(
-      [
-        ...Object.values(BOOTSTRAP_ROUTE_POLICIES).flatMap((policy) => [...policy.primary, ...policy.fallback]),
-        ...HARD_TASK_ESCALATION_REFS,
-      ].map((ref) => ref.logicalModelId),
-    );
-    assert.ok(!named.has("minimax-m2.5"), "P5 must not make MiniMax routable; that is P6's decision");
-    // It is nonetheless declared, which is what lets P6 name it without also opening the vendor union.
+  it("appears only in the two bounded read-only ladders, and never as a primary", () => {
     assert.equal(MODEL_VENDOR["minimax-m2.5"], "minimax");
+    const bounded = new Set(["fast_classification", "exact_extraction"]);
+    let laddersNaming = 0;
+    for (const [archetype, policy] of Object.entries(BOOTSTRAP_ROUTE_POLICIES)) {
+      const named = [...policy.primary, ...policy.fallback].filter((ref) => ref.logicalModelId === "minimax-m2.5");
+      if (named.length === 0) continue;
+      laddersNaming += 1;
+      assert.ok(bounded.has(archetype), `minimax-m2.5 must not appear in ${archetype}`);
+      // Its evidence is single-attempt, so it can never be the declared first attempt.
+      assert.ok(
+        !policy.primary.some((ref) => ref.logicalModelId === "minimax-m2.5"),
+        `minimax-m2.5 must not be the primary of ${archetype}`,
+      );
+      for (const ref of named) {
+        assert.equal(ref.singleAttemptEvidence, true, `${archetype} names it without the read-only confinement flag`);
+        assert.equal(ref.effort, "low");
+      }
+    }
+    assert.equal(laddersNaming, 2, "minimax-m2.5 must be named by exactly the two bounded ladders");
+    // It is also not an escalation candidate: hard-task retry is a measured-flakiness decision and this
+    // model has no repeat measurement at all.
+    assert.ok(!HARD_TASK_ESCALATION_REFS.some((ref) => ref.logicalModelId === "minimax-m2.5"));
   });
 });

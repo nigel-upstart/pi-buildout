@@ -107,6 +107,8 @@ export type RouteChoice = {
   escalationOnly?: boolean;
   /** Authorized only where step count rather than token cost is the binding constraint. */
   scopedFrugal?: boolean;
+  /** Backed only by single-attempt evidence; authorized for read-only consequence only. */
+  singleAttemptEvidence?: boolean;
   score?: number;
   scoreComponents?: RouteScoreComponents;
   evidenceScore?: number;
@@ -435,6 +437,24 @@ function evaluateEndpoint(
     });
     return undefined;
   }
+  // A candidate backed only by single-attempt evidence is confined to read-only consequence.
+  //
+  // The ability floor cannot do this job, and relying on it would be the trap. MiniMax M2.5 derives
+  // band 2 from that source, which clears the irreversible floor outright, so band gating alone would
+  // admit it to exactly the work its evidence cannot speak to: the source measured a single attempt per
+  // instance, so regression breakage, partial credit, repeat determinism, wall time and peak context
+  // were never observed. Five of the six terms the cost-to-done model consumes are missing.
+  //
+  // Read-only consequence is where the absence of those five terms cannot hurt: nothing the candidate
+  // produces changes state, so a wrong answer costs a retry rather than a repository.
+  if (ref.singleAttemptEvidence === true && effectiveConsequence(archetype, context) !== "read_only") {
+    exclusions.push({
+      candidate: key,
+      code: "scope_unmet",
+      detail: "single-attempt-evidence candidate is authorized for read-only consequence only",
+    });
+    return undefined;
+  }
   const authorization = authorizeEffort(ref.logicalModelId, ref.effort, {
     allowSuperSaturation: policy.allowSuperSaturation,
     consequence: effectiveConsequence(archetype, context),
@@ -534,6 +554,7 @@ function evaluateEndpoint(
         }),
     ...(ref.escalationOnly ? { escalationOnly: true } : {}),
     ...(ref.scopedFrugal ? { scopedFrugal: true } : {}),
+    ...(ref.singleAttemptEvidence ? { singleAttemptEvidence: true } : {}),
     rankReason: "bootstrap",
   };
 }

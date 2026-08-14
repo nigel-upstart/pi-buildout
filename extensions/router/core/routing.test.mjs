@@ -281,10 +281,19 @@ describe("ordinary route selection", () => {
 
   it("pins the cost-first endpoint primary for every bootstrap archetype", () => {
     const expectedPrimaries = {
+      // This case runs under the default routing context, which conservatively assumes reversible
+      // consequence. gpt-5.6-luna declares an agentic minimum of high, so both the declared primary
+      // (luna@medium) and luna@low before it are refused here, and the ladder settles on luna@high.
+      //
+      // That is the intended behaviour of putting luna@high directly behind luna@medium: rising
+      // consequence buys more effort on the same model rather than a switch to a different one. It is
+      // also strictly better than the claude-haiku-4-5@low this used to select - cheaper per effective
+      // token (0.297 against 1.232) and actually measured (44.3% pass, 9.1% regression breakage) where
+      // Haiku has no agentic rollout row at all.
       fast_classification: {
-        logicalModelId: "claude-haiku-4-5",
-        effort: "low",
-        endpoint: "amazon-bedrock/anthropic.claude-haiku-4-5",
+        logicalModelId: "gpt-5.6-luna",
+        effort: "high",
+        endpoint: "amazon-bedrock/openai.gpt-5.6-luna",
       },
       exact_extraction: {
         logicalModelId: "claude-haiku-4-5",
@@ -1105,6 +1114,14 @@ describe("balanced tier and scoped frugal candidate", () => {
       model("amazon-bedrock", "openai.gpt-oss-120b", "openai", 128_000),
       model("anthropic", "claude-opus-4-6", "anthropic"),
       model("github-copilot", "claude-opus-4.6", "anthropic"),
+      // Shaped like the real endpoint rather than the generic helper: MiniMax M2.5 is reachable only on
+      // Amazon Bedrock, accepts no images, and exposes no effort above high.
+      {
+        ...model("amazon-bedrock", "minimax.minimax-m2.5", "minimax", 196_608),
+        supportedEfforts: ["off", "minimal", "low", "medium", "high"],
+        inputTypes: ["text"],
+        costPerMillion: { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0 },
+      },
     ];
   }
 
@@ -1123,7 +1140,9 @@ describe("balanced tier and scoped frugal candidate", () => {
     );
     assert.equal(classification.kind, "ordinary");
     assert.equal(classification.primary.modelId, "gpt-5.6-luna");
-    assert.equal(classification.primary.effort, "low");
+    // medium, not low: low is the worst-measured configuration in the corpus and measures below the
+    // rung behind it, so it is no longer declared. Both are authorized for read-only consequence.
+    assert.equal(classification.primary.effort, "medium");
     assert.equal(classification.primary.rankReason, "bootstrap");
 
     const extraction = selectOrdinaryRoute(
@@ -1178,6 +1197,120 @@ describe("balanced tier and scoped frugal candidate", () => {
         assert.notEqual(choice.logicalModelId, "gpt-5.4-mini", `${archetype} routed the withdrawn peer rung`);
       }
     }
+  });
+
+  it("routes minimax-m2.5 on read-only bounded work and refuses it everywhere else", () => {
+    const readOnly = deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []);
+    for (const archetype of ["fast_classification", "exact_extraction"]) {
+      const decision = selectOrdinaryRoute(archetype, withExtras(), REQUIREMENTS, [], undefined, undefined, readOnly);
+      assert.equal(decision.kind, "ordinary");
+      const chain = [decision.primary, ...decision.fallbacks];
+      const scoped = chain.find((choice) => choice.logicalModelId === "minimax-m2.5");
+      assert.ok(scoped, `${archetype} did not reach minimax-m2.5 on read-only work`);
+      assert.equal(scoped.singleAttemptEvidence, true);
+      assert.equal(scoped.effort, "low");
+      // Never the first attempt: its evidence is a single attempt per instance.
+      assert.notEqual(decision.primary.logicalModelId, "minimax-m2.5");
+      // Ahead of the rung it displaces, which it beats on resolve rate, cost per resolved task and
+      // median API calls in the one source measuring both.
+      const order = chain.map((choice) => choice.logicalModelId);
+      assert.ok(
+        order.indexOf("minimax-m2.5") < order.indexOf("claude-haiku-4-5"),
+        `${archetype} ordered minimax-m2.5 behind claude-haiku-4-5`,
+      );
+    }
+  });
+
+  it("refuses minimax-m2.5 the moment consequence leaves read-only, whatever its ability band", () => {
+    // The band this model derives from single-attempt evidence is 2, which clears the irreversible
+    // ability floor outright. So the ability floor cannot be what protects mutating work here; the
+    // read-only confinement is, and this asserts that it and not the band is doing the work.
+    for (const actionMode of ["reversible_mutation", "external_side_effect", "destructive"]) {
+      const decision = selectOrdinaryRoute(
+        "fast_classification",
+        withExtras(),
+        REQUIREMENTS,
+        [],
+        undefined,
+        undefined,
+        deriveRoutingContext({ ...FEATURES, actionMode }, []),
+      );
+      assert.equal(decision.kind, "ordinary", actionMode);
+      assert.ok(
+        [decision.primary, ...decision.fallbacks].every((choice) => choice.logicalModelId !== "minimax-m2.5"),
+        `minimax-m2.5 routed for ${actionMode}`,
+      );
+      assert.ok(
+        decision.exclusions.some(
+          (exclusion) => exclusion.candidate.includes("minimax") && /read-only consequence only/.test(exclusion.detail),
+        ),
+        `${actionMode} refused it without saying why`,
+      );
+    }
+    // Critical risk raises consequence to irreversible even on an otherwise read-only action mode.
+    const critical = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "information_only", risk: "critical" }, []),
+    );
+    assert.ok([critical.primary, ...critical.fallbacks].every((c) => c.logicalModelId !== "minimax-m2.5"));
+  });
+
+  it("buys more effort on the same model before a different model as consequence rises", () => {
+    // The classification ladder's rule, and the reason luna@high sits directly behind luna@medium.
+    const readOnly = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+    );
+    assert.equal(readOnly.primary.logicalModelId, "gpt-5.6-luna");
+    assert.equal(readOnly.primary.effort, "medium");
+
+    // gpt-5.6-luna declares an agentic minimum of high, measured at 23.5% regression breakage against
+    // 9.1%, so reversible consequence refuses medium and the same model at high takes over.
+    const reversible = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "reversible_mutation" }, []),
+    );
+    assert.equal(reversible.primary.logicalModelId, "gpt-5.6-luna");
+    assert.equal(reversible.primary.effort, "high");
+    assert.ok(
+      reversible.exclusions.some(
+        (exclusion) => exclusion.candidate.includes("gpt-5.6-luna") && /agentic minimum/.test(exclusion.detail),
+      ),
+      "the refusal of luna@medium must name the measured reason",
+    );
+  });
+
+  it("keeps critical-risk classification routable with two independent survivors", () => {
+    // selectOrdinaryRoute needs a primary AND a fallback, so one surviving logical candidate is not
+    // enough. Cutting gpt-5.6-sol at medium left exactly one until claude-opus-5 at high was added.
+    const critical = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "destructive", risk: "critical" }, []),
+    );
+    assert.equal(critical.kind, "ordinary", "critical-risk classification must stay routable");
+    const chain = [critical.primary, ...critical.fallbacks];
+    assert.ok(chain.length >= 2, `expected at least two attempts, got ${String(chain.length)}`);
+    for (const choice of chain) assert.ok(choice.ability >= 2, `${choice.logicalModelId} is below the floor`);
   });
 
   it("authorizes gpt-oss-120b for bounded work only, and only on its Bedrock route", () => {
