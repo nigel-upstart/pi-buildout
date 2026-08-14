@@ -106,6 +106,7 @@ function classifierSystemPrompt(stage: "primary" | "secondary"): string {
     "Never return or recommend a model, provider, route, prompt profile, or price.",
     "Classify only the immediate requested task; repository size or available tools do not imply implementation scope.",
     "Use information_only when the request can be answered from supplied text; use local_read only when it asks to inspect local artifacts.",
+    "Action mode describes the effect of the requested deliverable, not the investigation that precedes it: a request to investigate and then fix, tune, or commit is a mutation, not a read.",
     "Use reversible_mutation when the immediate request asks you to change, create, or delete anything on disk, including editing files, writing tests, committing, or creating a branch or worktree.",
     "Use external_side_effect when the request reaches beyond this machine, such as publishing, releasing, deploying, pushing, or calling a third-party service.",
     "Set reviewIntent only when the immediate request asks to review, audit, or critique existing work; never set it merely because risky work should later receive independent verification.",
