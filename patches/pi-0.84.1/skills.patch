@@ -88,7 +88,7 @@ index 97af6cd..c76a43b 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..d84b2cc
+index 0000000..6baf9a1
 --- /dev/null
 +++ b/dist/core/skill-management.js
 @@ -0,0 +1,215 @@
@@ -291,7 +291,7 @@ index 0000000..d84b2cc
 +        if (command === "add" || command === "remove") {
 +            const source = rest.find((arg) => !arg.startsWith("--"));
 +            const scope = scopeFromArgs(rest, options.allowSession);
-+            if (!source || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
++            if (!source || rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
 +                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            if (scope === "session") {
 +                if (!options.allowSession)
@@ -352,7 +352,7 @@ index 5ff9c80..7f5ba25 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 42e655d..01d5035 100644
+index 42e655d..3fe60ee 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -23,6 +23,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -375,7 +375,7 @@ index 42e655d..01d5035 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4743,6 +4749,56 @@ export class InteractiveMode {
+@@ -4743,6 +4749,62 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
@@ -421,7 +421,13 @@ index 42e655d..01d5035 100644
 +                : ["Skills: none"];
 +        }
 +        if (args[0] === "add" || args[0] === "remove") {
-+            await this.handleReloadCommand();
++            const reloadDeferred = this.session.isStreaming || this.session.isCompacting;
++            if (reloadDeferred) {
++                result.lines.push("Change will apply after `/skills reload` when the current operation finishes.");
++            }
++            else {
++                await this.handleReloadCommand();
++            }
 +        }
 +        if (result.lines.length > 0) {
 +            this.chatContainer.addChild(new Spacer(1));
