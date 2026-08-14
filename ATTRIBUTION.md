@@ -238,8 +238,8 @@ the data is structurally barred from that model rather than down-weighted within
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, and `0.84.1`
-- Latest documentation and example revision reviewed: `9d2ec7ffabe927bfad2214c1cee25b6632a78dcf`
+- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, `0.84.1`, and `0.84.2`
+- Latest documentation and example revision reviewed: `914cf1472e715297caa30db4b9535d534a9eb718`
 - License declared by the package: MIT
 
 Ideas and API patterns used:
