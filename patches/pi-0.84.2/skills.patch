@@ -97,10 +97,10 @@ index 97af6cd..01c4dcb 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..31e2e60
+index 0000000..1105d40
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,232 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -294,6 +294,8 @@ index 0000000..31e2e60
 +    try {
 +        const [command, ...rest] = args;
 +        if (command === "active") {
++            if (rest.length !== 0)
++                throw new Error("Usage: pi skills active");
 +            const entries = getActiveSkillEntries({ ...options, strict: true });
 +            return {
 +                exitCode: 0,
@@ -302,6 +304,8 @@ index 0000000..31e2e60
 +            };
 +        }
 +        if (command === "list" || command === "search") {
++            if (command === "list" && rest.length !== 0)
++                throw new Error("Usage: pi skills list");
 +            const query = command === "search" ? rest.join(" ").trim().toLowerCase() : "";
 +            if (command === "search" && !query)
 +                throw new Error("Usage: pi skills search <query>");
