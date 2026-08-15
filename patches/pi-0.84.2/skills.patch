@@ -97,10 +97,10 @@ index 97af6cd..01c4dcb 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..a504d88
+index 0000000..a87627a
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,226 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -278,14 +278,16 @@ index 0000000..a504d88
 +    }
 +    return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 +}
-+function usage() {
++function usage(allowSession = false) {
++    const command = allowSession ? "/skills" : "pi skills";
++    const scopes = `--global|--repo${allowSession ? "|--session" : ""}`;
 +    return [
-+        "Usage: pi skills <active|list|search|add|remove>",
-+        "  pi skills active",
-+        "  pi skills list",
-+        "  pi skills search <query>",
-+        "  pi skills add <skill-or-path> --global|--repo",
-+        "  pi skills remove <skill-or-path> --global|--repo",
++        `Usage: ${command} <active|list|search|add|remove${allowSession ? "|reload" : ""}>`,
++        `  ${command} active`,
++        `  ${command} list`,
++        `  ${command} search <query>`,
++        `  ${command} add <skill-or-path> ${scopes}`,
++        `  ${command} remove <skill-or-path> ${scopes}`,
 +    ];
 +}
 +export function runSkillsCommand(args, options) {
@@ -319,7 +321,7 @@ index 0000000..a504d88
 +            updatePersistedSkill(command, source, scope, options);
 +            return { exitCode: 0, lines: [`${command === "add" ? "Enabled" : "Disabled"} ${source} for ${scope} scope.`] };
 +        }
-+        return { exitCode: 1, lines: usage() };
++        return { exitCode: 1, lines: usage(options.allowSession) };
 +    }
 +    catch (error) {
 +        return { exitCode: 1, lines: [error instanceof Error ? error.message : String(error)] };
