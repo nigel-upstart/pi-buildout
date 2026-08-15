@@ -1,5 +1,5 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 97af6cd..c76a43b 100644
+index 97af6cd..01c4dcb 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -10,6 +10,7 @@ import { findGitPaths } from "./footer-data-provider.js";
@@ -20,7 +20,23 @@ index 97af6cd..c76a43b 100644
  function loadContextFileFromDir(dir) {
      const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
      for (const filename of candidates) {
-@@ -326,11 +330,13 @@ export class DefaultResourceLoader {
+@@ -144,6 +148,7 @@ export class DefaultResourceLoader {
+     appendSystemPrompt;
+     appendSystemPromptSourcePaths;
+     lastSkillPaths;
++    catalogPathsByName;
+     extensionSkillSourceInfos;
+     extensionPromptSourceInfos;
+     extensionThemeSourceInfos;
+@@ -261,6 +266,7 @@ export class DefaultResourceLoader {
+     }
+     async reload(options) {
+         resetTimings("extensions");
++        this.catalogPathsByName = undefined;
+         if (this.loaded) {
+             clearExtensionCache();
+         }
+@@ -326,11 +332,13 @@ export class DefaultResourceLoader {
          }
          this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
          this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
@@ -37,14 +53,13 @@ index 97af6cd..c76a43b 100644
          for (const p of this.additionalSkillPaths) {
              if (isLocalPath(p)) {
                  const resolved = this.resolveResourcePath(p);
-@@ -496,6 +502,48 @@ export class DefaultResourceLoader {
+@@ -496,6 +504,41 @@ export class DefaultResourceLoader {
              };
          });
      }
 +    getActiveSkillPaths() {
 +        const paths = [];
 +        const diagnostics = [];
-+        let catalogPaths;
 +        const entries = getActiveSkillEntries({
 +            cwd: this.cwd,
 +            agentDir: this.agentDir,
@@ -54,14 +69,7 @@ index 97af6cd..c76a43b 100644
 +            const source = sourceOf(entry);
 +            if (!source)
 +                continue;
-+            let resolved;
-+            if (looksLikePath(source)) {
-+                resolved = this.resolveResourcePath(source);
-+            }
-+            else {
-+                catalogPaths ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
-+                resolved = catalogPaths.get(source);
-+            }
++            const resolved = this.resolveSkillEntry(source);
 +            if (resolved) {
 +                paths.push(resolved);
 +            }
@@ -81,7 +89,8 @@ index 97af6cd..c76a43b 100644
 +        return this.findCatalogSkillPath(source);
 +    }
 +    findCatalogSkillPath(name) {
-+        return getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).find((skill) => skill.name === name)?.filePath;
++        this.catalogPathsByName ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
++        return this.catalogPathsByName.get(name);
 +    }
      updateSkillsFromPaths(skillPaths, metadataByPath) {
          let skillsResult;
