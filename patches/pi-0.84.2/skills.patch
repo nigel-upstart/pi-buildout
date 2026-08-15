@@ -97,14 +97,14 @@ index 97af6cd..01c4dcb 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..56c5c68
+index 0000000..a504d88
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,224 @@
 +import { execFileSync } from "node:child_process";
-+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
++import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
-+import { dirname, join, relative, resolve, sep } from "node:path";
++import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 +import { CONFIG_DIR_NAME } from "../config.js";
 +import { loadSkillsFromDir } from "./skills.js";
 +
@@ -247,9 +247,14 @@ index 0000000..56c5c68
 +export function getProjectAgentSkillDirs(cwd) {
 +    const dirs = [];
 +    const repoRoot = git(cwd, ["rev-parse", "--show-toplevel"]);
-+    const stopAt = repoRoot ? resolve(repoRoot) : undefined;
-+    let current = resolve(cwd);
++    const stopAt = repoRoot ? realpathSync(resolve(repoRoot)) : undefined;
++    let current = realpathSync(resolve(cwd));
 +    while (true) {
++        if (stopAt) {
++            const fromRoot = relative(stopAt, current);
++            if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot))
++                break;
++        }
 +        dirs.push(join(current, ".agents", "skills"));
 +        if (current === stopAt)
 +            break;
