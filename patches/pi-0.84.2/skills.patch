@@ -97,10 +97,10 @@ index 97af6cd..01c4dcb 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..a87627a
+index 0000000..31e2e60
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,228 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -310,8 +310,10 @@ index 0000000..a87627a
 +        }
 +        if (command === "add" || command === "remove") {
 +            const source = rest.find((arg) => !arg.startsWith("--"));
++            if (!source)
++                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            const scope = scopeFromArgs(rest, options.allowSession);
-+            if (!source || rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
++            if (rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
 +                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            if (scope === "session") {
 +                if (!options.allowSession)
