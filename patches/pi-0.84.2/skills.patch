@@ -97,10 +97,10 @@ index 97af6cd..01c4dcb 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..6baf9a1
+index 0000000..56c5c68
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,219 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -127,7 +127,11 @@ index 0000000..6baf9a1
 +}
 +function git(cwd, args) {
 +    try {
-+        return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
++        return execFileSync("git", ["-C", cwd, ...args], {
++            encoding: "utf-8",
++            stdio: ["ignore", "pipe", "ignore"],
++            timeout: 2000,
++        }).trim();
 +    }
 +    catch {
 +        return undefined;
