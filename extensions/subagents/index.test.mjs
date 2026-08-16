@@ -9,6 +9,7 @@ import {
   formatModelCatalog,
   parseClassifierDecision,
   parseModelRequest,
+  safeTerminalText,
   supportedThinkingLevels,
   truncateMiddle,
 } from "./helpers.ts";
@@ -93,6 +94,25 @@ test("bounded text helpers retain useful tails without exceeding limits", () => 
   assert.equal(appendBoundedTail("abcdef", "ghij", 5), "fghij");
 });
 
+test("terminal display text escapes controls without discarding safe surrounding lines", () => {
+  const safe = safeTerminalText(
+    "status: running\nchild: \u001b]8;;https://example.invalid\u0007link \u202e\nsummary: retained\n\0",
+  );
+  for (const codePoint of [0x1b, 0x07, 0x202e, 0x00]) {
+    assert.equal(safe.includes(String.fromCodePoint(codePoint)), false);
+  }
+  // Assert the whole transformation rather than only the neighbouring lines: a
+  // sanitizer that discarded the offending line outright, instead of escaping it
+  // in place, would still satisfy per-line spot checks.
+  assert.equal(
+    safe,
+    "status: running\n" +
+      "child: [U+001B]]8;;https://example.invalid[U+0007]link [U+202E]\n" +
+      "summary: retained\n" +
+      "[U+0000]",
+  );
+});
+
 test("current delegation turn is excluded from child context compaction", () => {
   const prior = { role: "assistant", content: "prior decision" };
   const currentUser = { role: "user", content: "create a subagent" };
@@ -163,4 +183,17 @@ test("auth bridge forwards api key and headers, and rejects header injection", a
   );
   assert.deepEqual(run({ PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai" }), []);
   assert.equal(process.env.PI_SIMPLE_SUBAGENT_API_KEY, undefined);
+});
+
+// `ExtensionContext.modelRegistry` is a synchronous compatibility facade whose
+// underlying `ModelRuntime` is a private field. `modelRuntimeFromContext` in
+// index.ts reaches it via `Reflect.get(ctx.modelRegistry, "runtime")` because Pi
+// exposes no public accessor (checked through 0.84.2). If a Pi upgrade renames or
+// removes that field, targeted compaction silently falls back to fresh child
+// context, so pin the shape here and fail loudly at test time instead.
+test("Pi's ModelRegistry still exposes the ModelRuntime that compaction reaches for", async () => {
+  const { ModelRegistry, ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+  const runtime = await ModelRuntime.create({ allowModelNetwork: false });
+  const registry = new ModelRegistry(runtime);
+  assert.equal(Reflect.get(registry, "runtime"), runtime);
 });

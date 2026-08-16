@@ -74,7 +74,19 @@ input.on("line", (line) => {
         } else if (String(command.message).includes("COMPACT")) {
           send({ type: "compaction_end", aborted: false, result: { tokensBefore: 10_000 } });
         }
-        if (String(command.message).includes("SPAWN_DESCENDANT")) {
+        if (String(command.message).includes("LARGE_RPC_LINE")) {
+          const text = `large:${"x".repeat(5 * 1024 * 1024)}`;
+          send({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
+          send({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "large response accepted" }],
+              stopReason: "stop",
+            },
+          });
+          send({ type: "turn_end" });
+        } else if (String(command.message).includes("SPAWN_DESCENDANT")) {
           const descendant = spawn(
             process.execPath,
             ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
@@ -91,6 +103,11 @@ input.on("line", (line) => {
           send({
             type: "message_end",
             message: { role: "assistant", content: [], stopReason: "error", errorMessage: "mock model failure" },
+          });
+        } else if (String(command.message).includes("EMPTY_LENGTH")) {
+          send({
+            type: "message_end",
+            message: { role: "assistant", content: [], stopReason: "length" },
           });
         } else {
           send({

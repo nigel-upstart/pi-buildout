@@ -215,3 +215,34 @@ export function appendBoundedTail(current: string, addition: string, maxChars: n
   if (combined.length <= maxChars) return combined;
   return combined.slice(combined.length - maxChars);
 }
+
+function unsafeTerminalCodePoint(codePoint: number): boolean {
+  if (codePoint <= 0x1f) return codePoint !== 0x09 && codePoint !== 0x0a;
+  if (codePoint >= 0x7f && codePoint <= 0x9f) return true;
+
+  const directionalFormatting =
+    codePoint === 0x061c ||
+    codePoint === 0x200e ||
+    codePoint === 0x200f ||
+    (codePoint >= 0x202a && codePoint <= 0x202e) ||
+    (codePoint >= 0x2066 && codePoint <= 0x2069);
+  if (directionalFormatting) return true;
+
+  const privateUse = (codePoint >= 0xe000 && codePoint <= 0xf8ff) || (codePoint >= 0xf0000 && codePoint <= 0x10fffd);
+  const invalidScalar = codePoint >= 0xd800 && codePoint <= 0xdfff;
+  const nonCharacter =
+    (codePoint >= 0xfdd0 && codePoint <= 0xfdef) || (codePoint & 0xffff) === 0xfffe || (codePoint & 0xffff) === 0xffff;
+  return privateUse || invalidScalar || nonCharacter;
+}
+
+/** Escape untrusted child text for terminal display without changing the model-facing result. */
+export function safeTerminalText(value: string): string {
+  let safe = "";
+  for (const character of value.replaceAll("\r\n", "\n")) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    safe += unsafeTerminalCodePoint(codePoint)
+      ? `[U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}]`
+      : character;
+  }
+  return safe;
+}

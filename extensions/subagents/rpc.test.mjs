@@ -72,6 +72,32 @@ test("managed child starts, streams a bounded transcript, accepts more work, and
   assert.equal(child.snapshot().state, "stopped");
 });
 
+test("managed child accepts Pi-sized image event lines above four MiB", async (t) => {
+  const child = new ManagedSubagent({
+    id: "large123",
+    name: "large-line-child",
+    task: "LARGE_RPC_LINE",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => child.stop());
+
+  await child.start();
+  assert.equal(await child.waitForIdle(2_000), true);
+  const snapshot = child.snapshot();
+  assert.equal(snapshot.state, "idle");
+  assert.equal(snapshot.lastAssistantText, "large response accepted");
+  assert.equal(snapshot.transcriptTail.length, 120_000);
+  assert.match(snapshot.transcriptTail, /^x+$/);
+  assert.equal(snapshot.error, undefined);
+});
+
 test("interrupt aborts an active child without accepting its delayed answer", async (t) => {
   const child = new ManagedSubagent({
     id: "interrupt1",
@@ -200,6 +226,29 @@ test("stop terminates descendant processes, not only the Pi child", async (t) =>
     }
   }
   assert.fail(`descendant process ${descendantPid} survived stop`);
+});
+
+test("managed child treats an empty output-limit response as a failure", async (t) => {
+  const child = new ManagedSubagent({
+    id: "length123",
+    name: "length-child",
+    task: "EMPTY_LENGTH",
+    model: "test/model",
+    effort: "low",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => child.stop());
+
+  await child.start();
+  assert.equal(await child.waitForIdle(2_000), true);
+  const snapshot = child.snapshot();
+  assert.equal(snapshot.state, "failed");
+  assert.equal(snapshot.error, "Child model exhausted its output token limit without producing text.");
 });
 
 test("managed child preserves terminal model failures after agent_settled", async (t) => {
