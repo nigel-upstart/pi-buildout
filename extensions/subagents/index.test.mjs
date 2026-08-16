@@ -101,11 +101,16 @@ test("terminal display text escapes controls without discarding safe surrounding
   for (const codePoint of [0x1b, 0x07, 0x202e, 0x00]) {
     assert.equal(safe.includes(String.fromCodePoint(codePoint)), false);
   }
-  assert.match(safe, /status: running/);
-  assert.match(safe, /\[U\+001B\]/);
-  assert.match(safe, /\[U\+202E\]/);
-  assert.match(safe, /summary: retained/);
-  assert.match(safe, /\[U\+0000\]/);
+  // Assert the whole transformation rather than only the neighbouring lines: a
+  // sanitizer that discarded the offending line outright, instead of escaping it
+  // in place, would still satisfy per-line spot checks.
+  assert.equal(
+    safe,
+    "status: running\n" +
+      "child: [U+001B]]8;;https://example.invalid[U+0007]link [U+202E]\n" +
+      "summary: retained\n" +
+      "[U+0000]",
+  );
 });
 
 test("current delegation turn is excluded from child context compaction", () => {
