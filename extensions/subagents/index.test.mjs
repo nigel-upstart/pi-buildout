@@ -184,3 +184,16 @@ test("auth bridge forwards api key and headers, and rejects header injection", a
   assert.deepEqual(run({ PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai" }), []);
   assert.equal(process.env.PI_SIMPLE_SUBAGENT_API_KEY, undefined);
 });
+
+// `ExtensionContext.modelRegistry` is a synchronous compatibility facade whose
+// underlying `ModelRuntime` is a private field. `modelRuntimeFromContext` in
+// index.ts reaches it via `Reflect.get(ctx.modelRegistry, "runtime")` because Pi
+// exposes no public accessor (checked through 0.84.2). If a Pi upgrade renames or
+// removes that field, targeted compaction silently falls back to fresh child
+// context, so pin the shape here and fail loudly at test time instead.
+test("Pi's ModelRegistry still exposes the ModelRuntime that compaction reaches for", async () => {
+  const { ModelRegistry, ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+  const runtime = await ModelRuntime.create({ allowModelNetwork: false });
+  const registry = new ModelRegistry(runtime);
+  assert.equal(Reflect.get(registry, "runtime"), runtime);
+});
