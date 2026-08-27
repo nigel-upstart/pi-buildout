@@ -5,7 +5,6 @@ description: >-
   available Datadog MCP equivalent. Use when asked about AI tool calls, MCP adoption, skill usage, unique users, usage
   leaderboards, or non-native tool usage over a specified time range.
 argument-hint: "<Datadog AI usage question and time range>"
-allowed-tools: Read, Bash(*), Grep, Glob
 ---
 
 # AI Tool Usage
