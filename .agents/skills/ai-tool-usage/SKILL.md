@@ -1,10 +1,9 @@
 ---
 name: ai-tool-usage
 description: >-
-  Analyze AI tool usage in Datadog, especially Claude Code and Cowork MCP tools and Skills, using the pup CLI or an
-  available Datadog MCP equivalent. Use when asked about AI tool calls, MCP adoption, skill usage, unique users, usage
-  leaderboards, or non-native tool usage over a specified time range.
+  Analyze AI tool usage in Datadog, Claude Code, Cowork and Codex MCP tools and Skills.
 argument-hint: "<Datadog AI usage question and time range>"
+disable-model-invocation: true
 ---
 
 # AI Tool Usage
