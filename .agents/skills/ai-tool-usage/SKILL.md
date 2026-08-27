@@ -220,10 +220,13 @@ sum:codex.mcp.call{*}.as_count()
 sum:codex.mcp.call{*} by {server,tool}.as_count()
 ```
 
-Codex metrics do not provide a user identity tag in the known setup, so do not invent a Codex unique-user number. If
-`connector_name` is needed, first inspect Metric Without Limits/queryable tags. It may be enabled only on a sibling
-metric such as `codex.mcp.call.duration_ms.count`; if so, label that result as a proxy and do not silently mix it with
-the exact counter.
+Codex metrics do not provide a user identity tag in the known setup, so do not invent a Codex unique-user number. Codex
+skill-related metrics such as `codex.skills.shadow_selection`, `codex.skills.shadow_selection.invocation`, and
+`codex.skill.injected` describe skill selection or injection telemetry, not the Claude/Cowork `@tool_name:Skill`
+invocation events. Do not merge them into the Skill leaderboard unless the user explicitly requests a separate Codex
+skill-selection analysis and the metric semantics are verified. If `connector_name` is needed, first inspect Metric
+Without Limits/queryable tags. It may be enabled only on a sibling metric such as `codex.mcp.call.duration_ms.count`; if
+so, label that result as a proxy and do not silently mix it with the exact counter.
 
 A `disabled_tags` error is not proof that a tag exists but is merely disabled: Datadog can return the same error for a
 nonexistent tag. Verify tag availability through metric metadata/tag configuration or an equivalent documented API.
@@ -279,16 +282,22 @@ For each bucket, normalize to this internal row shape:
 
 ```json
 {
+  "source": "claude-cowork|codex",
   "kind": "skill|mcp",
   "raw_name": "...",
   "display_name": "...",
+  "canonical_key": "source-qualified key",
+  "server": "...",
+  "connector_name": "...",
   "calls": 0,
   "invocations_per_day": 0.0,
-  "distinct_users": 0
+  "distinct_users": 0,
+  "distinct_users_coverage": "known|unavailable"
 }
 ```
 
-Set `display_name` for MCPs to the MCP server name. For Skills, first try to qualify the name using the local
+Set `source=claude-cowork` for log-derived rows and `source=codex` for metric-derived rows. Set `display_name` for
+Claude/Cowork MCPs to the MCP server name. For Skills, first try to qualify the name using the local
 `teamupstart/claude-code-extensions` checkout:
 
 ```bash
@@ -314,10 +323,26 @@ Only after inspecting its help should the agent use the supported discovery subc
 annotations, not proof of local origin, and never replace a raw name solely because an upstream name looks similar. If
 neither source matches, report the raw skill name unchanged.
 
-### Build one combined ranked list
+### Canonical naming and one combined ranked list
 
-Combine the normalized Skill and MCP rows from `CURRENT` into one list. Keep `kind` and a stable key
-(`kind + ':' + raw_name`) so a skill and MCP with the same display name do not collide. Compute invocation rate as:
+Combine Claude/Cowork Skills, Claude/Cowork MCPs, and Codex MCPs into one list. Codex contributes MCP rows only unless a
+separate, semantically verified Codex skill report is explicitly requested. Preserve the telemetry source in each row's
+identity. Use source-qualified keys so same-named integrations do not collide:
+
+```text
+claude-cowork:<raw_mcp_server_name>
+codex:<connector_name>
+codex:<server>
+claude-cowork:skill:<raw_skill_name>
+```
+
+For Codex, prefer populated `connector_name` as the display/raw name and retain `server` as an additional field. If it
+is absent, use `server`. Treat `N/A` as missing attribution, not as a connector that can be merged. Do not merge a Codex
+`slack` row with a Claude/Cowork Slack UUID or local server merely because the names look similar. Only collapse them
+when a reviewed canonical mapping is explicitly provided; retain the source-qualified key and raw values even then. Do
+not infer a mapping from a tool prefix alone.
+
+Compute invocation rate as:
 
 ```text
 invocations_per_day = calls / 7
@@ -334,8 +359,8 @@ Produce **one combined table** with the union of:
 The union can contain up to 20 rows. Include these columns:
 
 ```text
-rank_by_invocations, rank_by_users, kind, display_name, raw_name,
-calls, invocations_per_day, distinct_users
+rank_by_invocations, rank_by_users, source, kind, display_name, raw_name,
+canonical_key, calls, invocations_per_day, distinct_users, distinct_users_coverage
 ```
 
 A row present in both rankings gets both ranks. Sort the final union by `rank_by_invocations` (nulls last), then
@@ -344,7 +369,7 @@ score. Do not add per-skill distinct-user counts together to claim an overall us
 
 ### Weekly totals and changes
 
-For each of `CURRENT`, `WOW`, and `28D`, run the ungrouped combined query:
+For each of `CURRENT`, `WOW`, and `28D`, run the ungrouped Claude/Cowork combined query:
 
 ```bash
 pup --no-agent logs aggregate \
@@ -353,10 +378,15 @@ pup --no-agent logs aggregate \
   --compute='count,cardinality(@user.email)' --limit=1
 ```
 
-Read `c0` as total non-native invocations and `c1` as distinct users. The combined filter is essential: cardinality is
-calculated over the union, so a user who invoked both an MCP and a Skill is counted once.
+Read Claude/Cowork `c0` as known non-native invocations and `c1` as known distinct users. Query Codex MCP invocations
+separately from the exact `codex.mcp.call` metric and add those calls to the Claude/Cowork calls for the combined
+invocation total. Keep per-source totals visible.
 
-Compute two comparisons for both totals (`invocations` and `distinct_users`):
+Report the cross-source user total as **>= Distinct Users**: the known Claude/Cowork distinct-user count is a lower
+bound because Codex has no user identity tag. Do not invent Codex users, add separate cardinalities, or assume the two
+source user sets are disjoint or overlapping.
+
+Compute two comparisons for both totals (`invocations` and `>= distinct_users`):
 
 ```text
 change_vs_WoW_percent   = (CURRENT - WOW) / WOW * 100
@@ -364,15 +394,30 @@ change_vs_28D_percent   = (CURRENT - D28) / D28 * 100
 ```
 
 If a comparison baseline is zero, report `n/a` rather than dividing by zero. Include absolute deltas as well as
-percentages when useful. If cardinality is approximate, label the user comparison accordingly. Never sum the grouped
-`c1` values; use the ungrouped combined query for the total distinct-user count.
+percentages when useful. Label the user comparison as a lower bound and state that Codex identity is missing. Never sum
+grouped `c1` values; use the ungrouped Claude/Cowork combined query for the known-user lower bound.
 
-### MCP equivalent
+### Codex metric query and MCP equivalent
 
-If `pup` is unavailable but a Datadog MCP is available, perform the same six grouped queries and three ungrouped queries
-through its Logs Aggregate / Logs Analytics equivalent. Preserve the exact three time windows, filters, group-by fields,
-computes, and pagination. If the MCP only returns raw events, paginate fully, derive call counts, and deduplicate the
-union of `@user.email` values client-side; state that fallback and count missing identities.
+For Codex MCP totals, use the exact counter:
+
+```bash
+pup --no-agent metrics query --from="$FROM" --to="$TO" \
+  --query='sum:codex.mcp.call{*}.as_count()'
+```
+
+For Codex breakdowns, use `server` and `tool`; use `connector_name` only when it is queryable. `connector_name` on
+`codex.mcp.call` may have been enabled through Metrics without Limits after historical data was written, so the tag is
+not retroactive. Historical connector rankings may require `codex.mcp.call.duration_ms.count`, which is a labeled
+call-count proxy and must not be added to the exact counter. This is a future-fix/data-quality caveat, not a reason to
+omit Codex from aggregate invocation totals. WoW and -28d changes may also reflect telemetry or instrumentation changes;
+report those comparisons, but show per-source totals so the reader can distinguish usage changes from telemetry changes.
+
+If `pup` is unavailable but a Datadog MCP is available, perform the Claude/Cowork Logs Aggregate and Codex Metrics Query
+equivalents. Preserve exact windows, filters, group-bys, computes, pagination, and source labels. If the MCP only
+returns raw events, paginate fully, derive Claude/Cowork counts, and deduplicate Claude/Cowork `@user.email` values
+client-side; state that fallback and count missing identities. Codex still contributes invocations but remains
+unavailable for user attribution.
 
 ## Interpretation and reporting
 
@@ -384,10 +429,15 @@ Always report:
 - Whether a value is an invocation count, invocation rate, per-group count, or distinct-user count.
 - Skill qualification source: local plugin match, optional upstream annotation, or raw skill name.
 - Missing-identity and approximate-cardinality caveats.
+- Source-qualified naming and any reviewed canonical mappings.
+- Separate Claude/Cowork and Codex totals, plus the combined invocation total.
+- `>= Distinct Users` terminology and its lower-bound interpretation.
 - Current totals and absolute/percentage changes versus WoW and -28d.
 
 For a threshold question, show the number of qualifying buckets and clarify what a bucket represents. For example: "27
 MCP servers, each counted once regardless of how many tools it exposes, had >10 calls and >=2 distinct users."
 
-Do not combine Claude/Cowork log counts with Codex metric counts without clearly labeling the different sources and
-event semantics.
+Combine Claude/Cowork log counts with Codex metric counts when an organization-wide result is requested, but clearly
+label sources, event semantics, and separate source totals. Invocation totals are additive; user totals are only **>=
+Distinct Users** because Codex lacks identity data. Do not merge same-named MCPs across sources without an explicit
+reviewed canonical mapping.
