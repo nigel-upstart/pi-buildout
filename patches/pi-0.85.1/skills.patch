@@ -97,10 +97,10 @@ index c5ed4d7..4e16f58 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..1105d40
+index 0000000..a1d24d3
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,236 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -278,8 +278,11 @@ index 0000000..1105d40
 +    }
 +    return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 +}
++function commandName(allowSession = false) {
++    return allowSession ? "/skills" : "pi skills";
++}
 +function usage(allowSession = false) {
-+    const command = allowSession ? "/skills" : "pi skills";
++    const command = commandName(allowSession);
 +    const scopes = `--global|--repo${allowSession ? "|--session" : ""}`;
 +    return [
 +        `Usage: ${command} <active|list|search|add|remove${allowSession ? "|reload" : ""}>`,
@@ -292,10 +295,11 @@ index 0000000..1105d40
 +}
 +export function runSkillsCommand(args, options) {
 +    try {
++        const surface = commandName(options.allowSession);
 +        const [command, ...rest] = args;
 +        if (command === "active") {
 +            if (rest.length !== 0)
-+                throw new Error("Usage: pi skills active");
++                throw new Error(`Usage: ${surface} active`);
 +            const entries = getActiveSkillEntries({ ...options, strict: true });
 +            return {
 +                exitCode: 0,
@@ -305,20 +309,20 @@ index 0000000..1105d40
 +        }
 +        if (command === "list" || command === "search") {
 +            if (command === "list" && rest.length !== 0)
-+                throw new Error("Usage: pi skills list");
++                throw new Error(`Usage: ${surface} list`);
 +            const query = command === "search" ? rest.join(" ").trim().toLowerCase() : "";
 +            if (command === "search" && !query)
-+                throw new Error("Usage: pi skills search <query>");
++                throw new Error(`Usage: ${surface} search <query>`);
 +            const skills = getSkillCatalog(options).filter((skill) => !query || `${skill.name} ${skill.description}`.toLowerCase().includes(query));
 +            return { exitCode: 0, lines: skills.length ? skills.map((skill) => `${skill.name}\t${skill.description}`) : [query ? "No matching skills." : "No catalog skills found."] };
 +        }
 +        if (command === "add" || command === "remove") {
 +            const source = rest.find((arg) => !arg.startsWith("--"));
 +            if (!source)
-+                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
++                throw new Error(`Usage: ${surface} ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            const scope = scopeFromArgs(rest, options.allowSession);
 +            if (rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
-+                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
++                throw new Error(`Usage: ${surface} ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            if (scope === "session") {
 +                if (!options.allowSession)
 +                    throw new Error("Session scope is available only from interactive /skills commands.");
