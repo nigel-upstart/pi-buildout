@@ -90,6 +90,25 @@ checksum-guarded installation. It intentionally does not adopt automatic loading
 concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
 unrelated extension, prompt, theme, package, trust, and provider behavior.
 
+## Pi 0.85.1 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@0.85.1`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`)
+- License declared by the package: MIT
+
+[`patches/pi-0.85.1/skills.patch`](patches/pi-0.85.1/skills.patch) is a modified-code patch against Pi's published,
+generated runtime and documentation. It modifies upstream `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
+`dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
+lines derive from the MIT-licensed Pi package. The added `dist/core/skill-management.js` is an original implementation
+for this repository, informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
+
+The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
+normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
+checksum-guarded installation. It intentionally does not adopt automatic loading of every discovered skill,
+concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
+unrelated extension, prompt, theme, package, trust, and provider behavior.
+
 ## Pi documentation and examples
 
 - Source: `@earendil-works/pi-coding-agent`
