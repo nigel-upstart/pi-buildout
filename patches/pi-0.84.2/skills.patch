@@ -1,5 +1,5 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 97af6cd..c76a43b 100644
+index 97af6cd..01c4dcb 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -10,6 +10,7 @@ import { findGitPaths } from "./footer-data-provider.js";
@@ -20,7 +20,23 @@ index 97af6cd..c76a43b 100644
  function loadContextFileFromDir(dir) {
      const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
      for (const filename of candidates) {
-@@ -326,11 +330,13 @@ export class DefaultResourceLoader {
+@@ -144,6 +148,7 @@ export class DefaultResourceLoader {
+     appendSystemPrompt;
+     appendSystemPromptSourcePaths;
+     lastSkillPaths;
++    catalogPathsByName;
+     extensionSkillSourceInfos;
+     extensionPromptSourceInfos;
+     extensionThemeSourceInfos;
+@@ -261,6 +266,7 @@ export class DefaultResourceLoader {
+     }
+     async reload(options) {
+         resetTimings("extensions");
++        this.catalogPathsByName = undefined;
+         if (this.loaded) {
+             clearExtensionCache();
+         }
+@@ -326,11 +332,13 @@ export class DefaultResourceLoader {
          }
          this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
          this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
@@ -37,14 +53,13 @@ index 97af6cd..c76a43b 100644
          for (const p of this.additionalSkillPaths) {
              if (isLocalPath(p)) {
                  const resolved = this.resolveResourcePath(p);
-@@ -496,6 +502,48 @@ export class DefaultResourceLoader {
+@@ -496,6 +504,41 @@ export class DefaultResourceLoader {
              };
          });
      }
 +    getActiveSkillPaths() {
 +        const paths = [];
 +        const diagnostics = [];
-+        let catalogPaths;
 +        const entries = getActiveSkillEntries({
 +            cwd: this.cwd,
 +            agentDir: this.agentDir,
@@ -54,14 +69,7 @@ index 97af6cd..c76a43b 100644
 +            const source = sourceOf(entry);
 +            if (!source)
 +                continue;
-+            let resolved;
-+            if (looksLikePath(source)) {
-+                resolved = this.resolveResourcePath(source);
-+            }
-+            else {
-+                catalogPaths ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
-+                resolved = catalogPaths.get(source);
-+            }
++            const resolved = this.resolveSkillEntry(source);
 +            if (resolved) {
 +                paths.push(resolved);
 +            }
@@ -81,21 +89,22 @@ index 97af6cd..c76a43b 100644
 +        return this.findCatalogSkillPath(source);
 +    }
 +    findCatalogSkillPath(name) {
-+        return getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).find((skill) => skill.name === name)?.filePath;
++        this.catalogPathsByName ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
++        return this.catalogPathsByName.get(name);
 +    }
      updateSkillsFromPaths(skillPaths, metadataByPath) {
          let skillsResult;
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..6baf9a1
+index 0000000..1105d40
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,232 @@
 +import { execFileSync } from "node:child_process";
-+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
++import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
-+import { dirname, join, relative, resolve, sep } from "node:path";
++import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 +import { CONFIG_DIR_NAME } from "../config.js";
 +import { loadSkillsFromDir } from "./skills.js";
 +
@@ -118,7 +127,11 @@ index 0000000..6baf9a1
 +}
 +function git(cwd, args) {
 +    try {
-+        return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
++        return execFileSync("git", ["-C", cwd, ...args], {
++            encoding: "utf-8",
++            stdio: ["ignore", "pipe", "ignore"],
++            timeout: 2000,
++        }).trim();
 +    }
 +    catch {
 +        return undefined;
@@ -234,9 +247,14 @@ index 0000000..6baf9a1
 +export function getProjectAgentSkillDirs(cwd) {
 +    const dirs = [];
 +    const repoRoot = git(cwd, ["rev-parse", "--show-toplevel"]);
-+    const stopAt = repoRoot ? resolve(repoRoot) : undefined;
-+    let current = resolve(cwd);
++    const stopAt = repoRoot ? realpathSync(resolve(repoRoot)) : undefined;
++    let current = realpathSync(resolve(cwd));
 +    while (true) {
++        if (stopAt) {
++            const fromRoot = relative(stopAt, current);
++            if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot))
++                break;
++        }
 +        dirs.push(join(current, ".agents", "skills"));
 +        if (current === stopAt)
 +            break;
@@ -260,20 +278,24 @@ index 0000000..6baf9a1
 +    }
 +    return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 +}
-+function usage() {
++function usage(allowSession = false) {
++    const command = allowSession ? "/skills" : "pi skills";
++    const scopes = `--global|--repo${allowSession ? "|--session" : ""}`;
 +    return [
-+        "Usage: pi skills <active|list|search|add|remove>",
-+        "  pi skills active",
-+        "  pi skills list",
-+        "  pi skills search <query>",
-+        "  pi skills add <skill-or-path> --global|--repo",
-+        "  pi skills remove <skill-or-path> --global|--repo",
++        `Usage: ${command} <active|list|search|add|remove${allowSession ? "|reload" : ""}>`,
++        `  ${command} active`,
++        `  ${command} list`,
++        `  ${command} search <query>`,
++        `  ${command} add <skill-or-path> ${scopes}`,
++        `  ${command} remove <skill-or-path> ${scopes}`,
 +    ];
 +}
 +export function runSkillsCommand(args, options) {
 +    try {
 +        const [command, ...rest] = args;
 +        if (command === "active") {
++            if (rest.length !== 0)
++                throw new Error("Usage: pi skills active");
 +            const entries = getActiveSkillEntries({ ...options, strict: true });
 +            return {
 +                exitCode: 0,
@@ -282,6 +304,8 @@ index 0000000..6baf9a1
 +            };
 +        }
 +        if (command === "list" || command === "search") {
++            if (command === "list" && rest.length !== 0)
++                throw new Error("Usage: pi skills list");
 +            const query = command === "search" ? rest.join(" ").trim().toLowerCase() : "";
 +            if (command === "search" && !query)
 +                throw new Error("Usage: pi skills search <query>");
@@ -290,8 +314,10 @@ index 0000000..6baf9a1
 +        }
 +        if (command === "add" || command === "remove") {
 +            const source = rest.find((arg) => !arg.startsWith("--"));
++            if (!source)
++                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            const scope = scopeFromArgs(rest, options.allowSession);
-+            if (!source || rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
++            if (rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
 +                throw new Error(`Usage: pi skills ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
 +            if (scope === "session") {
 +                if (!options.allowSession)
@@ -301,7 +327,7 @@ index 0000000..6baf9a1
 +            updatePersistedSkill(command, source, scope, options);
 +            return { exitCode: 0, lines: [`${command === "add" ? "Enabled" : "Disabled"} ${source} for ${scope} scope.`] };
 +        }
-+        return { exitCode: 1, lines: usage() };
++        return { exitCode: 1, lines: usage(options.allowSession) };
 +    }
 +    catch (error) {
 +        return { exitCode: 1, lines: [error instanceof Error ? error.message : String(error)] };
@@ -352,7 +378,7 @@ index d4da288..aa9726e 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 6a88679..5e8cbba 100644
+index 6a88679..f29b34a 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -23,6 +23,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -375,13 +401,13 @@ index 6a88679..5e8cbba 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4792,6 +4798,62 @@ export class InteractiveMode {
+@@ -4792,6 +4798,67 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
 +    async handleSkillsCommand(text) {
 +        const args = text.slice("/skills".length).trim().split(/\s+/).filter(Boolean);
-+        if (args[0] === "reload") {
++        if (args.length === 1 && args[0] === "reload") {
 +            await this.handleReloadCommand();
 +            return;
 +        }
@@ -407,7 +433,12 @@ index 6a88679..5e8cbba 100644
 +                }
 +            }
 +            else {
-+                loader.additionalSkillPaths = loader.additionalSkillPaths.filter((path) => path !== result.session.source && (!resolved || path !== resolved));
++                const enabled = resolved && loader.additionalSkillPaths.some((path) => path === result.session.source || path === resolved);
++                if (!enabled) {
++                    this.showError(`Skill is not enabled for this session: ${result.session.source}`);
++                    return;
++                }
++                loader.additionalSkillPaths = loader.additionalSkillPaths.filter((path) => path !== result.session.source && path !== resolved);
 +            }
 +            result.lines = [`${result.session.action === "add" ? "Enabled" : "Disabled"} ${result.session.source} for this session.`];
 +        }
