@@ -1,5 +1,5 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index c5ed4d7..7071cc6 100644
+index c5ed4d7..c85a0e5 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -11,6 +11,7 @@ import { findGitPaths } from "./footer-data-provider.js";
@@ -43,7 +43,7 @@ index c5ed4d7..7071cc6 100644
          for (const p of this.additionalSkillPaths) {
              if (isLocalPath(p)) {
                  const resolved = this.resolveResourcePath(p);
-@@ -497,6 +502,45 @@ export class DefaultResourceLoader {
+@@ -497,6 +502,50 @@ export class DefaultResourceLoader {
              };
          });
      }
@@ -72,15 +72,20 @@ index c5ed4d7..7071cc6 100644
 +    invalidateSkillCatalogCache() {
 +        this.catalogPathsByName = undefined;
 +    }
-+    resolveSkillEntry(entry) {
++    normalizeSkillEntry(entry) {
 +        const source = sourceOf(entry);
 +        if (!source)
 +            return undefined;
-+        if (looksLikePath(source)) {
-+            const resolved = this.resolveResourcePath(source);
-+            return existsSync(resolved) ? resolved : undefined;
-+        }
-+        return this.findCatalogSkillPath(source);
++        return looksLikePath(source) ? this.resolveResourcePath(source) : source;
++    }
++    resolveSkillEntry(entry) {
++        const source = sourceOf(entry);
++        const normalized = this.normalizeSkillEntry(entry);
++        if (!source || !normalized)
++            return undefined;
++        if (looksLikePath(source))
++            return existsSync(normalized) ? normalized : undefined;
++        return this.findCatalogSkillPath(normalized);
 +    }
 +    findCatalogSkillPath(name) {
 +        this.catalogPathsByName ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir, settingsManager: this.settingsManager }).map((skill) => [skill.name, skill.filePath]));
@@ -91,10 +96,10 @@ index c5ed4d7..7071cc6 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..7a9af2c
+index 0000000..e040118
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,275 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -318,6 +323,7 @@ index 0000000..7a9af2c
 +        `  ${command} search <query>`,
 +        `  ${command} add <skill-or-path> ${scopes}`,
 +        `  ${command} remove <skill-or-path> ${scopes}`,
++        ...(allowSession ? [`  ${command} reload`] : []),
 +    ];
 +}
 +export function runSkillsCommand(args, options) {
@@ -356,8 +362,6 @@ index 0000000..7a9af2c
 +            if (command === "add" && !resolveSkillSource(source, options))
 +                throw new Error(`Skill not found in the catalog or at an existing path: ${source}`);
 +            if (scope === "session") {
-+                if (!options.allowSession)
-+                    throw new Error("Session scope is available only from interactive /skills commands.");
 +                return { exitCode: 0, lines: [], session: { action: command, source: target } };
 +            }
 +            const updated = updatePersistedSkill(command, target, scope, options);
@@ -385,7 +389,7 @@ index 7135c37..1e936a2 100644
  //# sourceMappingURL=slash-commands.js.map
 \ No newline at end of file
 diff --git a/dist/main.js b/dist/main.js
-index bb7c8c3..3b9bafe 100644
+index bb7c8c3..4f86a90 100644
 --- a/dist/main.js
 +++ b/dist/main.js
 @@ -29,6 +29,7 @@ import { resolveCliModel, resolveModelScope } from "./core/model-resolver.js";
@@ -396,7 +400,7 @@ index bb7c8c3..3b9bafe 100644
  import { formatMissingSessionCwdPrompt, getMissingSessionCwdIssue, MissingSessionCwdError, } from "./core/session-cwd.js";
  import { assertValidSessionId, SessionManager } from "./core/session-manager.js";
  import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.js";
-@@ -469,6 +470,36 @@ export async function main(args, options) {
+@@ -469,6 +470,37 @@ export async function main(args, options) {
      if (await handleConfigCommand(args, { extensionFactories })) {
          return;
      }
@@ -422,7 +426,8 @@ index bb7c8c3..3b9bafe 100644
 +        });
 +        const output = result.lines.join("\n");
 +        if (result.exitCode === 0) {
-+            console.log(output);
++            if (output)
++                console.log(output);
 +        }
 +        else {
 +            console.error(chalk.red(output));
@@ -434,7 +439,7 @@ index bb7c8c3..3b9bafe 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..7403043 100644
+index a1e7d98..e88834b 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -24,6 +24,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -457,7 +462,7 @@ index a1e7d98..7403043 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4971,6 +4977,78 @@ export class InteractiveMode {
+@@ -4971,6 +4977,82 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
@@ -497,12 +502,16 @@ index a1e7d98..7403043 100644
 +                }
 +            }
 +            else {
-+                const enabled = loader.additionalSkillPaths.some((path) => path === result.session.source || (resolved !== undefined && path === resolved));
++                const matches = (path) => {
++                    const normalized = typeof loader.normalizeSkillEntry === "function" ? loader.normalizeSkillEntry(path) : path;
++                    return path === result.session.source || normalized === result.session.source || (resolved !== undefined && normalized === resolved);
++                };
++                const enabled = loader.additionalSkillPaths.some(matches);
 +                if (!enabled) {
 +                    this.showError(`Skill is not enabled for this session: ${result.session.source}`);
 +                    return;
 +                }
-+                const retainedPaths = loader.additionalSkillPaths.filter((path) => path !== result.session.source && path !== resolved);
++                const retainedPaths = loader.additionalSkillPaths.filter((path) => !matches(path));
 +                loader.additionalSkillPaths.splice(0, loader.additionalSkillPaths.length, ...retainedPaths);
 +            }
 +            const displayedSource = result.session.action === "add" ? resolved : result.session.source;
