@@ -97,15 +97,16 @@ index c5ed4d7..100c438 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..c5b3c9e
+index 0000000..e9e2d21
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,267 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
 +import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 +import { CONFIG_DIR_NAME } from "../config.js";
++import { resolvePath } from "../utils/paths.js";
 +import { SettingsManager } from "./settings-manager.js";
 +import { loadSkillsFromDir } from "./skills.js";
 +
@@ -294,6 +295,16 @@ index 0000000..c5b3c9e
 +    }
 +    return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 +}
++function looksLikePath(value) {
++    return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
++}
++function resolveSkillSource(source, options) {
++    if (looksLikePath(source)) {
++        const resolved = resolvePath(source, options.cwd, { trim: true });
++        return existsSync(resolved) ? resolved : undefined;
++    }
++    return getSkillCatalog(options).find((skill) => skill.name === source)?.filePath;
++}
 +function commandName(allowSession = false) {
 +    return allowSession ? "/skills" : "pi skills";
 +}
@@ -339,6 +350,8 @@ index 0000000..c5b3c9e
 +            const scope = scopeFromArgs(rest, options.allowSession);
 +            if (rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
 +                throw new Error(`Usage: ${surface} ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
++            if (command === "add" && !resolveSkillSource(source, options))
++                throw new Error(`Skill not found in the catalog or at an existing path: ${source}`);
 +            if (scope === "session") {
 +                if (!options.allowSession)
 +                    throw new Error("Session scope is available only from interactive /skills commands.");
@@ -369,7 +382,7 @@ index 7135c37..1e936a2 100644
  //# sourceMappingURL=slash-commands.js.map
 \ No newline at end of file
 diff --git a/dist/main.js b/dist/main.js
-index bb7c8c3..0a8d428 100644
+index bb7c8c3..3b9bafe 100644
 --- a/dist/main.js
 +++ b/dist/main.js
 @@ -29,6 +29,7 @@ import { resolveCliModel, resolveModelScope } from "./core/model-resolver.js";
@@ -385,7 +398,7 @@ index bb7c8c3..0a8d428 100644
          return;
      }
 +    if (args[0] === "skills") {
-+        if (args[1] === "list" || args[1] === "search") {
++        if (["list", "search", "add"].includes(args[1])) {
 +            const projectTrusted = await resolveProjectTrusted({
 +                cwd,
 +                trustStore: new ProjectTrustStore(agentDir),
@@ -418,7 +431,7 @@ index bb7c8c3..0a8d428 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..13a357f 100644
+index a1e7d98..f1fc679 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -24,6 +24,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -441,7 +454,7 @@ index a1e7d98..13a357f 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4971,6 +4977,68 @@ export class InteractiveMode {
+@@ -4971,6 +4977,72 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
@@ -463,6 +476,10 @@ index a1e7d98..13a357f 100644
 +        }
 +        if (result.session) {
 +            const loader = this.session.resourceLoader;
++            if (typeof loader.resolveSkillEntry !== "function" || !Array.isArray(loader.additionalSkillPaths)) {
++                this.showError("Session skill activation is unavailable for this resource loader.");
++                return;
++            }
 +            const resolved = loader.resolveSkillEntry(result.session.source);
 +            if (result.session.action === "add") {
 +                if (!resolved) {
