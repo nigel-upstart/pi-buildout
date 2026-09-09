@@ -431,7 +431,7 @@ index bb7c8c3..3b9bafe 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..f1fc679 100644
+index a1e7d98..ef4c3e6 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -24,6 +24,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -454,7 +454,7 @@ index a1e7d98..f1fc679 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4971,6 +4977,72 @@ export class InteractiveMode {
+@@ -4971,6 +4977,73 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
@@ -501,9 +501,10 @@ index a1e7d98..f1fc679 100644
 +            result.lines = [`${result.session.action === "add" ? "Enabled" : "Disabled"} ${result.session.source} for this session.`];
 +        }
 +        if (args[0] === "active") {
++            const sessionPaths = this.session.resourceLoader.additionalSkillPaths;
 +            const activeEntries = [
 +                ...(result.activeEntries ?? []),
-+                ...this.session.resourceLoader.additionalSkillPaths.map((source) => ({ scope: "session", source })),
++                ...(Array.isArray(sessionPaths) ? sessionPaths : []).map((source) => ({ scope: "session", source })),
 +            ];
 +            result.lines = activeEntries.length
 +                ? ["Active skills:", ...activeEntries.map((entry) => `  ${entry.scope}: ${entry.source}`)]
