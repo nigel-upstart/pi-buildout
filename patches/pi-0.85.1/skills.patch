@@ -1,5 +1,5 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index c5ed4d7..6b2b83b 100644
+index c5ed4d7..7071cc6 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -11,6 +11,7 @@ import { findGitPaths } from "./footer-data-provider.js";
@@ -22,7 +22,7 @@ index c5ed4d7..6b2b83b 100644
      }
      async reload(options) {
          resetTimings("extensions");
-+        this.catalogPathsByName = undefined;
++        this.invalidateSkillCatalogCache();
          if (this.loaded) {
              clearExtensionCache();
          }
@@ -43,7 +43,7 @@ index c5ed4d7..6b2b83b 100644
          for (const p of this.additionalSkillPaths) {
              if (isLocalPath(p)) {
                  const resolved = this.resolveResourcePath(p);
-@@ -497,6 +502,42 @@ export class DefaultResourceLoader {
+@@ -497,6 +502,45 @@ export class DefaultResourceLoader {
              };
          });
      }
@@ -69,6 +69,9 @@ index c5ed4d7..6b2b83b 100644
 +        }
 +        return { paths, diagnostics };
 +    }
++    invalidateSkillCatalogCache() {
++        this.catalogPathsByName = undefined;
++    }
 +    resolveSkillEntry(entry) {
 +        const source = sourceOf(entry);
 +        if (!source)
@@ -88,10 +91,10 @@ index c5ed4d7..6b2b83b 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..c2d5b1c
+index 0000000..7a9af2c
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,276 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -203,12 +206,12 @@ index 0000000..c2d5b1c
 +    const config = readJson(location.path);
 +    const target = location.key ? (isObjectRecord(config[location.key]) ? config[location.key] : {}) : config;
 +    const enabled = enabledEntries(target);
-+    const matched = enabled.some((entry) => sourceOf(entry) === source);
++    const matched = enabled.some((entry) => normalizeSkillSource(sourceOf(entry), options) === source);
 +    if (action === "remove" && !matched)
 +        return false;
 +    const next = action === "add"
-+        ? (enabled.some((entry) => sourceOf(entry) === source) ? enabled : [...enabled, source])
-+        : enabled.filter((entry) => sourceOf(entry) !== source);
++        ? (matched ? enabled : [...enabled, source])
++        : enabled.filter((entry) => normalizeSkillSource(sourceOf(entry), options) !== source);
 +    target.enabled = next;
 +    if (location.key)
 +        config[location.key] = target;
@@ -289,12 +292,18 @@ index 0000000..c2d5b1c
 +export function looksLikePath(value) {
 +    return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
 +}
++function normalizeSkillSource(source, options) {
++    if (!source)
++        return undefined;
++    return looksLikePath(source) ? resolvePath(source, options.cwd, { trim: true }) : source;
++}
 +function resolveSkillSource(source, options) {
-+    if (looksLikePath(source)) {
-+        const resolved = resolvePath(source, options.cwd, { trim: true });
-+        return existsSync(resolved) ? resolved : undefined;
-+    }
-+    return getSkillCatalog(options).find((skill) => skill.name === source)?.filePath;
++    const normalized = normalizeSkillSource(source, options);
++    if (!normalized)
++        return undefined;
++    if (looksLikePath(source))
++        return existsSync(normalized) ? normalized : undefined;
++    return getSkillCatalog(options).find((skill) => skill.name === normalized)?.filePath;
 +}
 +function commandName(allowSession = false) {
 +    return allowSession ? "/skills" : "pi skills";
@@ -341,14 +350,17 @@ index 0000000..c2d5b1c
 +            const scope = scopeFromArgs(rest, options.allowSession);
 +            if (rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg)))
 +                throw new Error(`Usage: ${surface} ${command} <skill-or-path> --global|--repo${options.allowSession ? "|--session" : ""}`);
++            const target = normalizeSkillSource(source, options);
++            if (!target)
++                throw new Error(`Skill source is invalid: ${source}`);
 +            if (command === "add" && !resolveSkillSource(source, options))
 +                throw new Error(`Skill not found in the catalog or at an existing path: ${source}`);
 +            if (scope === "session") {
 +                if (!options.allowSession)
 +                    throw new Error("Session scope is available only from interactive /skills commands.");
-+                return { exitCode: 0, lines: [], session: { action: command, source } };
++                return { exitCode: 0, lines: [], session: { action: command, source: target } };
 +            }
-+            const updated = updatePersistedSkill(command, source, scope, options);
++            const updated = updatePersistedSkill(command, target, scope, options);
 +            if (!updated)
 +                throw new Error(`Skill is not enabled for ${scope} scope: ${source}`);
 +            return { exitCode: 0, lines: [`${command === "add" ? "Enabled" : "Disabled"} ${source} for ${scope} scope.`] };
@@ -422,7 +434,7 @@ index bb7c8c3..3b9bafe 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..65debe2 100644
+index a1e7d98..7403043 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -24,6 +24,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -445,7 +457,7 @@ index a1e7d98..65debe2 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4971,6 +4977,74 @@ export class InteractiveMode {
+@@ -4971,6 +4977,78 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
@@ -471,6 +483,9 @@ index a1e7d98..65debe2 100644
 +                this.showError("Session skill activation is unavailable for this resource loader.");
 +                return;
 +            }
++            if (typeof loader.invalidateSkillCatalogCache === "function") {
++                loader.invalidateSkillCatalogCache();
++            }
 +            const resolved = loader.resolveSkillEntry(result.session.source);
 +            if (result.session.action === "add") {
 +                if (!resolved) {
@@ -487,7 +502,8 @@ index a1e7d98..65debe2 100644
 +                    this.showError(`Skill is not enabled for this session: ${result.session.source}`);
 +                    return;
 +                }
-+                loader.additionalSkillPaths = loader.additionalSkillPaths.filter((path) => path !== result.session.source && path !== resolved);
++                const retainedPaths = loader.additionalSkillPaths.filter((path) => path !== result.session.source && path !== resolved);
++                loader.additionalSkillPaths.splice(0, loader.additionalSkillPaths.length, ...retainedPaths);
 +            }
 +            const displayedSource = result.session.action === "add" ? resolved : result.session.source;
 +            result.lines = [`${result.session.action === "add" ? "Enabled" : "Disabled"} ${displayedSource} for this session.`];
