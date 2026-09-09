@@ -97,10 +97,10 @@ index c5ed4d7..4e16f58 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..a1d24d3
+index 0000000..a7786d2
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,242 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -207,6 +207,9 @@ index 0000000..a1d24d3
 +    const config = readJson(location.path);
 +    const target = location.key ? (config[location.key] && typeof config[location.key] === "object" ? config[location.key] : {}) : config;
 +    const enabled = enabledEntries(target);
++    const matched = enabled.some((entry) => sourceOf(entry) === source);
++    if (action === "remove" && !matched)
++        return false;
 +    const next = action === "add"
 +        ? (enabled.some((entry) => sourceOf(entry) === source) ? enabled : [...enabled, source])
 +        : enabled.filter((entry) => sourceOf(entry) !== source);
@@ -214,6 +217,7 @@ index 0000000..a1d24d3
 +    if (location.key)
 +        config[location.key] = target;
 +    writeJson(location.path, config);
++    return true;
 +}
 +export function getActiveSkillEntries({ cwd, agentDir, strict = false, onWarn }) {
 +    const entries = [];
@@ -328,7 +332,9 @@ index 0000000..a1d24d3
 +                    throw new Error("Session scope is available only from interactive /skills commands.");
 +                return { exitCode: 0, lines: [], session: { action: command, source } };
 +            }
-+            updatePersistedSkill(command, source, scope, options);
++            const updated = updatePersistedSkill(command, source, scope, options);
++            if (!updated)
++                throw new Error(`Skill is not enabled for ${scope} scope: ${source}`);
 +            return { exitCode: 0, lines: [`${command === "add" ? "Enabled" : "Disabled"} ${source} for ${scope} scope.`] };
 +        }
 +        return { exitCode: 1, lines: usage(options.allowSession) };
@@ -351,7 +357,7 @@ index 7135c37..1e936a2 100644
  //# sourceMappingURL=slash-commands.js.map
 \ No newline at end of file
 diff --git a/dist/main.js b/dist/main.js
-index bb7c8c3..cd30103 100644
+index bb7c8c3..ea0d64a 100644
 --- a/dist/main.js
 +++ b/dist/main.js
 @@ -29,6 +29,7 @@ import { resolveCliModel, resolveModelScope } from "./core/model-resolver.js";
@@ -366,7 +372,7 @@ index bb7c8c3..cd30103 100644
      if (await handleConfigCommand(args, { extensionFactories })) {
          return;
      }
-+    if (args[0] === "skills" && (args.length === 1 || ["active", "list", "search", "add", "remove"].includes(args[1]))) {
++    if (args[0] === "skills") {
 +        const result = runSkillsCommand(args.slice(1), { cwd, agentDir });
 +        const output = result.lines.join("\n");
 +        if (result.exitCode === 0) {
@@ -382,7 +388,7 @@ index bb7c8c3..cd30103 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..f8215ca 100644
+index a1e7d98..d0eae82 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -24,6 +24,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -437,7 +443,7 @@ index a1e7d98..f8215ca 100644
 +                }
 +            }
 +            else {
-+                const enabled = resolved && loader.additionalSkillPaths.some((path) => path === result.session.source || path === resolved);
++                const enabled = loader.additionalSkillPaths.some((path) => path === result.session.source || (resolved !== undefined && path === resolved));
 +                if (!enabled) {
 +                    this.showError(`Skill is not enabled for this session: ${result.session.source}`);
 +                    return;
@@ -474,7 +480,7 @@ index a1e7d98..f8215ca 100644
          if (this.session.isStreaming) {
              this.showWarning("Wait for the current response to finish before reloading.");
 diff --git a/docs/skills.md b/docs/skills.md
-index 02835f8..8f4a93e 100644
+index 02835f8..70d11fa 100644
 --- a/docs/skills.md
 +++ b/docs/skills.md
 @@ -21,7 +21,15 @@ Pi implements the [Agent Skills standard](https://agentskills.io/specification),
@@ -490,11 +496,23 @@ index 02835f8..8f4a93e 100644
 +- Global: `~/.pi/agent/skills.json`
 +- Repository: `~/.pi/agent/repo-skills.json`, keyed by git repository identity
 +
-+Catalog sources include:
++The searchable catalog scans these skill directories:
  
  - Global:
    - `~/.pi/agent/skills/`
-@@ -64,16 +72,37 @@ For project-level Claude Code skills, add to `.pi/settings.json`:
+@@ -29,9 +37,8 @@ Pi loads skills from:
+ - Project (only after the project is trusted):
+   - `.pi/skills/`
+   - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
+-- Packages: `skills/` directories or `pi.skills` entries in `package.json`
+-- Settings: `skills` array with files or directories
+-- CLI: `--skill <path>` (repeatable, additive even with `--no-skills`)
++
++Package-provided and settings-configured skills must be activated by path; they are not included in `pi skills list` or `pi skills search`.
+ 
+ Discovery rules:
+ - In `~/.pi/agent/skills/` and `.pi/skills/`, direct root `.md` files are discovered as individual skills when they have valid skill frontmatter with a non-empty `description`
+@@ -64,16 +71,37 @@ For project-level Claude Code skills, add to `.pi/settings.json`:
  
  ## How Skills Work
  
