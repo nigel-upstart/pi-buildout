@@ -1,26 +1,16 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index c5ed4d7..100c438 100644
+index c5ed4d7..dab0e84 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -11,6 +11,7 @@ import { findGitPaths } from "./footer-data-provider.js";
  import { DefaultPackageManager } from "./package-manager.js";
  import { loadPromptTemplates } from "./prompt-templates.js";
  import { SettingsManager } from "./settings-manager.js";
-+import { getActiveSkillEntries, getSkillCatalog, sourceOf } from "./skill-management.js";
++import { getActiveSkillEntries, getSkillCatalog, looksLikePath, sourceOf } from "./skill-management.js";
  import { loadSkills } from "./skills.js";
  import { createSourceInfo } from "./source-info.js";
  import { resetTimings } from "./timings.js";
-@@ -29,6 +30,9 @@ function resolvePromptInput(input, description) {
-     }
-     return input;
- }
-+function looksLikePath(value) {
-+    return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
-+}
- function loadContextFileFromDir(dir) {
-     const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
-     for (const filename of candidates) {
-@@ -145,6 +149,7 @@ export class DefaultResourceLoader {
+@@ -145,6 +146,7 @@ export class DefaultResourceLoader {
      appendSystemPrompt;
      appendSystemPromptSourcePaths;
      lastSkillPaths;
@@ -28,7 +18,7 @@ index c5ed4d7..100c438 100644
      extensionSkillSourceInfos;
      extensionPromptSourceInfos;
      extensionThemeSourceInfos;
-@@ -262,6 +267,7 @@ export class DefaultResourceLoader {
+@@ -262,6 +264,7 @@ export class DefaultResourceLoader {
      }
      async reload(options) {
          resetTimings("extensions");
@@ -36,7 +26,7 @@ index c5ed4d7..100c438 100644
          if (this.loaded) {
              clearExtensionCache();
          }
-@@ -327,11 +333,13 @@ export class DefaultResourceLoader {
+@@ -327,11 +330,13 @@ export class DefaultResourceLoader {
          }
          this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
          this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
@@ -53,7 +43,7 @@ index c5ed4d7..100c438 100644
          for (const p of this.additionalSkillPaths) {
              if (isLocalPath(p)) {
                  const resolved = this.resolveResourcePath(p);
-@@ -497,6 +505,41 @@ export class DefaultResourceLoader {
+@@ -497,6 +502,41 @@ export class DefaultResourceLoader {
              };
          });
      }
@@ -97,7 +87,7 @@ index c5ed4d7..100c438 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..e9e2d21
+index 0000000..c2d5b1c
 --- /dev/null
 +++ b/dist/core/skill-management.js
 @@ -0,0 +1,267 @@
@@ -295,7 +285,7 @@ index 0000000..e9e2d21
 +    }
 +    return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 +}
-+function looksLikePath(value) {
++export function looksLikePath(value) {
 +    return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
 +}
 +function resolveSkillSource(source, options) {
@@ -431,7 +421,7 @@ index bb7c8c3..3b9bafe 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..ef4c3e6 100644
+index a1e7d98..65debe2 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -24,6 +24,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -454,7 +444,7 @@ index a1e7d98..ef4c3e6 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4971,6 +4977,73 @@ export class InteractiveMode {
+@@ -4971,6 +4977,74 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
@@ -498,7 +488,8 @@ index a1e7d98..ef4c3e6 100644
 +                }
 +                loader.additionalSkillPaths = loader.additionalSkillPaths.filter((path) => path !== result.session.source && path !== resolved);
 +            }
-+            result.lines = [`${result.session.action === "add" ? "Enabled" : "Disabled"} ${result.session.source} for this session.`];
++            const displayedSource = result.session.action === "add" ? resolved : result.session.source;
++            result.lines = [`${result.session.action === "add" ? "Enabled" : "Disabled"} ${displayedSource} for this session.`];
 +        }
 +        if (args[0] === "active") {
 +            const sessionPaths = this.session.resourceLoader.additionalSkillPaths;
