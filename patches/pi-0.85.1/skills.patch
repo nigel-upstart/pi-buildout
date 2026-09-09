@@ -1,5 +1,5 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index c5ed4d7..dab0e84 100644
+index c5ed4d7..6b2b83b 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -11,6 +11,7 @@ import { findGitPaths } from "./footer-data-provider.js";
@@ -43,7 +43,7 @@ index c5ed4d7..dab0e84 100644
          for (const p of this.additionalSkillPaths) {
              if (isLocalPath(p)) {
                  const resolved = this.resolveResourcePath(p);
-@@ -497,6 +502,41 @@ export class DefaultResourceLoader {
+@@ -497,6 +502,42 @@ export class DefaultResourceLoader {
              };
          });
      }
@@ -74,7 +74,8 @@ index c5ed4d7..dab0e84 100644
 +        if (!source)
 +            return undefined;
 +        if (looksLikePath(source)) {
-+            return this.resolveResourcePath(source);
++            const resolved = this.resolveResourcePath(source);
++            return existsSync(resolved) ? resolved : undefined;
 +        }
 +        return this.findCatalogSkillPath(source);
 +    }
