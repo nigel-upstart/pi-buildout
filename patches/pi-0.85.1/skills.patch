@@ -1,5 +1,5 @@
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index c5ed4d7..4e16f58 100644
+index c5ed4d7..100c438 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -11,6 +11,7 @@ import { findGitPaths } from "./footer-data-provider.js";
@@ -89,7 +89,7 @@ index c5ed4d7..4e16f58 100644
 +        return this.findCatalogSkillPath(source);
 +    }
 +    findCatalogSkillPath(name) {
-+        this.catalogPathsByName ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir }).map((skill) => [skill.name, skill.filePath]));
++        this.catalogPathsByName ??= new Map(getSkillCatalog({ cwd: this.cwd, agentDir: this.agentDir, settingsManager: this.settingsManager }).map((skill) => [skill.name, skill.filePath]));
 +        return this.catalogPathsByName.get(name);
 +    }
      updateSkillsFromPaths(skillPaths, metadataByPath) {
@@ -97,23 +97,27 @@ index c5ed4d7..4e16f58 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..a7786d2
+index 0000000..c5b3c9e
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,254 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
 +import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 +import { CONFIG_DIR_NAME } from "../config.js";
++import { SettingsManager } from "./settings-manager.js";
 +import { loadSkillsFromDir } from "./skills.js";
 +
++function isObjectRecord(value) {
++    return value !== null && typeof value === "object" && !Array.isArray(value);
++}
 +function readJson(path) {
 +    if (!existsSync(path))
 +        return {};
 +    try {
 +        const value = JSON.parse(readFileSync(path, "utf-8"));
-+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
++        return isObjectRecord(value) ? value : {};
 +    }
 +    catch (error) {
 +        throw new Error(`Could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -205,7 +209,7 @@ index 0000000..a7786d2
 +function updatePersistedSkill(action, source, scope, options) {
 +    const location = configLocation(scope, options.cwd, options.agentDir);
 +    const config = readJson(location.path);
-+    const target = location.key ? (config[location.key] && typeof config[location.key] === "object" ? config[location.key] : {}) : config;
++    const target = location.key ? (isObjectRecord(config[location.key]) ? config[location.key] : {}) : config;
 +    const enabled = enabledEntries(target);
 +    const matched = enabled.some((entry) => sourceOf(entry) === source);
 +    if (action === "remove" && !matched)
@@ -252,7 +256,10 @@ index 0000000..a7786d2
 +    const dirs = [];
 +    const repoRoot = git(cwd, ["rev-parse", "--show-toplevel"]);
 +    const stopAt = repoRoot ? realpathSync(resolve(repoRoot)) : undefined;
-+    let current = realpathSync(resolve(cwd));
++    const resolvedCwd = resolve(cwd);
++    if (!existsSync(resolvedCwd))
++        return dirs;
++    let current = realpathSync(resolvedCwd);
 +    while (true) {
 +        if (stopAt) {
 +            const fromRoot = relative(stopAt, current);
@@ -269,12 +276,17 @@ index 0000000..a7786d2
 +    }
 +    return dirs;
 +}
-+export function getSkillCatalogDirs({ cwd, agentDir }) {
-+    return [join(agentDir, "skills"), join(homedir(), ".agents", "skills"), join(cwd, CONFIG_DIR_NAME, "skills"), ...getProjectAgentSkillDirs(cwd)];
++export function getSkillCatalogDirs({ cwd, agentDir, projectTrusted = false }) {
++    const dirs = [join(agentDir, "skills"), join(homedir(), ".agents", "skills")];
++    if (projectTrusted) {
++        dirs.push(join(cwd, CONFIG_DIR_NAME, "skills"), ...getProjectAgentSkillDirs(cwd));
++    }
++    return dirs;
 +}
-+export function getSkillCatalog({ cwd, agentDir }) {
++export function getSkillCatalog({ cwd, agentDir, settingsManager }) {
++    const manager = settingsManager ?? SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 +    const found = new Map();
-+    for (const dir of getSkillCatalogDirs({ cwd, agentDir })) {
++    for (const dir of getSkillCatalogDirs({ cwd, agentDir, projectTrusted: manager.isProjectTrusted() })) {
 +        for (const skill of loadSkillsFromDir({ dir, source: "path" }).skills) {
 +            if (!found.has(skill.name))
 +                found.set(skill.name, skill);
@@ -357,7 +369,7 @@ index 7135c37..1e936a2 100644
  //# sourceMappingURL=slash-commands.js.map
 \ No newline at end of file
 diff --git a/dist/main.js b/dist/main.js
-index bb7c8c3..ea0d64a 100644
+index bb7c8c3..0a8d428 100644
 --- a/dist/main.js
 +++ b/dist/main.js
 @@ -29,6 +29,7 @@ import { resolveCliModel, resolveModelScope } from "./core/model-resolver.js";
@@ -368,12 +380,30 @@ index bb7c8c3..ea0d64a 100644
  import { formatMissingSessionCwdPrompt, getMissingSessionCwdIssue, MissingSessionCwdError, } from "./core/session-cwd.js";
  import { assertValidSessionId, SessionManager } from "./core/session-manager.js";
  import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.js";
-@@ -469,6 +470,18 @@ export async function main(args, options) {
+@@ -469,6 +470,36 @@ export async function main(args, options) {
      if (await handleConfigCommand(args, { extensionFactories })) {
          return;
      }
 +    if (args[0] === "skills") {
-+        const result = runSkillsCommand(args.slice(1), { cwd, agentDir });
++        if (args[1] === "list" || args[1] === "search") {
++            const projectTrusted = await resolveProjectTrusted({
++                cwd,
++                trustStore: new ProjectTrustStore(agentDir),
++                defaultProjectTrust: bootstrapSettingsManager.getDefaultProjectTrust(),
++                projectTrustContext: createProjectTrustContext({
++                    cwd,
++                    mode: process.stdin.isTTY && process.stdout.isTTY ? "interactive" : "print",
++                    settingsManager: bootstrapSettingsManager,
++                    hasUI: Boolean(process.stdin.isTTY && process.stdout.isTTY),
++                }),
++            });
++            bootstrapSettingsManager.setProjectTrusted(projectTrusted);
++        }
++        const result = runSkillsCommand(args.slice(1), {
++            cwd,
++            agentDir,
++            settingsManager: bootstrapSettingsManager,
++        });
 +        const output = result.lines.join("\n");
 +        if (result.exitCode === 0) {
 +            console.log(output);
@@ -388,7 +418,7 @@ index bb7c8c3..ea0d64a 100644
      if (parsed.diagnostics.length > 0) {
          for (const d of parsed.diagnostics) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..d0eae82 100644
+index a1e7d98..13a357f 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -24,6 +24,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.js";
@@ -411,7 +441,7 @@ index a1e7d98..d0eae82 100644
              if (text === "/debug") {
                  this.handleDebugCommand();
                  this.editor.setText("");
-@@ -4971,6 +4977,67 @@ export class InteractiveMode {
+@@ -4971,6 +4977,68 @@ export class InteractiveMode {
      // =========================================================================
      // Command handlers
      // =========================================================================
@@ -424,6 +454,7 @@ index a1e7d98..d0eae82 100644
 +        const result = runSkillsCommand(args, {
 +            cwd: this.sessionManager.getCwd(),
 +            agentDir: getAgentDir(),
++            settingsManager: this.settingsManager,
 +            allowSession: true,
 +        });
 +        if (result.exitCode !== 0) {
