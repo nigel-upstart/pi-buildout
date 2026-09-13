@@ -119,16 +119,19 @@ unrelated extension, prompt, theme, package, trust, and provider behavior.
 - License declared by the package: MIT
 
 [`patches/pi-0.85.1/skills.patch`](patches/pi-0.85.1/skills.patch) is a modified-code patch against Pi's published,
-generated runtime and documentation. It modifies upstream `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
-`dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
-lines derive from the MIT-licensed Pi package. The added `dist/core/skill-management.js` is an original implementation
-for this repository, informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
+generated runtime and documentation. It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`,
+`dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
+`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
+from the MIT-licensed Pi package. The bundled entrypoints become thin wrappers so the patched unbundled runtime handles
+CLI and RPC execution. The added `dist/core/skill-management.js` is an original implementation for this repository,
+informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
 
 The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
 normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
-checksum-guarded installation. It intentionally does not adopt automatic loading of every discovered skill,
-concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
-unrelated extension, prompt, theme, package, trust, and provider behavior.
+checksum-guarded installation. Its catalog reuses Pi's package manager to include enabled package and settings skill
+sources while preserving Pi's precedence and project-trust behavior. It intentionally does not adopt automatic loading
+of every discovered skill, concurrent-update locking, configured-path confinement, new public resource-loader mutator
+APIs, or changes to Pi's unrelated extension, prompt, theme, package, trust, and provider behavior.
 
 ## Pi documentation and examples
 
@@ -141,9 +144,10 @@ unrelated extension, prompt, theme, package, trust, and provider behavior.
 Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
-- The Pi 0.84.2 skills catalog reuses `DefaultPackageManager.resolve()` and its resolved-resource metadata to discover
-  package and settings skills with upstream manifest, filtering, scope, and precedence behavior. The catalog merge and
-  opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not adopted.
+- The Pi 0.84.2 and later versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
+  metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
+  The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
+  adopted.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
