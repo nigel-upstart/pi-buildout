@@ -6,16 +6,7 @@ AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
 EXTENSIONS=(clear effort markdown-backlinks subagents)
-PATCH_FILES=(
-  dist/bundle/cli.js
-  dist/bundle/rpc-entry.js
-  dist/core/resource-loader.js
-  dist/core/skill-management.js
-  dist/core/slash-commands.js
-  dist/main.js
-  dist/modes/interactive/interactive-mode.js
-  docs/skills.md
-)
+PATCH_FILES=()
 PATCH_STAGE_DIR=
 PATCH_BACKUP_DIR=
 PATCH_COMMIT_IN_PROGRESS=0
@@ -165,6 +156,18 @@ if ((APPLY_SKILLS_PATCH)); then
   PATCHED_SUMS="$PATCH_DIR/patched.sha256"
   if [[ ! -f "$PATCH_FILE" || ! -f "$BASELINE_SUMS" || ! -f "$BASELINE_ABSENT" || ! -f "$PATCHED_SUMS" ]]; then
     printf 'No complete /skills patch exists for pi %s. Use --skip-skill-loading-patch.\n' "$PI_VERSION" >&2
+    exit 1
+  fi
+
+  while read -r checksum file extra; do
+    if [[ ! "$checksum" =~ ^[0-9a-f]{64}$ || -z "$file" || -n "${extra:-}" || "$file" == /* || "$file" == ".." || "$file" == ../* || "$file" == */../* || "$file" == */.. ]]; then
+      printf 'Patched checksum manifest contains an invalid entry.\n' >&2
+      exit 1
+    fi
+    PATCH_FILES+=("$file")
+  done < "$PATCHED_SUMS"
+  if ((${#PATCH_FILES[@]} == 0)); then
+    printf 'Patched checksum manifest is empty.\n' >&2
     exit 1
   fi
 
