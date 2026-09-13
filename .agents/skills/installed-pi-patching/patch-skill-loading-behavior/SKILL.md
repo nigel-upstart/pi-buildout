@@ -47,6 +47,10 @@ docs/skills.md                    # skill docs
 README.md                         # high-level docs and CLI table
 ```
 
+Pi 0.84.4 dispatches the installed `pi` command and RPC entrypoint through `dist/bundle/`; its versioned patch therefore
+also replaces those two bundled entrypoints with wrappers around the patched unbundled runtime. Include any such
+entrypoint files in the patch and checksum manifests when a release switches its package bin layout.
+
 Source maps may exist, but the editable runtime is `dist/*.js`. Prefer changing the smallest runtime surface that proves
 the behavior.
 
@@ -103,6 +107,11 @@ The command surfaces are deliberately thin wrappers around `dist/core/skill-mana
 
 Avoid adding separate configuration semantics in the TUI and CLI. Keep parsing, repo-key resolution, persistence, and
 catalog queries in the shared core module.
+
+Catalog resolution is asynchronous. It keeps fixed global and trusted-project directory discovery first, then reuses
+`DefaultPackageManager.resolve()` for package and settings skills rather than approximating manifest, filter, scope, or
+precedence behavior. Both `runSkillsCommand()` callers must await it and pass the active `SettingsManager`; name-based
+activation in `DefaultResourceLoader` awaits that same catalog so package and settings names resolve consistently.
 
 ## Verification Ideas
 
