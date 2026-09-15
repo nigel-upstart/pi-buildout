@@ -49,9 +49,8 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: extensions/otel/package-lock.json
-          registry-url: https://registry.npmjs.org
       - name: Install pinned dependencies
-        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+        run: npm ci --ignore-scripts
       - name: Typecheck
         run: npm run typecheck
       - name: Build and test
