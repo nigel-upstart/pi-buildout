@@ -815,7 +815,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     cache: { cachedTokens: number; expectedReuseRatio: number };
     primaryCompletedAtMs: number;
   }): SecondaryReconciliationTask | undefined {
-    if (!classifySecondaryTask || !input.classification.escalated || input.classification.failedClosed)
+    if (
+      !classifySecondaryTask ||
+      !input.classification.escalated ||
+      input.classification.failedClosed ||
+      input.classification.secondaryFeatures !== undefined
+    )
       return undefined;
     const controller = new AbortController();
     const grace = chooseSecondaryGrace(input.cache, input.lease.selected, input.registry, secondaryGracePolicy);
