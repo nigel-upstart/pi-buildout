@@ -765,6 +765,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       run.status === "completed" ? run.value : undefined,
       task.binding.taskId,
     );
+    const staleReason = secondaryStaleReason(task);
+    if (staleReason) {
+      await rejectQueuedSecondary(ctx, queued, staleReason);
+      return;
+    }
     if (queuedSecondaryReconciliation) {
       await rejectQueuedSecondary(ctx, queuedSecondaryReconciliation, "superseded_secondary_result");
     }
@@ -2290,6 +2295,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           repositoryLanguageBucket: languageBucket,
           contextSizeBucket: contextBucket,
         });
+        await abortSecondaryWork(ctx, "superseded_task");
         state = installLease(state, lease);
         accumulatedTaskCosts.set(lease.taskId, 0);
         taskStartedAt.set(lease.taskId, Date.now());
