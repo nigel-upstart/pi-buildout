@@ -311,6 +311,20 @@ describe("classifyTask", () => {
     assert.equal(result.failedClosed, true);
     assert.match(result.features.evidence[0], /same vendor/);
   });
+
+  it("uses the secondary response vendor for provider-diversity checks", async () => {
+    const result = await classifyTask({
+      prompt: "Risky task",
+      synopsis,
+      primary: transport(features({ risk: "high" }), "openai"),
+      secondary: transport(features({ risk: "high" }), "openai"),
+      primaryVendor: "openai",
+      secondaryVendor: "anthropic",
+    });
+    assert.equal(result.failedClosed, true);
+    assert.equal(result.secondaryVendor, "openai");
+    assert.match(result.features.evidence[0], /same vendor/);
+  });
 });
 
 describe("reconcileFeatures", () => {
