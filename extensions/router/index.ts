@@ -371,9 +371,16 @@ function previousChoice(
 
 type RouterExtensionOptions = {
   telemetry?: Pick<JsonlTelemetryStore, "append" | "read">;
-  /** Test seam for deterministic adapter failure and telemetry-contract regressions. */
+  /**
+   * Backward-compatible classifier override for tests and embedders that still provide a single
+   * synchronous primary-plus-secondary classifier. When this is the only classifier override, the
+   * router disables async secondary reconciliation so old fixtures keep their historical behavior.
+   * Production does not expose a flag for this path; the default runtime uses the split classifiers.
+   */
   classifyTask?: typeof classifyTaskWithPi;
+  /** Primary classifier override used by fresh-task routing before any background reconciliation. */
   classifyPrimaryTask?: typeof classifyTaskPrimaryWithPi;
+  /** Secondary classifier override used asynchronously after an escalated primary result. */
   classifySecondaryTask?: typeof classifyTaskSecondaryWithPi;
   secondaryGracePolicy?: SecondaryGracePolicy;
 };
@@ -390,17 +397,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     new JsonlTelemetryStore(
       process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
     );
-  // classifyTask is the pre-secondary-classifier seam used by older tests and embedders. When it is
-  // the only classifier override, keep the old synchronous behavior by using it as the primary
-  // classifier and disabling async secondary reconciliation. There is no production flag for this:
-  // the default runtime path uses the split primary/secondary classifiers.
-  const legacySynchronousClassifier =
+  // Keep the legacy override behavior only for callers that still inject `classifyTask` by itself.
+  // New tests should prefer the split overrides so they exercise the same async path as production.
+  const useSingleCallClassifierOverride =
     options.classifyTask !== undefined &&
     options.classifyPrimaryTask === undefined &&
     options.classifySecondaryTask === undefined;
   const classifyTask = options.classifyTask ?? classifyTaskWithPi;
   const classifyPrimaryTask = options.classifyPrimaryTask ?? options.classifyTask ?? classifyTaskPrimaryWithPi;
-  const classifySecondaryTask = legacySynchronousClassifier
+  const classifySecondaryTask = useSingleCallClassifierOverride
     ? undefined
     : (options.classifySecondaryTask ?? classifyTaskSecondaryWithPi);
   const secondaryGracePolicy = options.secondaryGracePolicy ?? DEFAULT_SECONDARY_GRACE_POLICY;
@@ -433,6 +438,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let reviewParentAttemptMetrics: AttemptMetrics | undefined;
   const accumulatedTaskCosts = new Map<string, number>();
   const taskStartedAt = new Map<string, number>();
+  /**
+   * In-flight secondary classifier work for the current Node process.
+   *
+   * JavaScript keeps these mutations on one event loop; no worker thread shares this Set or the task
+   * objects. The mutable fields are therefore lifecycle latches for async continuations, not
+   * cross-thread synchronization primitives. Every mutating path marks `settled` before deleting or
+   * aborting a task, so a later promise continuation can observe the latch and return without
+   * recording a duplicate reconciliation event.
+   */
   const secondaryTasks = new Set<SecondaryReconciliationTask>();
   let queuedSecondaryReconciliation: QueuedSecondaryReconciliation | undefined;
   let telemetryHealthy = true;
@@ -613,6 +627,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return "between_turns";
   }
 
+  /**
+   * Snapshot nonnegative work counters for reconciliation telemetry.
+   *
+   * These counters are advisory diagnostics rather than safety gates. Clamping protects telemetry
+   * from hook imbalance, such as a missing tool-end event, without changing the routing state machine.
+   */
   function safeWorkCounters(): Record<string, number> {
     return {
       turns: Math.max(0, attemptTurns),
@@ -735,6 +755,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
   }
 
+  /**
+   * Cancel and consume all secondary work that belongs to a superseded routing context.
+   *
+   * The router calls this when a manual override, shutdown, or new lease makes any pending secondary
+   * answer invalid. It clears the queued reconciliation first, then marks each in-flight task settled,
+   * aborts its signal, removes it from `secondaryTasks`, and records a single rejection when a context
+   * is available.
+   */
   async function abortSecondaryWork(ctx: ExtensionContext | undefined, reason: string): Promise<void> {
     const queued = queuedSecondaryReconciliation;
     queuedSecondaryReconciliation = undefined;
