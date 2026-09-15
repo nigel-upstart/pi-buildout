@@ -67,6 +67,25 @@ function detectDriver(): Driver | null {
 const probePort = (p: number, timeoutMs = 300) =>
   probeTcp("127.0.0.1", p, timeoutMs);
 
+/**
+ * A configured collector is frequently remote, so its probe needs both the real
+ * host (not loopback) and a WAN-tolerant timeout.
+ */
+const REMOTE_PROBE_TIMEOUT_MS = 1500;
+
+/**
+ * Reachability of an arbitrary configured endpoint. Unparseable endpoints are
+ * reported unreachable rather than probed at a guessed address.
+ */
+export async function endpointReachable(
+  endpoint: string,
+  probe: (host: string, port: number, timeoutMs: number) => Promise<boolean> = probeTcp,
+): Promise<boolean> {
+  const parsed = parseEndpoint(endpoint);
+  if (!parsed) return false;
+  return probe(parsed.host, parsed.port, REMOTE_PROBE_TIMEOUT_MS);
+}
+
 async function waitForPort(p: number, totalMs = 5000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < totalMs) {
@@ -219,15 +238,16 @@ async function isRunning(): Promise<boolean> {
 
 type Notify = (msg: string, level?: "info" | "error") => void;
 
+/** Resolves true when a dashboard is running afterwards, false on any failure. */
 async function startCmd(
   notify: Notify,
   forceDriver: Driver | undefined,
-): Promise<void> {
+): Promise<boolean> {
   ensureDir();
 
   if (await isRunning()) {
     notify(`Aspire dashboard already running → ${UI_URL}`);
-    return;
+    return true;
   }
 
   // Pre-check: port conflict from an unrelated process.
@@ -236,20 +256,20 @@ async function startCmd(
       `Port ${OTLP_GRPC_PORT} is in use by another process. Free it or change ports.`,
       "error",
     );
-    return;
+    return false;
   }
   if (await probePort(UI_PORT)) {
     notify(
       `Port ${UI_PORT} is in use by another process. Free it or change ports.`,
       "error",
     );
-    return;
+    return false;
   }
 
   const driver = forceDriver ?? detectDriver();
   if (!driver) {
     notify(noDriverMessage(), "error");
-    return;
+    return false;
   }
 
   // Truncate the log so failure tails are scoped to this run.
@@ -265,7 +285,7 @@ async function startCmd(
     }
   } catch (e: any) {
     notify(`Failed to spawn ${driver}: ${e?.message ?? e}`, "error");
-    return;
+    return false;
   }
 
   writeMeta({ driver, pid, startedAt: new Date().toISOString() });
@@ -280,7 +300,7 @@ async function startCmd(
       ].join("\n"),
       "error",
     );
-    return;
+    return false;
   }
 
   writeConn({
@@ -295,6 +315,20 @@ async function startCmd(
       `OTLP HTTP: http://localhost:${OTLP_HTTP_PORT}`,
     ].join("\n"),
   );
+  return true;
+}
+
+/**
+ * Payload for `pi-otel:dashboard-ready`, or null when startup failed. Emitting
+ * unconditionally would rewire the SDK to a dashboard that never came up, which
+ * is the dead-endpoint retry loop the deferred init exists to avoid.
+ */
+export function dashboardReadyEvent(
+  started: boolean,
+): { endpoint: string; protocol: Protocol } | null {
+  return started
+    ? { endpoint: `http://localhost:${OTLP_GRPC_PORT}`, protocol: "grpc" }
+    : null;
 }
 
 async function stopCmd(notify: Notify): Promise<void> {
@@ -401,11 +435,15 @@ async function statusCmd(
   const meta = readMeta();
 
   // Active endpoint: conn file overrides resolved config (mirrors pi-otel:dashboard-ready logic)
-  const activeEndpoint = conn?.endpoint ?? baseCfg?.endpoint ?? "(unknown)";
+  const configuredEndpoint = conn?.endpoint ?? baseCfg?.endpoint;
+  const activeEndpoint = configuredEndpoint ?? "(unknown)";
   const activeProtocol = conn?.protocol ?? baseCfg?.protocol ?? "grpc";
 
-  const parsed = parseEndpoint(activeEndpoint);
-  const reachable = parsed ? await probePort(parsed.port) : false;
+  // Only probe a real endpoint: the placeholder above is a valid URL hostname,
+  // so probing it would spend the timeout on a DNS lookup for "(unknown)".
+  const reachable = configuredEndpoint
+    ? await endpointReachable(configuredEndpoint)
+    : false;
 
   const lines: string[] = [];
   lines.push(
@@ -482,10 +520,8 @@ export function registerOtelCommand(
           );
           return;
         }
-        await startCmd(notify, forced);
-        pi.events.emit("pi-otel:dashboard-ready", {
-          endpoint: `http://localhost:${OTLP_GRPC_PORT}`,
-        });
+        const event = dashboardReadyEvent(await startCmd(notify, forced));
+        if (event) pi.events.emit("pi-otel:dashboard-ready", event);
         return;
       }
 

@@ -118,6 +118,11 @@ default rather than disabling capture or exporting an unbounded attribute.
   dual-written.
 - An export-contract test runs the real SDK against an in-process OTLP/HTTP receiver and asserts a 200 KB tool result
   arrives intact, which is the only check covering serialization rather than attribute assembly alone.
+- `/otel status` probes the configured endpoint's own host instead of loopback, so a remote collector is no longer
+  reported `UNREACHABLE`, and the `(unknown)` placeholder is no longer probed as a hostname.
+- `/otel start` announces `pi-otel:dashboard-ready` only when a dashboard actually came up, and includes its `grpc`
+  protocol. Announcing unconditionally rewired the SDK to an endpoint that never started, producing the dead-endpoint
+  retry loop that deferred initialization exists to avoid.
 - Dependencies that the source imports but upstream only received transitively through `@opentelemetry/sdk-node`
   (`api-logs`, `sdk-logs`, `sdk-metrics`, and the `exporter-logs-*` / `exporter-metrics-*` packages) are now declared
   directly, so the tree installs and typechecks on its own.
