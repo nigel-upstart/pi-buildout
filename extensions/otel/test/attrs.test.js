@@ -124,6 +124,14 @@ test("non-string values are JSON-serialized before clamping", () => {
   assert.equal(typeof clampAttr(cyclic), "string");
 });
 
+test("values JSON.stringify cannot represent still clamp to a string", () => {
+  // JSON.stringify returns undefined for these, which would throw in
+  // Buffer.byteLength if it were passed through unchecked.
+  assert.equal(clampAttr(undefined), "undefined");
+  assert.equal(clampAttr(() => 1), "() => 1");
+  assert.equal(clampAttr(Symbol("tool")), "Symbol(tool)");
+});
+
 // --- resolveConfig --------------------------------------------------------
 
 test("maxAttributeBytes defaults to 60 KiB when unset", () => {

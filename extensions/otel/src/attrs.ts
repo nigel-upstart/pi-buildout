@@ -156,7 +156,9 @@ export function clampAttr(
   if (typeof value === "string") s = value;
   else {
     try {
-      s = JSON.stringify(value);
+      // JSON.stringify is typed as returning string but yields undefined for
+      // undefined, functions, and symbols, which would throw in byteLength.
+      s = JSON.stringify(value) ?? String(value);
     } catch {
       s = String(value);
     }
