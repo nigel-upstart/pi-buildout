@@ -73,7 +73,7 @@ import {
   type SpanNaming,
   spanToolName,
 } from "./attrs.js";
-import { emitLifecycleLog } from "./otel/logs.js";
+import { emitLifecycleLog, TRACKER_LOG_EVENT } from "./otel/logs.js";
 import {
   getDurationHistogram,
   getTokenHistogram,
@@ -600,7 +600,7 @@ export class SpanTracker {
       const stack = (error as Error)?.stack;
       if (typeof stack === "string") attrs["exception.stacktrace"] = stack;
       emitLifecycleLog(
-        "pi.llm_request.error",
+        TRACKER_LOG_EVENT.llmRequestError,
         SeverityNumber.ERROR,
         `LLM request failed: ${errMsg}`,
         attrs,
@@ -697,7 +697,7 @@ export class SpanTracker {
         attrs[ATTR_TOOL_CALL_RESULT] = this.clamp(args.result);
       }
       emitLifecycleLog(
-        "pi.tool.error",
+        TRACKER_LOG_EVENT.toolError,
         SeverityNumber.ERROR,
         `tool ${slot.name} failed`,
         attrs,

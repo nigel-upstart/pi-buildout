@@ -52,7 +52,11 @@ import {
 import { registerOtelCommand } from "./commands/otel.js";
 import type { OtelConfig } from "./config.js";
 import { normalizeProtocol, resolveConfig } from "./config.js";
-import { emitLifecycleLog } from "./otel/logs.js";
+import {
+  createLogChannelEmitter,
+  emitLifecycleLog,
+  LOG_CHANNEL,
+} from "./otel/logs.js";
 import { initSdk, probeEndpoint, shutdownSdk } from "./otel/sdk.js";
 import { registerShellPropagation } from "./shell-propagation.js";
 import { SpanTracker } from "./spans.js";
@@ -70,9 +74,16 @@ const SEVERITY_MAP: Record<string, SeverityNumber> = {
 export default function (pi: ExtensionAPI): void {
   registerOtelCommand(pi, () => ctx0?.cwd);
 
+  // Typed emitter for this extension's own records. It rejects the event names
+  // SpanTracker emits when a span ends, so a duplicate cannot be reintroduced
+  // here without failing the build.
+  const emitLog = createLogChannelEmitter((channel, payload) => {
+    pi.events.emit(channel, payload);
+  });
+
   // pi-otel:log — any pi extension can emit structured log records through
   // pi-otel. No-op when signals.logs is disabled (LoggerProvider not registered).
-  pi.events.on("pi-otel:log", (data: unknown) => {
+  pi.events.on(LOG_CHANNEL, (data: unknown) => {
     if (!data || typeof data !== "object") return;
     const {
       eventName = "pi-otel.log",
@@ -137,7 +148,7 @@ export default function (pi: ExtensionAPI): void {
     // Fire once: wiring can happen at session_start OR later via dashboard-ready.
     if (!sessionStartLogged) {
       sessionStartLogged = true;
-      pi.events.emit("pi-otel:log", {
+      emitLog({
         eventName: "pi.session.start",
         severity: "info",
         body: `pi session ${sessionIdRef ?? "(ephemeral)"} started`,
@@ -307,7 +318,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, _ctx) => {
     // Defensive: close any in-flight interaction before flushing.
     tracker?.endInteraction();
-    pi.events.emit("pi-otel:log", {
+    emitLog({
       eventName: "pi.session.end",
       severity: "info",
       body: `pi session ${sessionIdRef ?? "(ephemeral)"} ended`,
