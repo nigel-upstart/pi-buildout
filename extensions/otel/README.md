@@ -28,10 +28,46 @@ diffability for no functional gain.
 cd extensions/otel
 npm ci
 npm run typecheck
-npm test          # builds, then runs the upstream node:test suite
+npm test          # builds, then runs the node:test suite
+npm audit --omit=dev
 ```
 
-CI runs the same commands in the `otel-extension` job of `.github/workflows/check.yml`.
+CI runs the same commands in the `otel-extension` job of `.github/workflows/check.yml`, and fails the build on any high
+or critical dependency finding.
+
+## Dependencies
+
+The tree runs the OpenTelemetry 2.x / 0.2xx train (`sdk-node@0.222`, `core` / `resources` / `sdk-trace-base` /
+`sdk-metrics` at `2.11`, `semantic-conventions@1.43`). Upstream `0.3.0` pinned the 0.57.x / 1.30.x line, which reported
+23 findings (19 moderate, 4 high) with no coherent override path: leaf overrides left `sdk-node` and `core` flagged,
+overriding `sdk-node` failed with `EOVERRIDE` because it is a direct dependency, and a partial bump produced a mixed
+1.x/2.x type tree. Migrating the whole train instead reports **0 findings**.
+
+The migration needed three source changes, each marked in the affected file: `new Resource(...)` became
+`resourceFromAttributes(...)`, the per-signal exporter helper now infers the three protocol classes independently
+(they declare separate private members and are not mutually assignable), and `BatchLogRecordProcessor` takes an options
+object.
+
+## Semantic conventions
+
+Three token-usage keys had drifted from the GenAI registry. Each is now emitted under **both** the registry spelling and
+the pre-1.44 spelling, so dashboards querying the old names keep working:
+
+| Registry key (1.43.0) | Also emitted (legacy) |
+| --- | --- |
+| `gen_ai.usage.cache_read.input_tokens` | `gen_ai.usage.cache_read_input_tokens` |
+| `gen_ai.usage.cache_creation.input_tokens` | `gen_ai.usage.cache_creation_input_tokens` |
+| `gen_ai.usage.reasoning.output_tokens` | `gen_ai.usage.reasoning_tokens` |
+
+Two deliberate deviations:
+
+- `gen_ai.usage.cache_write_input_tokens` keeps its spelling because the registry defines no cache-write attribute as of
+  1.43.0. Inventing a registry-looking name would be worse than an honest vendor key.
+- `gen_ai.system` is retained: it is still exported by `@opentelemetry/semantic-conventions@1.43.0`, so the concern that
+  it had been removed does not hold. A test asserts this rather than trusting the reading.
+
+The constants are asserted equal to the registry package's own exports, so a registry upgrade that renames a key fails a
+test instead of drifting silently.
 
 ## Configuration
 
@@ -67,10 +103,15 @@ default rather than disabling capture or exporting an unbounded attribute.
   content at 60 KiB with no way to configure it.
 - Truncation is now exact and character-safe: it fills the byte budget instead of discarding up to 64 characters per
   step, and it backs off UTF-8 continuation bytes so a multi-byte character is never split.
+- The OpenTelemetry dependency train moved to 2.x / 0.2xx, clearing all 23 inherited advisories.
+- Cache and reasoning token keys carry the current registry spelling alongside the legacy spelling.
+- An export-contract test runs the real SDK against an in-process OTLP/HTTP receiver and asserts a 200 KB tool result
+  arrives intact, which is the only check covering serialization rather than attribute assembly alone.
 - Dependencies that the source imports but upstream only received transitively through `@opentelemetry/sdk-node`
   (`api-logs`, `sdk-logs`, `sdk-metrics`, and the `exporter-logs-*` / `exporter-metrics-*` packages) are now declared
   directly, so the tree installs and typechecks on its own.
 - Upstream's docs-site, Biome, and release tooling were not adopted; only the extension source and its tests are
   vendored.
 
-Behavior is otherwise byte-compatible with upstream `0.3.0`, and all 32 upstream tests pass unmodified.
+Behavior is otherwise compatible with upstream `0.3.0`: all 32 upstream tests pass unmodified, alongside 23 tests added
+here.

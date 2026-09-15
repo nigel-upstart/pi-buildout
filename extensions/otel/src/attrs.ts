@@ -1,6 +1,8 @@
 /**
  * Modified from upstream pi-otel 0.3.0: the string-attribute byte cap is a
- * parameter rather than a module-private constant, and truncation is exact.
+ * parameter rather than a module-private constant, truncation is exact, and the
+ * cache/reasoning token keys carry the current GenAI registry spelling
+ * alongside the pre-1.44 spelling for dashboard compatibility.
  *
  * gen_ai.* attribute and metric constants.
  *
@@ -37,11 +39,38 @@ export const ATTR_FINISH_REASONS = "gen_ai.response.finish_reasons";
 export const ATTR_INPUT_TOKENS = "gen_ai.usage.input_tokens";
 export const ATTR_OUTPUT_TOKENS = "gen_ai.usage.output_tokens";
 export const ATTR_TOKEN_TYPE = "gen_ai.token.type";
-export const ATTR_CACHE_READ_TOKENS = "gen_ai.usage.cache_read_input_tokens";
-export const ATTR_CACHE_WRITE_TOKENS = "gen_ai.usage.cache_write_input_tokens";
+
+/**
+ * Cache and reasoning token keys, current GenAI registry spelling (verified
+ * against `@opentelemetry/semantic-conventions@1.43.0`, which exports these as
+ * `ATTR_GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS`,
+ * `ATTR_GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS`, and
+ * `ATTR_GEN_AI_USAGE_REASONING_OUTPUT_TOKENS`).
+ */
+export const ATTR_CACHE_READ_TOKENS = "gen_ai.usage.cache_read.input_tokens";
 export const ATTR_CACHE_CREATION_TOKENS =
+  "gen_ai.usage.cache_creation.input_tokens";
+export const ATTR_REASONING_TOKENS = "gen_ai.usage.reasoning.output_tokens";
+
+/**
+ * Pre-1.44 spellings this extension emitted before the registry adopted the
+ * dotted form. They are written alongside the registry keys above so existing
+ * dashboards and saved queries keep resolving; drop them only with a migration
+ * note.
+ */
+export const ATTR_CACHE_READ_TOKENS_LEGACY =
+  "gen_ai.usage.cache_read_input_tokens";
+export const ATTR_CACHE_CREATION_TOKENS_LEGACY =
   "gen_ai.usage.cache_creation_input_tokens";
-export const ATTR_REASONING_TOKENS = "gen_ai.usage.reasoning_tokens";
+export const ATTR_REASONING_TOKENS_LEGACY = "gen_ai.usage.reasoning_tokens";
+
+/**
+ * Cache-write tokens have no GenAI registry attribute as of 1.43.0 (the
+ * registry defines only `cache_read` and `cache_creation`), so this key is
+ * deliberately left at its existing spelling rather than invented into a
+ * registry-looking name.
+ */
+export const ATTR_CACHE_WRITE_TOKENS = "gen_ai.usage.cache_write_input_tokens";
 
 // Tool
 export const ATTR_TOOL_NAME = "gen_ai.tool.name";
@@ -182,19 +211,31 @@ export function applyUsageAttrs(
   const set = (k: string, v: unknown) => {
     if (typeof v === "number" && Number.isFinite(v)) attrs[k] = v;
   };
+  // Registry key plus the pre-1.44 spelling, so a rename cannot silently blind
+  // an existing dashboard.
+  const setDual = (registryKey: string, legacyKey: string, v: unknown) => {
+    set(registryKey, v);
+    set(legacyKey, v);
+  };
   set(ATTR_INPUT_TOKENS, u.input ?? u.inputTokens ?? u.input_tokens);
   set(ATTR_OUTPUT_TOKENS, u.output ?? u.outputTokens ?? u.output_tokens);
-  set(ATTR_CACHE_READ_TOKENS, u.cacheRead ?? u.cache_read ?? u.cacheReadTokens);
+  setDual(
+    ATTR_CACHE_READ_TOKENS,
+    ATTR_CACHE_READ_TOKENS_LEGACY,
+    u.cacheRead ?? u.cache_read ?? u.cacheReadTokens,
+  );
   set(
     ATTR_CACHE_WRITE_TOKENS,
     u.cacheWrite ?? u.cache_write ?? u.cacheWriteTokens,
   );
-  set(
+  setDual(
     ATTR_CACHE_CREATION_TOKENS,
+    ATTR_CACHE_CREATION_TOKENS_LEGACY,
     u.cacheCreation ?? u.cache_creation ?? u.cacheCreationTokens,
   );
-  set(
+  setDual(
     ATTR_REASONING_TOKENS,
+    ATTR_REASONING_TOKENS_LEGACY,
     u.reasoning ?? u.reasoningTokens ?? u.reasoning_tokens,
   );
   const cost = u.cost;
