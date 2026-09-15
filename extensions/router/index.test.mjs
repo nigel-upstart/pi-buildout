@@ -938,6 +938,51 @@ describe("routerExtension", () => {
     );
   });
 
+  it("aborts prior secondary work when a new lease supersedes it", async () => {
+    const firstSecondary = deferred();
+    const secondSecondary = deferred();
+    let secondaryCalls = 0;
+    let firstSignal;
+    let secondSignal;
+    const result = await runAdapterTurn({
+      classifyTask: successfulClassifier(1, { taskContinuity: "new_task" }),
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        secondaryCalls++;
+        if (secondaryCalls === 1) {
+          firstSignal = signal;
+          return firstSecondary.promise;
+        }
+        secondSignal = signal;
+        return secondSecondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-superseded-lease",
+    });
+
+    await result.hooks.get("input")(
+      { text: "Implement a different bounded repository change", source: "interactive" },
+      result.ctx,
+    );
+    await result.hooks.get("before_agent_start")(
+      { prompt: "Implement a different bounded repository change", systemPrompt: "system", images: [] },
+      result.ctx,
+    );
+
+    assert.equal(firstSignal.aborted, true);
+    assert.equal(secondSignal?.aborted ?? false, false);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "superseded_task",
+    );
+
+    firstSecondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    secondSecondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+  });
+
   it("uses cache-priced grace to apply a safe secondary correction before the first provider request", async () => {
     const gracePolicy = {
       maxGraceMs: 80,
