@@ -1,7 +1,7 @@
 # Owning pi's OpenTelemetry export: decision record
 
 Status: **decided — vendored fork, opt-in, downstream unchanged**. Tracks
-[issue #45](https://github.com/nigel-upstart/pi-buildout/issues/45).
+[issue zew1me/pi-buildout#45](https://github.com/zew1me/pi-buildout/issues/45).
 
 ## Problem
 
