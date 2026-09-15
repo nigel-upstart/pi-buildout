@@ -258,14 +258,15 @@ for extension in "${EXTENSIONS[@]}"; do
   entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
   # A `package.json` travels with the extension so its runtime imports resolve outside this
   # repository, and a `package-lock.json` travels with it so the installed tree gets the exact
-  # versions this repository tests. `node_modules` is pruned rather than copied: dependencies are
-  # installed into the staged tree below from that manifest, so the installed tree never inherits
-  # this repository's development tree.
+  # versions this repository tests. `LICENSE` and `NOTICE` travel with it because installing is
+  # redistribution: the vendored Apache-2.0 source must keep its notices. `node_modules` is pruned
+  # rather than copied: dependencies are installed into the staged tree below from that manifest, so
+  # the installed tree never inherits this repository's development tree.
   while IFS= read -r -d '' source_file; do
     relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
     mkdir -p "$EXTENSION_STAGE_DIR/$(dirname "$relative_file")"
     cp "$source_file" "$EXTENSION_STAGE_DIR/$relative_file"
-  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -name dist -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' -o -name 'package-lock.json' \) -print0)
+  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -name dist -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' -o -name 'package-lock.json' -o -name 'LICENSE' -o -name 'LICENSE.*' -o -name 'NOTICE' -o -name 'NOTICE.*' \) -print0)
 
   # Runtime dependencies are installed before the atomic swap, so a failed or offline install leaves
   # the previously working extension tree in place instead of publishing one that cannot load.

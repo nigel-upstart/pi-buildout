@@ -55,6 +55,9 @@ describe("vendored OTel extension installation", () => {
 
     // The lockfile ships so the installed tree gets the versions CI tested.
     assert.equal(await exists(join(otel, "package-lock.json")), true);
+    // Installing is redistribution: the vendored Apache-2.0 notice must travel with the source.
+    assert.equal(await exists(join(otel, "LICENSE")), true);
+    assert.match(await readFile(join(otel, "LICENSE"), "utf8"), /Apache License/);
     // Tests and compiled output are development artifacts and must not be published.
     assert.equal(await exists(join(otel, "test")), false);
     assert.equal(await exists(join(otel, "dist")), false);
