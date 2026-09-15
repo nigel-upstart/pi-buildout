@@ -580,7 +580,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   function leaseRevision(lease: TaskLease): string {
     return safetyFingerprint({
       taskId: lease.taskId,
-      updatedAt: lease.updatedAt,
       attemptIndex: lease.attemptIndex,
       selected: lease.selected,
       lifecycle: lease.lifecycle,
