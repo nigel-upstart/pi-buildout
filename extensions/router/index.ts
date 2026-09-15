@@ -390,6 +390,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     new JsonlTelemetryStore(
       process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
     );
+  // classifyTask is the pre-secondary-classifier seam used by older tests and embedders. When it is
+  // the only classifier override, keep the old synchronous behavior by using it as the primary
+  // classifier and disabling async secondary reconciliation. There is no production flag for this:
+  // the default runtime path uses the split primary/secondary classifiers.
   const legacySynchronousClassifier =
     options.classifyTask !== undefined &&
     options.classifyPrimaryTask === undefined &&
@@ -916,12 +920,29 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return "Secondary safety classification is pending after a low-confidence primary; mutating tools are blocked until reconciliation reaches a safe boundary";
   }
 
+  /**
+   * Derive the lease lifecycle that should remain after accepting a secondary correction.
+   *
+   * A correction that stays in the same safety policy can keep the existing lifecycle progress, as
+   * long as the previous lifecycle has not already completed. Policy changes or completed lifecycles
+   * restart from the initial phase for the original task fingerprint so the refreshed route re-enters
+   * the safety gates appropriate to the secondary classifier's features.
+   */
   function correctedLifecycle(active: TaskLease, corrected: ClassificationResult): LeaseLifecycle {
     const nextPolicy = deriveSafetyPolicy(corrected.features);
     if (active.lifecycle.policy === nextPolicy && active.lifecycle.phase !== "completed") return active.lifecycle;
     return initialLifecycle(nextPolicy, active.lifecycle.taskFingerprint);
   }
 
+  /**
+   * Attempt to apply a queued secondary-classifier result at a safe execution boundary.
+   *
+   * The drain rejects stale or failed secondary results, re-routes completed results, compares the
+   * material/safety benefit against cache-switch cost, and either records a rejection or installs the
+   * corrected lease. Boundary metadata controls whether a prompt-refresh correction can happen before
+   * the first request, whether active tool execution should defer the drain, and whether a running
+   * task should be asked to cleanly stop and resume under the refreshed route.
+   */
   async function drainSecondaryReconciliation(ctx: ExtensionContext, boundary: ReconciliationBoundary): Promise<void> {
     if (boundary.kind === "turn_end" && activeToolExecutions > 0) return;
     const queued = queuedSecondaryReconciliation;
