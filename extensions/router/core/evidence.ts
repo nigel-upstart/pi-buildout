@@ -149,10 +149,24 @@ export function abilityFromConsensus(consensusBest: number): AbilityTier {
 }
 
 /**
- * Models the router routes to that have no DeepSWE rollout row. The value is still derived from
- * a named source rather than invented: it is the consensus band for that model in the same
- * `model_consensus` table. Any candidate absent here and absent from the evidence rows must
- * declare its ability explicitly in policy.
+ * Fresh consensus rows that postdate the complete routing-prior capture. They are keyed by effort
+ * because the new report measures those configurations separately. These figures may establish an
+ * ability band for bounded review selection, but do not fabricate the regression, repeatability,
+ * latency-tail, or context-overflow fields required by cost-to-done scoring.
+ *
+ * Source: teamupstart/ai-acceleration PR #650 at 8053ead0ccc38c9bcd84131984d515fdc22bfddd,
+ * report-data.json data through 2026-09-10.
+ */
+const FRESH_CONSENSUS_BEST: Readonly<Record<string, number>> = {
+  "gemini-3.8-flash@medium": 81.03,
+  "gemini-3.8-flash@high": 93.55,
+};
+
+/**
+ * Models the router routes to that have no complete DeepSWE routing-prior row. The value is still
+ * derived from a named source rather than invented: it is the consensus band for that model in the
+ * same `model_consensus` table. Any candidate absent here and absent from the evidence rows remains
+ * unroutable through policy's fail-closed `abilityFor` lookup.
  */
 const CONSENSUS_ONLY_ABILITY: Readonly<Record<string, AbilityTier>> = {
   // Claude Haiku 4.5 consensus performance_best 36.5 (single source, non-agentic scope).
@@ -172,6 +186,8 @@ const CONSENSUS_ONLY_ABILITY: Readonly<Record<string, AbilityTier>> = {
 export function evidenceAbility(modelId: string, effort: EffortLevel): AbilityTier | undefined {
   const row = findEvidencePrior(modelId, effort);
   if (row?.consensusBest !== undefined) return abilityFromConsensus(row.consensusBest);
+  const freshConsensusBest = FRESH_CONSENSUS_BEST[`${modelId}@${effort}`];
+  if (freshConsensusBest !== undefined) return abilityFromConsensus(freshConsensusBest);
   const consensusOnly = CONSENSUS_ONLY_ABILITY[modelId];
   if (consensusOnly !== undefined) return consensusOnly;
   // Single-attempt evidence is the weakest source and is therefore consulted last. The precedence is

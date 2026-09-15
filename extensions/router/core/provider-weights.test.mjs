@@ -16,8 +16,8 @@ describe("provider route weights", () => {
   it("pins built-ins and the conservative unknown-provider default", () => {
     const { weights, rejections } = resolveProviderWeights();
     assert.deepEqual(providerWeightFor("amazon-bedrock", weights), {
-      weight: 0.83,
-      basis: "contract",
+      weight: 1.00001,
+      basis: "preference",
       source: "built-in",
     });
     for (const provider of ["openai-codex", "anthropic", "google", "google-vertex", "bifrost"]) {
@@ -161,7 +161,9 @@ describe("provider route weights", () => {
     assert.throws(() => {
       first.rejections.push({});
     }, TypeError);
-    assert.equal(second.weights.get("amazon-bedrock").weight, 0.83);
+    const independentlyResolvedBedrock = second.weights.get("amazon-bedrock");
+    assert.notStrictEqual(independentlyResolvedBedrock, bedrock);
+    assert.deepEqual(independentlyResolvedBedrock, bedrock);
 
     const unknown = providerWeightFor("unknown", first.weights);
     assert.equal(Object.isFrozen(unknown), true);
@@ -185,7 +187,9 @@ describe("provider route weights", () => {
     });
 
     assert.equal(result.rejections.length, PROVIDER_WEIGHT_REJECTION_LIMIT);
-    assert.ok(result.rejections.every((rejection) => (rejection.provider?.length ?? 0) <= 160));
+    const providerRejections = result.rejections.filter((rejection) => rejection.provider !== undefined);
+    assert.ok(providerRejections.length > 0, "the bounded result must retain a provider-specific rejection");
+    assert.ok(providerRejections.every((rejection) => rejection.provider.length <= 160));
     assert.ok(result.rejections.every((rejection) => !("rejectedValue" in rejection)));
     assert.doesNotMatch(JSON.stringify(result.rejections), new RegExp(secret));
     assert.equal(providerWeightFor(`${"p".repeat(200)}-119`, result.weights).source, "rejection-fallback");

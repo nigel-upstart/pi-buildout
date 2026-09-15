@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { BOOTSTRAP_ROUTE_POLICIES, HARD_TASK_ESCALATION_REFS, MODEL_VENDOR } from "./policy.ts";
+import { BOOTSTRAP_ROUTE_POLICIES, HARD_TASK_ESCALATION_REFS, MODEL_VENDOR, reviewerRefs } from "./policy.ts";
 import { ARCHETYPES } from "./archetype.ts";
-import { EFFORT_LEVELS, findPromptProfile, PROMPT_PROFILES } from "./profiles.ts";
+import { EFFORT_LEVELS, findPromptProfile, MODEL_VENDORS, PROMPT_PROFILES } from "./profiles.ts";
 import { canonicalModelId } from "./scope.ts";
 import { canonicalVendor } from "./routing.ts";
 
@@ -109,11 +109,9 @@ describe("prompt profile eligibility is declared in canonical logical model IDs"
       );
       if (!resolvable) unroutable.push(`${endpoint.provider}/${endpoint.modelId}`);
     }
-    // 50: cutting gpt-5.4-mini removed its three fixture spellings (openai, openai-codex and
-    // github-copilot) from the policy-named set, taking 52 to 49; declaring minimax-m2.5 adds back the
-    // one Bedrock spelling that canonicalizes to it. minimax.minimax-m2 and minimax.minimax-m2.1 are in
-    // the fixture but are not policy-named, so they are correctly skipped.
-    assert.equal(named.length, 50, "the registry fixture no longer describes the surveyed policy endpoint set");
+    // 55: the prior 50 endpoints plus three observed Gemini 3.8 surfaces and the two already-surveyed
+    // Kimi endpoints that became policy-named. Older MiniMax spellings remain correctly skipped.
+    assert.equal(named.length, 55, "the registry fixture no longer describes the surveyed policy endpoint set");
     assert.deepEqual(unroutable, [], "policy-named endpoints resolve no profile and would be excluded");
   });
 
@@ -133,7 +131,7 @@ describe("canonical eligibility does not over-admit", () => {
     // scope.ts strips the region prefix unconditionally; the result is still nobody's model.
     assert.equal(canonicalModelId("us.gov-cloud-widget-1"), "gov-cloud-widget-1");
     assert.equal(MODEL_VENDOR[canonicalModelId("us.gov-cloud-widget-1")], undefined);
-    for (const vendor of ["anthropic", "openai", "google"]) {
+    for (const vendor of MODEL_VENDORS) {
       assert.equal(
         findPromptProfile(vendor, "us.gov-cloud-widget-1", "median_repository_implementation", "medium"),
         undefined,
@@ -199,6 +197,48 @@ describe("canonical eligibility does not over-admit", () => {
   });
 });
 
+describe("review-only Gemini 3.8", () => {
+  it("leads Google's reviewer availability chain and resolves no general-work profile", () => {
+    const googleReviewers = reviewerRefs("google", 4);
+    assert.equal(googleReviewers[0]?.logicalModelId, "gemini-3.8-flash");
+    assert.equal(
+      findPromptProfile("google", "gemini-3.8-flash", "code_review", "high")?.id,
+      "google-gemini-3.8-review-v1",
+    );
+    for (const archetype of ARCHETYPES.filter((entry) => entry !== "code_review")) {
+      for (const effort of EFFORT_LEVELS) {
+        assert.equal(findPromptProfile("google", "gemini-3.8-flash", archetype, effort), undefined);
+      }
+    }
+  });
+});
+
+describe("the scoped Kimi rungs", () => {
+  it("maps both Bedrock spellings to one bounded profile", () => {
+    for (const modelId of ["moonshotai.kimi-k2.5", "moonshot.kimi-k2-thinking"]) {
+      assert.equal(
+        findPromptProfile("moonshot", modelId, "fast_classification", "low")?.id,
+        "moonshot-kimi-bounded-v1",
+      );
+      assert.equal(findPromptProfile("moonshot", modelId, "median_repository_implementation", "low"), undefined);
+    }
+  });
+
+  it("appears only as a read-only-confined fallback in bounded ladders", () => {
+    const bounded = new Set(["fast_classification", "exact_extraction"]);
+    const namedBy = [];
+    for (const [archetype, policy] of Object.entries(BOOTSTRAP_ROUTE_POLICIES)) {
+      const refs = [...policy.primary, ...policy.fallback].filter((ref) => ref.vendor === "moonshot");
+      if (refs.length === 0) continue;
+      namedBy.push(archetype);
+      assert.ok(bounded.has(archetype), `${archetype} must not route a Kimi bounded candidate`);
+      assert.ok(refs.every((ref) => ref.singleAttemptEvidence === true));
+      assert.ok(policy.primary.every((ref) => ref.vendor !== "moonshot"));
+    }
+    assert.deepEqual(namedBy.sort(), [...bounded].sort());
+  });
+});
+
 describe("the scoped MiniMax rung", () => {
   it("resolves a vendor for every reachable MiniMax spelling", () => {
     // buildRegistrySnapshot drops any endpoint whose vendor is unknown, and a dropped endpoint is
@@ -239,10 +279,10 @@ describe("the scoped MiniMax rung", () => {
   });
 
   it("gives the refused scoped models no profile at all", () => {
-    // GLM-5, DeepSeek V3.2, Kimi and Grok were each refused on a recorded axis, so each must stay
-    // structurally ineligible rather than merely unlisted in a ladder.
-    for (const modelId of ["glm-5", "deepseek-v3.2", "kimi-k2.5", "kimi-k2-thinking", "grok-4.3"]) {
-      for (const vendor of ["minimax", "openai", "anthropic", "google"]) {
+    // Each model was refused on a recorded evidence, cost, or compensating-benefit axis, so it must
+    // stay structurally ineligible rather than merely unlisted in a ladder.
+    for (const modelId of ["glm-5", "glm-4.7", "deepseek-v3.2", "qwen3-coder-next", "grok-4.3"]) {
+      for (const vendor of MODEL_VENDORS) {
         for (const archetype of ARCHETYPES) {
           for (const effort of EFFORT_LEVELS) {
             assert.equal(findPromptProfile(vendor, modelId, archetype, effort), undefined, `${vendor}/${modelId}`);

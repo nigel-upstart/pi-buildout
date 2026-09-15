@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { deriveArchetype } from "../core/archetype.ts";
 import { conservativeFeatures, validateTaskFeatures } from "../core/features.ts";
-import { BOOTSTRAP_ROUTE_POLICIES, reviewerRefs } from "../core/policy.ts";
+import { BOOTSTRAP_ROUTE_POLICIES, reviewerRefs, reviewerVendors } from "../core/policy.ts";
 import { EFFORT_LEVELS, findPromptProfile } from "../core/profiles.ts";
 import { deriveRoutingContext, selectOrdinaryRoute, selectStandaloneReviewRoute } from "../core/routing.ts";
 import { scoreFeatureAxes } from "./score.ts";
@@ -43,12 +43,18 @@ function baseFeatures() {
 function registry() {
   const refs = [];
   for (const policy of Object.values(BOOTSTRAP_ROUTE_POLICIES)) refs.push(...policy.primary, ...policy.fallback);
-  for (const vendor of ["openai", "anthropic", "google"]) {
+  for (const vendor of reviewerVendors()) {
     for (const ability of [1, 2, 3, 4]) refs.push(...reviewerRefs(vendor, ability));
   }
   // Policy names logical models, so the corpus synthesizes one manufacturer endpoint per model. This
   // is what a machine with everything scoped in looks like.
-  const providerFor = { openai: "openai-codex", anthropic: "anthropic", google: "google-vertex" };
+  const providerFor = {
+    openai: "openai-codex",
+    anthropic: "anthropic",
+    google: "google-vertex",
+    minimax: "amazon-bedrock",
+    moonshot: "amazon-bedrock",
+  };
   const unique = new Map();
   for (const ref of refs) {
     const key = `${providerFor[ref.vendor]}/${ref.logicalModelId}`;

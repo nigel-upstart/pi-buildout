@@ -5,11 +5,11 @@ import { MODEL_VENDORS } from "./profiles.ts";
 import { canonicalModelId } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
-export const POLICY_VERSION = "router-policy-v7";
+export const POLICY_VERSION = "router-policy-v8";
 
 /**
  * Backward-compatible endpoint classification retained for lease validation and diagnostics. Tiers
- * do not participate in endpoint ordering; weighted effective cost selects the endpoint primary.
+ * break equal-effective-cost ties only; weighted effective cost remains the primary order.
  */
 export const ENDPOINT_TIERS = ["manufacturer", "gateway", "resale"] as const;
 export type EndpointTier = (typeof ENDPOINT_TIERS)[number];
@@ -62,11 +62,13 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "claude-fable-5": "anthropic",
   "claude-sonnet-5": "anthropic",
   "claude-haiku-4-5": "anthropic",
+  "gemini-3.8-flash": "google",
   "gemini-3.6-flash": "google",
   "gemini-2.5-pro": "google",
   "gemini-2.5-flash": "google",
-  // Carries a bounded prompt profile but no policy candidate yet, so it is declared and unroutable.
   "minimax-m2.5": "minimax",
+  "kimi-k2.5": "moonshot",
+  "kimi-k2-thinking": "moonshot",
 };
 
 /**
@@ -149,6 +151,18 @@ const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
  * the effort is chosen to match the rung rather than claimed as measured.
  */
 const MINIMAX_LOW = candidates("minimax-m2.5", "low").map((ref) => ({ ...ref, singleAttemptEvidence: true }));
+/**
+ * Reachable Kimi open-weight rungs, confined to read-only work because their quality evidence is
+ * single-attempt. Both sit within the approximate Haiku-to-Luna capability range and stay within 3x
+ * Luna's direct output-weighted list rate: K2.5 is 2.53x and K2 Thinking is 2.13x. K2.5 resolves 70.8% on
+ * SWE-bench Verified, supports image input, and leads the retained Ruby split at 68.2%; K2 Thinking
+ * resolves 63.4% and Artificial Analysis records 120.98 output tokens/s versus Haiku's 81.09.
+ */
+const KIMI_25_LOW = candidates("kimi-k2.5", "low").map((ref) => ({ ...ref, singleAttemptEvidence: true }));
+const KIMI_THINKING_LOW = candidates("kimi-k2-thinking", "low").map((ref) => ({
+  ...ref,
+  singleAttemptEvidence: true,
+}));
 const OPUS_LOW = candidates("claude-opus-5", "low");
 const OPUS_MEDIUM = candidates("claude-opus-5", "medium");
 const OPUS_HIGH = candidates("claude-opus-5", "high");
@@ -157,21 +171,25 @@ const OPUS_MAX = candidates("claude-opus-5", "max");
 const FABLE_XHIGH = candidates("claude-fable-5", "xhigh");
 const OPUS_46_HIGH = candidates("claude-opus-4-6", "high").map((ref) => ({ ...ref, scopedFrugal: true }));
 /**
- * Preference order for the Google rung. Independent review requires two non-builder vendors, so the
- * chain exists to guarantee Google can always supply one: whichever entry is scoped in and healthy on
- * a given machine becomes the rung, and the ladder degrades in capability rather than disappearing.
- *
- * gemini-3.6-flash leads because it is the only Gemini configuration the evidence pack does not
- * disqualify. gemini-3.5-flash is deliberately absent: it is disqualified for a measured 3.8%
- * context-overflow rate. The 2.5 entries are lowest-band reviewers, kept because an independent
- * second opinion from a weaker model is worth more than no independent review at all, and review is
- * read-only work where a weak reviewer cannot break anything.
+ * General Google availability chain. Direct `google` endpoints are filtered from non-review work in
+ * core/routing.ts because their operator quota is too low for general traffic; Vertex and other
+ * scoped surfaces remain eligible. gemini-3.5-flash stays absent because its measured context
+ * overflow disqualifies it.
  */
-const GEMINI_HIGH = [
+const GEMINI_GENERAL_HIGH = [
   ...candidates("gemini-3.6-flash", "high"),
   ...candidates("gemini-2.5-pro", "high"),
   ...candidates("gemini-2.5-flash", "high"),
 ];
+
+/**
+ * Review-only Google chain. Gemini 3.8 Flash at high effort leads on the refreshed corroborated
+ * evidence: 69.2 CursorBench and 73.8% DeepSWE, with consensus performance_best 93.55 (band 4).
+ * Its dedicated prompt profile resolves only for code_review, and direct Google is admitted only
+ * there. Older generations remain availability fallbacks because a weaker independent review is
+ * preferable to losing the Google reviewer entirely.
+ */
+const GEMINI_REVIEW_HIGH = [...candidates("gemini-3.8-flash", "high"), ...GEMINI_GENERAL_HIGH];
 
 export type BootstrapRoutePolicy = {
   archetype: Archetype;
@@ -203,13 +221,18 @@ export type BootstrapRoutePolicy = {
    */
   evidenceRanked: boolean;
   /**
-   * Deliberate human prior that outranks the evidence cost objective for this archetype's first
-   * attempt. Used only where the cost of a bad result is not paid inside the task: a defective plan
-   * or a wrong high-risk verdict propagates into many downstream pull requests, so these archetypes
-   * are ordered by capability rather than expected completion cost. Fallbacks stay evidence-ranked,
-   * and the pin is ignored when the pinned choice is not eligible.
+   * Deliberate policy prior that outranks the evidence cost objective for this archetype's first
+   * attempt. It may encode a refreshed corpus-wide default or a capability-first choice whose failure
+   * cost is paid downstream. Fallbacks stay evidence-ranked, and the pin is ignored when the pinned
+   * choice is not eligible.
    */
-  pinnedPrimary?: { logicalModelId: string; effort: EffortLevel; reason: string };
+  pinnedPrimary?: {
+    logicalModelId: string;
+    effort: EffortLevel;
+    reason: string;
+    /** Keep a measured language-specific route when one exists instead of applying the corpus-wide default. */
+    deferToLanguageEvidence?: boolean;
+  };
 };
 
 export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> = {
@@ -262,8 +285,10 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     fallback: [
       ...LUNA_HIGH,
       ...MINIMAX_LOW,
-      ...HAIKU_LOW,
+      ...KIMI_25_LOW,
+      ...KIMI_THINKING_LOW,
       ...GPT_OSS_HIGH,
+      ...HAIKU_LOW,
       ...TERRA_MEDIUM,
       ...OPUS_MEDIUM,
       ...OPUS_HIGH,
@@ -281,7 +306,16 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     // displaces. The rest of this ladder is deliberately untouched: gpt-5.6-sol was removed only from
     // fast_classification, because schema-emission fidelity is what orders this archetype and no source
     // measures it, so there is no evidence here to justify dropping a rung.
-    fallback: [...MINIMAX_LOW, ...HAIKU_LOW, ...SOL_LOW, ...GPT_OSS_HIGH, ...SOL_MEDIUM, ...OPUS_MEDIUM],
+    fallback: [
+      ...MINIMAX_LOW,
+      ...KIMI_25_LOW,
+      ...KIMI_THINKING_LOW,
+      ...HAIKU_LOW,
+      ...SOL_LOW,
+      ...GPT_OSS_HIGH,
+      ...SOL_MEDIUM,
+      ...OPUS_MEDIUM,
+    ],
     qualityFloor: 0.98,
     deterministicPassFloor: 0.98,
     allowSuperSaturation: false,
@@ -321,6 +355,13 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     allowSuperSaturation: false,
     mutatesRepository: true,
     evidenceRanked: true,
+    pinnedPrimary: {
+      logicalModelId: "claude-opus-5",
+      effort: "medium",
+      reason:
+        "the refreshed effectiveness report recommends Opus low/medium as the default agentic coding route and Sol high as the challenger; measured language-specific routing remains authoritative",
+      deferToLanguageEvidence: true,
+    },
   },
   stacked_pr_implementation: {
     archetype: "stacked_pr_implementation",
@@ -345,7 +386,7 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   algorithmic_iterative_coding: {
     archetype: "algorithmic_iterative_coding",
     primary: SOL_MEDIUM,
-    fallback: [...OPUS_MEDIUM, ...GEMINI_HIGH, ...TERRA_HIGH, ...LUNA_HIGH],
+    fallback: [...OPUS_MEDIUM, ...GEMINI_GENERAL_HIGH, ...TERRA_HIGH, ...LUNA_HIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.61,
     allowSuperSaturation: false,
@@ -446,14 +487,14 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
  * The ability-1 OpenAI and Anthropic rungs are also absent. A reviewer must be able to reason about
  * a diff, and the lowest-band configurations either cliff catastrophically (gpt-5.6-luna at low
  * effort passes 1.5% and breaks previously passing tests at 27.7%) or carry no agentic measurement
- * at all (claude-haiku-4-5). Google keeps its single rung because gemini-3.6-flash at high effort is
- * its only eligible configuration; a builder above that band produces a recorded ceiling mismatch
- * rather than a silent downgrade.
+ * at all (claude-haiku-4-5). Google's review-only rung leads with Gemini 3.8 Flash at high effort
+ * (band 4), then degrades through older generations when that endpoint is unavailable. The rung is
+ * intentionally an ordered availability chain rather than a set of equal-ability configurations.
  */
 const REVIEWER_TIERS: Partial<Record<ModelVendor, readonly (readonly CandidateRef[])[]>> = {
   openai: [SOL_MEDIUM, SOL_HIGH, SOL_MAX],
   anthropic: [OPUS_LOW, OPUS_MEDIUM, OPUS_HIGH, FABLE_XHIGH],
-  google: [GEMINI_HIGH],
+  google: [GEMINI_REVIEW_HIGH],
 };
 
 /** Vendors that actually declare a reviewer ladder, in MODEL_VENDORS order. */

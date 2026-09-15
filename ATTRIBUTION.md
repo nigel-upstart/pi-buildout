@@ -116,9 +116,10 @@ package is absent. No `pi-telemetry-otel` source was copied.
 Use: published per-token input and output list rates now drive cost-first endpoint ordering. Cache read/write semantics
 establish the related cost classifications; the sources also establish default and one-hour TTL behavior, GPT-5.6's
 explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior, and the exclusion of cache-read tokens from
-input-token rate-limit quotas. The repository's operator-supplied routing adjustment remains separate from and was not
-derived from AWS documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and
-commitment pricing were intentionally not adopted.
+input-token rate-limit quotas. The repository's operator-supplied `1.00001` Bedrock preference, which slightly
+prioritizes first-party endpoints when list rates match, remains separate from and was not derived from AWS
+documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and commitment pricing
+were intentionally not adopted.
 
 ### Anthropic prompt caching
 
@@ -148,13 +149,23 @@ The router's bootstrap priors in [`extensions/router/core/evidence.ts`](extensio
 from a local research corpus and the public benchmark captures it aggregates.
 
 - Source: local `llm-effectiveness` research corpus (`~/outputs/llm-effectiveness`), normalization version `2.0`
-- Revision reviewed: capture dated 2026-07-25, spend data through 2026-07-19
+- Initial revision reviewed: capture dated 2026-07-25, spend data through 2026-07-19
+- Latest revision reviewed:
+  [`teamupstart/ai-acceleration` PR #650](https://github.com/teamupstart/ai-acceleration/pull/650) at
+  `8053ead0ccc38c9bcd84131984d515fdc22bfddd`, report data through 2026-09-10; latest remote `main` reviewed at
+  [`392b967c5ec3ea8d63078ddbc31a8b16a1f22836`](https://github.com/teamupstart/ai-acceleration/commit/392b967c5ec3ea8d63078ddbc31a8b16a1f22836)
 - License: internal working data; not redistributed by this repository
 
 Use: numeric priors (deterministic pass rate, hard-task pass rate, regression-breakage rate, partial credit on failure,
-repeat reliability, wall time, agent steps, p90 peak context, cost per pass) were derived from that corpus's
+repeat reliability, wall time, agent steps, p90 peak context, cost per pass) were derived from the initial corpus's
 `analysis/router_capability_slices.py` output and its `ROUTING_LEARNINGS.md` interpretation, then transcribed as typed
-data with per-row provenance. No corpus code was copied into this repository.
+data with per-row provenance. The refreshed report contributes Gemini 3.8 Flash's effort-specific consensus band,
+CursorBench score, and DeepSWE pass/cost/context observations, plus current Artificial Analysis intelligence and speed
+context for the scoped-model gate; pinned pi-ai registry prices bound the Kimi fallbacks. Its Opus low/medium default
+and Sol-high challenger recommendation informs the median coding topology. No corpus or `ai_usage` code, prose, or raw
+benchmark records were copied. GPT-6/unsupported models, the report's Sonnet experiment proposal, frontend task
+heuristics, and automatic cross-model percentile ranking were intentionally not adopted; the router preserves its
+existing consequence gates and requires local acceptance telemetry before automatic promotion.
 
 Upstream sources that corpus aggregates, all consumed as published measurements rather than code:
 

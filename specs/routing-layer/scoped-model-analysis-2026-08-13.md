@@ -1,5 +1,10 @@
 # Scoped Bedrock model analysis — 2026-08-13
 
+> **Historical evidence snapshot.** The `0.83` columns and break-even calculations below preserve the assumptions
+> evaluated on this date; they are not current routing behavior. `router-policy-v8` uses a slight `1.00001` Bedrock
+> preference penalty, reassesses these candidates at effectively neutral weight, and admits only the bounded models in
+> [`decisions.md`](decisions.md#refreshed-evidence-and-endpoint-preferences-2026-09-10-router-policy-v8).
+
 This evidence record examines the MiniMax, Kimi, GLM, DeepSeek, Qwen, Nemotron, and Grok models in the pinned pi-ai
 registry that are within the router's scoped-model inquiry. It separates endpoint reachability and token-rate evidence
 from benchmark quality evidence. The conclusions are bounded to the named versions, providers, harnesses, and source

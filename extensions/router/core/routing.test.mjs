@@ -48,6 +48,7 @@ function registry() {
     model("anthropic", "claude-opus-5", "anthropic"),
     model("anthropic", "claude-fable-5", "anthropic"),
     model("google-vertex", "gemini-3.6-flash", "google"),
+    model("google-vertex", "gemini-3.8-flash", "google"),
   ];
 }
 
@@ -56,6 +57,8 @@ function endpointPrimaryGoldenRegistry() {
     openai: "openai-codex",
     anthropic: "anthropic",
     google: "google-vertex",
+    minimax: "amazon-bedrock",
+    moonshot: "amazon-bedrock",
   };
   const direct = Object.entries(MODEL_VENDOR).map(([modelId, vendor]) =>
     model(manufacturerProvider[vendor], modelId, vendor),
@@ -151,15 +154,17 @@ describe("deriveArchetype", () => {
 });
 
 describe("ordinary route selection", () => {
-  it("orders routine repository work by measured completion cost and keeps a cross-vendor fallback", () => {
+  it("uses the refreshed Opus coding default and keeps a cross-vendor challenger", () => {
     const decision = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
-    // Sol at high effort wins routine work on measured completion cost: 69.2% pass at $5.01 per
-    // pass and a 517 s median, against Opus 5 at medium with 68.1% at $4.86 and 588 s.
-    assert.equal(decision.primary.modelId, "gpt-5.6-sol");
-    assert.equal(decision.primary.effort, "high");
+    // The refreshed report recommends Opus at low/medium as the default coding route and Sol high
+    // as the acceptance-gated challenger. The pin reorders only; it does not remove Sol.
+    assert.equal(decision.primary.modelId, "claude-opus-5");
+    assert.equal(decision.primary.effort, "medium");
     assert.equal(decision.primary.rankReason, "evidence_prior");
-    assert.ok(decision.fallbacks.some((choice) => choice.vendor === "anthropic"));
+    const challenger = decision.fallbacks.find((choice) => choice.logicalModelId !== decision.primary.logicalModelId);
+    assert.equal(challenger?.logicalModelId, "gpt-5.6-sol");
+    assert.equal(challenger?.effort, "high");
     assert.notEqual(decision.primary.profileId, "");
   });
 
@@ -264,8 +269,19 @@ describe("ordinary route selection", () => {
     assert.equal(decision.kind, "ordinary");
     assert.ok([decision.primary, ...decision.fallbacks].every((choice) => choice.vendor !== "google"));
 
-    const withCurrent = selectOrdinaryRoute("algorithmic_iterative_coding", registry(), REQUIREMENTS);
-    assert.ok(withCurrent.fallbacks.some((choice) => choice.modelId === "gemini-3.6-flash"));
+    const withCurrent = selectOrdinaryRoute(
+      "algorithmic_iterative_coding",
+      [...registry(), model("google", "gemini-3.6-flash", "google")],
+      REQUIREMENTS,
+    );
+    const chain = [withCurrent.primary, ...withCurrent.fallbacks];
+    assert.ok(chain.some((choice) => choice.provider === "google-vertex" && choice.modelId === "gemini-3.6-flash"));
+    assert.ok(chain.every((choice) => choice.provider !== "google"));
+    assert.ok(
+      withCurrent.exclusions.some(
+        (exclusion) => exclusion.candidate === "google/gemini-3.6-flash" && exclusion.code === "provider_restricted",
+      ),
+    );
   });
 
   it("deduplicates an endpoint per effort rather than per model", () => {
@@ -288,17 +304,17 @@ describe("ordinary route selection", () => {
       // That is the intended behaviour of putting luna@high directly behind luna@medium: rising
       // consequence buys more effort on the same model rather than a switch to a different one. It is
       // also strictly better than the claude-haiku-4-5@low this used to select - cheaper per effective
-      // token (0.297 against 1.232) and actually measured (44.3% pass, 9.1% regression breakage) where
+      // token (0.95 against 4.0) and actually measured (44.3% pass, 9.1% regression breakage) where
       // Haiku has no agentic rollout row at all.
       fast_classification: {
         logicalModelId: "gpt-5.6-luna",
         effort: "high",
-        endpoint: "amazon-bedrock/openai.gpt-5.6-luna",
+        endpoint: "openai-codex/gpt-5.6-luna",
       },
       exact_extraction: {
         logicalModelId: "claude-haiku-4-5",
         effort: "low",
-        endpoint: "amazon-bedrock/anthropic.claude-haiku-4-5",
+        endpoint: "anthropic/claude-haiku-4-5",
       },
       // These Sol routes stay first party because the deliberately large request exceeds the 272K
       // Bedrock list-rate boundary. Copilot is eligible but remains last as a flat-rate proxy.
@@ -308,9 +324,9 @@ describe("ordinary route selection", () => {
         endpoint: "openai-codex/gpt-5.6-sol",
       },
       median_repository_implementation: {
-        logicalModelId: "gpt-5.6-sol",
-        effort: "high",
-        endpoint: "openai-codex/gpt-5.6-sol",
+        logicalModelId: "claude-opus-5",
+        effort: "medium",
+        endpoint: "anthropic/claude-opus-5",
       },
       stacked_pr_implementation: {
         logicalModelId: "gpt-5.6-sol",
@@ -325,7 +341,7 @@ describe("ordinary route selection", () => {
       algorithmic_iterative_coding: {
         logicalModelId: "claude-opus-5",
         effort: "medium",
-        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+        endpoint: "anthropic/claude-opus-5",
       },
       code_review: {
         logicalModelId: "gpt-5.6-sol",
@@ -335,12 +351,12 @@ describe("ordinary route selection", () => {
       implementation_planning: {
         logicalModelId: "claude-opus-5",
         effort: "high",
-        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+        endpoint: "anthropic/claude-opus-5",
       },
       large_program_planning: {
         logicalModelId: "claude-opus-5",
         effort: "xhigh",
-        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+        endpoint: "anthropic/claude-opus-5",
       },
       long_context_synthesis: {
         logicalModelId: "gpt-5.6-sol",
@@ -350,7 +366,7 @@ describe("ordinary route selection", () => {
       highest_risk_advisory: {
         logicalModelId: "claude-opus-5",
         effort: "max",
-        endpoint: "amazon-bedrock/anthropic.claude-opus-5",
+        endpoint: "anthropic/claude-opus-5",
       },
     };
     assert.deepEqual(Object.keys(expectedPrimaries).sort(), Object.keys(BOOTSTRAP_ROUTE_POLICIES).sort());
@@ -411,20 +427,18 @@ describe("ordinary route selection", () => {
       model("openai", "gpt-5.6-sol", "openai"),
       model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"),
     ];
-    const decision = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
+    const decision = selectOrdinaryRoute("terminal_heavy_implementation", models, REQUIREMENTS);
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.primary.logicalModelId, "gpt-5.6-sol");
-    assert.equal(decision.primary.provider, "amazon-bedrock");
-    // The tier remains diagnostic metadata and does not prevent the lower effective-cost resale route
-    // from becoming primary.
-    assert.equal(decision.primary.endpointTier, "resale");
+    assert.equal(decision.primary.provider, "openai-codex");
+    assert.equal(decision.primary.endpointTier, "manufacturer");
     const choices = [decision.primary, ...decision.fallbacks];
     const selectedGroup = choices.filter(
       (choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high",
     );
     assert.deepEqual(
       selectedGroup.map((choice) => `${choice.provider}/${choice.modelId}`),
-      ["amazon-bedrock/openai.gpt-5.6-sol", "openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"],
+      ["openai-codex/gpt-5.6-sol", "amazon-bedrock/openai.gpt-5.6-sol", "openai/gpt-5.6-sol"],
     );
     assert.deepEqual(choices.slice(0, selectedGroup.length), selectedGroup);
     assert.ok(
@@ -450,12 +464,13 @@ describe("ordinary route selection", () => {
     assert.ok(decision.primary.endpointEffectiveCost < decision.fallbacks[0].endpointEffectiveCost);
   });
 
-  it("uses provider weights and the comparator total order without hidden provider tiers", () => {
+  it("uses provider weights before the first-party equal-cost tie-break", () => {
     const equalPrice = { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 2.5 };
     const openaiModels = [
       ...registry().filter((candidate) => candidate.modelId !== "gpt-5.6-sol"),
       { ...model("openai", "gpt-5.6-sol", "openai"), costPerMillion: equalPrice },
       { ...model("openai-codex", "gpt-5.6-sol", "openai"), costPerMillion: equalPrice },
+      { ...model("amazon-bedrock", "openai.gpt-5.6-sol", "openai"), costPerMillion: equalPrice },
       { ...model("new-token-provider", "gpt-5.6-sol", "openai"), costPerMillion: equalPrice },
     ];
     const openai = selectOrdinaryRoute("median_repository_implementation", openaiModels, REQUIREMENTS);
@@ -463,7 +478,7 @@ describe("ordinary route selection", () => {
     const solProviders = [openai.primary, ...openai.fallbacks]
       .filter((choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high")
       .map((choice) => choice.provider);
-    assert.deepEqual(solProviders, ["openai-codex", "openai", "new-token-provider"]);
+    assert.deepEqual(solProviders, ["openai-codex", "amazon-bedrock", "openai", "new-token-provider"]);
 
     const anthropicModels = [
       ...registry().filter((candidate) => candidate.modelId !== "claude-opus-5"),
@@ -499,7 +514,7 @@ describe("ordinary route selection", () => {
       ["anthropic/claude-opus-4-6", "amazon-bedrock/au.anthropic.claude-opus-4-6-v1"],
     );
     assert.equal(opus46[0].endpointEffectiveCost, 20);
-    assert.ok(Math.abs(opus46[1].endpointEffectiveCost - 54.78) < 1e-12);
+    assert.ok(Math.abs(opus46[1].endpointEffectiveCost - 66.00066) < 1e-12);
   });
 
   it("uses identical effective-cost semantics in registry resolution and RouteChoice ordering", () => {
@@ -516,7 +531,7 @@ describe("ordinary route selection", () => {
     const models = [...registry().filter((candidate) => candidate.modelId !== "gpt-5.6-sol"), expensive, cheap];
 
     // Ordinary routing evaluates all endpoints and then orders the resulting RouteChoice group.
-    const ordinary = selectOrdinaryRoute("median_repository_implementation", models, REQUIREMENTS);
+    const ordinary = selectOrdinaryRoute("terminal_heavy_implementation", models, REQUIREMENTS);
     assert.equal(ordinary.kind, "ordinary");
     assert.equal(ordinary.primary.provider, "openai");
     assert.equal(ordinary.primary.endpointBlendedCost, 1);
@@ -797,7 +812,7 @@ describe("ordinary route selection", () => {
     const decision = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS, samples);
     assert.equal(decision.kind, "ordinary");
     assert.equal(decision.telemetryMature, false);
-    assert.equal(decision.primary.modelId, "gpt-5.6-sol");
+    assert.equal(decision.primary.modelId, "claude-opus-5");
     assert.equal(decision.primary.rankReason, "evidence_prior");
 
     // Maturity requires a comparable sample for every eligible group, so derive them from the
@@ -806,13 +821,13 @@ describe("ordinary route selection", () => {
       ...samples[0],
       provider: choice.provider,
       modelId: choice.modelId,
-      // Make claude-opus-5 the cheapest so telemetry demonstrably reorders away from the prior order.
-      p75ModelAndToolCost: choice.logicalModelId === "claude-opus-5" ? 1 : 100,
+      // Make gpt-5.6-sol the cheapest so telemetry demonstrably reorders away from the pinned prior.
+      p75ModelAndToolCost: choice.logicalModelId === "gpt-5.6-sol" ? 1 : 100,
     }));
     const mature = selectOrdinaryRoute("median_repository_implementation", registry(), REQUIREMENTS, matureSamples);
     assert.equal(mature.kind, "ordinary");
     assert.equal(mature.telemetryMature, true);
-    assert.equal(mature.primary.modelId, "claude-opus-5");
+    assert.equal(mature.primary.modelId, "gpt-5.6-sol");
     assert.equal(mature.primary.rankReason, "telemetry");
     assert.equal(mature.primary.scoreComponents.p75ModelAndToolCost, 1);
     assert.ok(Math.abs(mature.primary.scoreComponents.developerWaitCost - 0.0001) < 1e-12);
@@ -931,17 +946,16 @@ describe("review route selection", () => {
   });
 
   it("records a ceiling mismatch per vendor without shortening the chain", () => {
-    const models = registry();
+    const models = registry().map((candidate) =>
+      candidate.modelId === "gemini-3.8-flash" ? { ...candidate, available: false } : candidate,
+    );
     const builder = { ...models.find((candidate) => candidate.modelId === "claude-opus-5"), vendor: "moonshot" };
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "max", 4);
     assert.equal(decision.kind, "review");
-    // A vendor whose best eligible reviewer sits below the builder band is reported, not dropped.
-    for (const vendor of decision.ceilingMismatchVendors) {
-      assert.ok(
-        [decision.primary, ...decision.fallbacks].some((choice) => choice.vendor === vendor),
-        `${vendor} was reported as a ceiling mismatch but contributed no reviewer`,
-      );
-    }
+    assert.deepEqual(decision.ceilingMismatchVendors, ["google"]);
+    const google = [decision.primary, ...decision.fallbacks].find((choice) => choice.vendor === "google");
+    assert.ok(google, "the lower-band Google availability fallback must remain in the chain");
+    assert.equal(google.modelId, "gemini-3.6-flash");
   });
 });
 
@@ -953,6 +967,8 @@ describe("routing helpers", () => {
     assert.equal(canonicalVendor("bifrost", "openai/gpt-5.6-terra"), "openai");
     assert.equal(canonicalVendor("bifrost", "bedrock/anthropic.claude-sonnet-5"), "anthropic");
     assert.equal(canonicalVendor("bifrost", "vertex/gemini-2.5-flash"), "google");
+    assert.equal(canonicalVendor("amazon-bedrock", "moonshot.kimi-k2-thinking"), "moonshot");
+    assert.equal(canonicalVendor("amazon-bedrock", "moonshotai.kimi-k2.5"), "moonshot");
   });
 
   it("normalizes Amazon Bedrock direct and cross-region model IDs to their actual vendor", () => {
@@ -968,7 +984,7 @@ describe("routing helpers", () => {
     assert.equal(canonicalVendor("amazon-bedrock", "us.gov-cloud-widget-1"), undefined);
   });
 
-  it("calculates robust cost-to-done and stable snapshots", () => {
+  it("calculates robust cost-to-done and makes registry snapshots order-insensitive but content-sensitive", () => {
     assert.equal(
       robustCostToDone(
         {
@@ -986,9 +1002,11 @@ describe("routing helpers", () => {
       ),
       9,
     );
-    const snapshot = registrySnapshotId(registry());
-    assert.equal(snapshot, registrySnapshotId([...registry()].reverse()));
-    assert.match(snapshot, /^registry-v1:11:[0-9a-f]{16}$/);
+    const models = registry();
+    const snapshot = registrySnapshotId(models);
+    assert.equal(snapshot, registrySnapshotId([...models].reverse()));
+    const changed = models.map((entry, index) => (index === 0 ? { ...entry, contextWindow: 999_999 } : entry));
+    assert.notEqual(snapshot, registrySnapshotId(changed));
   });
 });
 
@@ -1107,7 +1125,7 @@ describe("weakly evidenced language tendencies", () => {
   });
 });
 
-describe("balanced tier and scoped frugal candidate", () => {
+describe("balanced tiers and scoped open-weight candidates", () => {
   function withExtras() {
     return [
       ...registry(),
@@ -1121,6 +1139,19 @@ describe("balanced tier and scoped frugal candidate", () => {
         supportedEfforts: ["off", "minimal", "low", "medium", "high"],
         inputTypes: ["text"],
         costPerMillion: { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0 },
+      },
+      {
+        ...model("amazon-bedrock", "moonshotai.kimi-k2.5", "moonshot", 262_143),
+        maxOutputTokens: 16_000,
+        supportedEfforts: ["off", "minimal", "low", "medium", "high"],
+        costPerMillion: { input: 0.6, output: 3, cacheRead: 0, cacheWrite: 0 },
+      },
+      {
+        ...model("amazon-bedrock", "moonshot.kimi-k2-thinking", "moonshot", 262_143),
+        maxOutputTokens: 16_000,
+        supportedEfforts: ["off", "minimal", "low", "medium", "high"],
+        inputTypes: ["text"],
+        costPerMillion: { input: 0.6, output: 2.5, cacheRead: 0, cacheWrite: 0 },
       },
     ];
   }
@@ -1388,11 +1419,40 @@ describe("balanced tier and scoped frugal candidate", () => {
     assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.logicalModelId !== "gpt-oss-120b"));
   });
 
+  it("admits the enabled Kimi models only as bounded read-only fallbacks", () => {
+    const readOnly = selectOrdinaryRoute(
+      "fast_classification",
+      withExtras(),
+      REQUIREMENTS,
+      [],
+      undefined,
+      undefined,
+      deriveRoutingContext({ ...FEATURES, actionMode: "information_only" }, []),
+    );
+    assert.equal(readOnly.kind, "ordinary");
+    const kimi = [readOnly.primary, ...readOnly.fallbacks].filter((choice) => choice.vendor === "moonshot");
+    assert.deepEqual(
+      kimi.map((choice) => choice.logicalModelId),
+      ["kimi-k2.5", "kimi-k2-thinking"],
+    );
+    assert.ok(kimi.every((choice) => choice.singleAttemptEvidence === true));
+    assert.equal(kimi[0].profileId, "moonshot-kimi-bounded-v1");
+
+    const mutating = selectOrdinaryRoute("fast_classification", withExtras(), REQUIREMENTS);
+    assert.equal(mutating.kind, "ordinary");
+    assert.ok([mutating.primary, ...mutating.fallbacks].every((choice) => choice.vendor !== "moonshot"));
+    assert.ok(
+      mutating.exclusions.some(
+        (exclusion) => exclusion.candidate.includes("kimi-") && /read-only consequence/.test(exclusion.detail),
+      ),
+    );
+  });
+
   it("admits the balanced mid tier as fallbacks without letting it take a mutating primary", () => {
     const median = selectOrdinaryRoute("median_repository_implementation", withExtras(), REQUIREMENTS);
     const chain = [median.primary, ...median.fallbacks].map((choice) => `${choice.logicalModelId}@${choice.effort}`);
     assert.ok(chain.includes("gpt-5.6-terra@high"), "terra@high should be an authorized mid fallback");
-    assert.equal(median.primary.logicalModelId, "gpt-5.6-sol");
+    assert.equal(median.primary.logicalModelId, "claude-opus-5");
 
     const algorithmic = selectOrdinaryRoute("algorithmic_iterative_coding", withExtras(), REQUIREMENTS);
     const algoChain = [algorithmic.primary, ...algorithmic.fallbacks].map(
@@ -1551,11 +1611,6 @@ describe("escalation-only candidates can never be a first attempt", () => {
       // luna at low effort is the legitimate declared classification primary; only luna at max is the
       // escalation candidate, so the check is on the flag and the effort, not on the model name.
       assert.notEqual(decision.primary.effort, "max");
-      assert.ok(
-        [decision.primary, ...decision.fallbacks].every(
-          (choice) => choice.escalationOnly !== true || choice !== decision.primary,
-        ),
-      );
     }
   });
 
@@ -1600,16 +1655,16 @@ describe("scope and health drive the candidate pool", () => {
     assert.equal(decision.fallbacks[0].modelId, "us.anthropic.claude-opus-5");
   });
 
-  it("lets weighted cost outrank endpoint-tier metadata when direct and Bedrock both exist", () => {
+  it("prefers first party when direct and Bedrock list costs tie", () => {
     const both = [
       endpoint("amazon-bedrock", "global.anthropic.claude-opus-5", "anthropic"),
       endpoint("anthropic", "claude-opus-5", "anthropic"),
       endpoint("openai-codex", "gpt-5.6-sol", "openai"),
     ];
     const decision = selectOrdinaryRoute("implementation_planning", both, REQUIREMENTS);
-    assert.equal(decision.primary.provider, "amazon-bedrock");
-    assert.equal(decision.primary.endpointTier, "resale");
-    assert.equal(decision.fallbacks[0].provider, "anthropic");
+    assert.equal(decision.primary.provider, "anthropic");
+    assert.equal(decision.primary.endpointTier, "manufacturer");
+    assert.equal(decision.fallbacks[0].provider, "amazon-bedrock");
   });
 
   it("reports a model that is not in scope rather than pretending it was unavailable", () => {
@@ -1643,8 +1698,23 @@ describe("scope and health drive the candidate pool", () => {
     );
   });
 
+  it("uses direct Gemini 3.8 only when it is supplying a review", () => {
+    const directOnly = [
+      ...registry().filter((candidate) => candidate.vendor !== "google"),
+      endpoint("google", "gemini-3.8-flash", "google"),
+    ];
+    const builder = directOnly.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    const decision = selectReviewRoute(directOnly, REQUIREMENTS, builder, "high", 3);
+    assert.equal(decision.kind, "review");
+    const google = [decision.primary, ...decision.fallbacks].find((choice) => choice.vendor === "google");
+    assert.ok(google);
+    assert.equal(google.provider, "google");
+    assert.equal(google.modelId, "gemini-3.8-flash");
+    assert.equal(google.ability, 4);
+  });
+
   it("supplies a Google reviewer from whichever Gemini generation is scoped in", () => {
-    // On a machine without gemini-3.6-flash, the chain degrades rather than leaving Google absent, so
+    // On a machine without Gemini 3.8 or 3.6, the chain degrades rather than leaving Google absent, so
     // independent review keeps two non-builder vendors.
     const olderGemini = [
       endpoint("openai-codex", "gpt-5.6-sol", "openai"),

@@ -206,8 +206,8 @@ describe("router scope configuration", () => {
     assert.equal(Object.isFrozen(EMPTY_SCOPE.patterns), true);
     assert.equal(typeof EMPTY_SCOPE.providerWeights.set, "undefined");
     assert.deepEqual(EMPTY_SCOPE.providerWeights.get("amazon-bedrock"), {
-      weight: 0.83,
-      basis: "contract",
+      weight: 1.00001,
+      basis: "preference",
       source: "built-in",
     });
 
@@ -220,8 +220,8 @@ describe("router scope configuration", () => {
     assert.deepEqual(missingScope.patterns, []);
     assert.equal(missingScope.patternSource, "default");
     assert.deepEqual(missingScope.providerWeights.get("amazon-bedrock"), {
-      weight: 0.83,
-      basis: "contract",
+      weight: 1.00001,
+      basis: "preference",
       source: "built-in",
     });
 
@@ -455,17 +455,17 @@ describe("lease restoration and context estimates", () => {
     );
   });
 
-  it("discards persisted v5 leases and restores the same lease under the current policy", () => {
+  it("discards leases from the previous policy and restores the same lease under the current policy", () => {
     const restore = (lease) =>
       restoreLeaseState(
         [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: lease } }],
         "shadow",
       ).active;
-    const v5Lease = leaseFixture();
-    v5Lease.policyVersion = "router-policy-v5";
-    assert.equal(restore(v5Lease), undefined);
+    const previousLease = leaseFixture();
+    previousLease.policyVersion = "router-policy-v7";
+    assert.equal(restore(previousLease), undefined);
 
-    const currentLease = structuredClone(v5Lease);
+    const currentLease = structuredClone(previousLease);
     currentLease.policyVersion = POLICY_VERSION;
     assert.equal(restore(currentLease)?.taskId, "task");
   });

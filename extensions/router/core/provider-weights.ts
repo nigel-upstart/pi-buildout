@@ -42,7 +42,7 @@ function definition(weight: number, basis: ProviderWeightBasis): ProviderWeightD
 }
 
 const BUILT_IN_PROVIDER_WEIGHTS = new Map<string, ProviderWeightDefinition>([
-  ["amazon-bedrock", definition(0.83, "contract")],
+  ["amazon-bedrock", definition(1.00001, "preference")],
   ["openai-codex", definition(1.0, "preference")],
   ["anthropic", definition(1.0, "preference")],
   ["google", definition(1.0, "preference")],

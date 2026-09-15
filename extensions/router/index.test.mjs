@@ -127,11 +127,11 @@ function irreversibleActionPlan() {
 }
 
 describe("classifier deadline", () => {
-  it("allows eleven seconds for classification", () => {
-    assert.equal(CLASSIFICATION_TIMEOUT_MS, 11_000);
+  it("allows fifteen seconds for classification", () => {
+    assert.equal(CLASSIFICATION_TIMEOUT_MS, 15_000);
   });
 
-  it("keeps retries, endpoint iteration, and secondary escalation inside one eleven-second budget", async () => {
+  it("keeps retries, endpoint iteration, and secondary escalation inside one fifteen-second budget", async () => {
     const endpointCalls = [];
     const signals = new Set();
     const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });
@@ -197,7 +197,7 @@ describe("classifier deadline", () => {
 
   it("stops endpoint iteration and secondary escalation once the injected deadline expires", async () => {
     // The deadline is injected per invocation, so this exercises real expiration against a blocked
-    // endpoint instead of asserting that an immediately settling fixture stayed under 11 seconds.
+    // endpoint instead of asserting that an immediately settling fixture stayed under 15 seconds.
     const deadlineMs = 25;
     const endpointCalls = [];
     const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });
@@ -245,7 +245,8 @@ describe("classifier deadline", () => {
     assert.equal(run.summary.timedOut, true);
     assert.equal(run.summary.cancelled, true);
     assert.equal(run.summary.errorCategory, "deadline");
-    assert.ok(run.summary.wallLatencyMs >= deadlineMs, `expired after only ${String(run.summary.wallLatencyMs)}ms`);
+    // Timer scheduling and performance.now() rounding can differ by roughly one millisecond.
+    assert.ok(run.summary.wallLatencyMs >= deadlineMs - 2, `expired after only ${String(run.summary.wallLatencyMs)}ms`);
     assert.ok(
       performance.now() - startedAt < CLASSIFICATION_TIMEOUT_MS,
       "expiration must not wait for the full budget",
@@ -916,8 +917,8 @@ describe("routerExtension", () => {
         "unmatched patterns (0):",
         "logical models (1):",
         "  gpt-5.6-sol (2 eligible endpoints):",
-        "    1. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=0.830000 weightBasis=contract weightSource=built-in cacheWrite=priced_write effectiveCost=19.712500",
-        "    2. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "    1. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "    2. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=1.000010 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750238",
         "excluded endpoints (0):",
         "provider-weight rejections (0):",
       ].join("\n"),
@@ -965,9 +966,9 @@ describe("routerExtension", () => {
         provider: "amazon-bedrock",
         modelId: "openai.gpt-5.6-sol",
       });
-      assert.equal(event.endpointEffectiveCost, 19.7125);
-      assert.equal(event.appliedProviderWeight, 0.83);
-      assert.equal(event.providerWeightBasis, "contract");
+      assert.equal(event.endpointEffectiveCost, 23.7502375);
+      assert.equal(event.appliedProviderWeight, 1.00001);
+      assert.equal(event.providerWeightBasis, "preference");
       assert.equal(event.cacheWriteClassification, "priced_write");
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;

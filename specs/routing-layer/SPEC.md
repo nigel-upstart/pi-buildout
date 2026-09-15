@@ -23,8 +23,8 @@ For each new task, decide:
 2. **Model and effort** — ordinary routes get one primary and an ordered chain of every eligible, policy-authorized
    provider endpoint. This permits recovery from a provider-specific rate limit or credential failure without silently
    broadening to an unvalidated model. Standalone reviews use this same feature-based route selection after inspecting
-   their delta. Generated reviews tied to a tracked builder get one candidate from each non-builder model vendor
-   (OpenAI, Anthropic, or Google) and no builder fallback.
+   their delta. Generated reviews tied to a tracked builder get one candidate from every eligible non-builder vendor
+   that declares a reviewer ladder, require at least two, and have no builder fallback.
 3. **Model-specific prompt profile** — a validated, versioned profile compiled into the final request without altering
    the user's intent.
 
@@ -147,7 +147,7 @@ arguments — never accept free-form JSON parsed out of prose.
 
 ### Deadline, cancellation, and fail-safe selection
 
-Each fresh-task or continuity request is owned by one router-level **11-second wall-clock deadline**, measured across
+Each fresh-task or continuity request is owned by one router-level **15-second wall-clock deadline**, measured across
 all schema attempts, endpoint fallback, and any secondary stage. One `AbortSignal` is passed through those layers to the
 underlying `complete()` call. At the deadline the router aborts the request and returns without waiting indefinitely for
 a provider transport to settle.
@@ -174,13 +174,15 @@ Deterministic, not LLM-assisted:
   estimate rather than an exact count.
 - Prompt-profile compatibility (a model without a validated profile for the archetype/effort is not eligible).
 - Review-provider exclusion uses the model's canonical vendor, not merely the endpoint/gateway name: select one
-  candidate from each of the two vendors other than the builder's vendor and prefer the closest reviewer at or above the
-  builder's effective ability. If a vendor has no model at that level, select its strongest eligible model and record
-  the ceiling mismatch.
+  candidate from every reviewer-ladder vendor other than the builder's vendor, require at least two, and prefer the
+  closest reviewer at or above the builder's effective ability. If a vendor has no model at that level, select its
+  strongest eligible model and record the ceiling mismatch. Google's availability rung leads with Gemini 3.8 Flash at
+  high effort and degrades to older Gemini generations when 3.8 is unavailable.
 - Ordinary routes should keep a different-vendor candidate in the chain wherever one is eligible. This is a property of
   the candidate pools rather than an enforced filter: ordering is driven by measured cost-to-done, so the router does
-  not reject an all-one-vendor chain when that is what eligibility leaves. Google contributes a single eligible
-  configuration, so vendor diversity in practice means OpenAI and Anthropic.
+  not reject an all-one-vendor chain when that is what eligibility leaves. Direct `google` endpoints are reserved for
+  `code_review` because the operator quota is too low for general traffic; ordinary Gemini candidates may use Vertex or
+  another scoped provider surface.
 - **The candidate pool is derived from the operator's model scope, not declared in this repository.** Policy names a
   logical model and an effort; the concrete endpoints come from the live registry filtered to the `enabledModels`
   patterns that drive pi's model selector. Enabling or disabling a model in settings therefore changes what the router
@@ -193,10 +195,11 @@ Deterministic, not LLM-assisted:
   changes, while a 5xx or timeout remains usable because removing an endpoint during a provider outage shrinks the
   fallback chain exactly when it is needed. An endpoint that was never probed is usable, because absence of evidence is
   not evidence of failure.
-- Endpoints for the selected logical model order by ascending weighted effective cost, then model-ID specificity, then
-  exact provider/model ID. Flat-rate subscription endpoints are excluded from cost comparison and ordered last.
-  Same-model endpoint grouping remains ahead of every different-model fallback, so an endpoint failure retries the same
-  model before routing changes models. Endpoint tiers are diagnostic metadata only and do not affect ordering.
+- Endpoints for the selected logical model order by ascending weighted effective cost, then first-party/gateway/resale
+  tier, model-ID specificity, and exact provider/model ID. Tier breaks only an equal-effective-cost tie, so a genuinely
+  cheaper gateway or resale route still wins. Flat-rate subscription endpoints are excluded from cost comparison and
+  ordered last. Same-model endpoint grouping remains ahead of every different-model fallback, so an endpoint failure
+  retries the same model before routing changes models.
 - Candidate IDs are exact and version-aware. Unknown IDs and silently moving aliases are ineligible unless a policy
   entry explicitly permits that alias; preview/restricted/safeguarded models require explicit registry flags and
   configured fallbacks.
@@ -224,10 +227,11 @@ the task while another configured provider remains healthy. Only after that chai
 
 Review routing has two deliberately separate forms:
 
-- A generated authorization, advisory, or completion review has a tracked parent/builder lease. It tries the two
-  non-builder vendors sequentially and is read-only. It never falls back to the builder: a builder cannot independently
-  authorize its own plan, and a non-independent verdict must not be mislabeled as completion review. Exhaustion restores
-  the parent with an explicit unavailable/skipped outcome; for authorization, execution remains blocked.
+- A generated authorization, advisory, or completion review has a tracked parent/builder lease. It tries the eligible
+  non-builder reviewer vendors sequentially (with a floor of two) and is read-only. It never falls back to the builder:
+  a builder cannot independently authorize its own plan, and a non-independent verdict must not be mislabeled as
+  completion review. Exhaustion restores the parent with an explicit unavailable/skipped outcome; for authorization,
+  execution remains blocked.
 - A standalone user-requested review has no parent and no assumed builder. Before model selection, the router gathers a
   bounded non-mutating view of the local delta or referenced pull request and classifies the delta's scope, languages,
   complexity, risk, horizon, context, and tool needs. It then uses the ordinary feature-based `code_review` policy and
@@ -243,26 +247,40 @@ meaning of its explicit kind: authorization, advice, or completion findings.
 These are starting priors to encode in the eligible-candidate registry, expected to be superseded by measured telemetry
 per route:
 
-| Archetype                                   | First choice                                                                                     | Required secondary                                                                      |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| Fast classification/routing                 | fast/low-effort model                                                                            | different-provider fast model                                                           |
-| Exact extraction, rigid schema              | precise model, low/medium effort                                                                 | fast fallback                                                                           |
-| Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                                                            | same-family fallback, medium                                                            |
-| Median repository implementation (1 PR)     | lowest measured completion cost at a saturated effort tier                                       | different-vendor fallback at high effort                                                |
-| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort                                                     | top different-provider agent, high; current-generation same-vendor fallback             |
-| Terminal-heavy implementation               | step-efficient coding model, high effort                                                         | different-provider high-effort fallback                                                 |
-| Algorithmic/rapid iterative coding          | fast iterative model, medium effort                                                              | strong coding model, medium                                                             |
-| Code review                                 | standalone: feature-ranked review model; tracked: closest non-builder reviewer ≥ builder ability | standalone ordinary fallback chain; tracked candidate from the other non-builder vendor |
-| Ordinary implementation planning (2–10 PRs) | pinned top planning model, high                                                                  | different-provider planning model, high                                                 |
-| Large program planning (11–100 PRs)         | pinned top long-run planning model, xhigh                                                        | different-provider planning model, high/max                                             |
-| Long-context synthesis                      | context-efficient model whose measured peak stays under half the window                          | different-provider fallback                                                             |
-| Highest-risk ambiguous advisory work        | pinned top reasoning model, max                                                                  | different-provider top reasoning model                                                  |
+| Archetype                                   | First choice                                                                                     | Required secondary                                                                |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| Fast classification/routing                 | fast/low-effort model                                                                            | different-provider fast model                                                     |
+| Exact extraction, rigid schema              | precise model, low/medium effort                                                                 | fast fallback                                                                     |
+| Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                                                            | same-family fallback, medium                                                      |
+| Median repository implementation (1 PR)     | Opus 5 medium as refreshed corpus-wide default; measured language route may override             | Sol high as different-vendor challenger                                           |
+| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort                                                     | top different-provider agent, high; current-generation same-vendor fallback       |
+| Terminal-heavy implementation               | step-efficient coding model, high effort                                                         | different-provider high-effort fallback                                           |
+| Algorithmic/rapid iterative coding          | fast iterative model, medium effort                                                              | strong coding model, medium                                                       |
+| Code review                                 | standalone: feature-ranked review model; tracked: closest non-builder reviewer ≥ builder ability | standalone ordinary fallback chain; tracked candidates from every eligible vendor |
+| Ordinary implementation planning (2–10 PRs) | pinned top planning model, high                                                                  | different-provider planning model, high                                           |
+| Large program planning (11–100 PRs)         | pinned top long-run planning model, xhigh                                                        | different-provider planning model, high/max                                       |
+| Long-context synthesis                      | context-efficient model whose measured peak stays under half the window                          | different-provider fallback                                                       |
+| Highest-risk ambiguous advisory work        | pinned top reasoning model, max                                                                  | different-provider top reasoning model                                            |
 
-Three archetypes carry a **pinned** first choice. Planning, program planning, and highest-risk advisory work order by
-capability rather than by expected completion cost, because a defective plan or a wrong high-risk verdict is paid by the
-downstream pull requests it authorizes rather than inside the task. A pin only reorders an already-authorized pool, is
-ignored when the pinned choice is ineligible, and leaves fallbacks evidence-ranked. Every other archetype is ordered
-purely by measured cost-to-done.
+The bounded read-only ladders also carry four enabled open-weight availability options. MiniMax M2.5 and `gpt-oss-120b`
+remain, while Kimi K2.5 and Kimi K2 Thinking join as low-effort fallbacks. The Kimi endpoints are each within three
+times `gpt-5.6-luna`'s direct output-weighted list rate. Their evidence is single-attempt, so they are structurally
+refused whenever consequence exceeds read-only; they are not implementation candidates. K2.5 contributes image support
+and a strong Ruby slice, while K2 Thinking contributes output speed comparable to Luna and above Haiku. Scoped models
+without an exact-version quality result or without a compensating benefit remain out of policy. The full candidate
+comparison is in [`scoped-model-analysis-2026-09-10.md`](scoped-model-analysis-2026-09-10.md).
+
+Gemini 3.8 Flash at high effort is a tracked-review candidate only. Its two-source refreshed evidence establishes a
+review ability band but not the regression, repeatability, latency-tail, and overflow priors needed for general
+cost-to-done routing. Direct Gemini API endpoints are therefore consumed only by `code_review`; expected endpoint
+failures continue through the independent reviewer fallback chain.
+
+Four archetypes carry a **pinned** first choice. Median repository implementation uses Opus 5 at medium as the refreshed
+corpus-wide coding default and Sol high as its challenger; that default defers to a measured language-specific route.
+Planning, program planning, and highest-risk advisory work order by capability rather than expected completion cost,
+because a defective plan or a wrong high-risk verdict is paid by the downstream pull requests it authorizes rather than
+inside the task. A pin only reorders an already-authorized pool, is ignored when the pinned choice is ineligible, and
+leaves fallbacks evidence-ranked. Every other archetype is ordered purely by measured cost-to-done.
 
 Minimum capability is gated on what a wrong result costs, derived from the task's own `actionMode`, `risk`, and
 `verificationStrength` rather than from its archetype label. `information_only` and `local_read` work has no capability
@@ -476,7 +494,7 @@ under another model family's prompt profile.
 - Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.
-- Classifier work is bounded by the router-owned 11-second deadline; abort/timeout is terminal across attempts,
+- Classifier work is bounded by the router-owned 15-second deadline; abort/timeout is terminal across attempts,
   endpoints, and escalation, and classification failure cannot replace the retained selection.
 - A telemetry append rejection or 250 ms caller deadline disables active routing for the session and cannot be hidden by
   a late persistence settlement.
@@ -485,8 +503,8 @@ under another model family's prompt profile.
 
 ## Non-goals
 
-- Parallel/multi-agent review panels or advisor arbitration. Generated review attempts are sequential and use at most
-  the two non-builder vendors.
+- Parallel/multi-agent review panels or advisor arbitration. Generated review attempts are sequential and draw from
+  every eligible non-builder reviewer vendor, with at least two required.
 - A general-purpose simulator or "what-if" routing sandbox (explicitly deferred until the classifier and profile
   registry stabilize).
 - Replacing manual override — a user must still be able to force a model/effort directly (e.g. via `/effort`), bypassing

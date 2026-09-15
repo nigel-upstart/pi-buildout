@@ -73,6 +73,7 @@ type ExclusionCode =
   | "scope_unmet"
   | "escalation_without_primary"
   | "profile_missing"
+  | "provider_restricted"
   | "duplicate_model";
 
 export type CandidateExclusion = {
@@ -359,6 +360,9 @@ export function canonicalVendor(provider: string, modelId: string): ModelVendor 
   }
   if (bareId.startsWith("claude-") || bareId.startsWith("anthropic.claude-")) return "anthropic";
   if (bareId.startsWith("gemini-")) return "google";
+  if (bareId.startsWith("kimi-") || bareId.startsWith("moonshot.kimi-") || bareId.startsWith("moonshotai.kimi-")) {
+    return "moonshot";
+  }
   // Bedrock spells MiniMax models `minimax.minimax-m2.5`, so the vendor segment and the model's own
   // brand token are the same word; the bare form `minimax-m2.5` carries only the latter. Both must
   // resolve, because buildRegistrySnapshot drops any endpoint whose vendor is unknown, and a dropped
@@ -395,9 +399,9 @@ type EligibleResolvedEndpoint = {
 };
 
 /**
- * Orders already-eligible, validly priced registry endpoints by weighted effective cost. Specificity
- * and exact endpoint identity provide the deterministic tie-breaks, and flat-rate subscription
- * endpoints remain last because their modeled token price is a capability proxy.
+ * Orders already-eligible, validly priced registry endpoints by weighted effective cost. First-party
+ * tier, specificity, and exact endpoint identity provide deterministic tie-breaks, and flat-rate
+ * subscription endpoints remain last because their modeled token price is a capability proxy.
  *
  * The registry candidates have already been scoped to the operator's `enabledModels` and evaluated
  * before reaching this function. Keeping eligibility ahead of comparison ensures an unsupported,
@@ -418,6 +422,17 @@ function evaluateEndpoint(
   const key = `${model.provider}/${model.modelId}`;
   if (!model.available) {
     exclusions.push({ candidate: key, code: "unavailable", detail: "endpoint auth/availability is not configured" });
+    return undefined;
+  }
+  // The direct Gemini API has a low operator quota and is reserved for review work, where an
+  // independent Google opinion is uniquely useful. Vertex and other scoped provider surfaces do not
+  // share that restriction, so ordinary Gemini routes may still use them.
+  if (model.provider === "google" && archetype !== "code_review") {
+    exclusions.push({
+      candidate: key,
+      code: "provider_restricted",
+      detail: "direct Google endpoints are reserved for code review",
+    });
     return undefined;
   }
   const health = healthVerdict(model.health);
@@ -687,9 +702,9 @@ type CandidateGroup = {
 };
 
 /**
- * Endpoint order within one logical model is weighted effective cost, followed by the comparator's
- * specificity and exact-identity tie-breaks. Endpoint tiers remain metadata and do not select the
- * primary. Group ordering is separate, so every endpoint for this model stays ahead of a different
+ * Endpoint order within one logical model is weighted effective cost, followed by first-party tier,
+ * specificity, and exact identity. Tier breaks only an exact cost tie; it cannot override a cheaper
+ * route. Group ordering is separate, so every endpoint for this model stays ahead of a different
  * logical-model fallback.
  */
 function orderEndpoints(endpoints: readonly RouteChoice[]): RouteChoice[] {
@@ -796,9 +811,15 @@ function orderGroups(
   // Candidates without evidence keep their declared policy order behind every scored candidate.
   const unscored = scored.filter((entry) => entry.evidence === undefined);
   const ordered = [...ranked, ...unscored];
-  // A pinned primary is a deliberate capability-first prior for archetypes whose failure cost is
-  // paid downstream rather than inside the task. It only reorders; it never adds a candidate.
-  const pin = BOOTSTRAP_ROUTE_POLICIES[archetype].pinnedPrimary;
+  // A pinned primary is a deliberate capability-first prior. A corpus-wide default may defer to
+  // the measured language policy; either way the pin only reorders and never adds a candidate.
+  const configuredPin = BOOTSTRAP_ROUTE_POLICIES[archetype].pinnedPrimary;
+  const pin =
+    configuredPin?.deferToLanguageEvidence &&
+    languagePolicy?.confidence !== undefined &&
+    languagePolicy.confidence !== "none"
+      ? undefined
+      : configuredPin;
   const pinIndex = pin
     ? ordered.findIndex(
         (entry) => entry.group.logicalModelId === pin.logicalModelId && entry.group.effort === pin.effort,
@@ -900,8 +921,8 @@ export function selectStandaloneReviewRoute(
 /**
  * Independent reviewers a generated review must obtain before it can report a verdict.
  *
- * Two is a floor on independence, not a description of the vendor set. The rule is "every vendor
- * other than the builder's, and at least two of them must be eligible"; it used to be implemented as
+ * Two is a floor on independence, not a description of the vendor set. The rule is "every eligible
+ * reviewer-ladder vendor other than the builder's, and at least two must be eligible"; it used to be implemented as
  * an equality check against a hardcoded triple, which returned unroutable for any builder outside
  * that triple and would have silently broken tracked review as soon as a fourth vendor was added.
  */

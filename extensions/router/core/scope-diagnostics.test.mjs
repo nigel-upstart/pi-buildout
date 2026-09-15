@@ -51,13 +51,15 @@ describe("scope diagnostics", () => {
     const endpoints = result.logicalModels[0].endpoints;
     assert.deepEqual(
       endpoints.map((endpoint) => endpoint.provider),
-      ["amazon-bedrock", "openai-codex", "openai", "github-copilot"],
+      ["openai-codex", "amazon-bedrock", "openai", "github-copilot"],
     );
     assert.equal(endpoints[0].listCost, 23.75);
-    assert.equal(endpoints[0].appliedWeight, 0.83);
-    assert.equal(endpoints[0].weightBasis, "contract");
+    assert.equal(endpoints[0].appliedWeight, 1);
+    assert.equal(endpoints[0].weightBasis, "preference");
     assert.equal(endpoints[0].cacheWriteClassification, "priced_write");
-    assert.ok(Math.abs(endpoints[0].effectiveCost - 19.7125) < 1e-12);
+    assert.equal(endpoints[0].effectiveCost, endpoints[0].listCost);
+    assert.equal(endpoints[1].appliedWeight, 1.00001);
+    assert.equal(endpoints[1].effectiveCost, 23.7502375);
     assert.equal(endpoints.at(-1).effectiveCost, undefined, "flat-rate endpoints remain last");
   });
 
@@ -83,8 +85,8 @@ describe("scope diagnostics", () => {
       .filter((choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high")
       .map(({ provider, modelId }) => `${provider}/${modelId}`);
     assert.deepEqual(displayed, [
-      "amazon-bedrock/openai.gpt-5.6-sol",
       "openai-codex/gpt-5.6-sol",
+      "amazon-bedrock/openai.gpt-5.6-sol",
       "openai/gpt-5.6-sol",
       "github-copilot/gpt-5.6-sol",
     ]);

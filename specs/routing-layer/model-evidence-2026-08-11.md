@@ -1,5 +1,10 @@
 # Router model and endpoint evidence — review 2026-08-11
 
+> **Historical evidence snapshot.** Its `0.83` Bedrock contract-weight calculations record the policy reviewed on this
+> date and are not current routing behavior. `router-policy-v8` uses a slight `1.00001` Bedrock preference penalty and
+> an equal-effective-cost manufacturer tie-break; see
+> [`decisions.md`](decisions.md#refreshed-evidence-and-endpoint-preferences-2026-09-10-router-policy-v8).
+
 This document replaces the hand-maintained 2026-07-25 Markdown narrative. Its companion
 [`model-evidence-2026-07-25.json`](model-evidence-2026-07-25.json) remains the machine-readable authority for the
 router's bootstrap priors and is unchanged. This review separates two evidence classes that the former document mixed:

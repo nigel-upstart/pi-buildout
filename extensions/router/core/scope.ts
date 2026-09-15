@@ -108,9 +108,9 @@ function normalizeVendorPath(modelId: string): string {
 }
 
 /**
- * Diagnostic endpoint classification retained in persisted leases and scope tests. It records the
- * provider relationship but does not influence endpoint ordering; unknown providers remain labelled
- * as resale metadata.
+ * Endpoint classification retained in persisted leases and scope tests. It records the provider
+ * relationship and breaks equal-effective-cost ties; unknown providers remain labelled as resale
+ * metadata.
  */
 const PROVIDER_TIERS: Readonly<Record<string, EndpointTier>> = {
   anthropic: "manufacturer",

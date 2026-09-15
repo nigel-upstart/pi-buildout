@@ -18,7 +18,7 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
  * first entry admitted on that basis — it carries a bounded prompt profile but no reviewer ladder, no
  * secondary-classifier tier and, until policy names one of its models, no route.
  */
-export const MODEL_VENDORS = ["openai", "anthropic", "google", "minimax"] as const;
+export const MODEL_VENDORS = ["openai", "anthropic", "google", "minimax", "moonshot"] as const;
 export type ModelVendor = (typeof MODEL_VENDORS)[number];
 
 export type PromptProfile = {
@@ -109,6 +109,27 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
       "Inspect the relevant evidence before changing files, then verify the change without repeating the full survey.",
     ],
     outputContract: "Complete the requested change and return a compact verification receipt.",
+    criticalConstraints: SHARED_CONSTRAINTS,
+    includeExamples: false,
+  },
+  {
+    // Bounded read-only work only. Both reachable Kimi versions have single-attempt evidence and no
+    // repeatability or regression data, so policy applies the same consequence confinement as the
+    // MiniMax rung. K2.5 adds image support and leads the retained Ruby slice; K2 Thinking adds a
+    // measured output-speed benefit over Haiku while staying within 3x Luna's blended list rate.
+    id: "moonshot-kimi-bounded-v1",
+    version: 1,
+    vendor: "moonshot",
+    modelIds: ["kimi-k2.5", "kimi-k2-thinking"],
+    archetypes: ["fast_classification", "exact_extraction"],
+    efforts: ["low", "medium", "high"],
+    executionSurface: "pi-coding-agent",
+    guidelines: [
+      "Answer the bounded question or produce the requested structure directly, with no exploratory tool work.",
+      "When a schema is supplied, emit exactly that schema and nothing else.",
+      "Use only supplied evidence; do not imply that unavailable tools or checks were run.",
+    ],
+    outputContract: "Return only the requested classification or structured record.",
     criticalConstraints: SHARED_CONSTRAINTS,
     includeExamples: false,
   },
@@ -241,6 +262,26 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
       "Use supplied context as evidence and do not imply that unavailable tools were run.",
     ],
     outputContract: "Return the requested artifact or findings with explicit supporting checks.",
+    criticalConstraints: SHARED_CONSTRAINTS,
+    includeExamples: true,
+  },
+  {
+    // Gemini 3.8 is deliberately review-only. The direct Gemini API is quota-constrained, and the
+    // refreshed benchmark evidence supports a high-quality independent reviewer without yet
+    // supplying the full reliability fields needed for general cost-to-done routing.
+    id: "google-gemini-3.8-review-v1",
+    version: 1,
+    vendor: "google",
+    modelIds: ["gemini-3.8-flash"],
+    archetypes: ["code_review"],
+    efforts: ["high"],
+    executionSurface: "pi-coding-agent",
+    guidelines: [
+      "Inspect the supplied change and report only actionable correctness, safety, or regression findings.",
+      "Anchor each finding to concrete code or evidence and distinguish blockers from optional hardening.",
+      "Do not claim that unavailable tests, tools, or provider checks were run.",
+    ],
+    outputContract: "Return concise, evidence-anchored review findings and explicitly state when none are found.",
     criticalConstraints: SHARED_CONSTRAINTS,
     includeExamples: true,
   },

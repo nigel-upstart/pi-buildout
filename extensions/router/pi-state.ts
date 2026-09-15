@@ -15,8 +15,8 @@ import type { LeaseState, RouterMode, TaskLease } from "./core/lease.ts";
 import { evidenceAbility } from "./core/evidence.ts";
 import { ENDPOINT_TIERS, POLICY_VERSION, policyAbility } from "./core/policy.ts";
 import type { EndpointTier } from "./core/policy.ts";
-import { EFFORT_LEVELS, findPromptProfile } from "./core/profiles.ts";
-import type { EffortLevel } from "./core/profiles.ts";
+import { EFFORT_LEVELS, findPromptProfile, MODEL_VENDORS } from "./core/profiles.ts";
+import type { EffortLevel, ModelVendor } from "./core/profiles.ts";
 import { ownProperty } from "./core/object-property.ts";
 import { providerWeightFor, resolveProviderWeights, ROUTER_PROVIDER_WEIGHTS_ENV } from "./core/provider-weights.ts";
 import type { ProviderWeightRejection, ResolvedProviderWeight } from "./core/provider-weights.ts";
@@ -39,6 +39,10 @@ function object(value: unknown): ObjectLike | undefined {
 
 function string(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function isModelVendor(value: unknown): value is ModelVendor {
+  return typeof value === "string" && MODEL_VENDORS.some((vendor) => vendor === value);
 }
 
 function stringArray(value: unknown): string[] {
@@ -119,7 +123,7 @@ function isRouteChoice(value: unknown, archetype: Archetype): boolean {
     !choice ||
     typeof choice.provider !== "string" ||
     typeof choice.modelId !== "string" ||
-    (choice.vendor !== "openai" && choice.vendor !== "anthropic" && choice.vendor !== "google") ||
+    !isModelVendor(choice.vendor) ||
     typeof choice.effort !== "string" ||
     !EFFORT_LEVELS.includes(choice.effort as EffortLevel) ||
     typeof choice.profileId !== "string" ||

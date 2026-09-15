@@ -1,4 +1,4 @@
-import { endpointSpecificity, isFlatRateProvider } from "./scope.ts";
+import { endpointSpecificity, endpointTierFor, isFlatRateProvider } from "./scope.ts";
 
 export type CacheWriteClassification = "priced_write" | "no_write_line_item" | "caching_unpriced";
 
@@ -175,13 +175,15 @@ function compareCodePointText(left: string, right: string): number {
   }
 }
 
+const ENDPOINT_TIER_RANK = Object.freeze({ manufacturer: 0, gateway: 1, resale: 2 });
+
 /**
- * Deterministic total order for concrete endpoints: token-billed effective cost, model-ID
- * specificity, then the exact provider/model identity. Flat-rate endpoints have no effective cost
- * and sort after every token-billed endpoint.
+ * Deterministic total order for concrete endpoints: token-billed effective cost, first-party tier,
+ * model-ID specificity, then the exact provider/model identity. Flat-rate endpoints have no
+ * effective cost and sort after every token-billed endpoint.
  *
- * Callers filter eligibility and validate pricing before comparison. Endpoint tiers are diagnostic
- * metadata only and deliberately remain outside this comparator.
+ * Callers filter eligibility and validate pricing before comparison. Tier is only an equal-cost
+ * tie-break: a genuinely cheaper gateway or resale endpoint still precedes a first-party route.
  */
 export function compareEndpointEffectiveCost(
   left: EndpointEffectiveCostComparable,
@@ -196,6 +198,8 @@ export function compareEndpointEffectiveCost(
       finiteNonnegative(right.endpointEffectiveCost ?? 0, "endpoint effective cost");
     if (cost !== 0) return cost;
   }
+  const tier = ENDPOINT_TIER_RANK[endpointTierFor(left.provider)] - ENDPOINT_TIER_RANK[endpointTierFor(right.provider)];
+  if (tier !== 0) return tier;
   const specificity = endpointSpecificity(left.modelId) - endpointSpecificity(right.modelId);
   if (specificity !== 0) return specificity;
   return compareCodePointText(`${left.provider}/${left.modelId}`, `${right.provider}/${right.modelId}`);
