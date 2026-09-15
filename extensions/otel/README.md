@@ -132,3 +132,20 @@ default rather than disabling capture or exporting an unbounded attribute.
 Behavior is otherwise compatible with upstream `0.3.0`: every upstream test passes unmodified, alongside the suites
 added here. Exact counts are deliberately not quoted, since they go stale on every change; run `npm test` for the
 current total.
+
+## Known upstream defects not fixed here
+
+Found in review, inherited from upstream, and unreachable in this repository's configuration. They are recorded so they
+are not mistaken for accepted behavior, and are the natural content of an upstream pull request:
+
+- `stopCmd` signals the PID in its metadata file after checking only that the PID is alive. The metadata is explicitly
+  allowed to outlive the dashboard, so a reused PID could belong to an unrelated process.
+- `startCmd` opens the dashboard log with `openSync` and never closes the parent's descriptor, leaking one per
+  `/otel start` attempt.
+- `isRunning` treats any listener on the OTLP gRPC port as the dashboard, so an unrelated service on that port is
+  reported as a running dashboard.
+- `initSdk` returns early whenever `signals.traces` is disabled, so a metrics-only or logs-only configuration produces no
+  telemetry at all. Our configuration enables all three signals.
+
+The first three are reachable only through the local Aspire launcher, which this repository does not use: its collector
+is remote.

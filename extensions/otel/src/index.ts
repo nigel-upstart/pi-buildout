@@ -162,7 +162,11 @@ export default function (pi: ExtensionAPI): void {
       shellPropagationOn = true;
       registerShellPropagation(pi, ctx.cwd, () => tracker);
     }
-    // Best-effort session id from the session manager.
+    // Best-effort session id from the session manager. Cleared first: a session
+    // transition reuses this process, so a retained id would label the new
+    // session's telemetry with the previous session's identifier whenever no
+    // session file is available.
+    sessionIdRef = undefined;
     try {
       const file = ctx.sessionManager?.getSessionFile?.();
       if (file) sessionIdRef = basename(file, ".jsonl");

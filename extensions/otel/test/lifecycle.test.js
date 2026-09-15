@@ -36,10 +36,12 @@ function fakePi() {
   };
 }
 
+let sessionFile = "/tmp/sessions/sess-lifecycle.jsonl";
+
 const ctx = {
   cwd: () => cwd,
   ui: { notify: () => {} },
-  sessionManager: { getSessionFile: () => "/tmp/sessions/sess-lifecycle.jsonl" },
+  sessionManager: { getSessionFile: () => sessionFile },
 };
 
 async function fire(event, payload) {
@@ -53,7 +55,7 @@ before(async () => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
-      received.push(Buffer.concat(chunks));
+      received.push({ url: req.url, body: Buffer.concat(chunks) });
       res.writeHead(200, { "content-type": "application/x-protobuf" });
       res.end();
     });
@@ -71,7 +73,10 @@ before(async () => {
         endpoint,
         protocol: "http/protobuf",
         captureContent: "metadata_only",
-        signals: { traces: true, metrics: false, logs: false },
+        // metrics and logs are enabled so the error path's duration metric and
+        // its single pi.llm_request.error record are observable on the wire,
+        // not just on the pi-otel:log channel.
+        signals: { traces: true, metrics: true, logs: true },
       },
     }),
   );
@@ -116,7 +121,7 @@ test("a failed LLM request marks its span and is logged exactly once", async () 
 
   await fire("session_shutdown", {});
 
-  const payload = Buffer.concat(received).toString("utf8");
+  const payload = Buffer.concat(received.map((r) => r.body)).toString("utf8");
   assert.ok(received.length > 0, "the collector received no export");
   assert.ok(
     payload.includes("error.type"),
@@ -126,6 +131,40 @@ test("a failed LLM request marks its span and is logged exactly once", async () 
     payload.includes("provider exploded"),
     "the span status message must carry the provider error",
   );
+
+  const signal = (path) =>
+    Buffer.concat(received.filter((r) => r.url === path).map((r) => r.body)).toString("utf8");
+
+  // The duration metric must carry the error label, otherwise error rates read
+  // zero in metric-based dashboards.
+  const metrics = signal("/v1/metrics");
+  assert.match(metrics, /gen_ai\.client\.operation\.duration/, "duration metric missing");
+  assert.match(metrics, /error\.type/, "the duration metric must be labelled with the error");
+
+  // Exactly one error record: endLlmRequest emits it, and index.ts must not add
+  // a second through the pi-otel:log channel.
+  const errorRecords = signal("/v1/logs").split("pi.llm_request.error").length - 1;
+  assert.equal(errorRecords, 1, "the error must be recorded exactly once");
+});
+
+test("an ephemeral session does not inherit the previous session id", async () => {
+  // A session transition reuses this process. With no session file, the id must
+  // fall back rather than label the new session as the old one.
+  sessionFile = undefined;
+  const before = logs.length;
+  await fire("session_start", {});
+  const started = logs
+    .slice(before)
+    .find((l) => l.eventName === "pi.session.start");
+  assert.ok(started, "the ephemeral session must still record a start");
+  assert.equal(
+    started.attributes["pi.session.id"],
+    undefined,
+    "an ephemeral session must not carry the previous session id",
+  );
+  assert.match(started.body, /\(ephemeral\)/);
+  await fire("session_shutdown", {});
+  sessionFile = "/tmp/sessions/sess-lifecycle.jsonl";
 });
 
 test("a session that follows a shutdown records its own start", async () => {
