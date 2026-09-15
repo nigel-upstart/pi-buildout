@@ -1,4 +1,7 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: content attributes are clamped with the
+ * configured `maxAttributeBytes` rather than a hard-coded 60 KiB constant.
+ *
  * Span lifecycle tracker.
  *
  * Owns one `pi.interaction` root span per user prompt. Children:
@@ -54,6 +57,7 @@ import {
   ATTR_TOOL_NAME,
   type ContentCapture,
   clampAttr,
+  DEFAULT_MAX_ATTRIBUTE_BYTES,
   EVENT_GEN_AI_ASSISTANT_MESSAGE,
   EVENT_GEN_AI_CHOICE,
   EVENT_GEN_AI_TOOL_MESSAGE,
@@ -80,6 +84,11 @@ import {
 export interface SpanTrackerOpts {
   tracer: Tracer;
   captureContent: ContentCapture;
+  /**
+   * Per-attribute UTF-8 byte cap. Defaults to the upstream 60 KiB value when a
+   * caller (including the upstream test suite) omits it.
+   */
+  maxAttributeBytes?: number;
   sessionId: () => string | undefined;
   cwd: string;
   /** Defaults to "legacy" — existing dashboards key off the `pi.*` names. */
@@ -198,6 +207,14 @@ export class SpanTracker {
     this.opts = opts;
   }
 
+  /** Clamp one captured value at the configured cap. */
+  private clamp(value: unknown): string {
+    return clampAttr(
+      value,
+      this.opts.maxAttributeBytes ?? DEFAULT_MAX_ATTRIBUTE_BYTES,
+    );
+  }
+
   private get genai(): boolean {
     return this.opts.spanNaming === "genai";
   }
@@ -241,7 +258,7 @@ export class SpanTracker {
     if (typeof prompt === "string") {
       attrs[ATTR_PI_USER_PROMPT_LENGTH] = prompt.length;
       if (this.opts.captureContent === "full") {
-        attrs[ATTR_PI_USER_PROMPT] = clampAttr(prompt);
+        attrs[ATTR_PI_USER_PROMPT] = this.clamp(prompt);
       }
     }
     if (this.genai) attrs[ATTR_AGENT_NAME] = GEN_AI_AGENT_NAME_PI;
@@ -393,7 +410,7 @@ export class SpanTracker {
         const attrs = {
           [ATTR_SYSTEM]: GEN_AI_SYSTEM_PI,
           role: "user",
-          content: clampAttr(m.content),
+          content: this.clamp(m.content),
         };
         this.llm.span.addEvent(EVENT_GEN_AI_USER_MESSAGE, attrs);
         this.currentInputMessages.push({
@@ -406,7 +423,7 @@ export class SpanTracker {
           role: "tool",
           id: m.toolCallId,
           ...(m.toolName ? { name: m.toolName } : {}),
-          content: clampAttr(m.content),
+          content: this.clamp(m.content),
         };
         this.llm.span.addEvent(EVENT_GEN_AI_TOOL_MESSAGE, attrs);
         this.currentInputMessages.push({
@@ -486,8 +503,8 @@ export class SpanTracker {
       [ATTR_SYSTEM]: GEN_AI_SYSTEM_PI,
       role: "assistant",
     };
-    if (text) assistantAttrs.content = clampAttr(text);
-    if (toolCalls.length) assistantAttrs.tool_calls = clampAttr(toolCalls);
+    if (text) assistantAttrs.content = this.clamp(text);
+    if (toolCalls.length) assistantAttrs.tool_calls = this.clamp(toolCalls);
     this.llm.span.addEvent(EVENT_GEN_AI_ASSISTANT_MESSAGE, assistantAttrs);
 
     const finish =
@@ -503,7 +520,7 @@ export class SpanTracker {
       [ATTR_SYSTEM]: GEN_AI_SYSTEM_PI,
       index: 0,
       finish_reason: finishReasonStr,
-      message: clampAttr(choiceMessage),
+      message: this.clamp(choiceMessage),
     });
 
     // Aspire 9.x AI panel reads these JSON-stringified attributes on the
@@ -528,12 +545,12 @@ export class SpanTracker {
     if (this.currentInputMessages.length > 0) {
       this.llm.span.setAttribute(
         ATTR_GEN_AI_INPUT_MESSAGES,
-        clampAttr(this.currentInputMessages),
+        this.clamp(this.currentInputMessages),
       );
     }
     this.llm.span.setAttribute(
       ATTR_GEN_AI_OUTPUT_MESSAGES,
-      clampAttr(outputMessages),
+      this.clamp(outputMessages),
     );
   }
 
@@ -559,7 +576,7 @@ export class SpanTracker {
       } else if (Array.isArray(v) && v.every((x) => typeof x === "string")) {
         this.llm.span.setAttribute(k, v);
       } else {
-        this.llm.span.setAttribute(k, clampAttr(v));
+        this.llm.span.setAttribute(k, this.clamp(v));
       }
     }
   }
@@ -645,7 +662,7 @@ export class SpanTracker {
     attrs[ATTR_TOOL_NAME] = toolName;
     attrs[ATTR_TOOL_CALL_ID] = toolCallId;
     if (this.opts.captureContent === "full" && input !== undefined) {
-      const clamped = clampAttr(input);
+      const clamped = this.clamp(input);
       attrs[ATTR_PI_TOOL_INPUT] = clamped;
       attrs[ATTR_TOOL_CALL_ARGUMENTS] = clamped;
     }
@@ -677,7 +694,7 @@ export class SpanTracker {
         [ATTR_TOOL_CALL_ID]: toolCallId,
       };
       if (this.opts.captureContent === "full" && args.result !== undefined) {
-        attrs[ATTR_TOOL_CALL_RESULT] = clampAttr(args.result);
+        attrs[ATTR_TOOL_CALL_RESULT] = this.clamp(args.result);
       }
       emitLifecycleLog(
         "pi.tool.error",
@@ -689,7 +706,7 @@ export class SpanTracker {
       slot.span.setAttribute(ATTR_PI_TOOL_IS_ERROR, false);
     }
     if (this.opts.captureContent === "full" && args.result !== undefined) {
-      const clamped = clampAttr(args.result);
+      const clamped = this.clamp(args.result);
       slot.span.setAttribute(ATTR_PI_TOOL_OUTPUT, clamped);
       slot.span.setAttribute(ATTR_TOOL_CALL_RESULT, clamped);
     }

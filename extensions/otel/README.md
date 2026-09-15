@@ -33,8 +33,38 @@ npm test          # builds, then runs the upstream node:test suite
 
 CI runs the same commands in the `otel-extension` job of `.github/workflows/check.yml`.
 
+## Configuration
+
+Upstream settings are unchanged. This fork adds one:
+
+| Setting | Env var | Default | Range |
+| --- | --- | --- | --- |
+| `otel.maxAttributeBytes` | `PI_OTEL_MAX_ATTRIBUTE_BYTES` | `61440` (60 KiB) | `1` – `67108864` (64 MiB) |
+
+```jsonc
+{
+  "otel": {
+    "captureContent": "full",
+    "maxAttributeBytes": 1048576
+  }
+}
+```
+
+The cap applies to every content attribute this extension builds — `pi.user_prompt`, `gen_ai.input.messages`,
+`gen_ai.output.messages`, `gen_ai.tool.call.arguments` / `pi.tool.input`, and `gen_ai.tool.call.result` /
+`pi.tool.output`. The SDK's `spanLimits`, and therefore `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`, never see these values, so
+the limit has to be applied where they are produced.
+
+The default preserves upstream behavior exactly: without this setting, capture is still clipped at 60 KiB. Raising it is
+what allows full-fidelity capture to actually leave the machine. A value outside the supported range falls back to the
+default rather than disabling capture or exporting an unbounded attribute.
+
 ## Owned changes so far
 
+- `otel.maxAttributeBytes` replaces upstream's module-private `MAX_ATTR_BYTES` constant, which truncated all captured
+  content at 60 KiB with no way to configure it.
+- Truncation is now exact and character-safe: it fills the byte budget instead of discarding up to 64 characters per
+  step, and it backs off UTF-8 continuation bytes so a multi-byte character is never split.
 - Dependencies that the source imports but upstream only received transitively through `@opentelemetry/sdk-node`
   (`api-logs`, `sdk-logs`, `sdk-metrics`, and the `exporter-logs-*` / `exporter-metrics-*` packages) are now declared
   directly, so the tree installs and typechecks on its own.
