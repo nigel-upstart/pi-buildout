@@ -121,19 +121,24 @@ test("a failed LLM request marks its span and is logged exactly once", async () 
 
   await fire("session_shutdown", {});
 
-  const payload = Buffer.concat(received.map((r) => r.body)).toString("utf8");
   assert.ok(received.length > 0, "the collector received no export");
-  assert.ok(
-    payload.includes("error.type"),
-    "a failed request must carry error.type on its span",
-  );
-  assert.ok(
-    payload.includes("provider exploded"),
-    "the span status message must carry the provider error",
-  );
-
   const signal = (path) =>
     Buffer.concat(received.filter((r) => r.url === path).map((r) => r.body)).toString("utf8");
+
+  // Asserted against the trace payload alone. error.type and the error message
+  // also appear on the metric and the log record, so searching every signal
+  // together would pass even if the span itself were left unmarked.
+  const traces = signal("/v1/traces");
+  assert.match(
+    traces,
+    /error\.type/,
+    "a failed request must carry error.type on its span",
+  );
+  assert.match(
+    traces,
+    /provider exploded/,
+    "the span status message must carry the provider error",
+  );
 
   // The duration metric must carry the error label, otherwise error rates read
   // zero in metric-based dashboards.
