@@ -52,8 +52,10 @@ Upstream settings are unchanged. This fork adds one:
 
 The cap applies to every content attribute this extension builds — `pi.user_prompt`, `gen_ai.input.messages`,
 `gen_ai.output.messages`, `gen_ai.tool.call.arguments` / `pi.tool.input`, and `gen_ai.tool.call.result` /
-`pi.tool.output`. The SDK's `spanLimits`, and therefore `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`, never see these values, so
-the limit has to be applied where they are produced.
+`pi.tool.output`. It is applied where those values are produced, which is the only place a cap can be *raised*:
+`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` configures the SDK's own `spanLimits`, and that limit can only truncate a value
+further (it defaults to unlimited and is character-based, not byte-based). Setting it can therefore never lift this
+extension's clamp — hence a dedicated setting.
 
 The default preserves upstream behavior exactly: without this setting, capture is still clipped at 60 KiB. Raising it is
 what allows full-fidelity capture to actually leave the machine. A value outside the supported range falls back to the

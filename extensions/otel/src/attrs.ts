@@ -144,9 +144,9 @@ function truncateUtf8(value: string, maxBytes: number): string {
  * Serialize a value and cap it at `maxBytes` UTF-8 bytes, marking any
  * truncation. The returned string is never larger than `maxBytes`.
  *
- * The cap is applied here because it covers attributes this extension builds
- * itself; the SDK's `spanLimits` (and therefore
- * `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`) never see them.
+ * This runs before the SDK's own `spanLimits.attributeValueLengthLimit`
+ * (`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`), which defaults to unlimited and can
+ * only truncate further, never raise this cap.
  */
 export function clampAttr(
   value: unknown,
