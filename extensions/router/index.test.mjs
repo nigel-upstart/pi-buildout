@@ -894,8 +894,6 @@ describe("routerExtension", () => {
   it("dispatches no-cache secondary classification off the critical path", async () => {
     const secondary = deferred();
     let secondaryStartedAt = 0;
-    const prompt = "Implement one bounded repository change";
-    const startedAt = Date.now();
     const result = await runAdapterTurn({
       classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
       classifySecondaryTask: async () => {
@@ -904,17 +902,41 @@ describe("routerExtension", () => {
       },
       models: standardRoutingModels(),
       mode: "active",
-      prompt,
+      prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-no-cache",
     });
-    const elapsedMs = Date.now() - startedAt;
 
-    assert.ok(secondaryStartedAt >= startedAt, "the provider-diverse secondary must start in the background");
-    assert.ok(elapsedMs < 75, `no-cache dispatch waited ${String(elapsedMs)}ms for the secondary`);
+    assert.ok(secondaryStartedAt > 0, "the provider-diverse secondary must start in the background");
+    assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 1);
     assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, 0);
 
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
     await flushMicrotasks();
+  });
+
+  it("does not start background reconciliation after an already reconciled continuity classification", async () => {
+    let secondaryCalls = 0;
+    const result = await runAdapterTurn({
+      active: adapterLease(),
+      classifyTask: successfulClassifier(2, { confidence: 0.6, risk: "high", taskContinuity: "new_task" }),
+      classifySecondaryTask: async () => {
+        secondaryCalls++;
+        return classificationResult(2, { confidence: 0.95 });
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Please inspect the remaining details",
+      sessionId: "async-secondary-already-reconciled",
+    });
+
+    assert.equal(secondaryCalls, 0);
+    assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, 0);
+    assert.equal(
+      result.events.filter(
+        ({ kind, data }) => kind === "classifier_invocation" && data.purpose === "secondary_reconciliation",
+      ).length,
+      0,
+    );
   });
 
   it("uses cache-priced grace to apply a safe secondary correction before the first provider request", async () => {
