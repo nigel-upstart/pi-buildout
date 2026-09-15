@@ -44,6 +44,46 @@ test("an unparseable endpoint is reported unreachable without probing", async ()
   }
 });
 
+test("an explicit non-HTTP scheme is rejected rather than probed at a bogus host", async () => {
+  // Prepending http:// to these yields "http://ftp://collector", which parses as
+  // the host "ftp" and would probe an unrelated address.
+  for (const endpoint of [
+    "ftp://collector",
+    "unix:///var/run/otlp.sock",
+    "grpc://collector:4317",
+  ]) {
+    let probed = false;
+    const reachable = await endpointReachable(endpoint, () => {
+      probed = true;
+      return Promise.resolve(true);
+    });
+    assert.equal(reachable, false, `${endpoint} must be unreachable`);
+    assert.equal(probed, false, `${endpoint} must not be probed`);
+  }
+});
+
+test("a scheme-less host:port endpoint is still accepted", async () => {
+  const probes = [];
+  await endpointReachable("collector.example.internal:4317", (host, port) => {
+    probes.push({ host, port });
+    return Promise.resolve(true);
+  });
+  assert.deepEqual(probes, [
+    { host: "collector.example.internal", port: 4317 },
+  ]);
+});
+
+test("an IPv6 literal is probed as an address, not a bracketed hostname", async () => {
+  const probes = [];
+  await endpointReachable("http://[::1]:4317", (host, port) => {
+    probes.push({ host, port });
+    return Promise.resolve(true);
+  });
+  // net.createConnection resolves "[::1]" as a hostname and fails; the address
+  // has to be unbracketed.
+  assert.deepEqual(probes, [{ host: "::1", port: 4317 }]);
+});
+
 test("an unreachable probe is reported as unreachable", async () => {
   assert.equal(
     await endpointReachable("http://collector.example.internal:4317", () =>

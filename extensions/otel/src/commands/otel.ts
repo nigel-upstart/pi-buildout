@@ -292,9 +292,15 @@ async function startCmd(
 
   const up = await waitForPort(OTLP_GRPC_PORT, 5000);
   if (!up) {
+    // The metadata is deliberately retained: it holds the only PID and driver
+    // record, and stopCmd can terminate an `aspire` process solely through it —
+    // its no-metadata fallback tries container runtimes only. isRunning() never
+    // reports a dashboard from metadata alone (it also requires the port), so
+    // keeping it cannot manufacture a running dashboard.
     notify(
       [
         `Aspire dashboard (driver=${driver}) did not become ready on port ${OTLP_GRPC_PORT} within 5s.`,
+        "It may still be starting. Run /otel stop to shut it down, or /otel status to re-check.",
         "--- log tail ---",
         tailLog(),
       ].join("\n"),
@@ -412,14 +418,25 @@ function parseEndpoint(
   // Accept "host:port", "http(s)://host:port", or "http(s)://host:port/path".
   let raw = endpoint.trim();
   if (!raw) return null;
-  if (!/^https?:\/\//i.test(raw)) raw = `http://${raw}`;
+  if (!/^https?:\/\//i.test(raw)) {
+    // Only a scheme-less input gets http:// prepended. Prepending it to an
+    // explicit non-HTTP scheme yields "http://ftp://host", which parses as the
+    // host "ftp" and would probe an unrelated address.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return null;
+    raw = `http://${raw}`;
+  }
   let u: URL;
   try {
     u = new URL(raw);
   } catch {
     return null;
   }
-  const host = u.hostname;
+  // URL.hostname keeps the brackets around an IPv6 literal, and net treats a
+  // bracketed value as a hostname to resolve rather than an address.
+  const host =
+    u.hostname.startsWith("[") && u.hostname.endsWith("]")
+      ? u.hostname.slice(1, -1)
+      : u.hostname;
   const port = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
   if (!host || !Number.isFinite(port)) return null;
   return { host, port };
