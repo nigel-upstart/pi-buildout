@@ -923,7 +923,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   async function drainSecondaryReconciliation(ctx: ExtensionContext, boundary: ReconciliationBoundary): Promise<void> {
-    if (boundary.kind !== "before_first_request" && activeToolExecutions > 0) return;
+    if (boundary.kind === "turn_end" && activeToolExecutions > 0) return;
     const queued = queuedSecondaryReconciliation;
     if (!queued) return;
     const staleReason = secondaryStaleReason(queued.task);
