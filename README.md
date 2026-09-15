@@ -32,9 +32,11 @@ containing pi's `package.json`:
 PI_PACKAGE_DIR=/opt/pi/lib/node_modules/@earendil-works/pi-coding-agent ./scripts/install-extensions.sh
 ```
 
-The installer verifies the installed pi package against the versioned `/skills` patch baseline, stages and verifies the
-patch, then replaces its runtime files. It does not modify pi settings. Use `--skip-skill-loading-patch` to install only
-the extensions.
+The installer verifies the installed pi package against the versioned `/skills` patch baseline, derives the complete set
+of runtime files from that patch's checksum manifest, stages and verifies the patch, then replaces those files. For
+bundled pi releases, the versioned patch delegates the published entrypoints to the patched unbundled runtime. The
+installer can also migrate recognized earlier patch states and rejects unknown or mixed states. It does not modify pi
+settings. Use `--skip-skill-loading-patch` to install only the extensions.
 
 ## Development and quality checks
 
