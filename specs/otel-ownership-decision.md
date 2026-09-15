@@ -36,12 +36,12 @@ reason.
 
 ## What the fork changes
 
-| Defect                 | Resolution                                                                                                 | Evidence                                                                                                               |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Hard-coded 60 KiB cap  | `otel.maxAttributeBytes` / `PI_OTEL_MAX_ATTRIBUTE_BYTES`, 1 byte to 64 MiB, still defaulting to 60 KiB     | 200 KB tool result exported intact through the real SDK to an in-process OTLP receiver; still truncated at the default |
-| 23 dependency findings | Whole train migrated to OTel 2.x / 0.2xx                                                                   | `npm audit --omit=dev` reports 0 findings; CI fails on high or critical                                                |
-| Semconv drift          | Registry spellings for `cache_read`, `cache_creation`, `reasoning`, emitted alongside the legacy spellings | Constants asserted equal to the registry package's own exports                                                         |
-| No CI                  | `otel-extension` job runs typecheck, the full test suite, and the audit gate                               | `.github/workflows/check.yml`                                                                                          |
+| Defect                 | Resolution                                                                                                       | Evidence                                                                                                               |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Hard-coded 60 KiB cap  | `otel.maxAttributeBytes` / `PI_OTEL_MAX_ATTRIBUTE_BYTES`, 1 byte to 64 MiB, still defaulting to 60 KiB           | 200 KB tool result exported intact through the real SDK to an in-process OTLP receiver; still truncated at the default |
+| 23 dependency findings | Whole train migrated to OTel 2.x / 0.2xx                                                                         | `npm audit --omit=dev` reports 0 findings; CI fails on high or critical                                                |
+| Semconv drift          | Registry spellings for `cache_read`, `cache_creation`, `reasoning`; pre-1.44 spellings dropped, not dual-written | Constants asserted equal to the registry package's own exports                                                         |
+| No CI                  | `otel-extension` job runs typecheck, the full test suite, and the audit gate                                     | `.github/workflows/check.yml`                                                                                          |
 
 Two deviations are intentional and documented in `extensions/otel/README.md`: `gen_ai.usage.cache_write_input_tokens`
 keeps its spelling because the registry has no cache-write attribute, and `gen_ai.system` is retained because the
@@ -69,8 +69,10 @@ Not yet performed. When the fork is adopted:
    `~/.pi/agent/settings.json`, and confirm no "another OpenTelemetry SDK" warning appears.
 2. Confirm spans, metrics, and logs arrive at the staging collector, and that a tool result above 60 KiB arrives intact
    with `otel.maxAttributeBytes` raised.
-3. Confirm dashboards still resolve: span names and `pi.*` attributes are unchanged, and the renamed token keys are
-   dual-written.
+3. Confirm dashboards still resolve: span names and `pi.*` attributes are unchanged. The pre-1.44 token-key spellings
+   are **not** emitted, so anything querying `gen_ai.usage.cache_read_input_tokens`,
+   `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.reasoning_tokens`, or
+   `gen_ai.usage.cache_write_input_tokens` must be repointed at the registry names before adoption.
 4. Update `upstart-dotfiles` in lockstep — `pi/.pi/agent/settings.json.j2` (drop the `packages` entry, add
    `maxAttributeBytes`), `install.sh` (pass `--with-otel`), and its README.
 
