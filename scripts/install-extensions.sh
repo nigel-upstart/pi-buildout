@@ -266,7 +266,10 @@ for extension in "${EXTENSIONS[@]}"; do
     relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
     mkdir -p "$EXTENSION_STAGE_DIR/$(dirname "$relative_file")"
     cp "$source_file" "$EXTENSION_STAGE_DIR/$relative_file"
-  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -name dist -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' -o -name 'package-lock.json' -o -name 'LICENSE' -o -name 'LICENSE.*' -o -name 'NOTICE' -o -name 'NOTICE.*' \) -print0)
+    # `test` directories are pruned wholesale rather than relying on the `*.test.*`
+    # name filter: test material that is not named that way (fixtures, helpers)
+    # would otherwise be published into the installed extension.
+  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -name dist -prune -o -name test -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' -o -name 'package-lock.json' -o -name 'LICENSE' -o -name 'LICENSE.*' -o -name 'NOTICE' -o -name 'NOTICE.*' \) -print0)
 
   # Runtime dependencies are installed before the atomic swap, so a failed or offline install leaves
   # the previously working extension tree in place instead of publishing one that cannot load.
