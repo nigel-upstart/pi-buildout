@@ -276,19 +276,21 @@ export default function (pi: ExtensionAPI): void {
     applyUsageAttrs(attrs, msg.usage);
     tracker?.setLlmAttrs(attrs);
     tracker?.noteAssistantMessage(msg);
-    tracker?.endLlmRequest();
     if (finish === "error") {
-      logError(
-        "pi.llm_request.error",
-        msg.errorMessage ?? `LLM request failed (${finish})`,
-        {
-          ...(typeof msg.model === "string"
-            ? { [ATTR_RESPONSE_MODEL]: msg.model }
-            : {}),
-          [ATTR_FINISH_REASONS]: finish,
-        },
-      );
+      // Ending without the error leaves the span status unset and omits
+      // error.type and the error-labelled duration metric, so a failed request
+      // is indistinguishable from a successful one on the span and in metrics.
+      // endLlmRequest also emits the pi.llm_request.error record itself (with
+      // request/response model and stacktrace), so this path must not emit a
+      // second one.
+      const message =
+        typeof msg.errorMessage === "string" && msg.errorMessage
+          ? msg.errorMessage
+          : `LLM request failed (${finish})`;
+      tracker?.endLlmRequest(new Error(message));
+      return;
     }
+    tracker?.endLlmRequest();
   });
 
   pi.on("tool_execution_start", async (event, _ctx) => {
@@ -328,6 +330,11 @@ export default function (pi: ExtensionAPI): void {
     await shutdownSdk();
     pi.events.emit("pi-otel:status", { state: "shutdown" });
     tracker = null;
+    // A session transition (/clear, /reload, /resume) shuts this session down and
+    // starts another in the same process. Without resetting, the next session
+    // wires successfully but never records pi.session.start, while still
+    // recording pi.session.end — leaving unpaired session records.
+    sessionStartLogged = false;
   });
 
   // Anchor exported for the launcher extension. The launcher can call
