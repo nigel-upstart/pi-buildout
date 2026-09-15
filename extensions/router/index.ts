@@ -4,7 +4,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ClassificationResult } from "./classifier.ts";
+import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
+import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
 import { isCodeBuilder } from "./core/features.ts";
 import { resolveFallback } from "./core/fallback.ts";
@@ -39,6 +40,14 @@ import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import { providerWeightFor } from "./core/provider-weights.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import {
+  DEFAULT_SECONDARY_GRACE_POLICY,
+  chooseSecondaryGrace,
+  decideSecondaryCorrection,
+  estimateCacheSwitchPenaltyUsd,
+  reconciliationDelta,
+} from "./core/reconciliation.ts";
+import type { SecondaryGraceDecision, SecondaryGracePolicy } from "./core/reconciliation.ts";
+import {
   bedrockLongContextPricingUnavailable,
   deriveRoutingContext,
   isStandaloneReviewRequest,
@@ -53,7 +62,7 @@ import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
 import type { RepositoryMetadata, SessionSynopsis } from "./core/synopsis.ts";
-import { classifyTaskWithPi } from "./pi-classifier.ts";
+import { classifyTaskPrimaryWithPi, classifyTaskSecondaryWithPi, classifyTaskWithPi } from "./pi-classifier.ts";
 import {
   buildRegistrySnapshot,
   EMPTY_SCOPE,
@@ -87,7 +96,12 @@ import {
   sanitizeClassifierFeatures,
   withRouterSpan,
 } from "./telemetry.ts";
-import type { ClassifierInvocationPurpose, ClassifierInvocationSummary, RouterTelemetryEvent } from "./telemetry.ts";
+import type {
+  ClassifierInvocationPurpose,
+  ClassifierInvocationRun,
+  ClassifierInvocationSummary,
+  RouterTelemetryEvent,
+} from "./telemetry.ts";
 
 const STATE_ENTRY = "model-router-state";
 const CONTEXT_MESSAGE = "model-router-context";
@@ -118,6 +132,52 @@ type AttemptMetrics = {
 };
 
 type AttemptDisposition = "unknown" | "pending" | "success" | "aborted" | "incomplete" | "failed";
+
+const SECONDARY_RECONCILIATION_TIMEOUT_MS = DEFAULT_SECONDARY_GRACE_POLICY.secondaryDeadlineMs;
+
+type SecondaryBinding = {
+  taskId: string;
+  inputFingerprint: string;
+  registrySnapshotId: string;
+  provisionalLeaseRevision: string;
+};
+
+type SecondaryArrival = "before_agent_run" | "during_provider_turn" | "during_tool_execution" | "between_turns";
+
+type SecondaryReconciliationTask = {
+  binding: SecondaryBinding;
+  controller: AbortController;
+  promise: Promise<ClassifierInvocationRun<ClassificationResult>>;
+  primary: PrimaryClassificationResult;
+  registry: readonly RegistryModelSnapshot[];
+  synopsis: SessionSynopsis;
+  prompt: string;
+  hasImages: boolean;
+  languageBucket: string;
+  languageBuckets: readonly string[];
+  contextBucket: string;
+  explorationKey: string;
+  cache: { cachedTokens: number; expectedReuseRatio: number };
+  grace: SecondaryGraceDecision;
+  graceUsedMs: number;
+  primaryCompletedAtMs: number;
+  secondaryStartedAtMs: number;
+  agentStartReleasedAtMs?: number;
+  pendingSafetyGate: boolean;
+  settled: boolean;
+};
+
+type QueuedSecondaryReconciliation = {
+  task: SecondaryReconciliationTask;
+  run: ClassifierInvocationRun<ClassificationResult>;
+  arrivedAtMs: number;
+  arrival: SecondaryArrival;
+};
+
+type ReconciliationBoundary =
+  | { kind: "before_first_request"; promptRefreshAllowed: true; continuing: true }
+  | { kind: "turn_end"; promptRefreshAllowed: false; continuing: boolean }
+  | { kind: "agent_settled"; promptRefreshAllowed: false; continuing: false };
 
 export function automaticRoutingBlockReason(
   classification: Pick<ClassificationResult, "failedClosed">,
@@ -315,6 +375,9 @@ type RouterExtensionOptions = {
   telemetry?: Pick<JsonlTelemetryStore, "append" | "read">;
   /** Test seam for deterministic adapter failure and telemetry-contract regressions. */
   classifyTask?: typeof classifyTaskWithPi;
+  classifyPrimaryTask?: typeof classifyTaskPrimaryWithPi;
+  classifySecondaryTask?: typeof classifyTaskSecondaryWithPi;
+  secondaryGracePolicy?: SecondaryGracePolicy;
 };
 
 export default function routerExtension(pi: ExtensionAPI, options: RouterExtensionOptions = {}): void {
@@ -329,7 +392,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     new JsonlTelemetryStore(
       process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
     );
+  const legacySynchronousClassifier =
+    options.classifyTask !== undefined &&
+    options.classifyPrimaryTask === undefined &&
+    options.classifySecondaryTask === undefined;
   const classifyTask = options.classifyTask ?? classifyTaskWithPi;
+  const classifyPrimaryTask = options.classifyPrimaryTask ?? options.classifyTask ?? classifyTaskPrimaryWithPi;
+  const classifySecondaryTask = legacySynchronousClassifier
+    ? undefined
+    : (options.classifySecondaryTask ?? classifyTaskSecondaryWithPi);
+  const secondaryGracePolicy = options.secondaryGracePolicy ?? DEFAULT_SECONDARY_GRACE_POLICY;
   let state: LeaseState = { mode: provisionalMode(), manualOverride: false };
   // The replacement session has a new branch, so carry only the enablement mode
   // across /clear. The task lease must still be discarded at the new-session
@@ -359,8 +431,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let reviewParentAttemptMetrics: AttemptMetrics | undefined;
   const accumulatedTaskCosts = new Map<string, number>();
   const taskStartedAt = new Map<string, number>();
+  const secondaryTasks = new Set<SecondaryReconciliationTask>();
+  let queuedSecondaryReconciliation: QueuedSecondaryReconciliation | undefined;
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
+  let agentRunActive = false;
+  let insideProviderTurn = false;
+  let activeToolExecutions = 0;
 
   function syncSafetyLifecycleTools(lifecycle: LeaseLifecycle | undefined): void {
     const current = pi.getActiveTools();
@@ -502,6 +579,485 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
   }
 
+  function leaseRevision(lease: TaskLease): string {
+    return safetyFingerprint({
+      taskId: lease.taskId,
+      updatedAt: lease.updatedAt,
+      attemptIndex: lease.attemptIndex,
+      selected: lease.selected,
+      lifecycle: lease.lifecycle,
+      features: lease.features,
+    });
+  }
+
+  function linkAbortSignals(signals: readonly AbortSignal[]): AbortSignal {
+    const controller = new AbortController();
+    const abort = () => {
+      controller.abort();
+    };
+    for (const signal of signals) {
+      if (signal.aborted) {
+        controller.abort();
+        break;
+      }
+      signal.addEventListener("abort", abort, { once: true });
+    }
+    return controller.signal;
+  }
+
+  function secondaryArrival(): SecondaryArrival {
+    if (!agentRunActive) return "before_agent_run";
+    if (insideProviderTurn) return "during_provider_turn";
+    if (activeToolExecutions > 0) return "during_tool_execution";
+    return "between_turns";
+  }
+
+  function safeWorkCounters(): Record<string, number> {
+    return {
+      turns: Math.max(0, attemptTurns),
+      toolCalls: Math.max(0, attemptToolCalls),
+      activeToolExecutions: Math.max(0, activeToolExecutions),
+    };
+  }
+
+  function secondaryStaleReason(task: SecondaryReconciliationTask): string | undefined {
+    const active = state.active;
+    if (!active) return "no_active_lease";
+    if (active.taskId !== task.binding.taskId) return "superseded_task";
+    if (active.lastPromptFingerprint !== task.binding.inputFingerprint) return "input_fingerprint_mismatch";
+    if (active.modelSnapshotId !== task.binding.registrySnapshotId) return "registry_snapshot_mismatch";
+    if (state.manualOverride || active.manualOverride) return "manual_override";
+    if (leaseRevision(active) !== task.binding.provisionalLeaseRevision) return "lease_revision_changed";
+    return undefined;
+  }
+
+  async function recordSecondaryReconciliation(
+    ctx: ExtensionContext,
+    queued: QueuedSecondaryReconciliation,
+    data: Record<string, unknown>,
+    extra: Partial<
+      Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
+    > = {},
+  ): Promise<void> {
+    const active = state.active?.taskId === queued.task.binding.taskId ? state.active : undefined;
+    await record(
+      ctx,
+      "secondary_reconciliation",
+      {
+        taskId: queued.task.binding.taskId,
+        inputFingerprint: queued.task.binding.inputFingerprint,
+        registrySnapshotId: queued.task.binding.registrySnapshotId,
+        provisionalLeaseRevision: queued.task.binding.provisionalLeaseRevision,
+        primaryToStartLatencyMs: Math.max(0, queued.task.secondaryStartedAtMs - queued.task.primaryCompletedAtMs),
+        graceChosenMs: queued.task.grace.graceMs,
+        graceUsedMs: queued.task.graceUsedMs,
+        expectedReusableTokens: queued.task.grace.expectedReusableTokens,
+        plausibleCacheMissPenaltyUsd: queued.task.grace.plausibleCacheMissPenaltyUsd,
+        secondaryArrival: queued.arrival,
+        secondaryArrivalLatencyMs: Math.max(0, queued.arrivedAtMs - queued.task.primaryCompletedAtMs),
+        workCompletedBeforeReconciliation: safeWorkCounters(),
+        ...data,
+      },
+      {
+        taskId: queued.task.binding.taskId,
+        ...(active
+          ? {
+              routeKey: active.archetype,
+              archetype: active.archetype,
+              provider: active.selected.provider,
+              modelId: active.selected.modelId,
+              effort: active.selected.effort,
+              promptProfileId: active.promptProfileId,
+              policyVersion: active.policyVersion,
+              modelSnapshotId: active.modelSnapshotId,
+            }
+          : {}),
+        ...extra,
+      },
+    );
+  }
+
+  async function rejectQueuedSecondary(
+    ctx: ExtensionContext,
+    queued: QueuedSecondaryReconciliation,
+    reason: string,
+    extraData: Record<string, unknown> = {},
+  ): Promise<void> {
+    await recordSecondaryReconciliation(ctx, queued, {
+      accepted: false,
+      reason,
+      ...extraData,
+    });
+  }
+
+  async function recordAbortedSecondaryTask(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+    reason: string,
+  ): Promise<void> {
+    const now = Date.now();
+    const active = state.active?.taskId === task.binding.taskId ? state.active : undefined;
+    await record(
+      ctx,
+      "secondary_reconciliation",
+      {
+        taskId: task.binding.taskId,
+        inputFingerprint: task.binding.inputFingerprint,
+        registrySnapshotId: task.binding.registrySnapshotId,
+        provisionalLeaseRevision: task.binding.provisionalLeaseRevision,
+        primaryToStartLatencyMs: Math.max(0, task.secondaryStartedAtMs - task.primaryCompletedAtMs),
+        graceChosenMs: task.grace.graceMs,
+        graceUsedMs: task.graceUsedMs,
+        expectedReusableTokens: task.grace.expectedReusableTokens,
+        plausibleCacheMissPenaltyUsd: task.grace.plausibleCacheMissPenaltyUsd,
+        secondaryArrival: secondaryArrival(),
+        secondaryArrivalLatencyMs: Math.max(0, now - task.primaryCompletedAtMs),
+        workCompletedBeforeReconciliation: safeWorkCounters(),
+        accepted: false,
+        reason,
+      },
+      {
+        taskId: task.binding.taskId,
+        ...(active
+          ? {
+              routeKey: active.archetype,
+              archetype: active.archetype,
+              provider: active.selected.provider,
+              modelId: active.selected.modelId,
+              effort: active.selected.effort,
+              promptProfileId: active.promptProfileId,
+              policyVersion: active.policyVersion,
+              modelSnapshotId: active.modelSnapshotId,
+            }
+          : {}),
+      },
+    );
+  }
+
+  async function abortSecondaryWork(ctx: ExtensionContext | undefined, reason: string): Promise<void> {
+    const queued = queuedSecondaryReconciliation;
+    queuedSecondaryReconciliation = undefined;
+    if (ctx && queued) await rejectQueuedSecondary(ctx, queued, reason);
+    for (const task of [...secondaryTasks]) {
+      task.pendingSafetyGate = false;
+      task.settled = true;
+      task.controller.abort();
+      secondaryTasks.delete(task);
+      if (ctx) await recordAbortedSecondaryTask(ctx, task, reason);
+    }
+  }
+
+  async function settleSecondaryReconciliation(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+    run: ClassifierInvocationRun<ClassificationResult>,
+  ): Promise<void> {
+    if (task.settled) return;
+    task.settled = true;
+    secondaryTasks.delete(task);
+    const queued: QueuedSecondaryReconciliation = {
+      task,
+      run,
+      arrivedAtMs: Date.now(),
+      arrival: secondaryArrival(),
+    };
+    await recordClassifierInvocation(
+      ctx,
+      run.summary,
+      run.status === "completed" ? run.value : undefined,
+      task.binding.taskId,
+    );
+    if (queuedSecondaryReconciliation) {
+      await rejectQueuedSecondary(ctx, queuedSecondaryReconciliation, "superseded_secondary_result");
+    }
+    queuedSecondaryReconciliation = queued;
+    if (task.agentStartReleasedAtMs !== undefined && !agentRunActive && attemptDisposition !== "pending") {
+      await drainSecondaryReconciliation(ctx, {
+        kind: "agent_settled",
+        promptRefreshAllowed: false,
+        continuing: false,
+      });
+    }
+  }
+
+  async function classifySecondaryWithTimeout(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+  ): Promise<ClassifierInvocationRun<ClassificationResult>> {
+    return runClassifierInvocation<ClassificationResult>({
+      purpose: "secondary_reconciliation",
+      timeoutMs: SECONDARY_RECONCILIATION_TIMEOUT_MS,
+      invoke: (signal, onAttempt) => {
+        if (!classifySecondaryTask) throw new Error("secondary classifier is unavailable");
+        return classifySecondaryTask({
+          ctx,
+          registry: task.registry,
+          prompt: task.prompt,
+          synopsis: task.synopsis,
+          primary: task.primary,
+          signal: linkAbortSignals([signal, task.controller.signal]),
+          onAttempt,
+        });
+      },
+    });
+  }
+
+  function startSecondaryReconciliation(input: {
+    ctx: ExtensionContext;
+    registry: readonly RegistryModelSnapshot[];
+    prompt: string;
+    synopsis: SessionSynopsis;
+    classification: PrimaryClassificationResult;
+    lease: TaskLease;
+    hasImages: boolean;
+    languageBucket: string;
+    languageBuckets: readonly string[];
+    contextBucket: string;
+    explorationKey: string;
+    cache: { cachedTokens: number; expectedReuseRatio: number };
+    primaryCompletedAtMs: number;
+  }): SecondaryReconciliationTask | undefined {
+    if (!classifySecondaryTask || !input.classification.escalated || input.classification.failedClosed)
+      return undefined;
+    const controller = new AbortController();
+    const grace = chooseSecondaryGrace(input.cache, input.lease.selected, input.registry, secondaryGracePolicy);
+    const secondaryStartedAtMs = Date.now();
+    const task: SecondaryReconciliationTask = {
+      binding: {
+        taskId: input.lease.taskId,
+        inputFingerprint: input.lease.lastPromptFingerprint,
+        registrySnapshotId: input.lease.modelSnapshotId,
+        provisionalLeaseRevision: leaseRevision(input.lease),
+      },
+      controller,
+      promise: Promise.resolve(undefined as never),
+      primary: input.classification,
+      registry: input.registry,
+      synopsis: input.synopsis,
+      prompt: input.prompt,
+      hasImages: input.hasImages,
+      languageBucket: input.languageBucket,
+      languageBuckets: input.languageBuckets,
+      contextBucket: input.contextBucket,
+      explorationKey: input.explorationKey,
+      cache: input.cache,
+      grace,
+      graceUsedMs: 0,
+      primaryCompletedAtMs: input.primaryCompletedAtMs,
+      secondaryStartedAtMs,
+      pendingSafetyGate:
+        input.classification.primaryFeatures !== undefined &&
+        input.classification.primaryFeatures.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD,
+      settled: false,
+    };
+    task.promise = classifySecondaryWithTimeout(input.ctx, task);
+    secondaryTasks.add(task);
+    void task.promise.then(
+      (run) => {
+        void settleSecondaryReconciliation(input.ctx, task, run);
+      },
+      (error: unknown) => {
+        void settleSecondaryReconciliation(input.ctx, task, {
+          status: "failed",
+          error,
+          summary: {
+            purpose: "secondary_reconciliation",
+            outcome: "error",
+            resolution: "none",
+            wallLatencyMs: 0,
+            timedOut: false,
+            cancelled: controller.signal.aborted,
+            attemptCount: 0,
+            completedAttemptCount: 0,
+            validAttemptCount: 0,
+            stages: [],
+            attempts: [],
+            errorCategory: controller.signal.aborted ? "cancelled" : "unexpected",
+          },
+        });
+      },
+    );
+    return task;
+  }
+
+  async function waitForSecondaryGrace(ctx: ExtensionContext, task: SecondaryReconciliationTask): Promise<void> {
+    if (task.grace.graceMs <= 0) return;
+    const startedAt = Date.now();
+    const settled = await Promise.race([
+      task.promise.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => {
+        setTimeout(() => {
+          resolve(false);
+        }, task.grace.graceMs);
+      }),
+    ]);
+    task.graceUsedMs = Math.max(0, Date.now() - startedAt);
+    if (settled)
+      await task.promise.then(
+        (run) => settleSecondaryReconciliation(ctx, task, run),
+        () => undefined,
+      );
+  }
+
+  function secondarySafetyBlockReason(toolName: string, input: Record<string, unknown>): string | undefined {
+    const pending = queuedSecondaryReconciliation?.task ?? [...secondaryTasks].find((task) => !task.settled);
+    if (!pending?.pendingSafetyGate || state.active?.taskId !== pending.binding.taskId) return undefined;
+    if (!isPotentiallyMutatingTool(toolName, input)) return undefined;
+    return "Secondary safety classification is pending after a low-confidence primary; mutating tools are blocked until reconciliation reaches a safe boundary";
+  }
+
+  function correctedLifecycle(active: TaskLease, corrected: ClassificationResult): LeaseLifecycle {
+    const nextPolicy = deriveSafetyPolicy(corrected.features);
+    if (active.lifecycle.policy === nextPolicy && active.lifecycle.phase !== "completed") return active.lifecycle;
+    return initialLifecycle(nextPolicy, active.lifecycle.taskFingerprint);
+  }
+
+  async function drainSecondaryReconciliation(ctx: ExtensionContext, boundary: ReconciliationBoundary): Promise<void> {
+    if (boundary.kind !== "before_first_request" && activeToolExecutions > 0) return;
+    const queued = queuedSecondaryReconciliation;
+    if (!queued) return;
+    const staleReason = secondaryStaleReason(queued.task);
+    if (staleReason) {
+      queuedSecondaryReconciliation = undefined;
+      await rejectQueuedSecondary(ctx, queued, staleReason);
+      return;
+    }
+    const active = state.active;
+    if (!active) return;
+    if (queued.run.status !== "completed") {
+      queuedSecondaryReconciliation = undefined;
+      const summary = queued.run.summary;
+      await rejectQueuedSecondary(
+        ctx,
+        queued,
+        summary.timedOut ? "secondary_timeout" : summary.cancelled ? "secondary_cancelled" : "secondary_failed",
+      );
+      return;
+    }
+    const routed = await route(
+      ctx,
+      queued.task.registry,
+      queued.run.value,
+      queued.task.hasImages,
+      queued.task.languageBucket,
+      queued.task.languageBuckets,
+      queued.task.contextBucket,
+      queued.task.explorationKey,
+    );
+    if (routed.decision.kind === "unroutable") {
+      queuedSecondaryReconciliation = undefined;
+      await rejectQueuedSecondary(ctx, queued, "secondary_route_unroutable", {
+        routeReason: routed.decision.reason,
+        exclusions: routed.decision.exclusions,
+      });
+      return;
+    }
+    const delta = reconciliationDelta(
+      active.features,
+      queued.run.value.features,
+      active.selected,
+      routed.decision.primary,
+    );
+    const estimatedCachePenaltyUsd = estimateCacheSwitchPenaltyUsd(
+      queued.task.cache,
+      active.selected,
+      routed.decision.primary,
+      queued.task.registry,
+    );
+    const correction = decideSecondaryCorrection(delta, estimatedCachePenaltyUsd, secondaryGracePolicy);
+    if (correction.action === "reject") {
+      queuedSecondaryReconciliation = undefined;
+      await rejectQueuedSecondary(ctx, queued, correction.reason, {
+        materialDelta: delta.material,
+        safetyRelevant: delta.safetyRelevant,
+        deltaReasons: delta.reasons,
+        estimatedCachePenaltyUsd,
+        expectedBenefitUsd: correction.expectedBenefitUsd,
+      });
+      return;
+    }
+
+    const lifecycle = correctedLifecycle(active, queued.run.value);
+    const promptRefreshRequired =
+      active.promptProfileId !== routed.decision.primary.profileId ||
+      active.archetype !== routed.decision.archetype ||
+      active.lifecycle.policy !== lifecycle.policy;
+    if (!boundary.promptRefreshAllowed && promptRefreshRequired && !boundary.continuing) {
+      queuedSecondaryReconciliation = undefined;
+      await rejectQueuedSecondary(ctx, queued, "task_ended_no_extra_turn", {
+        materialDelta: delta.material,
+        safetyRelevant: delta.safetyRelevant,
+        deltaReasons: delta.reasons,
+        estimatedCachePenaltyUsd,
+        expectedBenefitUsd: correction.expectedBenefitUsd,
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const correctedLease: TaskLease = {
+      ...active,
+      updatedAt: now,
+      archetype: routed.decision.archetype,
+      features: queued.run.value.features,
+      selected: routed.decision.primary,
+      fallbacks: routed.decision.fallbacks,
+      promptProfileId: routed.decision.primary.profileId,
+      modelSnapshotId: registrySnapshotId(routed.registry),
+      policyVersion: routed.decision.policyVersion,
+      lifecycle,
+    };
+    if (state.mode === "active" && !(await applyChoice(ctx, correctedLease.selected))) {
+      queuedSecondaryReconciliation = undefined;
+      await rejectQueuedSecondary(ctx, queued, "correction_apply_failed", {
+        materialDelta: delta.material,
+        safetyRelevant: delta.safetyRelevant,
+        deltaReasons: delta.reasons,
+        estimatedCachePenaltyUsd,
+        expectedBenefitUsd: correction.expectedBenefitUsd,
+      });
+      return;
+    }
+
+    state = installLease(state, correctedLease);
+    persistState();
+    updateStatus(ctx);
+    queuedSecondaryReconciliation = undefined;
+    const handoff = promptRefreshRequired
+      ? boundary.promptRefreshAllowed
+        ? "prompt_refresh_before_first_request"
+        : "clean_stop_resume"
+      : "same_profile_next_turn";
+    await recordSecondaryReconciliation(ctx, queued, {
+      accepted: true,
+      reason: "accepted",
+      handoff,
+      materialDelta: delta.material,
+      safetyRelevant: delta.safetyRelevant,
+      deltaReasons: delta.reasons,
+      estimatedCachePenaltyUsd,
+      expectedBenefitUsd: correction.expectedBenefitUsd,
+      secondaryClassifierOutput: sanitizeClassifierFeatures(queued.run.value.features),
+      secondaryClassifierAttempts: queued.run.value.attempts.map(sanitizeClassifierAttempt),
+    });
+    if (handoff === "clean_stop_resume") {
+      ctx.abort();
+      pi.sendMessage(
+        {
+          customType: CONTEXT_MESSAGE,
+          content:
+            "Secondary classification changed the route profile. Resume the same task under the refreshed router profile and existing evidence; do not broaden scope.",
+          display: false,
+          details: { taskId: correctedLease.taskId, reconciliation: "prompt_profile_refresh" },
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    }
+  }
+
   async function classifyContinuityWithTelemetry(
     ctx: ExtensionContext,
     registry: readonly RegistryModelSnapshot[],
@@ -554,7 +1110,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "router.classify",
       { "router.mode": state.mode },
       async (span) => {
-        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "fresh_task", classifyTask);
+        const invocation = await classifyWithTimeout(
+          ctx,
+          registry,
+          prompt,
+          taskSynopsis,
+          "fresh_task",
+          classifyPrimaryTask,
+        );
         const summary =
           invocation.status === "completed"
             ? completeClassifierInvocation(invocation.summary, "classified", invocation.value.failedClosed)
@@ -1422,6 +1985,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_shutdown", async (event) => {
+    await abortSecondaryWork(undefined, "session_shutdown");
     if (event.reason === "new") modeForNextSession = state.mode;
     // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
     // sees the mode in force when a session ends.
@@ -1429,6 +1993,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_start", async (event, ctx) => {
+    await abortSecondaryWork(ctx, "session_start");
     attemptDisposition = "unknown";
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
     scope = await readRouterScope(ctx.cwd);
@@ -1481,6 +2046,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_compact", async (_event, ctx) => {
+    await abortSecondaryWork(ctx, "session_compact");
     // Compaction rewrites history, not enablement. The mode stays in force, and re-persisting it puts
     // the mode after the compaction cut so a later resume of this session still sees it. The lease is
     // kept and a pending post_compaction boundary is recorded instead, so the next ordinary user
@@ -1595,6 +2161,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         pending,
         state.active,
       );
+      const primaryCompletedAtMs = Date.now();
       let active = turnClassification.active;
       const classification = turnClassification.classification;
       const requiresNewLease = turnClassification.requiresNewLease;
@@ -1765,6 +2332,31 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             modelSnapshotId: lease.modelSnapshotId,
           },
         );
+        const secondaryTask = startSecondaryReconciliation({
+          ctx,
+          registry: routed.registry,
+          prompt: event.prompt,
+          synopsis: currentSynopsis,
+          classification: routedClassification,
+          lease,
+          hasImages: pending?.hasImages ?? Boolean(event.images?.length),
+          languageBucket,
+          languageBuckets: repository.languageBuckets,
+          contextBucket,
+          explorationKey: promptFingerprint(event.prompt),
+          cache: pending?.cache ?? { cachedTokens: 0, expectedReuseRatio: 0 },
+          primaryCompletedAtMs,
+        });
+        if (secondaryTask) {
+          await waitForSecondaryGrace(ctx, secondaryTask);
+          secondaryTask.agentStartReleasedAtMs = Date.now();
+          await drainSecondaryReconciliation(ctx, {
+            kind: "before_first_request",
+            promptRefreshAllowed: true,
+            continuing: true,
+          });
+          if (state.active?.taskId === lease.taskId) active = state.active;
+        }
       }
 
       if (!active) return;
@@ -1798,6 +2390,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("model_select", async (event, ctx) => {
     if (applyingSelection || event.source === "restore") return;
+    await abortSecondaryWork(ctx, "manual_override");
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual model override") };
     state = markManualOverride(state);
     persistState();
@@ -1823,6 +2416,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("thinking_level_select", async (event, ctx) => {
     if (applyingSelection) return;
+    await abortSecondaryWork(ctx, "manual_override");
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual effort override") };
     const active = state.active;
     const changed = active ? changeEffortWithinLease(active, event.level, new Date().toISOString()) : undefined;
@@ -1857,6 +2451,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("agent_start", () => {
     lastProviderFailure = undefined;
     attemptDisposition = "pending";
+    agentRunActive = true;
+    insideProviderTurn = false;
+    activeToolExecutions = 0;
     agentRunSequence++;
     attemptStartedAt = Date.now();
     attemptTurns = 0;
@@ -1867,10 +2464,26 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("turn_start", () => {
+    insideProviderTurn = true;
     attemptTurns++;
   });
 
+  pi.on("turn_end", async (event, ctx) => {
+    insideProviderTurn = false;
+    await drainSecondaryReconciliation(ctx, {
+      kind: "turn_end",
+      promptRefreshAllowed: false,
+      continuing:
+        (assistantMessage(event.message) && event.message.stopReason === "toolUse") || event.toolResults.length > 0,
+    });
+  });
+
+  pi.on("tool_execution_start", () => {
+    activeToolExecutions++;
+  });
+
   pi.on("tool_execution_end", (event) => {
+    activeToolExecutions = Math.max(0, activeToolExecutions - 1);
     attemptToolCalls++;
     const check = deterministicCheckCalls.get(event.toolCallId);
     const mutation = potentiallyMutatingCalls.get(event.toolCallId);
@@ -1906,6 +2519,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("tool_call", (event) => {
     const reason = safetyToolBlockReason(state.active, event.toolName, event.input);
     if (reason) return { block: true, reason };
+    const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
+    if (secondaryReason) return { block: true, reason: secondaryReason };
     if (event.toolName === "bash") {
       const command = deterministicCheckCommand(typeof event.input.command === "string" ? event.input.command : "");
       if (command) deterministicCheckCalls.set(event.toolCallId, command);
@@ -2073,114 +2688,125 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
-    const active = state.active;
-    if (!active || state.mode !== "active" || active.executionFailed) return;
-    if (active.lifecycle.phase === "review") {
-      if (attemptDisposition === "success" && active.lifecycle.submission) {
-        await restoreParentAfterReview(ctx, active, "completed");
-      } else if (attemptDisposition === "aborted") {
-        await restoreParentAfterReview(ctx, active, "skipped");
+    try {
+      const active = state.active;
+      if (!active || state.mode !== "active" || active.executionFailed) return;
+      if (active.lifecycle.phase === "review") {
+        if (attemptDisposition === "success" && active.lifecycle.submission) {
+          await restoreParentAfterReview(ctx, active, "completed");
+        } else if (attemptDisposition === "aborted") {
+          await restoreParentAfterReview(ctx, active, "skipped");
+        }
+        return;
       }
-      return;
-    }
-    if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
+      if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
 
-    if (active.lifecycle.phase === "preflight") {
-      const plan = active.lifecycle.plan;
-      if (plan) {
-        const scopeFingerprint = safetyFingerprint({
-          taskFingerprint: active.lifecycle.taskFingerprint,
-          planFingerprint: plan.planFingerprint,
-        });
+      if (active.lifecycle.phase === "preflight") {
+        const plan = active.lifecycle.plan;
+        if (plan) {
+          const scopeFingerprint = safetyFingerprint({
+            taskFingerprint: active.lifecycle.taskFingerprint,
+            planFingerprint: plan.planFingerprint,
+          });
+          await startIndependentReview(
+            ctx,
+            active,
+            "authorization",
+            scopeFingerprint,
+            [
+              `Review the validated plan ${plan.planFingerprint} for task ${plan.taskFingerprint}.`,
+              `Targets: ${plan.plan.targets.join(", ")}.`,
+              "Verify concrete preconditions, irreversible effects, rollback realism, abort conditions, tool scope, and task/plan alignment. Approval applies only to this exact fingerprint.",
+            ].join("\n"),
+          );
+        } else if (!active.lifecycle.evidenceRepairAttempted) {
+          const repaired = {
+            ...active,
+            updatedAt: new Date().toISOString(),
+            lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
+          };
+          state = installLease(state, repaired);
+          persistState();
+          pi.sendMessage(
+            {
+              customType: CONTEXT_MESSAGE,
+              content:
+                "Preflight is still non-mutating. Inspect the exact targets and call submit_action_plan with concrete steps, preconditions, verification, rollback, abort conditions, irreversible effects, and required tool names.",
+              display: true,
+              details: { taskId: active.taskId, repairReason: "missing_action_plan" },
+            },
+            { triggerTurn: true, deliverAs: "followUp" },
+          );
+        } else {
+          ctx.ui.notify("Irreversible action remains blocked: no validated action plan is available", "error");
+        }
+        return;
+      }
+
+      if (active.lifecycle.phase === "advisory_pending") {
         await startIndependentReview(
           ctx,
           active,
-          "authorization",
-          scopeFingerprint,
-          [
-            `Review the validated plan ${plan.planFingerprint} for task ${plan.taskFingerprint}.`,
-            `Targets: ${plan.plan.targets.join(", ")}.`,
-            "Verify concrete preconditions, irreversible effects, rollback realism, abort conditions, tool scope, and task/plan alignment. Approval applies only to this exact fingerprint.",
-          ].join("\n"),
+          "advisory",
+          safetyFingerprint({ taskFingerprint: active.lifecycle.taskFingerprint, features: active.features }),
+          "Assess the high-risk reversible action before execution. Identify failure modes, safer sequencing, checks, and stop conditions. This is advice, not authorization.",
         );
-      } else if (!active.lifecycle.evidenceRepairAttempted) {
-        const repaired = {
-          ...active,
-          updatedAt: new Date().toISOString(),
-          lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
-        };
-        state = installLease(state, repaired);
-        persistState();
-        pi.sendMessage(
-          {
-            customType: CONTEXT_MESSAGE,
-            content:
-              "Preflight is still non-mutating. Inspect the exact targets and call submit_action_plan with concrete steps, preconditions, verification, rollback, abort conditions, irreversible effects, and required tool names.",
-            display: true,
-            details: { taskId: active.taskId, repairReason: "missing_action_plan" },
-          },
-          { triggerTurn: true, deliverAs: "followUp" },
-        );
-      } else {
-        ctx.ui.notify("Irreversible action remains blocked: no validated action plan is available", "error");
+        return;
       }
-      return;
-    }
 
-    if (active.lifecycle.phase === "advisory_pending") {
-      await startIndependentReview(
-        ctx,
-        active,
-        "advisory",
-        safetyFingerprint({ taskFingerprint: active.lifecycle.taskFingerprint, features: active.features }),
-        "Assess the high-risk reversible action before execution. Identify failure modes, safer sequencing, checks, and stop conditions. This is advice, not authorization.",
-      );
-      return;
-    }
-
-    if (lifecycleRequiresCompletionReview(active.lifecycle)) {
-      const collected = await collectCompletionEvidence(ctx, active);
-      if (collected.evidence) {
-        const codeBuilder = isCodeBuilder(active.features);
-        await startIndependentReview(
-          ctx,
-          active,
-          "completion",
-          collected.evidence.evidenceFingerprint,
-          codeBuilder
-            ? [
-                `Review implementation evidence ${collected.evidence.evidenceFingerprint}.`,
-                `Baseline HEAD: ${collected.evidence.baselineHead ?? "unavailable"}; completed HEAD: ${collected.evidence.completedHead ?? "unavailable"}.`,
-                `Changed files: ${collected.evidence.changedFiles.join(", ") || "committed delta"}.`,
-                `Deterministic checks: ${collected.evidence.checks.map((check) => `${check.passed ? "PASS" : "FAIL"} ${check.command}`).join("; ")}.`,
-                "Inspect working-tree, staged, and baseline-to-HEAD changes; the fingerprints are scope bindings, not a substitute for reading the diff and test evidence.",
-              ].join("\n")
-            : [
-                `Review completion evidence ${collected.evidence.evidenceFingerprint} for the tracked high-risk operation.`,
-                `Recorded successful mutating tools: ${collected.evidence.mutations.map((mutation) => mutation.toolName).join(", ")}.`,
-                "Check observed outcomes against the original task, advisory/authorization constraints, and available verification evidence.",
-              ].join("\n"),
-        );
-      } else if (!("evidenceRepairAttempted" in active.lifecycle) || !active.lifecycle.evidenceRepairAttempted) {
-        const repaired = {
-          ...active,
-          updatedAt: new Date().toISOString(),
-          lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
-        } as TaskLease;
-        state = installLease(state, repaired);
-        persistState();
-        pi.sendMessage(
-          {
-            customType: CONTEXT_MESSAGE,
-            content: `Required completion review has not started: ${collected.reason ?? "validated evidence is missing"}. Produce the missing deterministic diff/test or operation evidence without broadening scope.`,
-            display: true,
-            details: { taskId: active.taskId, repairReason: "missing_completion_evidence" },
-          },
-          { triggerTurn: true, deliverAs: "followUp" },
-        );
-      } else {
-        ctx.ui.notify(`Required completion review is blocked: ${collected.reason ?? "evidence missing"}`, "error");
+      if (lifecycleRequiresCompletionReview(active.lifecycle)) {
+        const collected = await collectCompletionEvidence(ctx, active);
+        if (collected.evidence) {
+          const codeBuilder = isCodeBuilder(active.features);
+          await startIndependentReview(
+            ctx,
+            active,
+            "completion",
+            collected.evidence.evidenceFingerprint,
+            codeBuilder
+              ? [
+                  `Review implementation evidence ${collected.evidence.evidenceFingerprint}.`,
+                  `Baseline HEAD: ${collected.evidence.baselineHead ?? "unavailable"}; completed HEAD: ${collected.evidence.completedHead ?? "unavailable"}.`,
+                  `Changed files: ${collected.evidence.changedFiles.join(", ") || "committed delta"}.`,
+                  `Deterministic checks: ${collected.evidence.checks.map((check) => `${check.passed ? "PASS" : "FAIL"} ${check.command}`).join("; ")}.`,
+                  "Inspect working-tree, staged, and baseline-to-HEAD changes; the fingerprints are scope bindings, not a substitute for reading the diff and test evidence.",
+                ].join("\n")
+              : [
+                  `Review completion evidence ${collected.evidence.evidenceFingerprint} for the tracked high-risk operation.`,
+                  `Recorded successful mutating tools: ${collected.evidence.mutations.map((mutation) => mutation.toolName).join(", ")}.`,
+                  "Check observed outcomes against the original task, advisory/authorization constraints, and available verification evidence.",
+                ].join("\n"),
+          );
+        } else if (!("evidenceRepairAttempted" in active.lifecycle) || !active.lifecycle.evidenceRepairAttempted) {
+          const repaired = {
+            ...active,
+            updatedAt: new Date().toISOString(),
+            lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
+          } as TaskLease;
+          state = installLease(state, repaired);
+          persistState();
+          pi.sendMessage(
+            {
+              customType: CONTEXT_MESSAGE,
+              content: `Required completion review has not started: ${collected.reason ?? "validated evidence is missing"}. Produce the missing deterministic diff/test or operation evidence without broadening scope.`,
+              display: true,
+              details: { taskId: active.taskId, repairReason: "missing_completion_evidence" },
+            },
+            { triggerTurn: true, deliverAs: "followUp" },
+          );
+        } else {
+          ctx.ui.notify(`Required completion review is blocked: ${collected.reason ?? "evidence missing"}`, "error");
+        }
       }
+    } finally {
+      await drainSecondaryReconciliation(ctx, {
+        kind: "agent_settled",
+        promptRefreshAllowed: false,
+        continuing: false,
+      });
+      agentRunActive = false;
+      insideProviderTurn = false;
+      activeToolExecutions = 0;
     }
   });
 

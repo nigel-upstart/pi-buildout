@@ -261,10 +261,10 @@ describe("selectClassifierModels", () => {
     });
     assert.equal(result.failedClosed, true);
     assert.equal(registryLookups, 0);
-    assert.equal(result.attempts.length, 4);
+    assert.equal(result.attempts.length, 2);
     assert.ok(result.attempts.every((attempt) => attempt.valid === false));
-    assert.equal(observations.filter((observation) => observation.state === "started").length, 4);
-    assert.equal(observations.filter((observation) => observation.outcome === "error").length, 4);
+    assert.equal(observations.filter((observation) => observation.state === "started").length, 2);
+    assert.equal(observations.filter((observation) => observation.outcome === "error").length, 2);
   });
 
   it("does not call an alternate endpoint when the provider returns an aborted response", async () => {
