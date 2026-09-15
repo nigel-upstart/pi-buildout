@@ -7,7 +7,7 @@ A vendored, `pi-buildout`-owned fork of [`pi-otel`](https://github.com/Nikiforov
 
 This layer imports the source and gives it a reproducible build, test, and CI path. It is **not installed or activated**
 yet: `scripts/install-extensions.sh` still does not ship it, and `upstart-dotfiles` still consumes the published
-`npm:pi-otel@0.3.0`. See [issue #45](https://github.com/nigel-upstart/pi-buildout/issues/45) for the ownership decision
+`npm:pi-otel@0.3.0`. See [issue #45](https://github.com/zew1me/pi-buildout/issues/45) for the ownership decision
 and the remaining work.
 
 ## Why it is vendored rather than reimplemented
