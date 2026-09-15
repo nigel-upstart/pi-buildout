@@ -8,6 +8,7 @@ import {
   ATTR_GEN_AI_USAGE_OUTPUT_TOKENS,
   ATTR_GEN_AI_USAGE_REASONING_OUTPUT_TOKENS,
 } from "@opentelemetry/semantic-conventions/incubating";
+import * as registry from "@opentelemetry/semantic-conventions/incubating";
 import {
   applyUsageAttrs,
   ATTR_CACHE_CREATION_TOKENS,
@@ -49,14 +50,18 @@ test("gen_ai.system is still a registry attribute, so it is kept as-is", () => {
 });
 
 test("cache-write tokens have no registry key and keep the existing spelling", () => {
-  const registryNames = new Set(
-    Object.values({
-      ATTR_GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS,
-      ATTR_GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
-    }),
+  assert.equal(
+    ATTR_CACHE_WRITE_TOKENS,
+    "gen_ai.usage.cache_write_input_tokens",
   );
-  assert.equal(ATTR_CACHE_WRITE_TOKENS, "gen_ai.usage.cache_write_input_tokens");
-  assert.ok(!registryNames.has(ATTR_CACHE_WRITE_TOKENS));
+  // Scans every registry export rather than a hand-picked pair, so this fails —
+  // and prompts a migration — if the registry ever defines a cache-write
+  // attribute instead of silently passing forever.
+  const cacheWriteKeys = Object.values(registry).filter(
+    (value) =>
+      typeof value === "string" && value.startsWith("gen_ai.usage.cache_write"),
+  );
+  assert.deepEqual(cacheWriteKeys, []);
 });
 
 test("renamed keys are written alongside their pre-1.44 spelling", () => {
