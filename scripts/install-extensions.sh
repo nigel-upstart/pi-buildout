@@ -6,6 +6,12 @@ AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
 EXTENSIONS=(clear effort markdown-backlinks router subagents)
+# extensions/otel is the vendored OpenTelemetry fork. It stays opt-in because only one
+# OpenTelemetry SDK can own a process: installing it while `npm:pi-otel` is still listed in
+# settings leaves whichever loads first owning the global providers and the other disabled.
+# See specs/otel-ownership-decision.md for the migration and rollback steps.
+OPTIONAL_EXTENSIONS=(otel)
+WITH_OTEL=0
 PATCH_FILES=(
   dist/core/resource-loader.js
   dist/core/skill-management.js
@@ -59,6 +65,30 @@ trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 trap cleanup EXIT
 
+# An extension may declare its entrypoint through the pi manifest (`pi.extensions`), which is how
+# the vendored fork keeps upstream's src/ layout. Everything else uses index.ts at the root.
+extension_entrypoint() {
+  local manifest="$1/package.json" declared=
+  if [[ -f "$manifest" ]]; then
+    declared=$(node -e '
+      const manifest = require(process.argv[1]);
+      const declared = manifest?.pi?.extensions;
+      process.stdout.write(Array.isArray(declared) && typeof declared[0] === "string" ? declared[0] : "");
+    ' "$manifest")
+  fi
+  if [[ -z "$declared" ]]; then
+    printf 'index.ts\n'
+    return 0
+  fi
+  # Keep the declared path inside the extension directory.
+  declared=${declared#./}
+  if [[ "$declared" == /* || "$declared" == *..* ]]; then
+    printf 'Extension %s declares an unusable entrypoint: %s\n' "$1" "$declared" >&2
+    return 1
+  fi
+  printf '%s\n' "$declared"
+}
+
 sha256() {
   if command -v shasum > /dev/null; then
     shasum -a 256 "$1" | awk '{print $1}'
@@ -104,8 +134,12 @@ find_global_pi_package() {
 for arg in "$@"; do
   case "$arg" in
     --skip-skill-loading-patch) APPLY_SKILLS_PATCH=0 ;;
+    --with-otel) WITH_OTEL=1 ;;
     -h | --help)
-      printf 'Usage: %s [--skip-skill-loading-patch]\n' "$(basename "$0")"
+      printf 'Usage: %s [--skip-skill-loading-patch] [--with-otel]\n' "$(basename "$0")"
+      printf '  --with-otel  also install the vendored OpenTelemetry extension (extensions/otel).\n'
+      printf '               Remove npm:pi-otel from pi settings first; two OpenTelemetry SDKs\n'
+      printf '               cannot both own one process.\n'
       exit 0
       ;;
     *)
@@ -115,12 +149,18 @@ for arg in "$@"; do
   esac
 done
 
+if ((WITH_OTEL)); then
+  EXTENSIONS+=("${OPTIONAL_EXTENSIONS[@]}")
+fi
+
 for extension in "${EXTENSIONS[@]}"; do
-  if [[ ! -f "$ROOT_DIR/extensions/$extension/index.ts" ]]; then
-    printf 'Missing packaged extension entrypoint: %s\n' "$ROOT_DIR/extensions/$extension/index.ts" >&2
+  entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
+  if [[ ! -f "$ROOT_DIR/extensions/$extension/$entrypoint" ]]; then
+    printf 'Missing packaged extension entrypoint: %s\n' "$ROOT_DIR/extensions/$extension/$entrypoint" >&2
     exit 1
   fi
-  if [[ "$extension" != router && ! -f "$ROOT_DIR/extensions/$extension/helpers.ts" ]]; then
+  # router and the vendored otel fork are multi-module trees without a helpers.ts seam.
+  if [[ "$extension" != router && "$extension" != otel && ! -f "$ROOT_DIR/extensions/$extension/helpers.ts" ]]; then
     printf 'Missing packaged extension helper: %s\n' "$ROOT_DIR/extensions/$extension/helpers.ts" >&2
     exit 1
   fi
@@ -215,34 +255,44 @@ fi
 mkdir -p "$EXTENSION_DIR"
 for extension in "${EXTENSIONS[@]}"; do
   EXTENSION_STAGE_DIR=$(mktemp -d "$EXTENSION_DIR/.${extension}.XXXXXX")
+  entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
   # A `package.json` travels with the extension so its runtime imports resolve outside this
-  # repository. `node_modules` is pruned rather than copied: dependencies are installed into the
-  # staged tree below from that manifest, so the installed tree never inherits this repository's
-  # development tree.
+  # repository, and a `package-lock.json` travels with it so the installed tree gets the exact
+  # versions this repository tests. `node_modules` is pruned rather than copied: dependencies are
+  # installed into the staged tree below from that manifest, so the installed tree never inherits
+  # this repository's development tree.
   while IFS= read -r -d '' source_file; do
     relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
     mkdir -p "$EXTENSION_STAGE_DIR/$(dirname "$relative_file")"
     cp "$source_file" "$EXTENSION_STAGE_DIR/$relative_file"
-  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' \) -print0)
+  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -name dist -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' -o -name 'package-lock.json' \) -print0)
 
   # Runtime dependencies are installed before the atomic swap, so a failed or offline install leaves
   # the previously working extension tree in place instead of publishing one that cannot load.
   if [[ -f "$EXTENSION_STAGE_DIR/package.json" ]] && node -e 'const d = require(process.argv[1]).dependencies; process.exit(d && Object.keys(d).length > 0 ? 0 : 1)' "$EXTENSION_STAGE_DIR/package.json"; then
-    if ! (cd "$EXTENSION_STAGE_DIR" && npm install --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts > /dev/null); then
+    # `npm ci` when a lockfile shipped: it installs the exact tree this repository tested and fails
+    # rather than silently resolving something new.
+    if [[ -f "$EXTENSION_STAGE_DIR/package-lock.json" ]]; then
+      install_command=(npm ci --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts)
+    else
+      install_command=(npm install --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts)
+    fi
+    if ! (cd "$EXTENSION_STAGE_DIR" && "${install_command[@]}" > /dev/null); then
       printf 'Could not install runtime dependencies for %s; leaving the existing extension in place.\n' "$extension" >&2
       exit 1
     fi
-    # Resolve every declared dependency the way pi will at load time. A dependency that installs but
-    # does not resolve would otherwise surface as a broken pi session rather than a failed install.
+    # Resolve every declared dependency the way pi will at load time, from the entrypoint that
+    # imports them. A dependency that installs but does not resolve would otherwise surface as a
+    # broken pi session rather than a failed install.
     # The single quotes are deliberate: ${directory} is a JavaScript template literal evaluated by
     # node, not a shell expansion.
     # shellcheck disable=SC2016
     if ! node -e '
       const { createRequire } = require("module");
-      const directory = process.argv[1];
-      const resolver = createRequire(`${directory}/index.ts`);
+      const [directory, entrypoint] = process.argv.slice(1);
+      const resolver = createRequire(`${directory}/${entrypoint}`);
       for (const name of Object.keys(require(`${directory}/package.json`).dependencies)) resolver.resolve(name);
-    ' "$EXTENSION_STAGE_DIR"; then
+    ' "$EXTENSION_STAGE_DIR" "$entrypoint"; then
       printf 'Runtime dependencies for %s did not resolve; leaving the existing extension in place.\n' "$extension" >&2
       exit 1
     fi

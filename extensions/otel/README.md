@@ -5,10 +5,12 @@ A vendored, `pi-buildout`-owned fork of [`pi-otel`](https://github.com/Nikiforov
 
 ## Status
 
-This layer imports the source and gives it a reproducible build, test, and CI path. It is **not installed or activated**
-yet: `scripts/install-extensions.sh` still does not ship it, and `upstart-dotfiles` still consumes the published
-`npm:pi-otel@0.3.0`. See [issue #45](https://github.com/zew1me/pi-buildout/issues/45) for the ownership decision
-and the remaining work.
+The fork is implemented, tested, and CI-gated, but **not activated by default**. `scripts/install-extensions.sh` ships
+it only with `--with-otel`, and `upstart-dotfiles` still consumes the published `npm:pi-otel@0.3.0`. Only one
+OpenTelemetry SDK can own a process, so the two must never be enabled together: whichever loads first owns the global
+providers and the other silently stops exporting. The decision record, adoption sequence, and rollback are in
+[`specs/otel-ownership-decision.md`](../../specs/otel-ownership-decision.md); the tracking issue is
+[zew1me/pi-buildout#45](https://github.com/zew1me/pi-buildout/issues/45).
 
 ## Why it is vendored rather than reimplemented
 
