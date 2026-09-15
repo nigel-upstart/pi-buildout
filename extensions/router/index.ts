@@ -133,8 +133,6 @@ type AttemptMetrics = {
 
 type AttemptDisposition = "unknown" | "pending" | "success" | "aborted" | "incomplete" | "failed";
 
-const SECONDARY_RECONCILIATION_TIMEOUT_MS = DEFAULT_SECONDARY_GRACE_POLICY.secondaryDeadlineMs;
-
 type SecondaryBinding = {
   taskId: string;
   inputFingerprint: string;
@@ -786,7 +784,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   ): Promise<ClassifierInvocationRun<ClassificationResult>> {
     return runClassifierInvocation<ClassificationResult>({
       purpose: "secondary_reconciliation",
-      timeoutMs: SECONDARY_RECONCILIATION_TIMEOUT_MS,
+      timeoutMs: secondaryGracePolicy.secondaryDeadlineMs,
       invoke: (signal, onAttempt) => {
         if (!classifySecondaryTask) throw new Error("secondary classifier is unavailable");
         return classifySecondaryTask({

@@ -1043,6 +1043,51 @@ describe("routerExtension", () => {
     assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, reconciliationCount);
   });
 
+  it("uses the configured secondary deadline for background reconciliation", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              const error = new Error("configured secondary deadline expired");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        }),
+      secondaryGracePolicy: {
+        maxGraceMs: 0,
+        secondaryDeadlineMs: 5,
+        lowPenaltyUsd: 0.001,
+        mediumPenaltyUsd: 0.01,
+        lowPenaltyGraceMs: 0,
+        mediumPenaltyGraceMs: 0,
+        highPenaltyGraceMs: 0,
+        materialCorrectionBenefitUsd: 0.02,
+        safetyCorrectionBenefitUsd: 25,
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-configured-deadline",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await flushMicrotasks();
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const invocation = result.events.find(
+      (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+    );
+    assert.equal(invocation?.data.timedOut, true);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "secondary_timeout",
+    );
+  });
+
   it("does not manufacture an extra turn for a task-ending cross-profile correction", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
