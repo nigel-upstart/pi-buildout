@@ -1088,6 +1088,26 @@ describe("routerExtension", () => {
     );
   });
 
+  it("drains queued secondary reconciliation at agent settlement despite a stuck tool counter", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-stuck-tool-counter",
+    });
+
+    result.hooks.get("tool_execution_start")({ toolCallId: "stuck-tool" });
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+    await flushMicrotasks();
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "no_material_delta",
+    );
+  });
+
   it("lets manual overrides win by aborting pending secondary work", async () => {
     const secondary = deferred();
     let secondarySignal;
