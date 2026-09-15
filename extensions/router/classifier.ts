@@ -333,8 +333,7 @@ export async function classifyTaskSecondary(input: {
   const secondaryVendor = secondaryResult.vendor ?? input.secondaryVendor;
   const secondaryFeatures = secondaryResult.features;
   const primaryVendor = input.primaryVendor ?? input.primary.primaryVendor;
-  const secondaryVendorForCheck = input.secondaryVendor ?? secondaryResult.vendor;
-  if (primaryVendor && secondaryVendorForCheck && primaryVendor === secondaryVendorForCheck) {
+  if (primaryVendor && secondaryVendor && primaryVendor === secondaryVendor) {
     features = conservativeFeatures("Secondary classifier used the same vendor as primary");
     failedClosed = true;
   } else if (secondaryResult.features) {
