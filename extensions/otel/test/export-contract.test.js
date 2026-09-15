@@ -126,7 +126,7 @@ test("a >60 KiB tool result reaches the collector intact under a raised cap", as
   );
   assert.ok(
     text.includes("gen_ai.usage.cache_read.input_tokens") &&
-      text.includes("gen_ai.usage.cache_read_input_tokens"),
-    "registry and legacy token keys must both be exported",
+      !text.includes("gen_ai.usage.cache_read_input_tokens"),
+    "the registry token key must be exported, and only it",
   );
 });

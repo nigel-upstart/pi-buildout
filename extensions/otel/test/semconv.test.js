@@ -12,14 +12,11 @@ import * as registry from "@opentelemetry/semantic-conventions/incubating";
 import {
   applyUsageAttrs,
   ATTR_CACHE_CREATION_TOKENS,
-  ATTR_CACHE_CREATION_TOKENS_LEGACY,
   ATTR_CACHE_READ_TOKENS,
-  ATTR_CACHE_READ_TOKENS_LEGACY,
   ATTR_CACHE_WRITE_TOKENS,
   ATTR_INPUT_TOKENS,
   ATTR_OUTPUT_TOKENS,
   ATTR_REASONING_TOKENS,
-  ATTR_REASONING_TOKENS_LEGACY,
   ATTR_SYSTEM,
 } from "../dist/attrs.js";
 
@@ -49,14 +46,14 @@ test("gen_ai.system is still a registry attribute, so it is kept as-is", () => {
   assert.equal(ATTR_SYSTEM, ATTR_GEN_AI_SYSTEM);
 });
 
-test("cache-write tokens have no registry key and keep the existing spelling", () => {
-  assert.equal(
-    ATTR_CACHE_WRITE_TOKENS,
-    "gen_ai.usage.cache_write_input_tokens",
-  );
+test("cache-write tokens follow the registry's shape without a registry key", () => {
+  // No registry attribute exists, so the name is ours; it mirrors the dotted
+  // shape of its cache_read and cache_creation siblings so the usage attributes
+  // are internally consistent.
+  assert.equal(ATTR_CACHE_WRITE_TOKENS, "gen_ai.usage.cache_write.input_tokens");
   // Scans every registry export rather than a hand-picked pair, so this fails —
-  // and prompts a migration — if the registry ever defines a cache-write
-  // attribute instead of silently passing forever.
+  // and prompts adopting the real name — if the registry ever defines a
+  // cache-write attribute, instead of silently passing forever.
   const cacheWriteKeys = Object.values(registry).filter(
     (value) =>
       typeof value === "string" && value.startsWith("gen_ai.usage.cache_write"),
@@ -64,7 +61,7 @@ test("cache-write tokens have no registry key and keep the existing spelling", (
   assert.deepEqual(cacheWriteKeys, []);
 });
 
-test("renamed keys are written alongside their pre-1.44 spelling", () => {
+test("each usage field is emitted once, under the registry spelling only", () => {
   const attrs = {};
   applyUsageAttrs(attrs, {
     input: 11,
@@ -78,22 +75,26 @@ test("renamed keys are written alongside their pre-1.44 spelling", () => {
     [ATTR_INPUT_TOKENS]: 11,
     [ATTR_OUTPUT_TOKENS]: 22,
     [ATTR_CACHE_READ_TOKENS]: 33,
-    [ATTR_CACHE_READ_TOKENS_LEGACY]: 33,
     [ATTR_CACHE_WRITE_TOKENS]: 44,
     [ATTR_CACHE_CREATION_TOKENS]: 55,
-    [ATTR_CACHE_CREATION_TOKENS_LEGACY]: 55,
     [ATTR_REASONING_TOKENS]: 66,
-    [ATTR_REASONING_TOKENS_LEGACY]: 66,
   });
+  // No pre-1.44 underscore spelling is emitted for any of them.
+  for (const key of Object.keys(attrs)) {
+    assert.ok(
+      !/^gen_ai\.usage\.(cache_read|cache_creation|cache_write|reasoning)_/.test(key),
+      `${key} is a dropped pre-1.44 spelling`,
+    );
+  }
 });
 
-test("absent usage fields emit neither spelling", () => {
+test("absent usage fields emit nothing", () => {
   const attrs = {};
   applyUsageAttrs(attrs, { input: 1 });
   assert.deepEqual(Object.keys(attrs), [ATTR_INPUT_TOKENS]);
 });
 
-test("non-numeric usage values are ignored for both spellings", () => {
+test("non-numeric usage values are ignored", () => {
   for (const bad of ["7", null, {}, [], Number.NaN, Number.POSITIVE_INFINITY]) {
     const attrs = {};
     applyUsageAttrs(attrs, { cacheRead: bad, reasoning: bad });

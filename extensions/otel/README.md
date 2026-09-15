@@ -50,21 +50,29 @@ object.
 
 ## Semantic conventions
 
-Three token-usage keys had drifted from the GenAI registry. Each is now emitted under **both** the registry spelling and
-the pre-1.44 spelling, so dashboards querying the old names keep working:
+Three token-usage keys had drifted from the GenAI registry and now use the registry spelling:
 
-| Registry key (1.43.0) | Also emitted (legacy) |
+| Emitted key | Pre-1.44 spelling, no longer emitted |
 | --- | --- |
 | `gen_ai.usage.cache_read.input_tokens` | `gen_ai.usage.cache_read_input_tokens` |
 | `gen_ai.usage.cache_creation.input_tokens` | `gen_ai.usage.cache_creation_input_tokens` |
 | `gen_ai.usage.reasoning.output_tokens` | `gen_ai.usage.reasoning_tokens` |
 
-Two deliberate deviations:
+The old spellings are **not** written alongside the new ones. Nothing this repository owns queries them, and emitting
+both would double the usage attribute count on every LLM span for no consumer. Anything that did query the old names
+must be repointed at the registry keys above.
 
-- `gen_ai.usage.cache_write_input_tokens` keeps its spelling because the registry defines no cache-write attribute as of
-  1.43.0. Inventing a registry-looking name would be worse than an honest vendor key.
+Two notes:
+
+- `gen_ai.usage.cache_write.input_tokens` has no registry attribute as of 1.43.0 — the registry defines only
+  `cache_read` and `cache_creation`. The name is ours, and follows the registry's shape for its siblings so the usage
+  attributes are internally consistent. A test scans every registry export and fails if a real cache-write attribute
+  ever appears, so it gets adopted rather than silently diverging.
 - `gen_ai.system` is retained: it is still exported by `@opentelemetry/semantic-conventions@1.43.0`, so the concern that
   it had been removed does not hold. A test asserts this rather than trusting the reading.
+
+The constants are asserted equal to the registry package's own exports, so a registry upgrade that renames a key fails a
+test instead of drifting silently.
 
 The constants are asserted equal to the registry package's own exports, so a registry upgrade that renames a key fails a
 test instead of drifting silently.
@@ -104,7 +112,8 @@ default rather than disabling capture or exporting an unbounded attribute.
 - Truncation is now exact and character-safe: it fills the byte budget instead of discarding up to 64 characters per
   step, and it backs off UTF-8 continuation bytes so a multi-byte character is never split.
 - The OpenTelemetry dependency train moved to 2.x / 0.2xx, clearing all 23 inherited advisories.
-- Cache and reasoning token keys carry the current registry spelling alongside the legacy spelling.
+- Cache and reasoning token keys use the current registry spelling, and the pre-1.44 spellings are dropped rather than
+  dual-written.
 - An export-contract test runs the real SDK against an in-process OTLP/HTTP receiver and asserts a 200 KB tool result
   arrives intact, which is the only check covering serialization rather than attribute assembly alone.
 - Dependencies that the source imports but upstream only received transitively through `@opentelemetry/sdk-node`
