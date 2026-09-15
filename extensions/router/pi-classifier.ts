@@ -248,6 +248,15 @@ export async function classifyTaskWithPi(input: {
   return classifyTaskSecondaryWithPi({ ...input, primary });
 }
 
+/**
+ * Run only the first classifier stage against the scoped Pi model registry.
+ *
+ * The router uses this on the critical path for fresh-task routing so it can select a provisional
+ * model quickly and launch secondary reconciliation only when the primary result escalates. It is a
+ * separate function rather than a mode flag on `classifyTaskWithPi` because the return type exposes
+ * primary-only metadata that callers must handle before a final reconciled `ClassificationResult`
+ * exists.
+ */
 export async function classifyTaskPrimaryWithPi(input: {
   ctx: ExtensionContext;
   registry: readonly RegistryModelSnapshot[];
@@ -268,6 +277,15 @@ export async function classifyTaskPrimaryWithPi(input: {
   });
 }
 
+/**
+ * Run the provider-diverse secondary classifier for an already completed primary result.
+ *
+ * This preserves the same transport and registry selection rules as `classifyTaskWithPi`, but it is
+ * callable independently so the router can execute it in the background with its own abort signal,
+ * timeout, telemetry purpose, and safe-boundary reconciliation. Keeping the primary and secondary
+ * entrypoints distinct makes the async lifecycle explicit in the type system instead of threading a
+ * boolean or string mode parameter through one overloaded function.
+ */
 export async function classifyTaskSecondaryWithPi(input: {
   ctx: ExtensionContext;
   registry: readonly RegistryModelSnapshot[];

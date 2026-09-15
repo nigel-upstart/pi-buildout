@@ -25,7 +25,9 @@ export type CacheValueEstimate = {
 };
 
 export type SecondaryGracePolicy = {
+  /** Maximum time to hold the first provider request for a secondary result. */
   maxGraceMs: number;
+  /** Total runtime budget for the background secondary classifier before it is aborted. */
   secondaryDeadlineMs: number;
   lowPenaltyUsd: number;
   mediumPenaltyUsd: number;
@@ -39,20 +41,32 @@ export type SecondaryGracePolicy = {
 /**
  * Cache-aware secondary reconciliation trades a small wait before the first agent request against
  * the cost of discovering that the secondary classifier would choose a different uncached route.
+ * The selected grace is always:
+ *
+ *   min(cache-risk bucket, maxGraceMs, secondaryDeadlineMs)
+ *
+ * `maxGraceMs` only caps how long the router pauses before releasing the first provider request.
+ * `secondaryDeadlineMs` is the longer background-classifier timeout: after the grace expires, the
+ * agent can start on the primary route while the secondary classifier continues until that deadline
+ * and can still reconcile at a safe boundary.
  *
  * The penalty is estimated as:
  *
  *   reusable tokens * max(corrected uncached/write rate - incumbent cache-read rate, 0)
  *
- * with rates converted from per-million-token pricing into dollars. For example, 100,000 cached
- * tokens with 50% expected reuse leaves 50,000 reusable tokens. If the incumbent can read those at
- * $0.10/M but the corrected route would need $4.00/M uncached/write input, the plausible penalty is
- * 50,000 / 1,000,000 * ($4.00 - $0.10) = $0.195. That crosses the medium threshold below, so the
- * grace window becomes the high bucket: 400ms, still capped by maxGraceMs and the classifier deadline.
+ * with rates converted from per-million-token pricing into dollars. For example, 1,000,000 cached
+ * tokens with 100% expected reuse leaves 1,000,000 reusable tokens. If the incumbent can read those
+ * at $0.10/M but the corrected route would need $4.10/M uncached/write input, the plausible penalty
+ * is 1,000,000 / 1,000,000 * ($4.10 - $0.10) = $4.00. With the defaults below, that enters the high
+ * bucket: the first request waits up to 400ms, while the secondary classifier may keep running until
+ * the 11s deadline and reconcile later.
  *
  * If the plausible penalty is low, we wait less because switching routes is cheap. If it is high, we
  * allow more time for the secondary result so we do not eagerly spend expensive cacheable context on
- * a route that may need correction.
+ * a route that may need correction. To hard-block the first request for the full classifier budget on
+ * expensive cache risk, configure `maxGraceMs` and the desired bucket grace to match
+ * `secondaryDeadlineMs`; the built-in defaults prefer bounded start latency and rely on later
+ * reconciliation plus the correction-benefit thresholds below.
  */
 export const DEFAULT_SECONDARY_GRACE_POLICY: SecondaryGracePolicy = Object.freeze({
   maxGraceMs: 400,
