@@ -80,7 +80,7 @@ authorization the same way a typed message does. The router's own continuations 
 post-fallback) are custom `model-router-context` messages, which never surface as an input event and so keep their lease
 without relying on any source exemption.
 
-Every router-level fresh-task or continuity classification has one router-owned **11-second wall-clock deadline**. The
+Every router-level fresh-task or continuity classification has one router-owned **15-second wall-clock deadline**. The
 router passes one `AbortSignal` through schema attempts and concrete endpoint calls. A router deadline aborts the
 in-flight call; any `AbortError` or `TimeoutError` is terminal, so the classifier does not retry the attempt, try
 another endpoint, or start/continue secondary escalation. On a continuity failure the current lease, model, effort, and

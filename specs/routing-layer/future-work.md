@@ -20,7 +20,7 @@ Add a per-endpoint circuit breaker that:
 - preserves the existing exact-ID, provider-diversity, and bounded-fallback policy;
 - has deterministic clock/probe tests, restart behavior, and operator controls.
 
-Classifier timeout ownership at the router boundary is now specified and implemented: one 11-second wall-clock deadline
+Classifier timeout ownership at the router boundary is now specified and implemented: one 15-second wall-clock deadline
 covers the complete fresh-task or continuity request; its `AbortSignal` reaches pi-ai; `AbortError`/`TimeoutError` stops
 schema retries, endpoint fallback, and secondary escalation; and failure retains the current lease/model rather than
 moving on. This is not part of the deferred circuit breaker.

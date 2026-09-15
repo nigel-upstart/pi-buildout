@@ -127,11 +127,11 @@ function irreversibleActionPlan() {
 }
 
 describe("classifier deadline", () => {
-  it("allows eleven seconds for classification", () => {
-    assert.equal(CLASSIFICATION_TIMEOUT_MS, 11_000);
+  it("allows fifteen seconds for classification", () => {
+    assert.equal(CLASSIFICATION_TIMEOUT_MS, 15_000);
   });
 
-  it("keeps retries, endpoint iteration, and secondary escalation inside one eleven-second budget", async () => {
+  it("keeps retries, endpoint iteration, and secondary escalation inside one fifteen-second budget", async () => {
     const endpointCalls = [];
     const signals = new Set();
     const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });
@@ -197,7 +197,7 @@ describe("classifier deadline", () => {
 
   it("stops endpoint iteration and secondary escalation once the injected deadline expires", async () => {
     // The deadline is injected per invocation, so this exercises real expiration against a blocked
-    // endpoint instead of asserting that an immediately settling fixture stayed under 11 seconds.
+    // endpoint instead of asserting that an immediately settling fixture stayed under 15 seconds.
     const deadlineMs = 25;
     const endpointCalls = [];
     const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });

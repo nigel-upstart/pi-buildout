@@ -171,7 +171,7 @@ extensions/router/
 
 ## Decision: router-owned classifier deadline and conservative fast paths
 
-The router owns one **11-second** wall-clock deadline for each fresh-task or continuity classification. It wraps the
+The router owns one **15-second** wall-clock deadline for each fresh-task or continuity classification. It wraps the
 whole request rather than resetting a timer for each retry, endpoint, or secondary stage, because those are all one
 user-visible routing decision. One `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and pi-ai
 `complete()` call. The deadline races the whole operation, aborts the signal, and returns the fail-safe result promptly;

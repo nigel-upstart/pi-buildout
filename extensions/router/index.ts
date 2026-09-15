@@ -192,12 +192,12 @@ export function safetyToolBlockReason(
   return lifecycleToolBlockReason(lease?.lifecycle, toolName, input);
 }
 
-// A hung classifier/selection call must never block the agent turn indefinitely. Eleven seconds
+// A hung classifier/selection call must never block the agent turn indefinitely. Fifteen seconds
 // accommodates observed classifier latency while keeping the deadline bounded; past that we abort
 // the in-flight request (via the shared AbortSignal, so the underlying network call is actually
 // cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
 // selected instead of routing on a call that never returned.
-export const CLASSIFICATION_TIMEOUT_MS = 11_000;
+export const CLASSIFICATION_TIMEOUT_MS = 15_000;
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],

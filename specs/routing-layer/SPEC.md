@@ -147,7 +147,7 @@ arguments — never accept free-form JSON parsed out of prose.
 
 ### Deadline, cancellation, and fail-safe selection
 
-Each fresh-task or continuity request is owned by one router-level **11-second wall-clock deadline**, measured across
+Each fresh-task or continuity request is owned by one router-level **15-second wall-clock deadline**, measured across
 all schema attempts, endpoint fallback, and any secondary stage. One `AbortSignal` is passed through those layers to the
 underlying `complete()` call. At the deadline the router aborts the request and returns without waiting indefinitely for
 a provider transport to settle.
@@ -494,7 +494,7 @@ under another model family's prompt profile.
 - Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.
-- Classifier work is bounded by the router-owned 11-second deadline; abort/timeout is terminal across attempts,
+- Classifier work is bounded by the router-owned 15-second deadline; abort/timeout is terminal across attempts,
   endpoints, and escalation, and classification failure cannot replace the retained selection.
 - A telemetry append rejection or 250 ms caller deadline disables active routing for the session and cannot be hidden by
   a late persistence settlement.

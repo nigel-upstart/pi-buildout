@@ -86,7 +86,7 @@ classification, and route work runs.
 Exit: every decision has policy/model/profile/classifier/exclusion/score data and fallback invariants are covered by
 tests.
 
-Reliability follow-up (completed after the original slice): the classifier now has one router-owned 11-second deadline,
+Reliability follow-up (completed after the original slice): the classifier now has one router-owned 15-second deadline,
 terminal abort/timeout propagation across attempts/endpoints/escalation, and retained-selection failure behavior.
 Narrow, policy-gated continuation/operation fast paths avoid unnecessary classification without becoming broad lexical
 task retention. Classifier telemetry now adds exactly one privacy-safe `classifier_invocation` request metric alongside
