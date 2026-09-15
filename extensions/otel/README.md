@@ -113,5 +113,6 @@ default rather than disabling capture or exporting an unbounded attribute.
 - Upstream's docs-site, Biome, and release tooling were not adopted; only the extension source and its tests are
   vendored.
 
-Behavior is otherwise compatible with upstream `0.3.0`: all 32 upstream tests pass unmodified, alongside 23 tests added
-here.
+Behavior is otherwise compatible with upstream `0.3.0`: every upstream test passes unmodified, alongside the suites
+added here. Exact counts are deliberately not quoted, since they go stale on every change; run `npm test` for the
+current total.
