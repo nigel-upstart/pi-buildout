@@ -21,19 +21,30 @@ let server;
 let cwd;
 
 const handlers = new Map();
+const channels = new Map();
 const logs = [];
 
 function fakePi() {
-  return {
+  const pi = {
     on: (event, handler) => handlers.set(event, handler),
     registerCommand: () => {},
     events: {
-      on: () => {},
+      on: (channel, handler) => {
+        const existing = channels.get(channel) ?? [];
+        existing.push(handler);
+        channels.set(channel, existing);
+      },
+      // Dispatches to registered handlers, as pi's bus does. Without this the
+      // extension's own pi-otel:log handler never runs, so nothing emitted on
+      // that channel becomes an OTel record and a duplicate emission would be
+      // invisible to the exported payload.
       emit: (channel, payload) => {
         if (channel === "pi-otel:log") logs.push(payload);
+        for (const handler of channels.get(channel) ?? []) handler(payload);
       },
     },
   };
+  return pi;
 }
 
 let sessionFile = "/tmp/sessions/sess-lifecycle.jsonl";
@@ -108,6 +119,17 @@ test("a failed LLM request marks its span and is logged exactly once", async () 
       errorMessage: "provider exploded",
     },
   });
+  await fire("tool_execution_start", {
+    toolCallId: "call-1",
+    toolName: "bash",
+    args: { cmd: "false" },
+  });
+  await fire("tool_execution_end", {
+    toolCallId: "call-1",
+    toolName: "bash",
+    isError: true,
+    result: "exit 1",
+  });
   await fire("turn_end", {});
   await fire("agent_end", {});
 
@@ -148,8 +170,20 @@ test("a failed LLM request marks its span and is logged exactly once", async () 
 
   // Exactly one error record: endLlmRequest emits it, and index.ts must not add
   // a second through the pi-otel:log channel.
-  const errorRecords = signal("/v1/logs").split("pi.llm_request.error").length - 1;
-  assert.equal(errorRecords, 1, "the error must be recorded exactly once");
+  const logPayload = signal("/v1/logs");
+  const countRecords = (name) => logPayload.split(name).length - 1;
+  assert.equal(
+    countRecords("pi.llm_request.error"),
+    1,
+    "the request error must be recorded exactly once",
+  );
+  // Same rule for tools: endTool emits this record, so the handler must not add
+  // a second one.
+  assert.equal(
+    countRecords("pi.tool.error"),
+    1,
+    "the tool error must be recorded exactly once",
+  );
 });
 
 test("an ephemeral session does not inherit the previous session id", async () => {

@@ -185,18 +185,6 @@ export default function (pi: ExtensionAPI): void {
     }
   });
 
-  const logError = (
-    eventName: string,
-    body: string,
-    attrs: Record<string, string | number | boolean> = {},
-  ) =>
-    pi.events.emit("pi-otel:log", {
-      eventName,
-      severity: "error",
-      body,
-      attributes: attrs,
-    });
-
   pi.on("before_agent_start", async (event, _ctx) => {
     tracker?.startInteraction(event?.prompt);
     const tid = tracker?.activeTraceId();
@@ -306,13 +294,10 @@ export default function (pi: ExtensionAPI): void {
   pi.on("tool_execution_end", async (event, _ctx) => {
     const e = event as any;
     if (!e?.toolCallId) return;
+    // endTool emits the pi.tool.error record itself, with the tool name, call id,
+    // and (under full capture) the result, so nothing is emitted here: doing both
+    // recorded every failed tool call twice.
     tracker?.endTool(e.toolCallId, { isError: !!e.isError, result: e.result });
-    if (e.isError) {
-      logError("pi.tool.error", `tool ${e.toolName} failed`, {
-        "gen_ai.tool.name": e.toolName,
-        "gen_ai.tool.call.id": e.toolCallId,
-      });
-    }
   });
 
   pi.on("agent_end", async (_event, _ctx) => {
