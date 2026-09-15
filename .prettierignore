@@ -1,4 +1,5 @@
 node_modules/
 coverage/
 patches/
+extensions/otel/
 .serena/project.yml
