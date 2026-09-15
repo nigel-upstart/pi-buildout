@@ -1,12 +1,18 @@
 import { complete, validateToolArguments } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, Tool } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CLASSIFIER_TOOL_NAME, classifyTask, isClassifierCancellationError } from "./classifier.ts";
+import {
+  CLASSIFIER_TOOL_NAME,
+  classifyTaskPrimary,
+  classifyTaskSecondary,
+  isClassifierCancellationError,
+} from "./classifier.ts";
 import type {
   ClassificationResult,
   ClassifierAttemptObservation,
   ClassifierRequest,
   ClassifierTransport,
+  PrimaryClassificationResult,
 } from "./classifier.ts";
 import { calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./core/endpoint-cost.ts";
 import type { EndpointEffectiveCostComparable } from "./core/endpoint-cost.ts";
@@ -237,13 +243,47 @@ export async function classifyTaskWithPi(input: {
   signal?: AbortSignal;
   onAttempt?: (observation: ClassifierAttemptObservation) => void;
 }): Promise<ClassificationResult> {
+  const primary = await classifyTaskPrimaryWithPi(input);
+  if (!primary.escalated) return primary;
+  return classifyTaskSecondaryWithPi({ ...input, primary });
+}
+
+export async function classifyTaskPrimaryWithPi(input: {
+  ctx: ExtensionContext;
+  registry: readonly RegistryModelSnapshot[];
+  prompt: string;
+  synopsis: SessionSynopsis;
+  signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
+}): Promise<PrimaryClassificationResult> {
   const selected = selectClassifierModels(input.registry);
   const primaryVendor = selected.primary[0]?.vendor;
-  const secondaryVendor = selected.secondary[0]?.vendor;
-  return classifyTask({
+  return classifyTaskPrimary({
     prompt: input.prompt,
     synopsis: input.synopsis,
     primary: transportFor(input.ctx, selected.primary),
+    ...(primaryVendor ? { primaryVendor } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.onAttempt ? { onAttempt: input.onAttempt } : {}),
+  });
+}
+
+export async function classifyTaskSecondaryWithPi(input: {
+  ctx: ExtensionContext;
+  registry: readonly RegistryModelSnapshot[];
+  prompt: string;
+  synopsis: SessionSynopsis;
+  primary: PrimaryClassificationResult;
+  signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
+}): Promise<ClassificationResult> {
+  const selected = selectClassifierModels(input.registry);
+  const primaryVendor = input.primary.primaryVendor ?? selected.primary[0]?.vendor;
+  const secondaryVendor = selected.secondary[0]?.vendor;
+  return classifyTaskSecondary({
+    prompt: input.prompt,
+    synopsis: input.synopsis,
+    primary: input.primary,
     secondary: transportFor(input.ctx, selected.secondary),
     ...(primaryVendor ? { primaryVendor } : {}),
     ...(secondaryVendor ? { secondaryVendor } : {}),
