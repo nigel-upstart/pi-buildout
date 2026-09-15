@@ -55,3 +55,10 @@ jobs:
         run: npm run typecheck
       - name: Build and test
         run: npm test
+      - name: Report dependency findings
+        # The root `npm run audit` reads the root lockfile only, so without this
+        # the vendored tree's advisories would be invisible in CI. It reports
+        # rather than gates here because this imported tree is still on
+        # upstream's dependency train; the blocking gate lands with its
+        # migration.
+        run: npm audit --omit=dev || true
