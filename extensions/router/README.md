@@ -215,16 +215,16 @@ endpoint's own list rates:
 
 The built-in route weights are:
 
-| Provider                  | Weight | Basis      | Purpose                                                         |
-| ------------------------- | -----: | ---------- | --------------------------------------------------------------- |
-| `amazon-bedrock`          |    1.0 | preference | neutral list cost; equal-cost first-party routes win the tie    |
-| `openai-codex`            |    1.0 | preference | preferred first-party subscription route                        |
-| `anthropic`               |    1.0 | preference | neutral first-party route                                       |
-| `google`, `google-vertex` |    1.0 | preference | neutral first-party routes; direct Google is review-only        |
-| `bifrost`                 |    1.0 | preference | neutral self-operated gateway                                   |
-| `openai`                  |  1.001 | preference | just behind `openai-codex` when list rates match                |
-| unknown provider          |   1.01 | preference | trails neutral known routes when list rates match               |
-| `github-copilot`          |    n/a | —          | excluded from token-cost comparison and ordered last; see below |
+| Provider                  |  Weight | Basis      | Purpose                                                         |
+| ------------------------- | ------: | ---------- | --------------------------------------------------------------- |
+| `amazon-bedrock`          | 1.00001 | preference | slightly behind first-party routes when list rates match        |
+| `openai-codex`            |     1.0 | preference | preferred first-party subscription route                        |
+| `anthropic`               |     1.0 | preference | neutral first-party route                                       |
+| `google`, `google-vertex` |     1.0 | preference | neutral first-party routes; direct Google is review-only        |
+| `bifrost`                 |     1.0 | preference | neutral self-operated gateway                                   |
+| `openai`                  |   1.001 | preference | just behind `openai-codex` when list rates match                |
+| unknown provider          |    1.01 | preference | trails neutral known routes when list rates match               |
+| `github-copilot`          |     n/a | —          | excluded from token-cost comparison and ordered last; see below |
 
 A `contract` basis asserts an actual price adjustment; a `preference` basis asserts ordering only and makes no price
 claim.
@@ -236,26 +236,27 @@ fields explicitly:
 ```json
 {
   "routerProviderWeights": {
-    "amazon-bedrock": 1.0,
+    "amazon-bedrock": 1.00001,
     "openai": 1.001
   }
 }
 ```
 
 ```sh
-export PI_ROUTER_PROVIDER_WEIGHTS='{"amazon-bedrock":1.0,"openai":1.001}'
+export PI_ROUTER_PROVIDER_WEIGHTS='{"amazon-bedrock":1.00001,"openai":1.001}'
 ```
 
 Precedence is resolved independently for each provider: environment, then project, then user, then built-in. Weights
 must be finite numbers from `0.5` through `2.0`, inclusive. An invalid selected entry records a non-sensitive rejection
 and uses neutral `1.0`; it does not recover a lower-precedence value for that provider.
 
-Bedrock's neutral weight applies its registry list rates unchanged; the router claims no private discount. When those
-rates tie a manufacturer's route for the same model, the first-party endpoint is tried first and Bedrock remains an
-availability fallback. Cache-write rates are classified explicitly: `priced_write` for a positive write rate,
-`no_write_line_item` when reads are priced but writes have no separate charge, and `caching_unpriced` when both read and
-write rates are zero (unpriced or unsupported). GitHub Copilot's flat-rate token prices are capability proxies rather
-than marginal billed costs, so Copilot has no effective-cost value and follows all eligible token-billed routes.
+Bedrock's `1.00001` preference applies a minimal ordering penalty to its registry list rates; the router claims no
+private discount. When unweighted list rates tie a manufacturer's route for the same model, the first-party endpoint is
+tried first and Bedrock remains an availability fallback. Cache-write rates are classified explicitly: `priced_write`
+for a positive write rate, `no_write_line_item` when reads are priced but writes have no separate charge, and
+`caching_unpriced` when both read and write rates are zero (unpriced or unsupported). GitHub Copilot's flat-rate token
+prices are capability proxies rather than marginal billed costs, so Copilot has no effective-cost value and follows all
+eligible token-billed routes.
 
 Bedrock `gpt-5.6-sol` is excluded above 272,000 estimated finished tokens until its registry entry supplies a
 long-context rate; the router never extends its short-context rate beyond that boundary. Residency remains a scope

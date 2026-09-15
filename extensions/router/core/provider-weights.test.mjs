@@ -16,7 +16,7 @@ describe("provider route weights", () => {
   it("pins built-ins and the conservative unknown-provider default", () => {
     const { weights, rejections } = resolveProviderWeights();
     assert.deepEqual(providerWeightFor("amazon-bedrock", weights), {
-      weight: 1,
+      weight: 1.00001,
       basis: "preference",
       source: "built-in",
     });

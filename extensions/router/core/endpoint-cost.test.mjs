@@ -57,13 +57,13 @@ describe("endpoint effective cost", () => {
 
   it("pins weighted effective costs from the installed registry, including regional markup", () => {
     const cases = [
-      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 26.125],
+      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 26.12526125],
       [requiredModel("openai-codex", "gpt-5.6-sol"), 23.75],
       [requiredModel("openai", "gpt-5.6-sol"), 23.77375],
-      [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 8],
-      [requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), 8.8],
+      [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 8.00008],
+      [requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), 8.800088],
       [requiredModel("anthropic", "claude-sonnet-5"), 8],
-      [requiredModel("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1"), 66],
+      [requiredModel("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1"), 66.00066],
     ];
     for (const [model, expected] of cases) assertClose(effectiveCost(model), expected);
   });
@@ -226,8 +226,8 @@ describe("installed pi cost semantics", () => {
 });
 
 describe("reference-mix effective cost", () => {
-  // Rates read from @earendil-works/pi-ai@0.84.1, amazon-bedrock, under the neutral preference
-  // weight. These pin the inputs to the scoped-model reassessment; a registry bump that moves a
+  // Rates read from @earendil-works/pi-ai@0.84.1, amazon-bedrock, under the slight resale preference
+  // penalty. These pin the inputs to the scoped-model reassessment; a registry bump that moves a
   // rate fails here rather than silently invalidating the comparison.
   const BEDROCK = {
     "minimax.minimax-m2.5": { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0, expected: 0.43 },
@@ -242,7 +242,7 @@ describe("reference-mix effective cost", () => {
     "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, expected: 7.423 },
     "openai.gpt-5.6-sol": { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 6.88, expected: 8.958 },
   };
-  const BEDROCK_PREFERENCE_WEIGHT = 1;
+  const BEDROCK_PREFERENCE_WEIGHT = 1.00001;
 
   function rates(modelId) {
     const { input, output, cacheRead, cacheWrite } = BEDROCK[modelId];

@@ -404,8 +404,8 @@ describe("endpoint telemetry fields", () => {
         providerWeightFor("amazon-bedrock"),
       ),
       {
-        endpointEffectiveCost: 23.75,
-        appliedProviderWeight: 1,
+        endpointEffectiveCost: 23.7502375,
+        appliedProviderWeight: 1.00001,
         providerWeightBasis: "preference",
         cacheWriteClassification: "priced_write",
       },

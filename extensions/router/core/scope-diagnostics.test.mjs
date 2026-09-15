@@ -58,6 +58,8 @@ describe("scope diagnostics", () => {
     assert.equal(endpoints[0].weightBasis, "preference");
     assert.equal(endpoints[0].cacheWriteClassification, "priced_write");
     assert.equal(endpoints[0].effectiveCost, endpoints[0].listCost);
+    assert.equal(endpoints[1].appliedWeight, 1.00001);
+    assert.equal(endpoints[1].effectiveCost, 23.7502375);
     assert.equal(endpoints.at(-1).effectiveCost, undefined, "flat-rate endpoints remain last");
   });
 

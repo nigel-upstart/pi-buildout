@@ -620,11 +620,11 @@ grouping and all v7 consequence gates remain in force. The scoped-candidate comp
    another provider outage can fall through without giving the builder its own verdict. This does not create parallel
    panels or multiple successful reviews; one successful reviewer completes the invocation.
 
-4. **Bedrock's preference weight is neutral and manufacturer endpoints break exact effective-cost ties.** The old `0.83`
-   value claimed an unsupported uniform contract discount and is removed. Bedrock is now `1.0`; OpenAI API remains
-   `1.001` relative to OpenAI Codex at `1.0`. Weighted effective list cost still decides first. Endpoint tier is
-   consulted only when those values tie, so Anthropic and OpenAI Codex beat equal-cost Bedrock resale endpoints while a
-   genuinely cheaper eligible Bedrock route can still win.
+4. **Bedrock has a minimal resale preference penalty and manufacturer endpoints break exact effective-cost ties.** The
+   old `0.83` value claimed an unsupported uniform contract discount and is removed. Bedrock is now `1.00001`; OpenAI
+   API remains `1.001` relative to OpenAI Codex and Anthropic at `1.0`. Weighted effective list cost still decides
+   first. Endpoint tier is consulted only when those values tie, while the small Bedrock penalty puts Anthropic and
+   OpenAI Codex ahead when their unweighted list rates match. A genuinely cheaper eligible Bedrock route can still win.
 
 5. **Kimi K2.5 and K2 Thinking are bounded availability fallbacks, not general coding routes.** Each is within three
    times Luna medium's direct output-weighted list rate. K2.5 contributes image input and measured Ruby strength; K2

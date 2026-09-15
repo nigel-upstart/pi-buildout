@@ -1,8 +1,8 @@
 # Scope-aware, cost-first endpoint routing with an Amazon Bedrock preference
 
 Status: **historical plan, implemented and superseded in part**. Its cost-first endpoint grouping remains current, but
-the `0.83` Bedrock contract assumption and cost-only tie-break were replaced by `router-policy-v8` with a neutral `1.0`
-preference and an equal-effective-cost manufacturer tie-break. See
+the `0.83` Bedrock contract assumption and cost-only tie-break were replaced by `router-policy-v8` with a slight
+`1.00001` resale preference penalty and an equal-effective-cost manufacturer tie-break. See
 [`decisions.md`](decisions.md#refreshed-evidence-and-endpoint-preferences-2026-09-10-router-policy-v8).
 
 ## Objective

@@ -464,7 +464,7 @@ describe("ordinary route selection", () => {
     assert.ok(decision.primary.endpointEffectiveCost < decision.fallbacks[0].endpointEffectiveCost);
   });
 
-  it("uses provider weights and first-party status only to break equal-cost ties", () => {
+  it("uses provider weights before the first-party equal-cost tie-break", () => {
     const equalPrice = { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 2.5 };
     const openaiModels = [
       ...registry().filter((candidate) => candidate.modelId !== "gpt-5.6-sol"),
@@ -514,7 +514,7 @@ describe("ordinary route selection", () => {
       ["anthropic/claude-opus-4-6", "amazon-bedrock/au.anthropic.claude-opus-4-6-v1"],
     );
     assert.equal(opus46[0].endpointEffectiveCost, 20);
-    assert.equal(opus46[1].endpointEffectiveCost, 66);
+    assert.ok(Math.abs(opus46[1].endpointEffectiveCost - 66.00066) < 1e-12);
   });
 
   it("uses identical effective-cost semantics in registry resolution and RouteChoice ordering", () => {
@@ -1655,7 +1655,7 @@ describe("scope and health drive the candidate pool", () => {
     assert.equal(decision.fallbacks[0].modelId, "us.anthropic.claude-opus-5");
   });
 
-  it("prefers first party when direct and Bedrock effective costs tie", () => {
+  it("prefers first party when direct and Bedrock list costs tie", () => {
     const both = [
       endpoint("amazon-bedrock", "global.anthropic.claude-opus-5", "anthropic"),
       endpoint("anthropic", "claude-opus-5", "anthropic"),

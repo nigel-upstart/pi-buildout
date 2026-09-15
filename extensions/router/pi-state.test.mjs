@@ -206,7 +206,7 @@ describe("router scope configuration", () => {
     assert.equal(Object.isFrozen(EMPTY_SCOPE.patterns), true);
     assert.equal(typeof EMPTY_SCOPE.providerWeights.set, "undefined");
     assert.deepEqual(EMPTY_SCOPE.providerWeights.get("amazon-bedrock"), {
-      weight: 1,
+      weight: 1.00001,
       basis: "preference",
       source: "built-in",
     });
@@ -220,7 +220,7 @@ describe("router scope configuration", () => {
     assert.deepEqual(missingScope.patterns, []);
     assert.equal(missingScope.patternSource, "default");
     assert.deepEqual(missingScope.providerWeights.get("amazon-bedrock"), {
-      weight: 1,
+      weight: 1.00001,
       basis: "preference",
       source: "built-in",
     });

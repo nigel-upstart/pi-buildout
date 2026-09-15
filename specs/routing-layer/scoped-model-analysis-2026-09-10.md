@@ -20,9 +20,10 @@ single-attempt mini-SWE-agent submissions over 500 instances and are verifier ou
 acceptance. Artificial Analysis uses Intelligence Index v4.3 and cross-provider output speed. A missing value means that
 the refreshed report contains no exact row; it is not treated as zero.
 
-Costs come from the pinned registry in USD per million tokens. The comparison is the router's
-`0.25 * input + 0.75 * output` blend under the current neutral `1.0` Bedrock preference. Direct Luna is `$0.20` input
-and `$1.20` output, for a `$0.95` blend and a three-times ceiling of `$2.85`.
+Costs come from the pinned registry in USD per million tokens. The comparison uses the router's
+`0.25 * input + 0.75 * output` blend at list rates; the current `1.00001` Bedrock preference penalty is too small to
+change the displayed figures or admission decisions. Direct Luna is `$0.20` input and `$1.20` output, for a `$0.95`
+blend and a three-times ceiling of `$2.85`.
 
 Artificial Analysis records Haiku 4.5 at 15.4 Intelligence Index and 81.09 output tokens/s, and Luna at 37.5 and 119.82
 output tokens/s. The latter row is labelled max effort; the report does not expose an effort-matched Artificial Analysis

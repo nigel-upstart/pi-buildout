@@ -918,7 +918,7 @@ describe("routerExtension", () => {
         "logical models (1):",
         "  gpt-5.6-sol (2 eligible endpoints):",
         "    1. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
-        "    2. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "    2. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=1.000010 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750238",
         "excluded endpoints (0):",
         "provider-weight rejections (0):",
       ].join("\n"),
@@ -966,8 +966,8 @@ describe("routerExtension", () => {
         provider: "amazon-bedrock",
         modelId: "openai.gpt-5.6-sol",
       });
-      assert.equal(event.endpointEffectiveCost, 23.75);
-      assert.equal(event.appliedProviderWeight, 1);
+      assert.equal(event.endpointEffectiveCost, 23.7502375);
+      assert.equal(event.appliedProviderWeight, 1.00001);
       assert.equal(event.providerWeightBasis, "preference");
       assert.equal(event.cacheWriteClassification, "priced_write");
     } finally {

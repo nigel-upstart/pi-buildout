@@ -116,9 +116,10 @@ package is absent. No `pi-telemetry-otel` source was copied.
 Use: published per-token input and output list rates now drive cost-first endpoint ordering. Cache read/write semantics
 establish the related cost classifications; the sources also establish default and one-hour TTL behavior, GPT-5.6's
 explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior, and the exclusion of cache-read tokens from
-input-token rate-limit quotas. The repository's operator-supplied neutral `1.0` Bedrock preference remains separate from
-and was not derived from AWS documentation; the public pricing page supplies only its list-price basis.
-Provisioned-throughput and commitment pricing were intentionally not adopted.
+input-token rate-limit quotas. The repository's operator-supplied `1.00001` Bedrock preference, which slightly
+prioritizes first-party endpoints when list rates match, remains separate from and was not derived from AWS
+documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and commitment pricing
+were intentionally not adopted.
 
 ### Anthropic prompt caching
 

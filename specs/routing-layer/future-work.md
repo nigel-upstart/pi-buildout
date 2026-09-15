@@ -56,11 +56,11 @@ GPT-5.6, despite both providers documenting a 30-minute minimum TTL for that mod
 prompts, logical models, request timing, token accounting, and cache-write observations; report sample counts and
 uncertainty so endpoint traffic mix is not mistaken for provider behaviour.
 
-A measured divergence does not yet change Bedrock-versus-first-party endpoint ordering. Bedrock now has a neutral `1.0`
-preference weight, so weighted effective list cost decides first and endpoint tier selects the manufacturer on an exact
-effective-cost tie. The pr3 invariant would not detect a cache-behaviour divergence: it reads registry rates and
-cache-rate classifications, not observed `cacheRead` outcomes. Use the PR7 per-endpoint `cacheRead` and `cacheWrite`
-telemetry to answer the operational question before turning it into a selection rule.
+A measured divergence does not yet change Bedrock-versus-first-party endpoint ordering. Bedrock now has a slight
+`1.00001` preference penalty, so weighted effective list cost decides first and endpoint tier selects the manufacturer
+on any remaining exact effective-cost tie. The pr3 invariant would not detect a cache-behaviour divergence: it reads
+registry rates and cache-rate classifications, not observed `cacheRead` outcomes. Use the PR7 per-endpoint `cacheRead`
+and `cacheWrite` telemetry to answer the operational question before turning it into a selection rule.
 
 ## FW4 — Cache-class eligibility, blocked on a measured cache-read share
 
