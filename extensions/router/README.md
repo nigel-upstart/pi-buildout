@@ -88,11 +88,11 @@ profile remain selected. On a fresh-task failure the router does not create a ro
 the current model/effort (and an existing lease, if present).
 
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
-builder, and two non-builder-vendor attempts; they never fall back to the builder for a verdict. Standalone
-user-requested reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta, classify its
-scope/languages/complexity/risk/horizon/context/tool needs, and use feature-based review routing. They do not inherit
-the current lease, invent a builder, become read-only merely because another task preceded them, or trigger recursive
-automatic review. They may perform explicitly requested external operations such as posting review comments.
+builder, and at least two eligible non-builder-vendor attempts; they never fall back to the builder for a verdict.
+Standalone user-requested reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta,
+classify its scope/languages/complexity/risk/horizon/context/tool needs, and use feature-based review routing. They do
+not inherit the current lease, invent a builder, become read-only merely because another task preceded them, or trigger
+recursive automatic review. They may perform explicitly requested external operations such as posting review comments.
 
 ## Start mode and enablement continuity
 
@@ -205,7 +205,8 @@ unprobed endpoints stay eligible. Override the record location with `PI_ROUTER_E
 ## Cost-first endpoint ordering
 
 Eligibility is resolved before ordering. Every token-billed endpoint for the selected logical model is ordered by
-ascending weighted effective cost, then model-ID specificity, then exact provider/model ID. Effective cost uses the
+ascending weighted effective cost, then first-party/gateway/resale tier, model-ID specificity, and exact provider/model
+ID. Tier breaks only an equal-cost tie; it never overrides a genuinely cheaper endpoint. Effective cost uses the
 endpoint's own list rates:
 
 ```text
@@ -216,10 +217,10 @@ The built-in route weights are:
 
 | Provider                  | Weight | Basis      | Purpose                                                         |
 | ------------------------- | -----: | ---------- | --------------------------------------------------------------- |
-| `amazon-bedrock`          |   0.83 | contract   | 17% off published list price across every token class           |
+| `amazon-bedrock`          |    1.0 | preference | neutral list cost; equal-cost first-party routes win the tie    |
 | `openai-codex`            |    1.0 | preference | preferred first-party subscription route                        |
 | `anthropic`               |    1.0 | preference | neutral first-party route                                       |
-| `google`, `google-vertex` |    1.0 | preference | neutral first-party routes                                      |
+| `google`, `google-vertex` |    1.0 | preference | neutral first-party routes; direct Google is review-only        |
 | `bifrost`                 |    1.0 | preference | neutral self-operated gateway                                   |
 | `openai`                  |  1.001 | preference | just behind `openai-codex` when list rates match                |
 | unknown provider          |   1.01 | preference | trails neutral known routes when list rates match               |
@@ -235,34 +236,43 @@ fields explicitly:
 ```json
 {
   "routerProviderWeights": {
-    "amazon-bedrock": { "weight": 0.83, "basis": "contract" },
+    "amazon-bedrock": 1.0,
     "openai": 1.001
   }
 }
 ```
 
 ```sh
-export PI_ROUTER_PROVIDER_WEIGHTS='{"amazon-bedrock":{"weight":0.83,"basis":"contract"}}'
+export PI_ROUTER_PROVIDER_WEIGHTS='{"amazon-bedrock":1.0,"openai":1.001}'
 ```
 
 Precedence is resolved independently for each provider: environment, then project, then user, then built-in. Weights
 must be finite numbers from `0.5` through `2.0`, inclusive. An invalid selected entry records a non-sensitive rejection
 and uses neutral `1.0`; it does not recover a lower-precedence value for that provider.
 
-The Bedrock operator adjustment covers input, output, cache reads, short cache writes, and 1-hour cache writes. Pi
-prices a 1-hour write as `input * 2`, so applying the uniform weight to input covers that class as well. Cache-write
-rates are classified explicitly: `priced_write` for a positive write rate, `no_write_line_item` when reads are priced
-but writes have no separate charge, and `caching_unpriced` when both read and write rates are zero (unpriced or
-unsupported). GitHub Copilot's flat-rate token prices are capability proxies rather than marginal billed costs, so
-Copilot has no effective-cost value and follows all eligible token-billed routes.
+Bedrock's neutral weight applies its registry list rates unchanged; the router claims no private discount. When those
+rates tie a manufacturer's route for the same model, the first-party endpoint is tried first and Bedrock remains an
+availability fallback. Cache-write rates are classified explicitly: `priced_write` for a positive write rate,
+`no_write_line_item` when reads are priced but writes have no separate charge, and `caching_unpriced` when both read and
+write rates are zero (unpriced or unsupported). GitHub Copilot's flat-rate token prices are capability proxies rather
+than marginal billed costs, so Copilot has no effective-cost value and follows all eligible token-billed routes.
 
 Bedrock `gpt-5.6-sol` is excluded above 272,000 estimated finished tokens until its registry entry supplies a
 long-context rate; the router never extends its short-context rate beyond that boundary. Residency remains a scope
 choice, not an ordering preference: scope in only the regional inference profiles permitted for the workload and scope
 out Global or other profiles that violate the requirement. Cost ordering never adds or revives an out-of-scope endpoint.
 
-Endpoint tiers remain in route and lease records as diagnostic metadata only. Every endpoint for the selected logical
-model and effort still precedes every different-model fallback.
+Direct `google` endpoints are eligible only for `code_review`, preserving the low direct-Gemini request quota for an
+independent reviewer. Gemini 3.8 Flash at high effort leads the Google review ladder when its exact ID is available;
+`google-vertex` and other scoped surfaces may still serve ordinary older-Gemini policy entries.
+
+Median repository implementation uses Opus 5 at medium as the refreshed corpus-wide default and keeps Sol high as its
+cross-provider challenger. Measured language-specific routes still override that default. The bounded read-only
+classification and extraction ladders retain MiniMax M2.5 and GPT-OSS 120B and add Kimi K2.5 plus Kimi K2 Thinking. Kimi
+remains structurally barred from mutating work because its current quality evidence is single-attempt.
+
+Endpoint tiers remain in route and lease records and break equal-effective-cost ties. Every endpoint for the selected
+logical model and effort still precedes every different-model fallback.
 
 ## Safety behavior
 

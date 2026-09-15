@@ -124,12 +124,12 @@ describe("selectClassifierModels", () => {
     assert.deepEqual(
       selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
       [
-        "amazon-bedrock/openai.gpt-5.6-luna",
         "openai-codex/gpt-5.6-luna",
+        "amazon-bedrock/openai.gpt-5.6-luna",
         "openai/gpt-5.6-luna",
+        "anthropic/claude-haiku-4-5",
         "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
         "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "anthropic/claude-haiku-4-5",
       ],
     );
     // The vendor guess for secondary selection follows the highest-priority tier (Luna/openai),
@@ -233,7 +233,7 @@ describe("selectClassifierModels", () => {
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
-      ["amazon-bedrock/openai.gpt-5.6-luna", "google-vertex/gpt-5.6-luna", "openai-codex/gpt-5.6-luna"],
+      ["google-vertex/gpt-5.6-luna", "openai-codex/gpt-5.6-luna", "amazon-bedrock/openai.gpt-5.6-luna"],
     );
   });
 

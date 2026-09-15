@@ -147,6 +147,8 @@ describe("ability bands", () => {
     // Sonnet 5 at high measures below the Opus 5 rungs and must not claim a mid tier by name.
     assert.equal(evidenceAbility("claude-sonnet-5", "high"), 1);
     assert.equal(evidenceAbility("gemini-3.6-flash", "high"), 1);
+    assert.equal(evidenceAbility("gemini-3.8-flash", "medium"), 3);
+    assert.equal(evidenceAbility("gemini-3.8-flash", "high"), 4);
     // Consensus-only fallback for a model with no rollout row.
     assert.equal(evidenceAbility("claude-haiku-4-5", "low"), 1);
     assert.equal(evidenceAbility("model-with-no-evidence", "high"), undefined);

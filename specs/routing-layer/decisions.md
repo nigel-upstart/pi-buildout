@@ -593,3 +593,48 @@ section records only the decisions and the tradeoffs they accept.
    29's rule. `exact_extraction` was left alone: Sol's removal was justified by a cost-and-band comparison specific to
    the classification ladder, and schema-emission fidelity, which is what should order extraction, is measured by no
    retained source.
+
+## Refreshed evidence and endpoint preferences, 2026-09-10 (`router-policy-v8`)
+
+This revision supersedes the Bedrock weighting and tie-break portions of `router-policy-v6`; v6's cost-first endpoint
+grouping and all v7 consequence gates remain in force. The scoped-candidate comparison is recorded in
+[`scoped-model-analysis-2026-09-10.md`](scoped-model-analysis-2026-09-10.md).
+
+1. **Opus 5 at medium is the corpus-wide default for median repository implementation, while measured language routes
+   remain authoritative.** The refreshed report explicitly recommends Opus low/medium as the agentic coding default and
+   Sol high as a 10% acceptance-gated challenger. The router has no percentage rollout mechanism, so it pins the
+   declared Opus-medium candidate and retains Sol high as the first cross-provider challenger. The pin defers when the
+   language evidence table has a measured or low-power route; this preserves the existing Go and TypeScript observations
+   instead of flattening them into the corpus-wide recommendation.
+
+2. **Direct Google is review-only, and Gemini 3.8 Flash high is admitted only to tracked review.** Direct Gemini has an
+   approximately five-request-per-minute operator quota. Vertex remains eligible for other scoped Gemini candidates,
+   while a direct `google` endpoint is excluded outside `code_review`. Gemini 3.8 has two-source performance evidence
+   sufficient for a review ability band, but not the regression, repeatability, latency-tail, and overflow fields used
+   by general cost-to-done routing. Runtime registries that do not yet expose its exact ID simply skip it and continue
+   through the reviewer ladder.
+
+3. **Generated reviews use every eligible non-builder vendor sequentially.** Review independence is still enforced by
+   logical model and vendor, and at least two reviewer vendors remain mandatory. The ladder is no longer truncated to
+   two, however: it includes all configured non-builder vendors in deterministic order so a failed Gemini endpoint or
+   another provider outage can fall through without giving the builder its own verdict. This does not create parallel
+   panels or multiple successful reviews; one successful reviewer completes the invocation.
+
+4. **Bedrock's preference weight is neutral and manufacturer endpoints break exact effective-cost ties.** The old `0.83`
+   value claimed an unsupported uniform contract discount and is removed. Bedrock is now `1.0`; OpenAI API remains
+   `1.001` relative to OpenAI Codex at `1.0`. Weighted effective list cost still decides first. Endpoint tier is
+   consulted only when those values tie, so Anthropic and OpenAI Codex beat equal-cost Bedrock resale endpoints while a
+   genuinely cheaper eligible Bedrock route can still win.
+
+5. **Kimi K2.5 and K2 Thinking are bounded availability fallbacks, not general coding routes.** Each is within three
+   times Luna medium's direct output-weighted list rate. K2.5 contributes image input and measured Ruby strength; K2
+   Thinking contributes measured output speed. Their current benchmark rows are single-attempt submissions, so the
+   existing structural `singleAttemptEvidence` guard confines them to read-only classification and extraction. GLM 5,
+   GLM 4.7, DeepSeek V3.2, and Qwen3 Coder Next are not admitted: none clears the same evidence, cost, and compensating-
+   benefit gate more convincingly than the retained bounded ladder. Existing GPT-OSS coverage remains unchanged.
+
+6. **GPT-6 Astra low is observed, not yet routed.** Its refreshed DataCurve result is the closest lower-cost OpenAI
+   comparison to Opus medium: 67.0% versus 68.1% pass rate, `$2.19` versus `$3.31` mean attempt cost, and `$3.27` versus
+   `$4.86` per pass. But Astra has only that one benchmark source and reports zero peak-context telemetry, while the
+   pinned package registry does not yet declare it even though some runtime registries do. It remains a challenger for a
+   future acceptance-gated admission rather than silently replacing a two-source default.

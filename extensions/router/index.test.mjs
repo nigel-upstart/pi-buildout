@@ -245,7 +245,8 @@ describe("classifier deadline", () => {
     assert.equal(run.summary.timedOut, true);
     assert.equal(run.summary.cancelled, true);
     assert.equal(run.summary.errorCategory, "deadline");
-    assert.ok(run.summary.wallLatencyMs >= deadlineMs, `expired after only ${String(run.summary.wallLatencyMs)}ms`);
+    // Timer scheduling and performance.now() rounding can differ by roughly one millisecond.
+    assert.ok(run.summary.wallLatencyMs >= deadlineMs - 2, `expired after only ${String(run.summary.wallLatencyMs)}ms`);
     assert.ok(
       performance.now() - startedAt < CLASSIFICATION_TIMEOUT_MS,
       "expiration must not wait for the full budget",
@@ -916,8 +917,8 @@ describe("routerExtension", () => {
         "unmatched patterns (0):",
         "logical models (1):",
         "  gpt-5.6-sol (2 eligible endpoints):",
-        "    1. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=0.830000 weightBasis=contract weightSource=built-in cacheWrite=priced_write effectiveCost=19.712500",
-        "    2. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "    1. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "    2. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
         "excluded endpoints (0):",
         "provider-weight rejections (0):",
       ].join("\n"),
@@ -965,9 +966,9 @@ describe("routerExtension", () => {
         provider: "amazon-bedrock",
         modelId: "openai.gpt-5.6-sol",
       });
-      assert.equal(event.endpointEffectiveCost, 19.7125);
-      assert.equal(event.appliedProviderWeight, 0.83);
-      assert.equal(event.providerWeightBasis, "contract");
+      assert.equal(event.endpointEffectiveCost, 23.75);
+      assert.equal(event.appliedProviderWeight, 1);
+      assert.equal(event.providerWeightBasis, "preference");
       assert.equal(event.cacheWriteClassification, "priced_write");
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;

@@ -57,15 +57,25 @@ describe("endpoint effective cost", () => {
 
   it("pins weighted effective costs from the installed registry, including regional markup", () => {
     const cases = [
-      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 21.68375],
+      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 26.125],
       [requiredModel("openai-codex", "gpt-5.6-sol"), 23.75],
       [requiredModel("openai", "gpt-5.6-sol"), 23.77375],
-      [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 6.64],
-      [requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), 7.304],
+      [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 8],
+      [requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), 8.8],
       [requiredModel("anthropic", "claude-sonnet-5"), 8],
-      [requiredModel("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1"), 54.78],
+      [requiredModel("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1"), 66],
     ];
     for (const [model, expected] of cases) assertClose(effectiveCost(model), expected);
+  });
+
+  it("keeps the admitted Kimi endpoints within three times Luna's blended list rate", () => {
+    const luna = requiredModel("openai-codex", "gpt-5.6-luna");
+    const lunaCost = blendedEndpointCost({ provider: luna.provider, costPerMillion: luna.cost });
+    for (const modelId of ["moonshotai.kimi-k2.5", "moonshot.kimi-k2-thinking"]) {
+      const kimi = requiredModel("amazon-bedrock", modelId);
+      const ratio = blendedEndpointCost({ provider: kimi.provider, costPerMillion: kimi.cost }) / lunaCost;
+      assert.ok(ratio <= 3, `${modelId} is ${ratio.toFixed(2)}x Luna and must remain within the admission ceiling`);
+    }
   });
 
   it("applies the unknown-provider default", () => {
@@ -123,6 +133,17 @@ describe("endpoint effective cost", () => {
         else assert.equal(forward, -reverse);
       }
     }
+    const tierTies = [
+      { provider: "amazon-bedrock", modelId: "anthropic.claude-sonnet-5", endpointEffectiveCost: 8 },
+      { provider: "bifrost", modelId: "bedrock/anthropic.claude-sonnet-5", endpointEffectiveCost: 8 },
+      { provider: "anthropic", modelId: "claude-sonnet-5", endpointEffectiveCost: 8 },
+    ];
+    assert.deepEqual(
+      [...tierTies].sort(compareEndpointEffectiveCost).map((endpoint) => endpoint.provider),
+      ["anthropic", "bifrost", "amazon-bedrock"],
+      "equal-cost routes prefer manufacturer, then gateway, then resale",
+    );
+
     const ordered = [...endpoints].sort(compareEndpointEffectiveCost);
     for (let first = 0; first < ordered.length; first++) {
       for (let later = first; later < ordered.length; later++) {
@@ -205,27 +226,23 @@ describe("installed pi cost semantics", () => {
 });
 
 describe("reference-mix effective cost", () => {
-  // Rates read from @earendil-works/pi-ai@0.84.1, amazon-bedrock, with the contract weight applied.
-  // These track the figures recorded in specs/routing-layer/scoped-model-analysis-2026-08-13.md, so a
-  // registry bump that moves a rate fails here rather than silently invalidating that record.
-  //
-  // The five cache-priced rows sit 0.001-0.007 below the recorded values because the record was
-  // computed at a rounded 0.124 cache-read share while this prices at the exact share that reproduces
-  // the observed mix. Unpriced-cache rows are identical, so no scoped comparison moves.
+  // Rates read from @earendil-works/pi-ai@0.84.1, amazon-bedrock, under the neutral preference
+  // weight. These pin the inputs to the scoped-model reassessment; a registry bump that moves a
+  // rate fails here rather than silently invalidating the comparison.
   const BEDROCK = {
-    "minimax.minimax-m2.5": { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0, expected: 0.357 },
-    "moonshotai.kimi-k2.5": { input: 0.6, output: 3, cacheRead: 0, cacheWrite: 0, expected: 0.785 },
-    "moonshot.kimi-k2-thinking": { input: 0.6, output: 2.5, cacheRead: 0, cacheWrite: 0, expected: 0.725 },
-    "deepseek.v3.2": { input: 0.62, output: 1.85, cacheRead: 0, cacheWrite: 0, expected: 0.662 },
-    "zai.glm-5": { input: 1, output: 3.2, cacheRead: 0, cacheWrite: 0, expected: 1.093 },
-    "openai.gpt-oss-120b": { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0, expected: 0.178 },
-    "openai.gpt-5.6-luna": { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275, expected: 0.297 },
-    "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, expected: 1.232 },
-    "openai.gpt-5.6-terra": { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75, expected: 2.974 },
-    "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, expected: 6.161 },
-    "openai.gpt-5.6-sol": { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 6.88, expected: 7.435 },
+    "minimax.minimax-m2.5": { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0, expected: 0.43 },
+    "moonshotai.kimi-k2.5": { input: 0.6, output: 3, cacheRead: 0, cacheWrite: 0, expected: 0.946 },
+    "moonshot.kimi-k2-thinking": { input: 0.6, output: 2.5, cacheRead: 0, cacheWrite: 0, expected: 0.874 },
+    "deepseek.v3.2": { input: 0.62, output: 1.85, cacheRead: 0, cacheWrite: 0, expected: 0.797 },
+    "zai.glm-5": { input: 1, output: 3.2, cacheRead: 0, cacheWrite: 0, expected: 1.317 },
+    "openai.gpt-oss-120b": { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0, expected: 0.215 },
+    "openai.gpt-5.6-luna": { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275, expected: 0.358 },
+    "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, expected: 1.485 },
+    "openai.gpt-5.6-terra": { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75, expected: 3.583 },
+    "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, expected: 7.423 },
+    "openai.gpt-5.6-sol": { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 6.88, expected: 8.958 },
   };
-  const BEDROCK_WEIGHT = 0.83;
+  const BEDROCK_PREFERENCE_WEIGHT = 1;
 
   function rates(modelId) {
     const { input, output, cacheRead, cacheWrite } = BEDROCK[modelId];
@@ -234,7 +251,7 @@ describe("reference-mix effective cost", () => {
 
   it("reproduces the recorded weighted figures for every audited endpoint", () => {
     for (const [modelId, row] of Object.entries(BEDROCK)) {
-      const actual = referenceMixEndpointCost(rates(modelId)) * BEDROCK_WEIGHT;
+      const actual = referenceMixEndpointCost(rates(modelId)) * BEDROCK_PREFERENCE_WEIGHT;
       assert.ok(
         Math.abs(actual - row.expected) < 0.0006,
         `${modelId} priced ${actual.toFixed(4)}, recorded ${String(row.expected)}`,
@@ -261,9 +278,9 @@ describe("reference-mix effective cost", () => {
     // Recorded in the analysis: against Bedrock Haiku 4.5 the break-even for MiniMax M2.5 falls from
     // 3.5x to 2.4x between a 12% and a 70% cache-read share, and GLM-5 crosses below 1.0, meaning it
     // becomes more expensive per token than the rung it was supposed to undercut.
-    const haiku = { rates: rates("claude-haiku-4-5"), weight: BEDROCK_WEIGHT };
-    const minimax = { rates: rates("minimax.minimax-m2.5"), weight: BEDROCK_WEIGHT };
-    const glm5 = { rates: rates("zai.glm-5"), weight: BEDROCK_WEIGHT };
+    const haiku = { rates: rates("claude-haiku-4-5"), weight: BEDROCK_PREFERENCE_WEIGHT };
+    const minimax = { rates: rates("minimax.minimax-m2.5"), weight: BEDROCK_PREFERENCE_WEIGHT };
+    const glm5 = { rates: rates("zai.glm-5"), weight: BEDROCK_PREFERENCE_WEIGHT };
 
     assert.ok(Math.abs(breakEvenTokenMultiplier(haiku, minimax, 0.124) - 3.5) < 0.05);
     assert.ok(Math.abs(breakEvenTokenMultiplier(haiku, minimax, 0.7) - 2.4) < 0.05);
