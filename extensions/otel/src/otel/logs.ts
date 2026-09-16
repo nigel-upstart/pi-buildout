@@ -19,6 +19,76 @@ const LOGGER_NAME = "pi-otel";
 const LOGGER_VERSION = "0.1.0";
 const BRIDGE_LOGGER_NAME = "@opentelemetry/diag";
 
+/**
+ * Event-bus channel that other pi packages publish structured log records to.
+ * pi-otel subscribes and forwards each record to the OTel logger.
+ */
+export const LOG_CHANNEL = "pi-otel:log";
+
+/**
+ * Log records emitted by `SpanTracker` as part of ending a span. It is the sole
+ * emitter of these: it holds the model, tool, and error context they carry, and
+ * emitting them anywhere else records the same failure twice.
+ *
+ * These names are shared with the emission sites so the ownership list and the
+ * emitted records cannot drift apart.
+ */
+export const TRACKER_LOG_EVENT = {
+  llmRequestError: "pi.llm_request.error",
+  toolError: "pi.tool.error",
+} as const;
+
+export type TrackerOwnedLogEvent =
+  (typeof TRACKER_LOG_EVENT)[keyof typeof TRACKER_LOG_EVENT];
+
+declare const emittedBySpanTracker: unique symbol;
+
+/**
+ * Marker with no runtime form. Intersecting a tracker-owned event name with this
+ * makes the name unassignable, so `tsc` rejects the call instead of the record
+ * being emitted a second time.
+ */
+type EmittedBySpanTracker = { readonly [emittedBySpanTracker]: never };
+
+export type LogChannelPayload<T extends string> = {
+  eventName: T;
+  severity?: "debug" | "info" | "warn" | "error";
+  body?: string;
+  attributes?: Record<string, string | number | boolean>;
+};
+
+/**
+ * Typed emitter for {@link LOG_CHANNEL}. It accepts any event name except the
+ * ones `SpanTracker` already emits; passing one of those fails `tsc`:
+ *
+ * ```ts
+ * emitLog({ eventName: "pi.tool.error", body: "..." });
+ * //        ~~~~~~~~~ Type '"pi.tool.error"' is not assignable to
+ * //                  type '"pi.tool.error" & EmittedBySpanTracker'
+ * ```
+ *
+ * Scope worth being precise about: this is a typecheck-time constraint on *this
+ * package's own sources*, enforced by `npm run typecheck` and by the
+ * `otel-extension` CI job. It is not a runtime check, and it does not constrain
+ * other extensions — they publish to {@link LOG_CHANNEL} over the event bus with
+ * whatever strings they choose, and nothing here can or should stop them. Its
+ * purpose is narrow: stop *us* from re-adding an emission that `SpanTracker`
+ * already makes, which has happened twice in this extension's history.
+ *
+ * A `string`-typed name also passes, because the extensibility API forwards
+ * names that are only known at runtime.
+ */
+export function createLogChannelEmitter(
+  emit: (channel: string, payload: unknown) => void,
+): <T extends string>(
+  payload: LogChannelPayload<T> &
+    (T extends TrackerOwnedLogEvent ? { eventName: EmittedBySpanTracker } : unknown),
+) => void {
+  return (payload) => {
+    emit(LOG_CHANNEL, payload);
+  };
+}
+
 let logger: Logger | null = null;
 let bridgeLogger: Logger | null = null;
 

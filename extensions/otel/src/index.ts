@@ -52,7 +52,11 @@ import {
 import { registerOtelCommand } from "./commands/otel.js";
 import type { OtelConfig } from "./config.js";
 import { normalizeProtocol, resolveConfig } from "./config.js";
-import { emitLifecycleLog } from "./otel/logs.js";
+import {
+  createLogChannelEmitter,
+  emitLifecycleLog,
+  LOG_CHANNEL,
+} from "./otel/logs.js";
 import { initSdk, probeEndpoint, shutdownSdk } from "./otel/sdk.js";
 import { registerShellPropagation } from "./shell-propagation.js";
 import { SpanTracker } from "./spans.js";
@@ -70,9 +74,16 @@ const SEVERITY_MAP: Record<string, SeverityNumber> = {
 export default function (pi: ExtensionAPI): void {
   registerOtelCommand(pi, () => ctx0?.cwd);
 
+  // Typed emitter for this extension's own records. It rejects the event names
+  // SpanTracker emits when a span ends, so a duplicate cannot be reintroduced
+  // here without failing the build.
+  const emitLog = createLogChannelEmitter((channel, payload) => {
+    pi.events.emit(channel, payload);
+  });
+
   // pi-otel:log — any pi extension can emit structured log records through
   // pi-otel. No-op when signals.logs is disabled (LoggerProvider not registered).
-  pi.events.on("pi-otel:log", (data: unknown) => {
+  pi.events.on(LOG_CHANNEL, (data: unknown) => {
     if (!data || typeof data !== "object") return;
     const {
       eventName = "pi-otel.log",
@@ -137,7 +148,7 @@ export default function (pi: ExtensionAPI): void {
     // Fire once: wiring can happen at session_start OR later via dashboard-ready.
     if (!sessionStartLogged) {
       sessionStartLogged = true;
-      pi.events.emit("pi-otel:log", {
+      emitLog({
         eventName: "pi.session.start",
         severity: "info",
         body: `pi session ${sessionIdRef ?? "(ephemeral)"} started`,
@@ -162,7 +173,11 @@ export default function (pi: ExtensionAPI): void {
       shellPropagationOn = true;
       registerShellPropagation(pi, ctx.cwd, () => tracker);
     }
-    // Best-effort session id from the session manager.
+    // Best-effort session id from the session manager. Cleared first: a session
+    // transition reuses this process, so a retained id would label the new
+    // session's telemetry with the previous session's identifier whenever no
+    // session file is available.
+    sessionIdRef = undefined;
     try {
       const file = ctx.sessionManager?.getSessionFile?.();
       if (file) sessionIdRef = basename(file, ".jsonl");
@@ -180,18 +195,6 @@ export default function (pi: ExtensionAPI): void {
       );
     }
   });
-
-  const logError = (
-    eventName: string,
-    body: string,
-    attrs: Record<string, string | number | boolean> = {},
-  ) =>
-    pi.events.emit("pi-otel:log", {
-      eventName,
-      severity: "error",
-      body,
-      attributes: attrs,
-    });
 
   pi.on("before_agent_start", async (event, _ctx) => {
     tracker?.startInteraction(event?.prompt);
@@ -276,19 +279,23 @@ export default function (pi: ExtensionAPI): void {
     applyUsageAttrs(attrs, msg.usage);
     tracker?.setLlmAttrs(attrs);
     tracker?.noteAssistantMessage(msg);
-    tracker?.endLlmRequest();
     if (finish === "error") {
-      logError(
-        "pi.llm_request.error",
-        msg.errorMessage ?? `LLM request failed (${finish})`,
-        {
-          ...(typeof msg.model === "string"
-            ? { [ATTR_RESPONSE_MODEL]: msg.model }
-            : {}),
-          [ATTR_FINISH_REASONS]: finish,
-        },
-      );
+      // Pass the error to endLlmRequest so the span records the failure: it sets
+      // the span status, error.type, and the error label on the duration metric.
+      // Ending without it would leave a failed request looking identical to a
+      // successful one on both the span and the metric.
+      //
+      // endLlmRequest also emits the pi.llm_request.error record itself, with
+      // request/response model and stacktrace, so this path deliberately emits
+      // nothing further.
+      const message =
+        typeof msg.errorMessage === "string" && msg.errorMessage
+          ? msg.errorMessage
+          : `LLM request failed (${finish})`;
+      tracker?.endLlmRequest(new Error(message));
+      return;
     }
+    tracker?.endLlmRequest();
   });
 
   pi.on("tool_execution_start", async (event, _ctx) => {
@@ -300,13 +307,9 @@ export default function (pi: ExtensionAPI): void {
   pi.on("tool_execution_end", async (event, _ctx) => {
     const e = event as any;
     if (!e?.toolCallId) return;
+    // endTool owns the pi.tool.error record, emitting it with the tool name, call
+    // id, and (under full capture) the result.
     tracker?.endTool(e.toolCallId, { isError: !!e.isError, result: e.result });
-    if (e.isError) {
-      logError("pi.tool.error", `tool ${e.toolName} failed`, {
-        "gen_ai.tool.name": e.toolName,
-        "gen_ai.tool.call.id": e.toolCallId,
-      });
-    }
   });
 
   pi.on("agent_end", async (_event, _ctx) => {
@@ -316,7 +319,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, _ctx) => {
     // Defensive: close any in-flight interaction before flushing.
     tracker?.endInteraction();
-    pi.events.emit("pi-otel:log", {
+    emitLog({
       eventName: "pi.session.end",
       severity: "info",
       body: `pi session ${sessionIdRef ?? "(ephemeral)"} ended`,
@@ -328,6 +331,11 @@ export default function (pi: ExtensionAPI): void {
     await shutdownSdk();
     pi.events.emit("pi-otel:status", { state: "shutdown" });
     tracker = null;
+    // A session transition (/clear, /reload, /resume) shuts this session down and
+    // starts another in the same process. Without resetting, the next session
+    // wires successfully but never records pi.session.start, while still
+    // recording pi.session.end — leaving unpaired session records.
+    sessionStartLogged = false;
   });
 
   // Anchor exported for the launcher extension. The launcher can call
