@@ -36,7 +36,7 @@ async function install(args) {
 }
 
 describe("vendored OTel extension installation", () => {
-  it("stays out of the default install because two OTel SDKs cannot share a process", async () => {
+  it("stays out of the default install because telemetry activation is explicit", async () => {
     const agentDirectory = await install([]);
     assert.equal(await exists(join(agentDirectory, "extensions", "otel")), false);
     // The default set must still install, so the opt-in gate cannot silently skip everything.

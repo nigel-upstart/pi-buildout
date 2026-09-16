@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { context as otelContext, propagation, trace } from "@opentelemetry/api";
+import { context as otelContext, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
 import {
   injectTraceContext,
@@ -12,7 +11,6 @@ import { SpanTracker } from "../dist/spans.js";
 
 const cm = new AsyncLocalStorageContextManager().enable();
 otelContext.setGlobalContextManager(cm);
-propagation.setGlobalPropagator(new W3CTraceContextPropagator());
 const provider = new BasicTracerProvider();
 const tracer = provider.getTracer("test");
 

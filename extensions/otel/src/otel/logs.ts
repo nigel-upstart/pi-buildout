@@ -1,4 +1,7 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: loggers come from the extension-scoped
+ * LoggerProvider rather than the global API provider.
+ *
  * LogRecord emission helpers + OTel diag→OTLP bridge.
  *
  * Pi-otel's OWN internal events do NOT use the global `diag` — they go
@@ -11,6 +14,7 @@ import type { DiagLogger } from "@opentelemetry/api";
 import {
   type LogAttributes,
   type Logger,
+  type LoggerProvider,
   logs,
   SeverityNumber,
 } from "@opentelemetry/api-logs";
@@ -91,24 +95,37 @@ export function createLogChannelEmitter(
 
 let logger: Logger | null = null;
 let bridgeLogger: Logger | null = null;
+let loggerProvider: LoggerProvider | null = null;
+
+export function configureLoggerProvider(provider: LoggerProvider | null): void {
+  loggerProvider = provider;
+  logger = null;
+  bridgeLogger = null;
+}
+
+function activeLoggerProvider(): LoggerProvider {
+  return loggerProvider ?? logs.getLoggerProvider();
+}
 
 export function getLogger(): Logger {
   if (!logger) {
-    logger = logs.getLogger(LOGGER_NAME, LOGGER_VERSION);
+    logger = activeLoggerProvider().getLogger(LOGGER_NAME, LOGGER_VERSION);
   }
   return logger;
 }
 
 function getBridgeLogger(): Logger {
   if (!bridgeLogger) {
-    bridgeLogger = logs.getLogger(BRIDGE_LOGGER_NAME, LOGGER_VERSION);
+    bridgeLogger = activeLoggerProvider().getLogger(
+      BRIDGE_LOGGER_NAME,
+      LOGGER_VERSION,
+    );
   }
   return bridgeLogger;
 }
 
 export function resetLogHandles(): void {
-  logger = null;
-  bridgeLogger = null;
+  configureLoggerProvider(null);
 }
 
 function emitLogRecord(

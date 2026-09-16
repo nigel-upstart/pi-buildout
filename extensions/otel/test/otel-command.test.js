@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   dashboardReadyEvent,
   endpointReachable,
+  registerOtelCommand,
 } from "../dist/commands/otel.js";
+import { resetExportHealth } from "../dist/otel/health.js";
 
 test("a configured endpoint is probed at its own host, not loopback", async () => {
   const probes = [];
@@ -101,4 +107,44 @@ test("dashboard-ready is announced only after a successful start", () => {
     // http/protobuf config apply to a gRPC endpoint on rewire.
     protocol: "grpc",
   });
+});
+
+test("/otel status reports enablement, signals, reachability, and delivery", async () => {
+  resetExportHealth();
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-otel-status-"));
+  mkdirSync(join(cwd, ".pi"));
+  writeFileSync(
+    join(cwd, ".pi", "settings.json"),
+    JSON.stringify({
+      otel: {
+        enabled: true,
+        endpoint: `http://127.0.0.1:${server.address().port}`,
+        protocol: "http/protobuf",
+        signals: { traces: true, metrics: true, logs: false },
+      },
+    }),
+  );
+
+  let command;
+  const pi = {
+    registerCommand: (_name, registered) => {
+      command = registered;
+    },
+  };
+  registerOtelCommand(pi, () => cwd);
+  const notes = [];
+  await command.handler("status", {
+    ui: { notify: (message, level) => notes.push({ message, level }) },
+  });
+  await new Promise((resolve) => server.close(resolve));
+
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].message, /Extension: enabled/);
+  assert.match(notes[0].message, /traces=on, metrics=on, logs=off/);
+  assert.match(notes[0].message, /Connected: .* — reachable/);
+  assert.match(notes[0].message, /Delivery traces\s+no export attempted yet/);
+  assert.match(notes[0].message, /Delivery metrics\s+no export attempted yet/);
+  assert.match(notes[0].message, /Delivery logs\s+disabled/);
 });

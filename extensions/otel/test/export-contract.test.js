@@ -3,7 +3,7 @@
  *
  * The other suites use a recording tracer, so they never exercise the real SDK,
  * exporter, or serializer. This one starts an in-process OTLP/HTTP receiver,
- * wires the actual NodeSDK at it, and asserts what lands on the wire — which is
+ * wires the actual scoped providers at it, and asserts what lands on the wire — which is
  * the only way to prove that a raised attribute cap survives serialization and
  * that the 2.x SDK migration still exports.
  */
@@ -11,7 +11,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { after, before, test } from "node:test";
-import { trace } from "@opentelemetry/api";
 import { initSdk, shutdownSdk } from "../dist/otel/sdk.js";
 import { applyUsageAttrs } from "../dist/attrs.js";
 import { SpanTracker } from "../dist/spans.js";
@@ -45,7 +44,7 @@ test("a >60 KiB tool result reaches the collector intact under a raised cap", as
   const maxAttributeBytes = 1024 * 1024;
   const result = `${"R".repeat(200 * 1024)}TAIL`;
 
-  const sdk = initSdk({
+  const runtime = initSdk({
     enabled: true,
     endpoint,
     protocol: "http/protobuf",
@@ -61,10 +60,10 @@ test("a >60 KiB tool result reaches the collector intact under a raised cap", as
     logLevel: 0,
     cwd: "/tmp/wd",
   });
-  assert.ok(sdk, "the migrated SDK must start");
+  assert.ok(runtime, "the migrated SDK must start");
 
   const tracker = new SpanTracker({
-    tracer: trace.getTracer("pi-otel-export-test"),
+    tracer: runtime.tracer,
     captureContent: "full",
     maxAttributeBytes,
     spanNaming: "genai",

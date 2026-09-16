@@ -1,6 +1,6 @@
 /**
- * Modified from upstream pi-otel 0.3.0: passes the configured attribute cap to
- * the span tracker.
+ * Modified from upstream pi-otel 0.3.0: passes owned configuration to the span
+ * tracker, uses the scoped SDK tracer, and exposes export-delivery health.
  *
  * pi-otel — OpenTelemetry traces for pi-coding-agent.
  *
@@ -35,7 +35,6 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { trace } from "@opentelemetry/api";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import {
   ATTR_FINISH_REASONS,
@@ -57,12 +56,10 @@ import {
   emitLifecycleLog,
   LOG_CHANNEL,
 } from "./otel/logs.js";
+import { getExportHealth, resetExportHealth } from "./otel/health.js";
 import { initSdk, probeEndpoint, shutdownSdk } from "./otel/sdk.js";
 import { registerShellPropagation } from "./shell-propagation.js";
 import { SpanTracker } from "./spans.js";
-
-const TRACER_NAME = "pi-otel";
-const TRACER_VERSION = "0.1.0";
 
 const SEVERITY_MAP: Record<string, SeverityNumber> = {
   debug: SeverityNumber.DEBUG,
@@ -125,16 +122,14 @@ export default function (pi: ExtensionAPI): void {
     cfg: OtelConfig,
     opts: { silentSuccess?: boolean } = {},
   ): void {
-    if (!initSdk(cfg, notify, opts)) {
-      // Without our own SDK the global tracer belongs to someone else (#9)
-      // or is a noop; either way no tracker.
+    const runtime = initSdk(cfg, notify, opts);
+    if (!runtime) {
       tracker = null;
       pi.events.emit("pi-otel:status", { state: "disabled" });
       return;
     }
-    const tracer = trace.getTracer(TRACER_NAME, TRACER_VERSION);
     tracker = new SpanTracker({
-      tracer,
+      tracer: runtime.tracer,
       captureContent: cfg.captureContent,
       maxAttributeBytes: cfg.maxAttributeBytes,
       spanNaming: cfg.spanNaming,
@@ -144,6 +139,8 @@ export default function (pi: ExtensionAPI): void {
     pi.events.emit("pi-otel:status", {
       state: "ready",
       endpoint: cfg.endpoint,
+      protocol: cfg.protocol,
+      health: getExportHealth(),
     });
     // Fire once: wiring can happen at session_start OR later via dashboard-ready.
     if (!sessionStartLogged) {
@@ -164,6 +161,9 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     ctx0 = ctx;
+    // A reused Pi process must not report the prior session's accepted export
+    // as health for a new session that has not wired or delivered anything.
+    resetExportHealth();
     const cfg = resolveConfig(ctx.cwd);
     if (!cfg.enabled) {
       tracker = null;
@@ -343,6 +343,7 @@ export default function (pi: ExtensionAPI): void {
   pi.events.on("pi-otel:request-status", () => {
     pi.events.emit("pi-otel:status", {
       state: tracker ? "ready" : "disabled",
+      health: getExportHealth(),
     });
   });
 

@@ -6,9 +6,9 @@ AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
 EXTENSIONS=(clear effort markdown-backlinks router subagents)
-# extensions/otel is the vendored OpenTelemetry fork. It stays opt-in because only one
-# OpenTelemetry SDK can own a process: installing it while `npm:pi-otel` is still listed in
-# settings leaves whichever loads first owning the global providers and the other disabled.
+# extensions/otel is the vendored OpenTelemetry fork. It stays opt-in so installation does not
+# enable telemetry unexpectedly. Remove `npm:pi-otel` from settings first: scoped providers allow
+# other OTel SDKs to coexist, but two Pi lifecycle extensions would emit duplicate telemetry.
 # See specs/otel-ownership-decision.md for the migration and rollback steps.
 OPTIONAL_EXTENSIONS=(otel)
 WITH_OTEL=0
@@ -138,8 +138,7 @@ for arg in "$@"; do
     -h | --help)
       printf 'Usage: %s [--skip-skill-loading-patch] [--with-otel]\n' "$(basename "$0")"
       printf '  --with-otel  also install the vendored OpenTelemetry extension (extensions/otel).\n'
-      printf '               Remove npm:pi-otel from pi settings first; two OpenTelemetry SDKs\n'
-      printf '               cannot both own one process.\n'
+      printf '               Remove npm:pi-otel from pi settings first to avoid duplicate Pi telemetry.\n'
       exit 0
       ;;
     *)
