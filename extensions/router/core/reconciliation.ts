@@ -46,9 +46,9 @@ export type SecondaryGracePolicy = {
  *   min(cache-risk bucket, maxGraceMs, secondaryDeadlineMs)
  *
  * `maxGraceMs` only caps how long the router pauses before releasing the first provider request.
- * `secondaryDeadlineMs` is the longer background-classifier timeout: after the grace expires, the
- * agent can start on the primary route while the secondary classifier continues until that deadline
- * and can still reconcile at a safe boundary.
+ * `secondaryDeadlineMs` is the background-classifier timeout. It can be longer than the selected
+ * grace: after the grace expires, the agent can start on the primary route while the secondary
+ * classifier continues until that deadline and can still reconcile at a safe boundary.
  *
  * The penalty is estimated as:
  *
@@ -58,8 +58,9 @@ export type SecondaryGracePolicy = {
  * tokens with 100% expected reuse leaves 1,000,000 reusable tokens. If the incumbent can read those
  * at $0.10/M but the corrected route would need $4.10/M uncached/write input, the plausible penalty
  * is 1,000,000 / 1,000,000 * ($4.10 - $0.10) = $4.00. With the defaults below, that enters the high
- * bucket: the first request waits up to 400ms, while the secondary classifier may keep running until
- * the 15s deadline and reconcile later.
+ * bucket: the selected grace is 400ms because the bucket grace is below both the 15s `maxGraceMs`
+ * cap and the 15s `secondaryDeadlineMs`; the secondary classifier may keep running until that
+ * deadline and reconcile later.
  *
  * If the plausible penalty is low, we wait less because switching routes is cheap. If it is high, we
  * allow more time for the secondary result so we do not eagerly spend expensive cacheable context on
