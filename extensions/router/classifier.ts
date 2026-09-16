@@ -6,7 +6,7 @@ import type { ModelVendor } from "./core/profiles.ts";
 import type { SessionSynopsis } from "./core/synopsis.ts";
 
 export const CLASSIFIER_TOOL_NAME = "report_task_features";
-const CLASSIFIER_CONFIDENCE_THRESHOLD = 0.8;
+export const CLASSIFIER_CONFIDENCE_THRESHOLD = 0.8;
 
 export type ClassifierRequest = {
   stage: "primary" | "secondary";
@@ -76,6 +76,10 @@ export type ClassificationResult = {
   secondaryVendor?: ModelVendor;
   primaryFeatures?: TaskFeatures;
   secondaryFeatures?: TaskFeatures;
+};
+
+export type PrimaryClassificationResult = ClassificationResult & {
+  primaryFeatures?: TaskFeatures;
 };
 
 const RISK_RANK = ["low", "medium", "high", "critical"] as const;
@@ -249,18 +253,22 @@ export function reconcileFeatures(primary: TaskFeatures, secondary: TaskFeatures
   };
 }
 
-export async function classifyTask(input: {
+function shouldEscalateClassification(features: TaskFeatures): boolean {
+  return (
+    features.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD || features.risk === "high" || features.risk === "critical"
+  );
+}
+
+export async function classifyTaskPrimary(input: {
   prompt: string;
   synopsis: SessionSynopsis;
   primary: ClassifierTransport;
-  secondary: ClassifierTransport;
   // Selected vendors are retained even if a transport fails before it can return a result.
   // They preserve the provider-diversity check for validated single-stage failover.
   primaryVendor?: ModelVendor;
-  secondaryVendor?: ModelVendor;
   signal?: AbortSignal;
   onAttempt?: (observation: ClassifierAttemptObservation) => void;
-}): Promise<ClassificationResult> {
+}): Promise<PrimaryClassificationResult> {
   const attempts: ClassifierAttempt[] = [];
   const primaryResult = await runStage(
     "primary",
@@ -271,56 +279,109 @@ export async function classifyTask(input: {
     input.signal,
     input.onAttempt,
   );
-  const primaryFeatures = primaryResult.features ?? conservativeFeatures("Primary classifier failed schema validation");
-  const shouldEscalate =
-    !primaryResult.features ||
-    primaryFeatures.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD ||
-    primaryFeatures.risk === "high" ||
-    primaryFeatures.risk === "critical";
+  const primaryVendor = primaryResult.vendor ?? input.primaryVendor;
 
-  let features = primaryFeatures;
-  let failedClosed = !primaryResult.features;
-  let secondaryVendor: ModelVendor | undefined;
-  let secondaryFeatures: TaskFeatures | undefined;
-  if (shouldEscalate) {
-    const secondaryResult = await runStage(
-      "secondary",
-      input.secondary,
-      input.prompt,
-      input.synopsis,
+  if (!primaryResult.features) {
+    const features = conservativeFeatures("Primary classifier failed schema validation");
+    return {
+      features,
+      archetype: deriveArchetype(features),
+      escalated: false,
+      failedClosed: true,
       attempts,
-      input.signal,
-      input.onAttempt,
-    );
-    secondaryVendor = secondaryResult.vendor;
-    secondaryFeatures = secondaryResult.features;
-    const primaryVendor = input.primaryVendor ?? primaryResult.vendor;
-    const secondaryVendorForCheck = input.secondaryVendor ?? secondaryResult.vendor;
-    if (primaryVendor && secondaryVendorForCheck && primaryVendor === secondaryVendorForCheck) {
-      features = conservativeFeatures("Secondary classifier used the same vendor as primary");
-      failedClosed = true;
-    } else if (secondaryResult.features && primaryResult.features) {
-      features = reconcileFeatures(primaryResult.features, secondaryResult.features);
-    } else if (secondaryResult.features && !primaryResult.features) {
-      // A validated provider-diverse failover is real classifier evidence. Do not merge it with
-      // synthetic fail-closed defaults: doing so would manufacture high risk and a program horizon.
-      features = secondaryResult.features;
-      failedClosed = false;
-    } else {
-      features = conservativeFeatures("Both classifier stages failed schema validation");
-      failedClosed = true;
-    }
+      ...(primaryVendor ? { primaryVendor } : {}),
+    };
+  }
+
+  const features = primaryResult.features;
+  return {
+    features,
+    archetype: deriveArchetype(features),
+    escalated: shouldEscalateClassification(features),
+    failedClosed: false,
+    attempts,
+    ...(primaryVendor ? { primaryVendor } : {}),
+    primaryFeatures: features,
+  };
+}
+
+export async function classifyTaskSecondary(input: {
+  prompt: string;
+  synopsis: SessionSynopsis;
+  primary: PrimaryClassificationResult;
+  secondary: ClassifierTransport;
+  primaryVendor?: ModelVendor;
+  secondaryVendor?: ModelVendor;
+  signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
+}): Promise<ClassificationResult> {
+  if (input.primary.failedClosed || !input.primary.primaryFeatures) return input.primary;
+  const attempts: ClassifierAttempt[] = [...input.primary.attempts];
+  const primaryFeatures = input.primary.primaryFeatures;
+  let features = primaryFeatures;
+  let failedClosed = false;
+
+  const secondaryResult = await runStage(
+    "secondary",
+    input.secondary,
+    input.prompt,
+    input.synopsis,
+    attempts,
+    input.signal,
+    input.onAttempt,
+  );
+  const secondaryVendor = secondaryResult.vendor ?? input.secondaryVendor;
+  const secondaryFeatures = secondaryResult.features;
+  const primaryVendor = input.primaryVendor ?? input.primary.primaryVendor;
+  if (primaryVendor && secondaryVendor && primaryVendor === secondaryVendor) {
+    features = conservativeFeatures("Secondary classifier used the same vendor as primary");
+    failedClosed = true;
+  } else if (secondaryResult.features) {
+    features = reconcileFeatures(primaryFeatures, secondaryResult.features);
   }
 
   return {
     features,
     archetype: deriveArchetype(features),
-    escalated: shouldEscalate,
+    escalated: true,
     failedClosed,
     attempts,
-    ...(primaryResult.vendor ? { primaryVendor: primaryResult.vendor } : {}),
+    ...(input.primary.primaryVendor ? { primaryVendor: input.primary.primaryVendor } : {}),
     ...(secondaryVendor ? { secondaryVendor } : {}),
-    ...(primaryResult.features ? { primaryFeatures: primaryResult.features } : {}),
+    primaryFeatures,
     ...(secondaryFeatures ? { secondaryFeatures } : {}),
   };
+}
+
+export async function classifyTask(input: {
+  prompt: string;
+  synopsis: SessionSynopsis;
+  primary: ClassifierTransport;
+  secondary: ClassifierTransport;
+  // Selected vendors are retained even if a transport fails before it can return a result.
+  // They preserve the provider-diversity check for validated escalation.
+  primaryVendor?: ModelVendor;
+  secondaryVendor?: ModelVendor;
+  signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
+}): Promise<ClassificationResult> {
+  const primary = await classifyTaskPrimary({
+    prompt: input.prompt,
+    synopsis: input.synopsis,
+    primary: input.primary,
+    ...(input.primaryVendor ? { primaryVendor: input.primaryVendor } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.onAttempt ? { onAttempt: input.onAttempt } : {}),
+  });
+  if (!primary.escalated) return primary;
+  return classifyTaskSecondary({
+    prompt: input.prompt,
+    synopsis: input.synopsis,
+    primary,
+    secondary: input.secondary,
+    ...(input.primaryVendor ? { primaryVendor: input.primaryVendor } : {}),
+    ...(input.secondaryVendor ? { secondaryVendor: input.secondaryVendor } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.onAttempt ? { onAttempt: input.onAttempt } : {}),
+  });
 }

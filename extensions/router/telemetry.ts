@@ -12,6 +12,7 @@ type TelemetryEventKind =
   | "boundary"
   | "classifier_invocation"
   | "classifier_attempt"
+  | "secondary_reconciliation"
   | "route_decision"
   | "attempt_completed"
   | "fallback"
@@ -40,7 +41,7 @@ export type RouterTelemetryEvent = {
   data: Record<string, unknown>;
 };
 
-export type ClassifierInvocationPurpose = "continuity" | "fresh_task";
+export type ClassifierInvocationPurpose = "continuity" | "fresh_task" | "secondary_reconciliation";
 type ClassifierInvocationOutcome = "success" | "timeout" | "error";
 type ClassifierInvocationResolution = "classified" | "failed_closed" | "retained_continuity" | "new_task" | "none";
 type ClassifierAttemptOutcome = "valid" | "invalid" | "error" | "cancelled" | "incomplete";
