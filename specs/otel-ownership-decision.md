@@ -1,6 +1,6 @@
 # Owning pi's OpenTelemetry export: decision record
 
-Status: **decided — vendored fork, opt-in, downstream unchanged**. Tracks
+Status: **adopted — vendored fork, opt-in managed installation**. Tracks
 [issue zew1me/pi-buildout#45](https://github.com/zew1me/pi-buildout/issues/45).
 
 ## Problem
@@ -49,39 +49,30 @@ registry still defines it — the concern that it had been removed does not hold
 
 ## Why activation is opt-in
 
-Only one OpenTelemetry SDK can own a process. With `npm:pi-otel@0.3.0` still in `settings.json`, loading the fork
-produces:
+The extension now uses provider-scoped trace, metric, and log pipelines, so a different SDK can own the global providers
+without disabling Pi telemetry. Activation remains explicit because installing telemetry is an operational choice, not
+because of a global-provider limitation.
 
-```text
-pi-otel: another OpenTelemetry SDK already registered global providers (trace, metrics, logs);
-pi-otel telemetry is disabled for this process.
-```
+The published `npm:pi-otel` package must still be removed before enabling this fork. Both extensions consume the same Pi
+lifecycle events, so provider coexistence would turn the old failure mode into duplicate spans, metrics, and logs rather
+than make two Pi instrumentations desirable.
 
-Whichever loads first wins and the other silently stops exporting. So `scripts/install-extensions.sh` does **not** ship
-the extension by default; it requires `--with-otel`, and the two must never be enabled together. This also honors the
-issue's guardrail that the `pi-otel` pin not be unpinned during exploration.
+## Adoption state
 
-## Adoption sequence
+Managed adoption is complete: `upstart-dotfiles` removed the published package from settings, installs this repository
+with `--with-otel`, and supplies `user.email` in the `pi()` wrapper. This repository's real-SDK tests prove all three
+signals reach an in-process OTLP receiver, including a tool result above 60 KiB under a raised cap.
 
-Not yet performed. When the fork is adopted:
-
-1. Install locally with `./scripts/install-extensions.sh --with-otel` **after** removing `npm:pi-otel@0.3.0` from
-   `~/.pi/agent/settings.json`, and confirm no "another OpenTelemetry SDK" warning appears.
-2. Confirm spans, metrics, and logs arrive at the staging collector, and that a tool result above 60 KiB arrives intact
-   with `otel.maxAttributeBytes` raised.
-3. Confirm dashboards still resolve: span names and `pi.*` attributes are unchanged. The pre-1.44 token-key spellings
-   are **not** emitted, so anything querying `gen_ai.usage.cache_read_input_tokens`,
-   `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.reasoning_tokens`, or
-   `gen_ai.usage.cache_write_input_tokens` must be repointed at the registry names before adoption.
-4. Update `upstart-dotfiles` in lockstep — `pi/.pi/agent/settings.json.j2` (drop the `packages` entry, add
-   `maxAttributeBytes`), `install.sh` (pass `--with-otel`), and its README.
+Production launch-path checks, convention mappings, exporter-delivery status, backend verification commands, and the
+remaining Datadog/APM ownership boundary are maintained in
+[`otel-production-readiness.md`](otel-production-readiness.md).
 
 ## Rollback
 
 Re-add `npm:pi-otel@0.3.0` to `settings.json`, remove `~/.pi/agent/extensions/otel`, and re-run the installer without
-`--with-otel`. Because the fork keeps upstream's span names, `pi.*` attributes, and legacy token keys, telemetry
-continuity is preserved in both directions. `otel.maxAttributeBytes` is simply ignored by the published package, which
-resumes truncating at 60 KiB.
+`--with-otel`. The published package resumes truncating at 60 KiB and also loses scoped-provider coexistence, exporter
+delivery health, session-labelled metrics, the cost metric, and current token-key spellings. Rollback therefore restores
+basic telemetry continuity but not production-readiness parity.
 
 ## Follow-up
 

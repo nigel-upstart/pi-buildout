@@ -1,3 +1,8 @@
+/**
+ * Modified from upstream pi-otel 0.3.0: status probes the configured endpoint
+ * and reports resolved signal enablement plus actual exporter delivery health.
+ */
+
 import { spawn, spawnSync } from "node:child_process";
 import {
   mkdirSync,
@@ -10,6 +15,10 @@ import { homedir, platform } from "node:os";
 import { join as joinPath } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveConfig } from "../config.js";
+import {
+  describeSignalHealth,
+  getExportHealth,
+} from "../otel/health.js";
 import { probeTcp } from "../otel/sdk.js";
 
 const OTEL_DIR = joinPath(homedir(), ".pi", "agent", "otel");
@@ -463,9 +472,31 @@ async function statusCmd(
     : false;
 
   const lines: string[] = [];
+  lines.push(`Extension: ${baseCfg?.enabled ? "enabled" : "disabled"}`);
+  if (baseCfg) {
+    lines.push(
+      `Signals:   traces=${baseCfg.signals.traces ? "on" : "off"}, metrics=${baseCfg.signals.metrics ? "on" : "off"}, logs=${baseCfg.signals.logs ? "on" : "off"}`,
+    );
+  }
   lines.push(
     `Connected: ${activeEndpoint} (${activeProtocol}) — ${reachable ? "reachable" : "UNREACHABLE"}`,
   );
+
+  const health = getExportHealth();
+  for (const signal of ["traces", "metrics", "logs"] as const) {
+    const state = health.signals[signal];
+    // Before SDK initialization, derive enabled/disabled from resolved config
+    // while making the lack of an accepted export explicit.
+    const effective = health.configured
+      ? state
+      : {
+          ...state,
+          enabled: baseCfg?.signals[signal] ?? false,
+        };
+    lines.push(
+      `Delivery ${signal.padEnd(7)} ${describeSignalHealth(effective)}`,
+    );
+  }
 
   if (baseCfg && baseCfg.endpoint !== activeEndpoint) {
     lines.push(`  (config default: ${baseCfg.endpoint})`);

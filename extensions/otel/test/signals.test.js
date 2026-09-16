@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 import { SeverityNumber } from "@opentelemetry/api-logs";
-import { trace } from "@opentelemetry/api";
 import { emitLifecycleLog } from "../dist/otel/logs.js";
+import { getExportHealth } from "../dist/otel/health.js";
 import { initSdk, shutdownSdk } from "../dist/otel/sdk.js";
 import { SpanTracker } from "../dist/spans.js";
 
@@ -40,7 +40,7 @@ after(async () => {
 });
 
 test("all three signals are constructed and exported by the migrated SDK", async () => {
-  const sdk = initSdk({
+  const runtime = initSdk({
     enabled: true,
     endpoint,
     protocol: "http/protobuf",
@@ -52,14 +52,14 @@ test("all three signals are constructed and exported by the migrated SDK", async
     sampleRatio: 1.0,
     propagateToShell: false,
     signals: { traces: true, metrics: true, logs: true },
-    resourceAttributes: {},
+    resourceAttributes: { "user.email": "pi@example.test" },
     logLevel: 0,
     cwd: "/tmp/wd",
   });
-  assert.ok(sdk, "the SDK must start with metrics and logs enabled");
+  assert.ok(runtime, "the SDK must start with metrics and logs enabled");
 
   const tracker = new SpanTracker({
-    tracer: trace.getTracer("pi-otel-signals-test"),
+    tracer: runtime.tracer,
     captureContent: "metadata_only",
     spanNaming: "genai",
     cwd: "/tmp/wd",
@@ -73,6 +73,7 @@ test("all three signals are constructed and exported by the migrated SDK", async
   tracker.setLlmAttrs({
     "gen_ai.usage.input_tokens": 11,
     "gen_ai.usage.output_tokens": 22,
+    "pi.cost.usd": 0.125,
   });
   tracker.endLlmRequest();
   tracker.endTurn();
@@ -95,6 +96,90 @@ test("all three signals are constructed and exported by the migrated SDK", async
     Buffer.concat(received.filter((r) => r.url === path).map((r) => r.body)).toString("utf8");
 
   assert.match(bySignal("/v1/metrics"), /gen_ai\.client\./, "metric instruments missing");
+  assert.match(
+    bySignal("/v1/metrics"),
+    /gen_ai\.client\.cost\.usd/,
+    "provider-reported cost metric missing",
+  );
+  assert.match(bySignal("/v1/metrics"), /sess-signals/, "session metric dimension missing");
+  for (const key of ["pi.session.id", "session.id", "gen_ai.conversation.id"]) {
+    assert.match(bySignal("/v1/metrics"), new RegExp(key.replaceAll(".", "\\.")), `${key} missing`);
+  }
+  assert.match(bySignal("/v1/metrics"), /user\.email/, "resource identity missing");
+  assert.match(bySignal("/v1/metrics"), /pi@example\.test/, "resource identity value missing");
+  assert.match(
+    bySignal("/v1/metrics"),
+    /process\.executable\.name/,
+    "scoped providers must retain NodeSDK process resource detection",
+  );
+  assert.doesNotMatch(
+    bySignal("/v1/metrics"),
+    /service\.instance\.id/,
+    "per-process identity must not create metric series",
+  );
   assert.match(bySignal("/v1/logs"), /pi\.session\.start/, "log record missing");
   assert.match(bySignal("/v1/traces"), /chat claude-sonnet-4/, "span missing");
+  assert.match(
+    bySignal("/v1/traces"),
+    /service\.instance\.id/,
+    "traces retain legitimate per-process identity",
+  );
+
+  const health = getExportHealth();
+  for (const signal of ["traces", "metrics", "logs"]) {
+    assert.ok(health.signals[signal].successes > 0, `${signal} success was not recorded`);
+    assert.ok(health.signals[signal].lastSuccessAt, `${signal} has no last-success timestamp`);
+  }
+});
+
+test("metrics-only and logs-only configurations export without traces", async () => {
+  received.length = 0;
+  const base = {
+    enabled: true,
+    endpoint,
+    protocol: "http/protobuf",
+    headers: {},
+    serviceName: "pi-otel-single-signal-test",
+    captureContent: "metadata_only",
+    maxAttributeBytes: 60 * 1024,
+    spanNaming: "genai",
+    sampleRatio: 1.0,
+    propagateToShell: false,
+    resourceAttributes: {},
+    logLevel: 0,
+    cwd: "/tmp/wd",
+  };
+
+  const metricsRuntime = initSdk({
+    ...base,
+    signals: { traces: false, metrics: true, logs: false },
+  });
+  assert.ok(metricsRuntime);
+  const tracker = new SpanTracker({
+    tracer: metricsRuntime.tracer,
+    captureContent: "metadata_only",
+    spanNaming: "genai",
+    cwd: "/tmp/wd",
+    sessionId: () => "sess-metrics-only",
+  });
+  tracker.startLlmRequest("model", "provider");
+  tracker.setLlmAttrs({ "gen_ai.usage.input_tokens": 1 });
+  tracker.endLlmRequest();
+  await shutdownSdk();
+  assert.deepEqual(new Set(received.map((r) => r.url)), new Set(["/v1/metrics"]));
+  assert.doesNotMatch(
+    Buffer.concat(received.map((r) => r.body)).toString("utf8"),
+    /gen_ai\.client\.cost\.usd/,
+    "missing provider cost must not create a zero-valued cost series",
+  );
+
+  received.length = 0;
+  const logsRuntime = initSdk({
+    ...base,
+    signals: { traces: false, metrics: false, logs: true },
+  });
+  assert.ok(logsRuntime);
+  emitLifecycleLog("pi.single-signal", SeverityNumber.INFO, "logs only");
+  await shutdownSdk();
+  assert.deepEqual(new Set(received.map((r) => r.url)), new Set(["/v1/logs"]));
 });

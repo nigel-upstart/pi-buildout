@@ -1,4 +1,7 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: meters come from the scoped provider
+ * and include a custom provider-reported USD cost counter.
+ *
  * GenAI client histograms — sigil-aligned per OTel semconv. Lazy so this
  * module is safe to import when metrics are disabled (global MeterProvider
  * is then no-op).
@@ -7,6 +10,7 @@
 import {
   type Counter,
   type Histogram,
+  type MeterProvider,
   type MetricOptions,
   metrics,
 } from "@opentelemetry/api";
@@ -15,11 +19,24 @@ const METER_NAME = "pi-otel";
 const METER_VERSION = "0.1.0";
 
 const cache = new Map<string, Histogram | Counter>();
+let meterProvider: MeterProvider | null = null;
+
+export function configureMeterProvider(provider: MeterProvider | null): void {
+  meterProvider = provider;
+  cache.clear();
+}
+
+function getMeter() {
+  return (meterProvider ?? metrics.getMeterProvider()).getMeter(
+    METER_NAME,
+    METER_VERSION,
+  );
+}
 
 function getHistogram(name: string, opts: MetricOptions): Histogram {
   let h = cache.get(name) as Histogram | undefined;
   if (!h) {
-    h = metrics.getMeter(METER_NAME, METER_VERSION).createHistogram(name, opts);
+    h = getMeter().createHistogram(name, opts);
     cache.set(name, h);
   }
   return h;
@@ -28,7 +45,7 @@ function getHistogram(name: string, opts: MetricOptions): Histogram {
 function getCounter(name: string, opts: MetricOptions): Counter {
   let c = cache.get(name) as Counter | undefined;
   if (!c) {
-    c = metrics.getMeter(METER_NAME, METER_VERSION).createCounter(name, opts);
+    c = getMeter().createCounter(name, opts);
     cache.set(name, c);
   }
   return c;
@@ -44,6 +61,13 @@ export const getTokenHistogram = () =>
   getHistogram("gen_ai.client.token.usage", {
     description: "Number of tokens used in GenAI client operations",
     unit: "{token}",
+  });
+
+/** Custom metric: the GenAI semconv does not define monetary cost. */
+export const getCostCounter = () =>
+  getCounter("gen_ai.client.cost.usd", {
+    description: "Provider-reported cost of GenAI client operations in USD",
+    unit: "USD",
   });
 
 // Step-1 integer buckets up to 32. Default OTel boundaries start at 5, so
@@ -65,5 +89,5 @@ export const getToolCallsCounter = () =>
   });
 
 export function resetMetricHandles(): void {
-  cache.clear();
+  configureMeterProvider(null);
 }

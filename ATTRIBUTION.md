@@ -387,3 +387,20 @@ replacing the pre-1.44 spellings rather than dual-writing them, and corrections 
 the configured endpoint's own host (rejecting non-HTTP schemes and unbracketing IPv6 literals) and start announces only
 a dashboard that actually came up. It also resets the session-start bookkeeping across session transitions and marks a
 failed LLM request's span, both of which upstream omits.
+
+### Provider-scoped OpenTelemetry ownership
+
+- Source: `pi-otel-telemetry`
+- Canonical repository: <https://github.com/mprokopov/pi-otel-telemetry>
+- Revision reviewed: `d9714929da0cff692dc7b7dece8d643a231aed51`
+- License declared by the source: MIT
+
+Conceptual use: that revision demonstrates the provider-scoped tracer pattern — obtain a tracer directly from an owned
+provider instead of registering it globally — and documents why global one-time registration loses spans after reload.
+The same ownership principle informed `extensions/otel/src/otel/sdk.ts`, generalized independently across trace, metric,
+and log providers so the owned Pi extension can coexist with a foreign SDK.
+
+No source code was copied or modified from `pi-otel-telemetry`. Its implementation's signal scope, data model, and
+reload mechanics were not adopted. This repository retains its existing Pi GenAI span tree, constructs its own scoped
+providers/exporters, explicitly preserves shell trace context, separates metric resources for cardinality control, and
+records exporter delivery health.

@@ -1,6 +1,7 @@
 /**
  * Modified from upstream pi-otel 0.3.0: content attributes are clamped with the
- * configured `maxAttributeBytes` rather than a hard-coded 60 KiB constant.
+ * configured `maxAttributeBytes`; metrics carry session identity and positive
+ * provider-reported cost.
  *
  * Span lifecycle tracker.
  *
@@ -32,6 +33,7 @@ import {
   ATTR_INPUT_TOKENS,
   ATTR_OPERATION_NAME,
   ATTR_OUTPUT_TOKENS,
+  ATTR_PI_COST_USD,
   ATTR_PI_CWD,
   ATTR_PI_LLM_SYNTHESIZED,
   ATTR_PI_SESSION_ID,
@@ -75,6 +77,7 @@ import {
 } from "./attrs.js";
 import { emitLifecycleLog, TRACKER_LOG_EVENT } from "./otel/logs.js";
 import {
+  getCostCounter,
   getDurationHistogram,
   getTokenHistogram,
   getToolCallsCounter,
@@ -109,6 +112,7 @@ interface LlmSlot {
   responseModel?: string;
   inputTokens?: number;
   outputTokens?: number;
+  costUsd?: number;
   toolCallCount?: number;
   synthesized?: boolean;
 }
@@ -564,6 +568,10 @@ export class SpanTracker {
     if (typeof inTok === "number") this.llm.inputTokens = inTok;
     const outTok = attrs[ATTR_OUTPUT_TOKENS];
     if (typeof outTok === "number") this.llm.outputTokens = outTok;
+    const cost = attrs[ATTR_PI_COST_USD];
+    if (typeof cost === "number" && Number.isFinite(cost)) {
+      this.llm.costUsd = cost;
+    }
     for (const [k, v] of Object.entries(attrs)) {
       if (v === undefined || v === null) continue;
       // OTel SDK requires primitive or primitive[] values.
@@ -618,6 +626,7 @@ export class SpanTracker {
     const baseAttrs: Record<string, string> = {
       [ATTR_SYSTEM]: GEN_AI_SYSTEM_PI,
       [ATTR_OPERATION_NAME]: OP_CHAT,
+      ...this.sessionMetricAttrs(),
     };
     if (this.llm.requestModel)
       baseAttrs[ATTR_REQUEST_MODEL] = this.llm.requestModel;
@@ -640,10 +649,32 @@ export class SpanTracker {
           [ATTR_TOKEN_TYPE]: "output",
         });
       }
+      // Cost is provider-reported. Do not synthesize a zero when the provider
+      // omits it, and ignore non-positive values so empty series do not imply
+      // that an unpriced request was free.
+      if (typeof this.llm.costUsd === "number" && this.llm.costUsd > 0) {
+        getCostCounter().add(this.llm.costUsd, baseAttrs);
+      }
       getToolCallsHistogram().record(this.llm.toolCallCount ?? 0, baseAttrs);
     } catch {
       // Metrics are best-effort — never block span lifecycle.
     }
+  }
+
+  /**
+   * Session identity is intentionally exported on metrics. Backends control
+   * indexing/cardinality; withholding it here would make per-session token and
+   * cost attribution impossible. The keys mirror the span contract exactly.
+   */
+  private sessionMetricAttrs(): Record<string, string> {
+    const sid = this.opts.sessionId();
+    return sid
+      ? {
+          [ATTR_PI_SESSION_ID]: sid,
+          [ATTR_SESSION_ID]: sid,
+          [ATTR_CONVERSATION_ID]: sid,
+        }
+      : {};
   }
 
   toolContext(toolCallId: string): Context | undefined {
@@ -716,6 +747,7 @@ export class SpanTracker {
       const counterAttrs: Record<string, string> = {
         [ATTR_SYSTEM]: GEN_AI_SYSTEM_PI,
         [ATTR_TOOL_NAME]: slot.name,
+        ...this.sessionMetricAttrs(),
       };
       if (args.isError) counterAttrs[ATTR_ERROR_TYPE] = "tool_error";
       getToolCallsCounter().add(1, counterAttrs);

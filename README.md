@@ -38,14 +38,16 @@ The installer verifies the installed pi package against the versioned `/skills` 
 patch, then replaces its runtime files. It does not modify pi settings. Use `--skip-skill-loading-patch` to install only
 the extensions.
 
-The vendored OpenTelemetry extension is opt-in, because only one OpenTelemetry SDK can own a pi process:
+The vendored OpenTelemetry extension is opt-in so deployments do not acquire telemetry unexpectedly:
 
 ```bash
 ./scripts/install-extensions.sh --with-otel
 ```
 
-Remove any `npm:pi-otel` entry from pi settings first, or whichever loads first will own the global providers and the
-other will silently stop exporting. See [`specs/otel-ownership-decision.md`](specs/otel-ownership-decision.md).
+Remove any published `npm:pi-otel` entry from Pi settings first. The owned fork now uses scoped providers and can
+coexist with another OTel SDK, but loading two Pi lifecycle extensions would duplicate the same interactions. See
+[`specs/otel-ownership-decision.md`](specs/otel-ownership-decision.md) and
+[`specs/otel-production-readiness.md`](specs/otel-production-readiness.md).
 
 ## Development and quality checks
 

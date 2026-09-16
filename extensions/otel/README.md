@@ -5,12 +5,15 @@ A vendored, `pi-buildout`-owned fork of [`pi-otel`](https://github.com/Nikiforov
 
 ## Status
 
-The fork is implemented, tested, and CI-gated, but **not activated by default**. `scripts/install-extensions.sh` ships
-it only with `--with-otel`, and `upstart-dotfiles` still consumes the published `npm:pi-otel@0.3.0`. Only one
-OpenTelemetry SDK can own a process, so the two must never be enabled together: whichever loads first owns the global
-providers and the other silently stops exporting. The decision record, adoption sequence, and rollback are in
-[`specs/otel-ownership-decision.md`](../../specs/otel-ownership-decision.md); the tracking issue is
-[zew1me/pi-buildout#45](https://github.com/zew1me/pi-buildout/issues/45).
+The fork is implemented, tested, CI-gated, and installed by the managed `upstart-dotfiles` path. It remains an explicit
+`--with-otel` installer choice so deployments do not acquire telemetry unexpectedly. Remove the published
+`npm:pi-otel` package before installing this fork: provider scoping means another OTel SDK no longer disables this one,
+but loading two Pi lifecycle instrumentations would still duplicate Pi telemetry.
+
+The ownership decision and rollback are in
+[`specs/otel-ownership-decision.md`](../../specs/otel-ownership-decision.md). Convention mappings, supported launch
+paths, operational checks, indexing policy, and production-readiness dispositions are in
+[`specs/otel-production-readiness.md`](../../specs/otel-production-readiness.md).
 
 ## Why it is vendored rather than reimplemented
 
@@ -39,8 +42,9 @@ or critical dependency finding.
 
 ## Dependencies
 
-The tree runs the OpenTelemetry 2.x / 0.2xx train (`sdk-node@0.222`, `core` / `resources` / `sdk-trace-base` /
-`sdk-metrics` at `2.11`, `semantic-conventions@1.43`). Upstream `0.3.0` pinned the 0.57.x / 1.30.x line, which reported
+The tree runs the OpenTelemetry 2.x / 0.2xx train (`resources` / `sdk-trace-base` / `sdk-metrics` at `2.11`, signal
+exporters and `sdk-logs` at `0.222`, `semantic-conventions@1.43`). Upstream `0.3.0` pinned the 0.57.x / 1.30.x line,
+which reported
 23 findings (19 moderate, 4 high) with no coherent override path: leaf overrides left `sdk-node` and `core` flagged,
 overriding `sdk-node` failed with `EOVERRIDE` because it is a direct dependency, and a partial bump produced a mixed
 1.x/2.x type tree. Migrating the whole train instead reports **0 findings**.
@@ -76,9 +80,6 @@ Two notes:
 The constants are asserted equal to the registry package's own exports, so a registry upgrade that renames a key fails a
 test instead of drifting silently.
 
-The constants are asserted equal to the registry package's own exports, so a registry upgrade that renames a key fails a
-test instead of drifting silently.
-
 ## Configuration
 
 Upstream settings are unchanged. This fork adds one:
@@ -107,6 +108,31 @@ The default preserves upstream behavior exactly: without this setting, capture i
 what allows full-fidelity capture to actually leave the machine. A value outside the supported range falls back to the
 default rather than disabling capture or exporting an unbounded attribute.
 
+## Metrics and identity
+
+Every request metric carries the same model/operation labels as before plus `pi.session.id`, `session.id`, and
+`gen_ai.conversation.id` when Pi has a durable session file. The managed `pi()` wrapper supplies `user.email` as an OTel
+resource attribute; direct binary launches can supply the same key through `OTEL_RESOURCE_ATTRIBUTES`.
+
+`gen_ai.client.cost.usd` is a custom counter because the GenAI semantic conventions do not define monetary cost. It
+records only a positive `usage.cost.total` reported by the provider. Missing cost is omitted, never guessed or emitted
+as zero.
+
+`service.instance.id` remains on traces and logs, where identifying a process is useful, but is deliberately absent from
+the metric resource. Datadog promotes recognized resource attributes into metric tags, so a random per-process value on
+metrics would create unbounded series with no analytical value.
+
+## Provider ownership and export health
+
+Trace, metric, and log providers are extension-scoped. The fork never registers them as global providers, so a different
+SDK can coexist in the same process and remains untouched when Pi shuts down. Pi's span parentage is explicit, and shell
+propagation serializes the active Pi span context directly; automatic instrumentation owned by some other SDK continues
+to use that SDK's globals.
+
+`/otel status` reports four distinct facts: resolved enablement, configured signals, endpoint TCP reachability, and the
+last accepted or failed OTLP export for each signal. “Accepted” means the configured OTLP endpoint returned success; it
+does not claim that a downstream backend indexed the payload. The check is observational and never gates launch.
+
 ## Owned changes so far
 
 - `otel.maxAttributeBytes` replaces upstream's module-private `MAX_ATTR_BYTES` constant, which truncated all captured
@@ -126,6 +152,12 @@ default rather than disabling capture or exporting an unbounded attribute.
 - Dependencies that the source imports but upstream only received transitively through `@opentelemetry/sdk-node`
   (`api-logs`, `sdk-logs`, `sdk-metrics`, and the `exporter-logs-*` / `exporter-metrics-*` packages) are now declared
   directly, so the tree installs and typechecks on its own.
+- Provider-scoped trace, metric, and log pipelines coexist with foreign global OTel providers. The runtime owns only the
+  context manager it successfully registers and never disables another SDK's globals on shutdown.
+- Session identity is exported on request/tool metrics, provider-reported cost is emitted as the custom
+  `gen_ai.client.cost.usd` counter, and `service.instance.id` is kept off metric resources.
+- Exporter callbacks record per-signal attempts, accepted deliveries, failures, timestamps, and the last error for
+  `/otel status` and the `pi-otel:status` event.
 - Upstream's docs-site, Biome, and release tooling were not adopted; only the extension source and its tests are
   vendored.
 
@@ -144,8 +176,6 @@ are not mistaken for accepted behavior, and are the natural content of an upstre
   `/otel start` attempt.
 - `isRunning` treats any listener on the OTLP gRPC port as the dashboard, so an unrelated service on that port is
   reported as a running dashboard.
-- `initSdk` returns early whenever `signals.traces` is disabled, so a metrics-only or logs-only configuration produces no
-  telemetry at all. Our configuration enables all three signals.
 
 The first three are reachable only through the local Aspire launcher, which this repository does not use: its collector
 is remote.
