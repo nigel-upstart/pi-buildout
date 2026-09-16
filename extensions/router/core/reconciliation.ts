@@ -59,7 +59,7 @@ export type SecondaryGracePolicy = {
  * at $0.10/M but the corrected route would need $4.10/M uncached/write input, the plausible penalty
  * is 1,000,000 / 1,000,000 * ($4.10 - $0.10) = $4.00. With the defaults below, that enters the high
  * bucket: the first request waits up to 400ms, while the secondary classifier may keep running until
- * the 11s deadline and reconcile later.
+ * the 15s deadline and reconcile later.
  *
  * If the plausible penalty is low, we wait less because switching routes is cheap. If it is high, we
  * allow more time for the secondary result so we do not eagerly spend expensive cacheable context on
@@ -69,8 +69,8 @@ export type SecondaryGracePolicy = {
  * reconciliation plus the correction-benefit thresholds below.
  */
 export const DEFAULT_SECONDARY_GRACE_POLICY: SecondaryGracePolicy = Object.freeze({
-  maxGraceMs: 400,
-  secondaryDeadlineMs: 11_000,
+  maxGraceMs: 15_000,
+  secondaryDeadlineMs: 15_000,
   lowPenaltyUsd: 0.001,
   mediumPenaltyUsd: 0.01,
   lowPenaltyGraceMs: 75,
