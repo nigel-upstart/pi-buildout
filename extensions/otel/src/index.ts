@@ -1,4 +1,7 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: passes the configured attribute cap to
+ * the span tracker.
+ *
  * pi-otel — OpenTelemetry traces for pi-coding-agent.
  *
  * Wires pi lifecycle events into an OTel span tree:
@@ -122,6 +125,7 @@ export default function (pi: ExtensionAPI): void {
     tracker = new SpanTracker({
       tracer,
       captureContent: cfg.captureContent,
+      maxAttributeBytes: cfg.maxAttributeBytes,
       spanNaming: cfg.spanNaming,
       cwd: cfg.cwd,
       sessionId: () => sessionIdRef,

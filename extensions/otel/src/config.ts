@@ -1,4 +1,6 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: resolves `otel.maxAttributeBytes`.
+ *
  * Resolve pi-otel configuration from `.pi/settings.json` + env vars.
  *
  * Precedence: env vars (OTEL_* / PI_OTEL_*) override settings.json `otel.*`.
@@ -8,7 +10,11 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DiagLogLevel } from "@opentelemetry/api";
-import type { ContentCapture, SpanNaming } from "./attrs.js";
+import {
+  DEFAULT_MAX_ATTRIBUTE_BYTES,
+  type ContentCapture,
+  type SpanNaming,
+} from "./attrs.js";
 
 export interface OtelConfig {
   enabled: boolean;
@@ -17,6 +23,8 @@ export interface OtelConfig {
   headers: Record<string, string>;
   serviceName: string;
   captureContent: ContentCapture;
+  /** Per-attribute UTF-8 byte cap for captured prompt/message/tool content. */
+  maxAttributeBytes: number;
   spanNaming: SpanNaming;
   sampleRatio: number;
   propagateToShell: boolean;
@@ -38,6 +46,7 @@ interface SettingsShape {
     headers: Record<string, string>;
     serviceName: string;
     captureContent: ContentCapture | boolean;
+    maxAttributeBytes: number | string;
     spanNaming: string;
     sampleRatio: number;
     propagateToShell: boolean;
@@ -129,6 +138,28 @@ function normalizeCapture(v: unknown): ContentCapture {
   return "metadata_only";
 }
 
+/**
+ * Upper bound for `otel.maxAttributeBytes`. A single span attribute larger than
+ * this is far past any practical OTLP receiver limit, so a value above it is
+ * treated as a configuration mistake rather than silently honored.
+ */
+export const MAX_ATTRIBUTE_BYTES_LIMIT = 64 * 1024 * 1024;
+
+/**
+ * A cap outside the supported range falls back to the compatibility default
+ * rather than disabling capture or exporting an unbounded attribute.
+ */
+function normalizeMaxAttributeBytes(v: unknown): number {
+  const n = typeof v === "string" ? Number(v.trim()) : v;
+  if (typeof n !== "number" || !Number.isSafeInteger(n)) {
+    return DEFAULT_MAX_ATTRIBUTE_BYTES;
+  }
+  if (n < 1 || n > MAX_ATTRIBUTE_BYTES_LIMIT) {
+    return DEFAULT_MAX_ATTRIBUTE_BYTES;
+  }
+  return n;
+}
+
 export function resolveConfig(cwd: string): OtelConfig {
   const projectSettings = tryReadJson(join(cwd, ".pi", "settings.json"));
   const globalSettings = tryReadJson(
@@ -166,6 +197,10 @@ export function resolveConfig(cwd: string): OtelConfig {
     process.env.PI_OTEL_CAPTURE_CONTENT ?? merged?.captureContent,
   );
 
+  const maxAttributeBytes = normalizeMaxAttributeBytes(
+    process.env.PI_OTEL_MAX_ATTRIBUTE_BYTES ?? merged?.maxAttributeBytes,
+  );
+
   const spanNaming = normalizeSpanNaming(
     process.env.PI_OTEL_SPAN_NAMING ?? merged?.spanNaming,
   );
@@ -182,6 +217,7 @@ export function resolveConfig(cwd: string): OtelConfig {
     headers,
     serviceName,
     captureContent,
+    maxAttributeBytes,
     spanNaming,
     sampleRatio,
     propagateToShell:

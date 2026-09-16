@@ -1,4 +1,7 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: the string-attribute byte cap is a
+ * parameter rather than a module-private constant, and truncation is exact.
+ *
  * gen_ai.* attribute and metric constants.
  *
  * Names follow the OTel GenAI semantic conventions:
@@ -110,25 +113,60 @@ export const GEN_AI_SYSTEM_PI = "pi";
 export type ContentCapture = "metadata_only" | "no_tool_content" | "full";
 
 /**
- * Truncate a string attribute to ~60 KB (Claude Code parity, SPEC §7).
+ * Default cap for a single string attribute, in UTF-8 bytes.
+ *
+ * 60 KiB matches Claude Code (SPEC §7) and is the value upstream applied
+ * unconditionally, so it stays the default for compatibility. Deployments that
+ * export to a collector able to accept larger attributes raise it through
+ * `otel.maxAttributeBytes`.
  */
-const MAX_ATTR_BYTES = 60 * 1024;
-export function clampAttr(value: unknown): string {
+export const DEFAULT_MAX_ATTRIBUTE_BYTES = 60 * 1024;
+
+const TRUNCATION_SUFFIX = "…[truncated]";
+const TRUNCATION_SUFFIX_BYTES = Buffer.byteLength(TRUNCATION_SUFFIX, "utf8");
+
+/**
+ * Truncate to at most `maxBytes` UTF-8 bytes without splitting a character.
+ *
+ * Cutting a UTF-8 buffer at an arbitrary index can land inside a multi-byte
+ * sequence, so back off while the first dropped byte is a continuation byte
+ * (`0b10xxxxxx`).
+ */
+function truncateUtf8(value: string, maxBytes: number): string {
+  const buf = Buffer.from(value, "utf8");
+  if (buf.length <= maxBytes) return value;
+  let end = maxBytes;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString("utf8");
+}
+
+/**
+ * Serialize a value and cap it at `maxBytes` UTF-8 bytes, marking any
+ * truncation. The returned string is never larger than `maxBytes`.
+ *
+ * This runs before the SDK's own `spanLimits.attributeValueLengthLimit`
+ * (`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`), which defaults to unlimited and can
+ * only truncate further, never raise this cap.
+ */
+export function clampAttr(
+  value: unknown,
+  maxBytes: number = DEFAULT_MAX_ATTRIBUTE_BYTES,
+): string {
   let s: string;
   if (typeof value === "string") s = value;
   else {
     try {
-      s = JSON.stringify(value);
+      // JSON.stringify is typed as returning string but yields undefined for
+      // undefined, functions, and symbols, which would throw in byteLength.
+      s = JSON.stringify(value) ?? String(value);
     } catch {
       s = String(value);
     }
   }
-  if (Buffer.byteLength(s, "utf8") <= MAX_ATTR_BYTES) return s;
-  // Byte-safe truncation: shrink until <= limit
-  let end = MAX_ATTR_BYTES;
-  while (Buffer.byteLength(s.slice(0, end), "utf8") > MAX_ATTR_BYTES - 32)
-    end -= 64;
-  return `${s.slice(0, end)}…[truncated]`;
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+  // Too small to carry the marker: emit content only, still within the cap.
+  if (maxBytes <= TRUNCATION_SUFFIX_BYTES) return truncateUtf8(s, maxBytes);
+  return `${truncateUtf8(s, maxBytes - TRUNCATION_SUFFIX_BYTES)}${TRUNCATION_SUFFIX}`;
 }
 
 /**
