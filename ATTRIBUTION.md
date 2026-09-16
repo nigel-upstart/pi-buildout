@@ -355,3 +355,35 @@ The entry is kept because the modification did exist and was applied to an insta
 `patches/pi-web-access-0.14.0/REMOVED.md` records what the patch changed, what it deliberately left in place, why it was
 removed, and the commit plus baseline and patched SHA-256 values needed to recover or verify it. Do not reapply that
 diff to another version; derive a fresh one from the clean package of the version actually installed.
+
+## `pi-otel` (vendored OpenTelemetry extension fork)
+
+- Source: `pi-otel`
+- Canonical repository: <https://github.com/NikiforovAll/pi-otel>
+- Revision vendored: `bf00f530d3667375a5317a0f425d0918e6cfac7e` (release `0.3.0`)
+- License declared by the source: Apache-2.0 (© 2026 Oleksii Nikiforov)
+
+`extensions/otel` is a vendored fork, not conceptual inspiration: the extension source under `extensions/otel/src` and
+its test suite under `extensions/otel/test` are copied from that revision. The upstream `LICENSE` is retained verbatim
+at `extensions/otel/LICENSE`, and every file modified after the import carries a prominent notice naming the change, as
+Apache-2.0 §4(b) requires.
+
+What was adopted: the pi lifecycle wiring, the GenAI span tree (`invoke_agent` / `chat` / `execute_tool`), provider-name
+normalization, content-capture modes, token and cost attributes, the OTLP SDK bootstrap across the traces, metrics, and
+logs signals, shell trace propagation, and the `/otel` dashboard command.
+
+What was intentionally not adopted: the upstream VitePress documentation site, the Biome configuration, the Husky hooks,
+and the npm publication workflow. The upstream directory layout (`src/`, `test/`) is preserved so later upstream
+revisions remain diffable, which is also why the root project's formatter, linter, and typechecker exclude this
+directory rather than restyling the vendored source.
+
+Owned modifications at import: the package manifest declares the OpenTelemetry packages the source imports but upstream
+only obtained transitively through `@opentelemetry/sdk-node`, so the vendored tree installs and typechecks standalone.
+Subsequent owned changes are recorded in `extensions/otel/README.md` and in the per-file notices: a configurable
+`otel.maxAttributeBytes` cap replacing upstream's module-private 60 KiB `MAX_ATTR_BYTES` constant (keeping 60 KiB as the
+default and making truncation exact and character-safe), migration of the whole OpenTelemetry dependency train to the
+2.x / 0.2xx line with the three API changes it required, GenAI registry spellings for the cache and reasoning token keys
+replacing the pre-1.44 spellings rather than dual-writing them, and corrections to the `/otel` command so status probes
+the configured endpoint's own host (rejecting non-HTTP schemes and unbracketing IPv6 literals) and start announces only
+a dashboard that actually came up. It also resets the session-start bookkeeping across session transitions and marks a
+failed LLM request's span, both of which upstream omits.
