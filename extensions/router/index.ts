@@ -140,7 +140,10 @@ type SecondaryBinding = {
   provisionalLeaseRevision: string;
 };
 
-type SecondaryArrival = "before_agent_run" | "during_provider_turn" | "during_tool_execution" | "between_turns";
+type SecondaryArrival =
+  "before_agent_run" | "during_provider_turn" | "during_tool_execution" | "between_turns" | "after_agent_run";
+
+type AgentRunPhase = "before_start" | "active" | "settled";
 
 type SecondaryReconciliationTask = {
   binding: SecondaryBinding;
@@ -449,9 +452,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    */
   const secondaryTasks = new Set<SecondaryReconciliationTask>();
   let queuedSecondaryReconciliation: QueuedSecondaryReconciliation | undefined;
+  let pendingSecondarySafetyGate: SecondaryReconciliationTask | undefined;
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
-  let agentRunActive = false;
+  let agentRunPhase: AgentRunPhase = "before_start";
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
 
@@ -621,7 +625,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   function secondaryArrival(): SecondaryArrival {
-    if (!agentRunActive) return "before_agent_run";
+    if (agentRunPhase === "before_start") return "before_agent_run";
+    if (agentRunPhase === "settled") return "after_agent_run";
     if (insideProviderTurn) return "during_provider_turn";
     if (activeToolExecutions > 0) return "during_tool_execution";
     return "between_turns";
@@ -669,7 +674,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         inputFingerprint: queued.task.binding.inputFingerprint,
         registrySnapshotId: queued.task.binding.registrySnapshotId,
         provisionalLeaseRevision: queued.task.binding.provisionalLeaseRevision,
-        primaryToStartLatencyMs: Math.max(0, queued.task.secondaryStartedAtMs - queued.task.primaryCompletedAtMs),
+        ...(queued.task.agentStartReleasedAtMs === undefined
+          ? {}
+          : {
+              primaryToStartLatencyMs: Math.max(
+                0,
+                queued.task.agentStartReleasedAtMs - queued.task.primaryCompletedAtMs,
+              ),
+            }),
         graceChosenMs: queued.task.grace.graceMs,
         graceUsedMs: queued.task.graceUsedMs,
         expectedReusableTokens: queued.task.grace.expectedReusableTokens,
@@ -726,7 +738,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         inputFingerprint: task.binding.inputFingerprint,
         registrySnapshotId: task.binding.registrySnapshotId,
         provisionalLeaseRevision: task.binding.provisionalLeaseRevision,
-        primaryToStartLatencyMs: Math.max(0, task.secondaryStartedAtMs - task.primaryCompletedAtMs),
+        ...(task.agentStartReleasedAtMs === undefined
+          ? {}
+          : {
+              primaryToStartLatencyMs: Math.max(0, task.agentStartReleasedAtMs - task.primaryCompletedAtMs),
+            }),
         graceChosenMs: task.grace.graceMs,
         graceUsedMs: task.graceUsedMs,
         expectedReusableTokens: task.grace.expectedReusableTokens,
@@ -766,6 +782,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   async function abortSecondaryWork(ctx: ExtensionContext | undefined, reason: string): Promise<void> {
     const queued = queuedSecondaryReconciliation;
     queuedSecondaryReconciliation = undefined;
+    if (pendingSecondarySafetyGate) pendingSecondarySafetyGate.pendingSafetyGate = false;
+    pendingSecondarySafetyGate = undefined;
     if (ctx && queued) await rejectQueuedSecondary(ctx, queued, reason);
     for (const task of [...secondaryTasks]) {
       task.pendingSafetyGate = false;
@@ -798,6 +816,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
     const staleReason = secondaryStaleReason(task);
     if (staleReason) {
+      if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
       await rejectQueuedSecondary(ctx, queued, staleReason);
       return;
     }
@@ -805,7 +824,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       await rejectQueuedSecondary(ctx, queuedSecondaryReconciliation, "superseded_secondary_result");
     }
     queuedSecondaryReconciliation = queued;
-    if (task.agentStartReleasedAtMs !== undefined && !agentRunActive && attemptDisposition !== "pending") {
+    if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
+    if (task.agentStartReleasedAtMs !== undefined && agentRunPhase !== "active" && attemptDisposition !== "pending") {
       await drainSecondaryReconciliation(ctx, {
         kind: "agent_settled",
         promptRefreshAllowed: false,
@@ -891,6 +911,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     };
     task.promise = classifySecondaryWithTimeout(input.ctx, task);
     secondaryTasks.add(task);
+    if (task.pendingSafetyGate) pendingSecondarySafetyGate = task;
     void task.promise.then(
       (run) => {
         void settleSecondaryReconciliation(input.ctx, task, run);
@@ -942,7 +963,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   function secondarySafetyBlockReason(toolName: string, input: Record<string, unknown>): string | undefined {
-    const pending = queuedSecondaryReconciliation?.task ?? [...secondaryTasks].find((task) => !task.settled);
+    const pending =
+      pendingSecondarySafetyGate ??
+      queuedSecondaryReconciliation?.task ??
+      [...secondaryTasks].find((task) => !task.settled);
     if (!pending?.pendingSafetyGate || state.active?.taskId !== pending.binding.taskId) return undefined;
     if (!isPotentiallyMutatingTool(toolName, input)) return undefined;
     return "Secondary safety classification is pending after a low-confidence primary; mutating tools are blocked until reconciliation reaches a safe boundary";
@@ -2176,6 +2200,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    agentRunPhase = "before_start";
     let exposedSafetyLifecycle: LeaseLifecycle | undefined;
     if (state.mode === "off") {
       syncSafetyLifecycleTools(undefined);
@@ -2508,7 +2533,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("agent_start", () => {
     lastProviderFailure = undefined;
     attemptDisposition = "pending";
-    agentRunActive = true;
+    agentRunPhase = "active";
     insideProviderTurn = false;
     activeToolExecutions = 0;
     agentRunSequence++;
@@ -2861,7 +2886,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         promptRefreshAllowed: false,
         continuing: false,
       });
-      agentRunActive = false;
+      agentRunPhase = "settled";
       insideProviderTurn = false;
       activeToolExecutions = 0;
     }

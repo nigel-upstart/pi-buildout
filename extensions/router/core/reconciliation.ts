@@ -52,12 +52,12 @@ export type SecondaryGracePolicy = {
  *
  * The penalty is estimated as:
  *
- *   reusable tokens * max(corrected uncached/write rate - incumbent cache-read rate, 0)
+ *   reusable tokens * max(corrected cache-write rate - incumbent cache-read rate, 0)
  *
  * with rates converted from per-million-token pricing into dollars. For example, 1,000,000 cached
  * tokens with 100% expected reuse leaves 1,000,000 reusable tokens. If the incumbent can read those
- * at $0.10/M but the corrected route would need $4.10/M uncached/write input, the plausible penalty
- * is 1,000,000 / 1,000,000 * ($4.10 - $0.10) = $4.00. With the defaults below, that enters the high
+ * at $0.10/M but the corrected route would need $4.00/M of cache writes, the plausible penalty
+ * is 1,000,000 / 1,000,000 * ($4.00 - $0.10) = $3.90. With the defaults below, that enters the high
  * bucket: the selected grace is 400ms because the bucket grace is below both the 15s `maxGraceMs`
  * cap and the 15s `secondaryDeadlineMs`; the secondary classifier may keep running until that
  * deadline and reconcile later.
@@ -112,9 +112,9 @@ function expectedReusableTokens(cache: CacheValueEstimate): number {
   return nonnegativeFinite(cache.cachedTokens) * Math.min(1, nonnegativeFinite(cache.expectedReuseRatio));
 }
 
-function correctedUncachedInputRate(endpointSnapshot: RegistryModelSnapshot | undefined): number {
+function correctedCacheWriteRate(endpointSnapshot: RegistryModelSnapshot | undefined): number {
   if (!endpointSnapshot) return 0;
-  return endpointSnapshot.costPerMillion.input + Math.max(0, endpointSnapshot.costPerMillion.cacheWrite);
+  return nonnegativeFinite(endpointSnapshot.costPerMillion.cacheWrite);
 }
 
 export function estimateCacheSwitchPenaltyUsd(
@@ -126,7 +126,7 @@ export function estimateCacheSwitchPenaltyUsd(
   const tokens = expectedReusableTokens(cache);
   if (tokens <= 0) return 0;
   const incumbentCacheReadRate = endpoint(registry, incumbent)?.costPerMillion.cacheRead ?? 0;
-  const correctedRate = correctedUncachedInputRate(endpoint(registry, corrected));
+  const correctedRate = correctedCacheWriteRate(endpoint(registry, corrected));
   return (tokens / 1_000_000) * Math.max(0, correctedRate - incumbentCacheReadRate);
 }
 
@@ -139,7 +139,7 @@ export function chooseSecondaryGrace(
   const tokens = expectedReusableTokens(cache);
   const incumbentCacheReadRate = endpoint(registry, incumbent)?.costPerMillion.cacheRead ?? 0;
   const plausibleCorrectedRate = registry.reduce(
-    (maximum, candidate) => Math.max(maximum, correctedUncachedInputRate(candidate)),
+    (maximum, candidate) => Math.max(maximum, correctedCacheWriteRate(candidate)),
     0,
   );
   const plausibleCacheMissPenaltyUsd =
