@@ -55,3 +55,6 @@ npm-debug.log*
 .DS_Store
 .pi/
 .serena/
+
+# Vendored OTel extension build output
+extensions/otel/dist/

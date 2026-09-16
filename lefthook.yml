@@ -7,7 +7,10 @@ pre-commit:
       stage_fixed: true
     eslint:
       glob: "*.{js,mjs,cjs,ts,mts,cts}"
-      run: npx eslint --fix --max-warnings 0 {staged_files}
+      # --no-warn-ignored: passing staged paths explicitly makes ESLint warn for
+      # every intentionally ignored file (e.g. the vendored extensions/otel
+      # tree), which --max-warnings 0 would then fail on.
+      run: npx eslint --fix --max-warnings 0 --no-warn-ignored {staged_files}
       stage_fixed: true
     markdown:
       glob: "*.md"

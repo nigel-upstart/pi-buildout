@@ -31,3 +31,34 @@ jobs:
         run: npm run check
       - name: Audit dependencies
         run: npm run audit
+
+  otel-extension:
+    # extensions/otel is a vendored Apache-2.0 fork with its own dependency tree
+    # and toolchain, so it builds and tests independently of the root project.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: extensions/otel
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extensions/otel/package-lock.json
+      - name: Install pinned dependencies
+        run: npm ci --ignore-scripts
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build and test
+        run: npm test
+      - name: Report dependency findings
+        # The root `npm run audit` reads the root lockfile only, so without this
+        # the vendored tree's advisories would be invisible in CI. It reports
+        # rather than gates here because this imported tree is still on
+        # upstream's dependency train; the blocking gate lands with its
+        # migration.
+        run: npm audit --omit=dev || true
