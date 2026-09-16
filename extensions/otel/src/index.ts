@@ -280,12 +280,14 @@ export default function (pi: ExtensionAPI): void {
     tracker?.setLlmAttrs(attrs);
     tracker?.noteAssistantMessage(msg);
     if (finish === "error") {
-      // Ending without the error leaves the span status unset and omits
-      // error.type and the error-labelled duration metric, so a failed request
-      // is indistinguishable from a successful one on the span and in metrics.
-      // endLlmRequest also emits the pi.llm_request.error record itself (with
-      // request/response model and stacktrace), so this path must not emit a
-      // second one.
+      // Pass the error to endLlmRequest so the span records the failure: it sets
+      // the span status, error.type, and the error label on the duration metric.
+      // Ending without it would leave a failed request looking identical to a
+      // successful one on both the span and the metric.
+      //
+      // endLlmRequest also emits the pi.llm_request.error record itself, with
+      // request/response model and stacktrace, so this path deliberately emits
+      // nothing further.
       const message =
         typeof msg.errorMessage === "string" && msg.errorMessage
           ? msg.errorMessage
@@ -305,9 +307,8 @@ export default function (pi: ExtensionAPI): void {
   pi.on("tool_execution_end", async (event, _ctx) => {
     const e = event as any;
     if (!e?.toolCallId) return;
-    // endTool emits the pi.tool.error record itself, with the tool name, call id,
-    // and (under full capture) the result, so nothing is emitted here: doing both
-    // recorded every failed tool call twice.
+    // endTool owns the pi.tool.error record, emitting it with the tool name, call
+    // id, and (under full capture) the result.
     tracker?.endTool(e.toolCallId, { isError: !!e.isError, result: e.result });
   });
 
