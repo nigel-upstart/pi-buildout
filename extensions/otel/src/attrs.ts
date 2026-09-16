@@ -1,6 +1,8 @@
 /**
  * Modified from upstream pi-otel 0.3.0: the string-attribute byte cap is a
- * parameter rather than a module-private constant, and truncation is exact.
+ * parameter rather than a module-private constant, truncation is exact, and the
+ * cache/reasoning token keys carry the current GenAI registry spelling
+ * alongside the pre-1.44 spelling for dashboard compatibility.
  *
  * gen_ai.* attribute and metric constants.
  *
@@ -37,11 +39,30 @@ export const ATTR_FINISH_REASONS = "gen_ai.response.finish_reasons";
 export const ATTR_INPUT_TOKENS = "gen_ai.usage.input_tokens";
 export const ATTR_OUTPUT_TOKENS = "gen_ai.usage.output_tokens";
 export const ATTR_TOKEN_TYPE = "gen_ai.token.type";
-export const ATTR_CACHE_READ_TOKENS = "gen_ai.usage.cache_read_input_tokens";
-export const ATTR_CACHE_WRITE_TOKENS = "gen_ai.usage.cache_write_input_tokens";
+
+/**
+ * Cache and reasoning token keys, current GenAI registry spelling (verified
+ * against `@opentelemetry/semantic-conventions@1.43.0`, which exports these as
+ * `ATTR_GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS`,
+ * `ATTR_GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS`, and
+ * `ATTR_GEN_AI_USAGE_REASONING_OUTPUT_TOKENS`).
+ *
+ * Only these are emitted. The pre-1.44 underscore spellings are not written
+ * alongside them: nothing this repository owns queries them, and carrying both
+ * doubles the attribute count on every LLM span for no consumer.
+ */
+export const ATTR_CACHE_READ_TOKENS = "gen_ai.usage.cache_read.input_tokens";
 export const ATTR_CACHE_CREATION_TOKENS =
-  "gen_ai.usage.cache_creation_input_tokens";
-export const ATTR_REASONING_TOKENS = "gen_ai.usage.reasoning_tokens";
+  "gen_ai.usage.cache_creation.input_tokens";
+export const ATTR_REASONING_TOKENS = "gen_ai.usage.reasoning.output_tokens";
+
+/**
+ * Cache-write tokens have no GenAI registry attribute as of 1.43.0 — the
+ * registry defines only `cache_read` and `cache_creation`. The key follows the
+ * registry's shape for its siblings so the usage attributes are internally
+ * consistent, and must be replaced by the registry name if one is ever defined.
+ */
+export const ATTR_CACHE_WRITE_TOKENS = "gen_ai.usage.cache_write.input_tokens";
 
 // Tool
 export const ATTR_TOOL_NAME = "gen_ai.tool.name";
@@ -184,7 +205,10 @@ export function applyUsageAttrs(
   };
   set(ATTR_INPUT_TOKENS, u.input ?? u.inputTokens ?? u.input_tokens);
   set(ATTR_OUTPUT_TOKENS, u.output ?? u.outputTokens ?? u.output_tokens);
-  set(ATTR_CACHE_READ_TOKENS, u.cacheRead ?? u.cache_read ?? u.cacheReadTokens);
+  set(
+    ATTR_CACHE_READ_TOKENS,
+    u.cacheRead ?? u.cache_read ?? u.cacheReadTokens,
+  );
   set(
     ATTR_CACHE_WRITE_TOKENS,
     u.cacheWrite ?? u.cache_write ?? u.cacheWriteTokens,

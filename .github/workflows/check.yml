@@ -57,8 +57,7 @@ jobs:
         run: npm test
       - name: Report dependency findings
         # The root `npm run audit` reads the root lockfile only, so without this
-        # the vendored tree's advisories would be invisible in CI. It reports
-        # rather than gates here because this imported tree is still on
-        # upstream's dependency train; the blocking gate lands with its
-        # migration.
+        # the vendored tree's advisories would be invisible in CI.
         run: npm audit --omit=dev || true
+      - name: Fail on high or critical dependency findings
+        run: npm audit --omit=dev --audit-level=high

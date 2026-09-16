@@ -1,4 +1,8 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: migrated to the OpenTelemetry 2.x /
+ * 0.2xx SDK train (resource factory, per-signal exporter typing, and the
+ * options-object log processor constructor).
+ *
  * OTel SDK bootstrap. One global SDK per process — pi loads us per session
  * but the SDK is shared across sessions in the same process.
  */
@@ -16,7 +20,7 @@ import { OTLPMetricExporter as MetricProtoExporter } from "@opentelemetry/export
 import { OTLPTraceExporter as GrpcExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPTraceExporter as HttpExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPTraceExporter as ProtoExporter } from "@opentelemetry/exporter-trace-otlp-proto";
-import { Resource } from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
@@ -146,15 +150,20 @@ type ExporterCtor<T> = new (opts: {
   headers: Record<string, string>;
 }) => T;
 
-function pickByProtocol<T>(
+/**
+ * The three per-protocol exporter classes for one signal are structurally
+ * distinct (each declares its own private `_url`), so they are inferred
+ * independently and the result is their union rather than a single `T`.
+ */
+function pickByProtocol<Grpc, Proto, Http>(
   cfg: OtelConfig,
   signal: Signal,
   ctors: {
-    grpc: ExporterCtor<T>;
-    proto: ExporterCtor<T>;
-    http: ExporterCtor<T>;
+    grpc: ExporterCtor<Grpc>;
+    proto: ExporterCtor<Proto>;
+    http: ExporterCtor<Http>;
   },
-): T {
+): Grpc | Proto | Http {
   if (cfg.protocol === "grpc")
     return new ctors.grpc({ url: cfg.endpoint, headers: cfg.headers });
   const opts = {
@@ -190,7 +199,7 @@ export function initSdk(
   initOnce = true;
 
   const instanceId = `${process.pid}-${randomBytes(4).toString("hex")}`;
-  const resource = new Resource({
+  const resource = resourceFromAttributes({
     ...cfg.resourceAttributes,
     [ATTR_SERVICE_NAME]: cfg.serviceName,
     [ATTR_SERVICE_INSTANCE_ID]: instanceId,
@@ -233,7 +242,9 @@ export function initSdk(
       proto: LogProtoExporter,
       http: LogHttpExporter,
     });
-    sdkOpts.logRecordProcessors = [new BatchLogRecordProcessor(logExporter)];
+    sdkOpts.logRecordProcessors = [
+      new BatchLogRecordProcessor({ exporter: logExporter }),
+    ];
   }
 
   sdk = new NodeSDK(sdkOpts as ConstructorParameters<typeof NodeSDK>[0]);
