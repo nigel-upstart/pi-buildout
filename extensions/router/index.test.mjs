@@ -429,6 +429,7 @@ async function runAdapterTurn({
   classifyPrimaryTask,
   classifySecondaryTask,
   secondaryGracePolicy,
+  telemetry: telemetryOverride,
   active,
   prompt,
   sessionId,
@@ -477,7 +478,7 @@ async function runAdapterTurn({
       sentMessages.push({ message, options });
     },
   };
-  const telemetry = {
+  const telemetry = telemetryOverride ?? {
     append: async (event) => {
       events.push(event);
     },
@@ -1019,6 +1020,10 @@ describe("routerExtension", () => {
     assert.equal(reconciliation?.data.handoff, "prompt_refresh_before_first_request");
     assert.ok(reconciliation.data.graceChosenMs > 0, "cached context must choose a bounded grace");
     assert.ok(reconciliation.data.graceUsedMs > 0, "the turn should consume only the needed grace");
+    assert.ok(
+      reconciliation.data.primaryToStartLatencyMs >= reconciliation.data.graceUsedMs,
+      "startup latency must measure through release of the first agent request",
+    );
     assert.equal(result.abortCount, 0);
     assert.equal(result.sentMessages.length, 0);
     const persisted = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
@@ -1058,6 +1063,50 @@ describe("routerExtension", () => {
       result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
       "no_material_delta",
     );
+  });
+
+  it("keeps the low-confidence mutation gate while settlement telemetry is pending", async () => {
+    const secondary = deferred();
+    const telemetryStarted = deferred();
+    const releaseTelemetry = deferred();
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            telemetryStarted.resolve();
+            await releaseTelemetry.promise;
+          }
+        },
+        read: async () => [],
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-pending-telemetry-gate",
+    });
+
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await telemetryStarted.promise;
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-during-settlement-telemetry",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+
+    releaseTelemetry.resolve();
+    await waitUntil(() => events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const allowed = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-settlement-telemetry",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(allowed, undefined);
   });
 
   it("keeps secondary reconciliation valid across ordinary lease timestamp updates", async () => {
@@ -1249,6 +1298,7 @@ describe("routerExtension", () => {
     await flushMicrotasks();
     const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
     assert.equal(reconciliation?.data.reason, "task_ended_no_extra_turn");
+    assert.equal(reconciliation?.data.secondaryArrival, "after_agent_run");
     assert.equal(result.abortCount, 0);
     assert.equal(result.sentMessages.length, 0);
   });

@@ -124,9 +124,29 @@ describe("secondary reconciliation policy", () => {
       registryEntry("anthropic", "claude-opus-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
     ];
 
+    assert.ok(
+      Math.abs(
+        estimateCacheSwitchPenaltyUsd(
+          { cachedTokens: 100_000, expectedReuseRatio: 0.5 },
+          incumbent,
+          corrected,
+          registry,
+        ) - 0.912_5,
+      ) < Number.EPSILON,
+    );
+  });
+
+  it("does not substitute the input rate when a corrected endpoint has no cache-write line item", () => {
+    const incumbent = routeChoice();
+    const corrected = routeChoice({ provider: "uncached", modelId: "uncached-model" });
+    const registry = [
+      registryEntry("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+      registryEntry("uncached", "uncached-model", { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 }),
+    ];
+
     assert.equal(
       estimateCacheSwitchPenaltyUsd({ cachedTokens: 100_000, expectedReuseRatio: 0.5 }, incumbent, corrected, registry),
-      1.662_5,
+      0,
     );
   });
 
