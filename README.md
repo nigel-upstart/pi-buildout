@@ -9,6 +9,7 @@ Local pi customizations and supporting notes used to make pi the desired coding-
 | `extensions/effort`                    | `/effort`: select and persist thinking effort                                               | [`extensions/effort/README.md`](extensions/effort/README.md)                         |
 | `extensions/router`                    | Shadow-first, task-leased model and prompt-profile routing                                  | [`extensions/router/README.md`](extensions/router/README.md)                         |
 | `extensions/subagents`                 | Natural-language creation and control of isolated, recursively nestable Pi subagents        | [`extensions/subagents/README.md`](extensions/subagents/README.md)                   |
+| `extensions/otel`                      | Vendored OpenTelemetry fork: GenAI spans, metrics, and logs over OTLP (opt-in)              | [`extensions/otel/README.md`](extensions/otel/README.md)                             |
 | `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior                                  | [skill README](.agents/skills/installed-pi-patching/README.md)                       |
 | `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-0.80.6/README.md`](patches/pi-0.80.6/README.md)                         |
 
@@ -36,6 +37,15 @@ PI_PACKAGE_DIR=/opt/pi/lib/node_modules/@earendil-works/pi-coding-agent ./script
 The installer verifies the installed pi package against the versioned `/skills` patch baseline, stages and verifies the
 patch, then replaces its runtime files. It does not modify pi settings. Use `--skip-skill-loading-patch` to install only
 the extensions.
+
+The vendored OpenTelemetry extension is opt-in, because only one OpenTelemetry SDK can own a pi process:
+
+```bash
+./scripts/install-extensions.sh --with-otel
+```
+
+Remove any `npm:pi-otel` entry from pi settings first, or whichever loads first will own the global providers and the
+other will silently stop exporting. See [`specs/otel-ownership-decision.md`](specs/otel-ownership-decision.md).
 
 ## Development and quality checks
 
