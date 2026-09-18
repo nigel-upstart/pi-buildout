@@ -781,6 +781,120 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_safety_review"), true);
   });
 
+  it("makes /route off an immediate bypass for routing, selection tracking, and safety blocking", async () => {
+    const hooks = new Map();
+    const commands = new Map();
+    const appended = [];
+    const telemetryEvents = [];
+    const selectedModels = [];
+    const selectedEfforts = [];
+    let classifications = 0;
+    let activeTools = ["read", "bash", "submit_action_plan"];
+    const active = {
+      ...adapterLease(),
+      lifecycle: {
+        phase: "preflight",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: "task-fingerprint",
+      },
+    };
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "active", manualOverride: false, active },
+      },
+    ];
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: (name, command) => commands.set(name, command),
+      registerTool: () => {},
+      appendEntry: (customType, data) => appended.push({ customType, data }),
+      exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+      getActiveTools: () => activeTools,
+      setActiveTools: (tools) => {
+        activeTools = tools;
+      },
+      getThinkingLevel: () => "high",
+      setThinkingLevel: (effort) => selectedEfforts.push(effort),
+      setModel: async (model) => {
+        selectedModels.push(model);
+        return true;
+      },
+    };
+    const ctx = {
+      cwd: "/repo",
+      model: registryModelForChoice(active.selected),
+      modelRegistry: { getAll: () => [], getAvailable: () => [], find: () => undefined },
+      sessionManager: { getBranch: () => branch, getSessionId: () => "off-bypass-session" },
+      getContextUsage: () => ({ tokens: 0, contextWindow: 128_000 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        setWorkingMessage: () => {},
+        setWorkingVisible: () => {},
+        notify: () => {},
+      },
+    };
+    routerExtension(pi, {
+      telemetry: { append: async (event) => telemetryEvents.push(event), read: async () => [] },
+      classifyTask: async () => {
+        classifications++;
+        return classificationResult();
+      },
+    });
+
+    await hooks.get("session_start")({ reason: "reload" }, ctx);
+    await commands.get("route").handler("off", ctx);
+    const entriesAfterOff = appended.length;
+    const telemetryAfterOff = telemetryEvents.length;
+
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "off-edit", toolName: "edit", input: { path: "README.md" } }),
+      undefined,
+      "off mode must not enforce the persisted preflight lifecycle",
+    );
+    await hooks.get("model_select")({ source: "user", model: { provider: "anthropic", id: "claude-opus-5" } }, ctx);
+    await hooks.get("thinking_level_select")({ level: "low" }, ctx);
+    assert.deepEqual(activeTools, ["read", "bash"], "off mode must immediately remove router lifecycle tools");
+    assert.equal(
+      appended.length,
+      entriesAfterOff,
+      "off-mode selection hooks must not mutate the persisted router lease",
+    );
+    assert.equal(telemetryEvents.length, telemetryAfterOff, "off-mode selection hooks must not emit routing telemetry");
+
+    await commands.get("route").handler("active", ctx);
+    await hooks.get("input")({ text: "Queue a route, then disable it", source: "interactive" }, ctx);
+    await commands.get("route").handler("off", ctx);
+    const entriesAfterPendingOff = appended.length;
+    const telemetryAfterPendingOff = telemetryEvents.length;
+    const startResult = await hooks.get("before_agent_start")(
+      { prompt: "Queue a route, then disable it", systemPrompt: "base", images: [] },
+      ctx,
+    );
+    hooks.get("agent_start")();
+    hooks.get("turn_start")();
+    hooks.get("tool_execution_end")({ toolCallId: "off-edit", toolName: "edit", isError: false });
+    hooks.get("after_provider_response")({ status: 500 });
+    await hooks.get("agent_end")({ messages: [] }, ctx);
+    await hooks.get("agent_settled")({}, ctx);
+
+    assert.equal(startResult, undefined);
+    assert.equal(classifications, 0);
+    assert.deepEqual(selectedModels, []);
+    assert.deepEqual(selectedEfforts, []);
+    assert.equal(appended.length, entriesAfterPendingOff, "off-mode hooks must not mutate the persisted router lease");
+    assert.equal(telemetryEvents.length, telemetryAfterPendingOff, "off-mode hooks must not emit routing telemetry");
+
+    await commands.get("route").handler("active", ctx);
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "active-edit", toolName: "edit", input: { path: "README.md" } }).reason,
+      /preflight/,
+      "re-enabling active mode must restore the existing safety lifecycle",
+    );
+  });
+
   it("bounds stalled telemetry, fails active routing safe, and consumes late settlement", async (t) => {
     for (const lateOutcome of ["resolve", "reject"]) {
       await t.test(lateOutcome, async () => {
