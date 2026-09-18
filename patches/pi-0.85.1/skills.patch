@@ -122,10 +122,10 @@ index c5ed4d7..e0153e1 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..f8714df
+index 0000000..9ac670f
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,290 @@
 +import { execFileSync } from "node:child_process";
 +import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 +import { homedir } from "node:os";
@@ -144,7 +144,9 @@ index 0000000..f8714df
 +        return {};
 +    try {
 +        const value = JSON.parse(readFileSync(path, "utf-8"));
-+        return isObjectRecord(value) ? value : {};
++        if (!isObjectRecord(value))
++            throw new Error("Expected a JSON object");
++        return value;
 +    }
 +    catch (error) {
 +        throw new Error(`Could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -182,7 +184,9 @@ index 0000000..f8714df
 +    try {
 +        const parsed = new URL(url);
 +        const repoPath = parsed.pathname.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
-+        return parsed.hostname && repoPath ? `${parsed.hostname.toLowerCase()}:${repoPath}` : undefined;
++        const defaultPort = parsed.protocol === "ssh:" ? "22" : parsed.protocol === "git:" ? "9418" : undefined;
++        const host = parsed.port && parsed.port !== defaultPort ? parsed.host : parsed.hostname;
++        return host && repoPath ? `${host.toLowerCase()}:${repoPath}` : undefined;
 +    }
 +    catch {
 +        return undefined;

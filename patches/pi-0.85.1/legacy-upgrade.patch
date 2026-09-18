@@ -76,7 +76,7 @@ index c85a0e5..e0153e1 100644
      }
      updateSkillsFromPaths(skillPaths, metadataByPath) {
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
-index e040118..f8714df 100644
+index e040118..9ac670f 100644
 --- a/dist/core/skill-management.js
 +++ b/dist/core/skill-management.js
 @@ -4,8 +4,9 @@ import { homedir } from "node:os";
@@ -90,7 +90,29 @@ index e040118..f8714df 100644
  
  function isObjectRecord(value) {
      return value !== null && typeof value === "object" && !Array.isArray(value);
-@@ -181,15 +182,25 @@ export function getSkillCatalogDirs({ cwd, agentDir, projectTrusted = false }) {
+@@ -15,7 +16,9 @@ function readJson(path) {
+         return {};
+     try {
+         const value = JSON.parse(readFileSync(path, "utf-8"));
+-        return isObjectRecord(value) ? value : {};
++        if (!isObjectRecord(value))
++            throw new Error("Expected a JSON object");
++        return value;
+     }
+     catch (error) {
+         throw new Error(`Could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
+@@ -53,7 +56,9 @@ export function normalizeGitRemoteUrl(rawUrl) {
+     try {
+         const parsed = new URL(url);
+         const repoPath = parsed.pathname.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+-        return parsed.hostname && repoPath ? `${parsed.hostname.toLowerCase()}:${repoPath}` : undefined;
++        const defaultPort = parsed.protocol === "ssh:" ? "22" : parsed.protocol === "git:" ? "9418" : undefined;
++        const host = parsed.port && parsed.port !== defaultPort ? parsed.host : parsed.hostname;
++        return host && repoPath ? `${host.toLowerCase()}:${repoPath}` : undefined;
+     }
+     catch {
+         return undefined;
+@@ -181,15 +186,25 @@ export function getSkillCatalogDirs({ cwd, agentDir, projectTrusted = false }) {
      }
      return dirs;
  }
@@ -119,7 +141,7 @@ index e040118..f8714df 100644
      return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
  }
  export function looksLikePath(value) {
-@@ -200,13 +211,13 @@ function normalizeSkillSource(source, options) {
+@@ -200,13 +215,13 @@ function normalizeSkillSource(source, options) {
          return undefined;
      return looksLikePath(source) ? resolvePath(source, options.cwd, { trim: true }) : source;
  }
@@ -135,7 +157,7 @@ index e040118..f8714df 100644
  }
  function commandName(allowSession = false) {
      return allowSession ? "/skills" : "pi skills";
-@@ -224,7 +235,7 @@ function usage(allowSession = false) {
+@@ -224,7 +239,7 @@ function usage(allowSession = false) {
          ...(allowSession ? [`  ${command} reload`] : []),
      ];
  }
@@ -144,7 +166,7 @@ index e040118..f8714df 100644
      try {
          const surface = commandName(options.allowSession);
          const [command, ...rest] = args;
-@@ -244,7 +255,7 @@ export function runSkillsCommand(args, options) {
+@@ -244,7 +259,7 @@ export function runSkillsCommand(args, options) {
              const query = command === "search" ? rest.join(" ").trim().toLowerCase() : "";
              if (command === "search" && !query)
                  throw new Error(`Usage: ${surface} search <query>`);
@@ -153,7 +175,7 @@ index e040118..f8714df 100644
              return { exitCode: 0, lines: skills.length ? skills.map((skill) => `${skill.name}\t${skill.description}`) : [query ? "No matching skills." : "No catalog skills found."] };
          }
          if (command === "add" || command === "remove") {
-@@ -257,7 +268,7 @@ export function runSkillsCommand(args, options) {
+@@ -257,7 +272,7 @@ export function runSkillsCommand(args, options) {
              const target = normalizeSkillSource(source, options);
              if (!target)
                  throw new Error(`Skill source is invalid: ${source}`);

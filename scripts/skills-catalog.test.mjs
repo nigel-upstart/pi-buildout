@@ -224,17 +224,39 @@ test("the patched catalog resolves fixed, package, and settings skills with trus
     ]);
 
     const moduleUrl = (relativePath) => pathToFileURL(join(patchedPackage, relativePath)).href;
-    const [{ SettingsManager }, { getSkillCatalog, runSkillsCommand }, { DefaultResourceLoader }] = await Promise.all([
+    const [
+      { SettingsManager },
+      { getSkillCatalog, normalizeGitRemoteUrl, runSkillsCommand },
+      { DefaultResourceLoader },
+    ] = await Promise.all([
       import(moduleUrl("dist/core/settings-manager.js")),
       import(moduleUrl("dist/core/skill-management.js")),
       import(moduleUrl("dist/core/resource-loader.js")),
     ]);
+    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+
+    assert.equal(normalizeGitRemoteUrl("https://git.example.com:8443/org/repo.git"), "git.example.com:8443:org/repo");
+    assert.equal(normalizeGitRemoteUrl("https://git.example.com:9443/org/repo.git"), "git.example.com:9443:org/repo");
+    assert.equal(normalizeGitRemoteUrl("git@github.com:org/repo.git"), "github.com:org/repo");
+    assert.equal(normalizeGitRemoteUrl("ssh://git@github.com/org/repo.git"), "github.com:org/repo");
+    assert.equal(normalizeGitRemoteUrl("ssh://git@github.com:22/org/repo.git"), "github.com:org/repo");
+    assert.equal(normalizeGitRemoteUrl("ssh://git@github.com:2222/org/repo.git"), "github.com:2222:org/repo");
+
+    for (const invalidConfig of [[], null, "fixed-choice", 1]) {
+      await writeJson(join(agentDir, "skills.json"), invalidConfig);
+      const result = await runSkillsCommand(["active"], { cwd, agentDir, settingsManager });
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(result.lines, [`Could not parse ${join(agentDir, "skills.json")}: Expected a JSON object`]);
+    }
+    await writeJson(join(agentDir, "skills.json"), {
+      enabled: ["package-directory", "setting-global"],
+    });
+
     const invalidCommand = await runPatchedCli(patchedPackage, ["skills", "unknown"], { agentDir, cwd });
     assert.equal(invalidCommand.code, 1);
     assert.equal(invalidCommand.stdout, "");
     assert.match(invalidCommand.stderr, /Usage: pi skills/);
 
-    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
     const catalog = await getSkillCatalog({ cwd, agentDir, settingsManager });
     const catalogByName = new Map(catalog.map((skill) => [skill.name, skill]));
 

@@ -95,6 +95,14 @@ all become:
 github.com:earendil-works/pi-mono
 ```
 
+Starting with the 0.85.1 patch, preserve non-default remote ports in repository keys. Normalize explicit default SSH
+port `22` (and Git protocol port `9418`) to the same key as the port-omitted and SCP-like forms. Do not retrofit this
+repository-key change into earlier versioned patches unless explicitly requested.
+
+Starting with the 0.85.1 patch, valid JSON with a non-object top-level value in `skills.json` or `repo-skills.json` is a
+configuration error rather than an empty configuration. Strict command paths report that error; loader paths warn and
+ignore it.
+
 ## Interactive and CLI Skill Management
 
 The command surfaces are deliberately thin wrappers around `dist/core/skill-management.js`:
@@ -121,6 +129,8 @@ Create temp skills and temp agent dirs. Exercise these behaviors without network
 - `additionalSkillPaths` loads a session skill
 - `agentDir/skills.json` enables a global skill
 - `agentDir/repo-skills.json` enables a repo skill by normalized upstream URL
+- non-default remote ports stay distinct while explicit default ports retain canonical repository keys
+- non-object top-level JSON values fail strict configuration reads
 - `noSkills: true` ignores global/repo active skills
 
 Example shape:
