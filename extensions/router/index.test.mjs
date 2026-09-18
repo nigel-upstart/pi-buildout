@@ -788,6 +788,7 @@ describe("routerExtension", () => {
     const telemetryEvents = [];
     const selectedModels = [];
     const selectedEfforts = [];
+    const workingMessages = [];
     let classifications = 0;
     let activeTools = ["read", "bash", "submit_action_plan"];
     const active = {
@@ -831,7 +832,7 @@ describe("routerExtension", () => {
       ui: {
         theme: { fg: (_color, text) => text },
         setStatus: () => {},
-        setWorkingMessage: () => {},
+        setWorkingMessage: (message) => workingMessages.push(message),
         setWorkingVisible: () => {},
         notify: () => {},
       },
@@ -884,6 +885,7 @@ describe("routerExtension", () => {
     assert.equal(classifications, 0);
     assert.deepEqual(selectedModels, []);
     assert.deepEqual(selectedEfforts, []);
+    assert.deepEqual(workingMessages, ["Routing...", undefined]);
     assert.equal(appended.length, entriesAfterPendingOff, "off-mode hooks must not mutate the persisted router lease");
     assert.equal(telemetryEvents.length, telemetryAfterPendingOff, "off-mode hooks must not emit routing telemetry");
 

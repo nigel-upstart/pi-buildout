@@ -2216,6 +2216,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
           // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
           // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
+          if (pendingInput) ctx.ui.setWorkingMessage();
           pendingInput = undefined;
           lastProviderFailure = undefined;
           attemptDisposition = "unknown";
