@@ -1797,7 +1797,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (applyingSelection || event.source === "restore") return;
+    if (state.mode === "off" || applyingSelection || event.source === "restore") return;
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual model override") };
     state = markManualOverride(state);
     persistState();
@@ -1822,7 +1822,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("thinking_level_select", async (event, ctx) => {
-    if (applyingSelection) return;
+    if (state.mode === "off" || applyingSelection) return;
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual effort override") };
     const active = state.active;
     const changed = active ? changeEffortWithinLease(active, event.level, new Date().toISOString()) : undefined;
@@ -1855,6 +1855,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_start", () => {
+    if (state.mode === "off") return;
     lastProviderFailure = undefined;
     attemptDisposition = "pending";
     agentRunSequence++;
@@ -1867,10 +1868,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("turn_start", () => {
+    if (state.mode === "off") return;
     attemptTurns++;
   });
 
   pi.on("tool_execution_end", (event) => {
+    if (state.mode === "off") return;
     attemptToolCalls++;
     const check = deterministicCheckCalls.get(event.toolCallId);
     const mutation = potentiallyMutatingCalls.get(event.toolCallId);
@@ -1904,6 +1907,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("tool_call", (event) => {
+    if (state.mode === "off") return undefined;
     const reason = safetyToolBlockReason(state.active, event.toolName, event.input);
     if (reason) return { block: true, reason };
     if (event.toolName === "bash") {
@@ -1920,6 +1924,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("after_provider_response", (event) => {
+    if (state.mode === "off") return;
     // An invalid/expired token is endpoint availability failure just like a rate
     // limit: move to the next authorized provider instead of failing the lease.
     if (event.status === 401 || event.status === 403 || event.status === 429 || event.status >= 500) {
@@ -1928,6 +1933,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_end", async (event, ctx) => {
+    if (state.mode === "off") return;
     const active = state.active;
     if (!active || active.executionFailed) return;
     const assistants = event.messages.filter(assistantMessage);
@@ -2206,6 +2212,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
               }
             : {}),
         };
+        if (command === "off") {
+          // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
+          // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
+          // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
+          if (pendingInput) ctx.ui.setWorkingMessage();
+          pendingInput = undefined;
+          lastProviderFailure = undefined;
+          attemptDisposition = "unknown";
+          deterministicCheckCalls.clear();
+          deterministicCheckResults.clear();
+          potentiallyMutatingCalls.clear();
+          syncSafetyLifecycleTools(undefined);
+        }
         if (command === "active" && state.active) {
           accumulatedTaskCosts.set(state.active.taskId, 0);
           taskStartedAt.set(state.active.taskId, Date.now());
