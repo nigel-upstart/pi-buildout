@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const patchDirectory = join(repositoryRoot, "patches", "pi-0.84.2");
+const patchDirectory = join(repositoryRoot, "patches", "pi-0.85.1");
 const patchPath = join(patchDirectory, "skills.patch");
 const packageRoot = join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent");
 
@@ -35,8 +35,8 @@ async function baselineProblem() {
     return "the installed pi package dependencies are unavailable";
   }
   const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
-  if (packageJson.version !== "0.84.2") {
-    return `the installed pi package is ${String(packageJson.version)}, not 0.84.2`;
+  if (packageJson.version !== "0.85.1") {
+    return `the installed pi package is ${String(packageJson.version)}, not 0.85.1`;
   }
   const manifest = await readFile(join(patchDirectory, "baseline.sha256"), "utf8");
   for (const line of manifest.trim().split("\n")) {
@@ -49,7 +49,7 @@ async function baselineProblem() {
       !(await exists(baselinePath)) ||
       (await sha256(baselinePath)) !== expected
     ) {
-      return `the installed pi package does not match the 0.84.2 baseline at ${relativePath ?? "an unknown path"}`;
+      return `the installed pi package does not match the 0.85.1 baseline at ${relativePath ?? "an unknown path"}`;
     }
   }
   const absentManifest = await readFile(join(patchDirectory, "baseline.absent"), "utf8");
@@ -58,7 +58,7 @@ async function baselineProblem() {
     .map((line) => line.trim())
     .filter(Boolean)) {
     if (await exists(join(packageRoot, relativePath))) {
-      return `the installed pi package does not match the 0.84.2 baseline at ${relativePath}`;
+      return `the installed pi package does not match the 0.85.1 baseline at ${relativePath}`;
     }
   }
   return undefined;
@@ -98,7 +98,7 @@ async function applyPatch(target) {
 
 async function runPatchedCli(target, args, { agentDir, cwd }) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [join(target, "dist", "cli.js"), ...args], {
+    const child = spawn(process.execPath, [join(target, "dist", "bundle", "cli.js"), ...args], {
       cwd,
       env: {
         ...process.env,
@@ -224,17 +224,39 @@ test("the patched catalog resolves fixed, package, and settings skills with trus
     ]);
 
     const moduleUrl = (relativePath) => pathToFileURL(join(patchedPackage, relativePath)).href;
-    const [{ SettingsManager }, { getSkillCatalog, runSkillsCommand }, { DefaultResourceLoader }] = await Promise.all([
+    const [
+      { SettingsManager },
+      { getSkillCatalog, normalizeGitRemoteUrl, runSkillsCommand },
+      { DefaultResourceLoader },
+    ] = await Promise.all([
       import(moduleUrl("dist/core/settings-manager.js")),
       import(moduleUrl("dist/core/skill-management.js")),
       import(moduleUrl("dist/core/resource-loader.js")),
     ]);
+    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+
+    assert.equal(normalizeGitRemoteUrl("https://git.example.com:8443/org/repo.git"), "git.example.com:8443:org/repo");
+    assert.equal(normalizeGitRemoteUrl("https://git.example.com:9443/org/repo.git"), "git.example.com:9443:org/repo");
+    assert.equal(normalizeGitRemoteUrl("git@github.com:org/repo.git"), "github.com:org/repo");
+    assert.equal(normalizeGitRemoteUrl("ssh://git@github.com/org/repo.git"), "github.com:org/repo");
+    assert.equal(normalizeGitRemoteUrl("ssh://git@github.com:22/org/repo.git"), "github.com:org/repo");
+    assert.equal(normalizeGitRemoteUrl("ssh://git@github.com:2222/org/repo.git"), "github.com:2222:org/repo");
+
+    for (const invalidConfig of [[], null, "fixed-choice", 1]) {
+      await writeJson(join(agentDir, "skills.json"), invalidConfig);
+      const result = await runSkillsCommand(["active"], { cwd, agentDir, settingsManager });
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(result.lines, [`Could not parse ${join(agentDir, "skills.json")}: Expected a JSON object`]);
+    }
+    await writeJson(join(agentDir, "skills.json"), {
+      enabled: ["package-directory", "setting-global"],
+    });
+
     const invalidCommand = await runPatchedCli(patchedPackage, ["skills", "unknown"], { agentDir, cwd });
     assert.equal(invalidCommand.code, 1);
     assert.equal(invalidCommand.stdout, "");
     assert.match(invalidCommand.stderr, /Usage: pi skills/);
 
-    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
     const catalog = await getSkillCatalog({ cwd, agentDir, settingsManager });
     const catalogByName = new Map(catalog.map((skill) => [skill.name, skill]));
 
