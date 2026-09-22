@@ -1819,6 +1819,66 @@ describe("routerExtension", () => {
     assert.equal(reconciliation?.data.secondaryErrorCategory, "deadline");
     assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined, "no stage reported a start");
     assert.equal(reconciliation?.data.secondaryOutcome, "timeout");
+    assert.equal(typeof reconciliation?.data.secondaryWallLatencyMs, "number");
+    assert.ok(reconciliation.data.secondaryWallLatencyMs >= 0);
+  });
+
+  it("omits router budget attribution when the secondary failure is transport-owned", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        // A provider-thrown timeout is the transport's deadline, not the router's budget.
+        const error = new Error("provider timed out");
+        error.name = "TimeoutError";
+        throw error;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-transport-timeout-budget",
+    });
+
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.reason, "secondary_timeout");
+    assert.equal(reconciliation?.data.secondaryOutcome, "timeout");
+    assert.equal(reconciliation?.data.secondaryErrorCategory, "transport_timeout");
+    assert.equal(typeof reconciliation?.data.secondaryWallLatencyMs, "number");
+    // The configured budget is still reported, but nothing claims the router enforced a deadline.
+    assert.equal(reconciliation?.data.secondaryDeadlineMs, 15_000);
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, undefined);
+    assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
+  });
+
+  it("omits router budget attribution when a cancelled secondary is discarded", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            secondary.reject(error);
+          },
+          { once: true },
+        );
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-cancelled-budget",
+    });
+
+    await result.hooks.get("session_compact")({}, result.ctx);
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, false);
+    assert.equal(reconciliation?.data.secondaryDeadlineMs, 15_000);
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, undefined);
+    assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
   });
 
   it("records the secondary budget without failure attribution for an accepted correction", async () => {
