@@ -652,7 +652,8 @@ Evidence: [`registry-refresh-2026-09-22.md`](registry-refresh-2026-09-22.md).
 2. **The rate premise of cutting Sol at medium no longer holds, and the cut stands.** Decision 5 of the 2026-08-13
    section cut `gpt-5.6-sol` at medium partly because Opus 5 medium was cheaper. Under 0.85.1 and the current Bedrock
    weight, Sol is `6.532` against `7.423` for Opus 5 at the same mix, so only the ability band still favors Opus 5. The
-   cut is not reversed here; whether to reinstate Sol at medium is an open policy question.
+   cut is not reversed here; whether to reinstate Sol at medium is an open policy question, tracked in
+   [#67](https://github.com/nigel-upstart/pi-buildout/issues/67).
 
 3. **GPT-6 Astra remains unrouted.** 0.85.1 declares `gpt-6-astra`, which resolves one of the three reasons in decision
    6 of the 2026-09-10 section. The single benchmark source and missing peak-context telemetry still apply.
