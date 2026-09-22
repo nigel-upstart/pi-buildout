@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { resolveFallback, validateFallbackTopology } from "./fallback.ts";
+import { isProviderQuotaExhaustionError, resolveFallback, validateFallbackTopology } from "./fallback.ts";
 import { conservativeFeatures } from "./features.ts";
 import { createTaskLease } from "./lease.ts";
 
@@ -56,6 +56,40 @@ describe("ordinary fallback", () => {
     const exhausted = resolveFallback(bifrost.lease, "availability", "2026-07-17T00:04:00.000Z");
     assert.equal(exhausted.action, "restore_previous");
     assert.match(exhausted.reason, /all authorized ordinary provider choices exhausted/);
+  });
+
+  it("fast-skips remaining exhausted provider candidates upon provider quota limit exhaustion", () => {
+    const lease = taskLease(
+      "deliberate_tool_workflow",
+      choice("openai-codex", "gpt-5.6-sol", "openai-gpt-5.6-agent-v1"),
+      [
+        choice("openai-codex", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
+        choice("openai-codex", "gpt-5.6-sol", "openai-gpt-5.6-agent-v1"),
+        choice("openai-codex", "gpt-5.6-sol", "openai-gpt-5.6-agent-v1"),
+        choice("anthropic", "claude-opus-5", "anthropic-claude-planning-v1"),
+        choice("amazon-bedrock", "us.anthropic.claude-opus-5", "anthropic-claude-planning-v1"),
+      ],
+    );
+    assert.equal(isProviderQuotaExhaustionError("Codex error: The usage limit has been reached"), true);
+    assert.equal(isProviderQuotaExhaustionError("insufficient_quota"), true);
+    assert.equal(isProviderQuotaExhaustionError("Monthly usage limit reached"), true);
+    assert.equal(isProviderQuotaExhaustionError("Rate limit exceeded"), false);
+    assert.equal(isProviderQuotaExhaustionError(undefined), false);
+
+    // Initial failure on openai-codex skips all 3 remaining openai-codex fallbacks directly to anthropic
+    const skipped = resolveFallback(lease, "model_error", "2026-07-17T00:01:00.000Z", {
+      skipProvider: "openai-codex",
+    });
+    assert.equal(skipped.action, "use_choice");
+    assert.equal(skipped.choice.provider, "anthropic");
+    assert.equal(skipped.lease.attemptIndex, 4);
+    assert.match(skipped.reason, /fast-skipped exhausted provider openai-codex/);
+
+    // Next sequential fallback from anthropic proceeds normally to amazon-bedrock
+    const next = resolveFallback(skipped.lease, "availability", "2026-07-17T00:02:00.000Z");
+    assert.equal(next.action, "use_choice");
+    assert.equal(next.choice.provider, "amazon-bedrock");
+    assert.equal(next.lease.attemptIndex, 5);
   });
 });
 

@@ -3,8 +3,16 @@ import { MINIMUM_INDEPENDENT_REVIEWERS } from "./routing.ts";
 import type { RouteChoice } from "./routing.ts";
 
 // Cross-lease endpoint circuit breaking and background health recovery are tracked in
-// specs/routing-layer/future-work.md; this module intentionally handles only bounded in-lease fallback.
+// https://github.com/nigel-upstart/pi-buildout/issues/53 and #54; this module intentionally handles only bounded in-lease fallback.
 export type FailureKind = "availability" | "model_error" | "quality" | "deterministic_verification";
+
+const NON_RETRYABLE_PROVIDER_QUOTA_ERROR_PATTERN =
+  /GoUsageLimitError|FreeUsageLimitError|usage.?limit|insufficient_quota|out of budget|quota exceeded|billing/i;
+
+export function isProviderQuotaExhaustionError(errorMessage?: string): boolean {
+  if (!errorMessage) return false;
+  return NON_RETRYABLE_PROVIDER_QUOTA_ERROR_PATTERN.test(errorMessage);
+}
 
 export type FallbackResolution =
   | { action: "use_choice"; choice: RouteChoice; lease: TaskLease; reason: string; reviewFellBackToBuilder: boolean }
@@ -50,11 +58,26 @@ export function validateFallbackTopology(lease: TaskLease): string[] {
   return errors;
 }
 
-export function resolveFallback(lease: TaskLease, failure: FailureKind, now: string): FallbackResolution {
-  const nextAttempt = lease.attemptIndex + 1;
-  const nextChoice = lease.fallbacks[lease.attemptIndex];
+export function resolveFallback(
+  lease: TaskLease,
+  failure: FailureKind,
+  now: string,
+  options?: { skipProvider?: string },
+): FallbackResolution {
+  const skipProvider = options?.skipProvider;
+  let nextAttemptIndex = lease.attemptIndex;
+
+  if (skipProvider !== undefined) {
+    while (nextAttemptIndex < lease.fallbacks.length && lease.fallbacks[nextAttemptIndex]?.provider === skipProvider) {
+      nextAttemptIndex++;
+    }
+  }
+
+  const nextAttempt = nextAttemptIndex + 1;
+  const nextChoice = lease.fallbacks[nextAttemptIndex];
   if (nextChoice) {
     const isBuilderFallback = false;
+    const isSkipped = nextAttemptIndex > lease.attemptIndex;
     const updated: TaskLease = {
       ...lease,
       updatedAt: now,
@@ -66,7 +89,10 @@ export function resolveFallback(lease: TaskLease, failure: FailureKind, now: str
       action: "use_choice",
       choice: nextChoice,
       lease: updated,
-      reason: `sequential fallback after ${failure}`,
+      reason:
+        isSkipped && skipProvider !== undefined
+          ? `sequential fallback after ${failure} (fast-skipped exhausted provider ${skipProvider})`
+          : `sequential fallback after ${failure}`,
       reviewFellBackToBuilder: isBuilderFallback,
     };
   }

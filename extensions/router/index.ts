@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { ClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
 import { isCodeBuilder } from "./core/features.ts";
-import { resolveFallback } from "./core/fallback.ts";
+import { isProviderQuotaExhaustionError, resolveFallback } from "./core/fallback.ts";
 import type { FailureKind } from "./core/fallback.ts";
 import {
   changeEffortWithinLease,
@@ -951,10 +951,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   }
 
-  async function transitionFallback(ctx: ExtensionContext, failure: FailureKind, triggerTurn: boolean): Promise<void> {
+  async function transitionFallback(
+    ctx: ExtensionContext,
+    failure: FailureKind,
+    triggerTurn: boolean,
+    options?: { skipProvider?: string },
+  ): Promise<void> {
     const active = state.active;
     if (!active || state.mode !== "active" || active.executionFailed) return;
-    const fallback = resolveFallback(active, failure, new Date().toISOString());
+    const fallback = resolveFallback(active, failure, new Date().toISOString(), options);
     await record(
       ctx,
       "fallback",
@@ -2059,7 +2064,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       attemptDisposition = "failed";
       const failure = lastProviderFailure ?? "model_error";
       lastProviderFailure = undefined;
-      await transitionFallback(ctx, failure, true);
+      const skipProvider = isProviderQuotaExhaustionError(last?.errorMessage) ? attemptedProvider : undefined;
+      await transitionFallback(ctx, failure, true, skipProvider ? { skipProvider } : undefined);
     } else if (isActiveAttempt && last?.stopReason === "length") {
       attemptDisposition = "failed";
       await transitionFallback(ctx, "quality", true);
