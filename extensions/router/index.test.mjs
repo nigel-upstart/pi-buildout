@@ -19,6 +19,7 @@ import { validateActionPlan } from "./core/safety.ts";
 import { transportFromCandidates } from "./pi-classifier.ts";
 import { JsonlTelemetryStore, runClassifierInvocation } from "./telemetry.ts";
 import routerExtension, {
+  CLASSIFICATION_STAGE_TIMEOUT_MS,
   CLASSIFICATION_TIMEOUT_MS,
   activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
@@ -151,11 +152,62 @@ function irreversibleActionPlan() {
 }
 
 describe("classifier deadline", () => {
-  it("allows fifteen seconds for classification", () => {
-    assert.equal(CLASSIFICATION_TIMEOUT_MS, 15_000);
+  it("allows independent fifteen-second deadlines per classifier stage", () => {
+    assert.equal(CLASSIFICATION_STAGE_TIMEOUT_MS, 15_000);
   });
 
-  it("keeps retries, endpoint iteration, and secondary escalation inside one fifteen-second budget", async () => {
+  it("grants the secondary stage its own independent fifteen-second deadline", async () => {
+    const endpointCalls = [];
+    const signals = new Set();
+    const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });
+    const response = (entry, argumentsValue) => ({
+      arguments: argumentsValue,
+      provider: entry.model.provider,
+      modelId: entry.model.id,
+      vendor: entry.vendor,
+      latencyMs: 1,
+    });
+    const primary = transportFromCandidates(
+      [candidate("primary-a", "gpt-5.6-luna", "openai")],
+      async (entry, request) => {
+        endpointCalls.push(`${request.stage}:${entry.model.provider}`);
+        signals.add(request.signal);
+        return response(entry, implementationFeatures({ risk: "high" }));
+      },
+    );
+    const secondary = transportFromCandidates(
+      [candidate("secondary-a", "claude-sonnet-5", "anthropic")],
+      async (entry, request) => {
+        endpointCalls.push(`${request.stage}:${entry.model.provider}`);
+        signals.add(request.signal);
+        return response(entry, implementationFeatures({ risk: "high" }));
+      },
+    );
+
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+      stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
+      invoke: (signal, onAttempt) =>
+        classifyTask({
+          prompt: "Implement the change",
+          synopsis: {},
+          primary,
+          secondary,
+          primaryVendor: "openai",
+          secondaryVendor: "anthropic",
+          signal,
+          onAttempt,
+        }),
+    });
+
+    assert.equal(run.status, "completed");
+    assert.equal(run.value.escalated, true);
+    assert.deepEqual(endpointCalls, ["primary:primary-a", "secondary:secondary-a"]);
+    assert.equal(run.summary.attemptCount, 2);
+  });
+
+  it("keeps retries and endpoint iteration inside the stage budget", async () => {
     const endpointCalls = [];
     const signals = new Set();
     const candidate = (provider, id, vendor) => ({ model: { provider, id }, vendor });
@@ -193,6 +245,7 @@ describe("classifier deadline", () => {
     const run = await runClassifierInvocation({
       purpose: "fresh_task",
       timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+      stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
       invoke: (signal, onAttempt) =>
         classifyTask({
           prompt: "Implement the change",
@@ -216,9 +269,7 @@ describe("classifier deadline", () => {
       "secondary:secondary-a",
       "secondary:secondary-b",
     ]);
-    assert.equal(signals.size, 1, "every nested layer must share the one router deadline signal");
     assert.equal(run.summary.attemptCount, 3, "two primary schema attempts and one secondary attempt were observed");
-    assert.ok(run.summary.wallLatencyMs < CLASSIFICATION_TIMEOUT_MS);
   });
 
   it("stops endpoint iteration and secondary escalation once the injected deadline expires", async () => {

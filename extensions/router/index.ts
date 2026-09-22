@@ -263,6 +263,7 @@ export function safetyToolBlockReason(
 // cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
 // selected instead of routing on a call that never returned.
 export const CLASSIFICATION_TIMEOUT_MS = 15_000;
+export const CLASSIFICATION_STAGE_TIMEOUT_MS = 15_000;
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
@@ -274,6 +275,7 @@ async function classifyWithTimeout(
   return runClassifierInvocation<ClassificationResult>({
     purpose,
     timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+    stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
     invoke: (signal, onAttempt) =>
       classify({
         ctx,

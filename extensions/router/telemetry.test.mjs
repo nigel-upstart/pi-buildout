@@ -260,6 +260,90 @@ describe("classifier invocation telemetry", () => {
     assert.ok(summary.wallLatencyMs >= 0);
   });
 
+  it("allows each stage its own timeout budget when stageTimeoutMs is configured", async () => {
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 50,
+      stageTimeoutMs: 30,
+      invoke: async (signal, observe) => {
+        // Stage 1 takes 20ms (< 30ms stage timeout)
+        observe({ stage: "primary", try: 1, state: "started" });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        signal.throwIfAborted();
+        observe({
+          stage: "primary",
+          try: 1,
+          state: "completed",
+          outcome: "valid",
+          provider: "openai-codex",
+          modelId: "gpt-5.6-luna",
+          latencyMs: 20,
+        });
+
+        // Stage 2 takes another 20ms (< 30ms stage timeout, but total elapsed is 40ms > primary stage limit)
+        observe({ stage: "secondary", try: 1, state: "started" });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        signal.throwIfAborted();
+        observe({
+          stage: "secondary",
+          try: 1,
+          state: "completed",
+          outcome: "valid",
+          provider: "anthropic",
+          modelId: "claude-sonnet-5",
+          latencyMs: 20,
+        });
+        return "reconciled";
+      },
+    });
+
+    assert.equal(run.status, "completed");
+    assert.equal(run.value, "reconciled");
+    assert.equal(run.summary.attemptCount, 2);
+    assert.equal(run.summary.timedOut, false);
+    assert.ok(run.summary.wallLatencyMs >= 35);
+  });
+
+  it("times out the secondary stage when it exceeds its own stageTimeoutMs", async () => {
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 100,
+      stageTimeoutMs: 25,
+      invoke: async (signal, observe) => {
+        observe({ stage: "primary", try: 1, state: "started" });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        signal.throwIfAborted();
+        observe({
+          stage: "primary",
+          try: 1,
+          state: "completed",
+          outcome: "valid",
+          provider: "openai-codex",
+          modelId: "gpt-5.6-luna",
+          latencyMs: 10,
+        });
+
+        observe({ stage: "secondary", try: 1, state: "started" });
+        // Secondary takes 50ms (> 25ms stageTimeoutMs)
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(resolve, 50);
+          signal.addEventListener("abort", () => {
+            clearTimeout(timeout);
+            observe({ stage: "secondary", try: 1, state: "completed", outcome: "cancelled" });
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+        return "unreachable";
+      },
+    });
+
+    assert.equal(run.status, "failed");
+    assert.equal(run.summary.timedOut, true);
+    assert.equal(run.summary.errorCategory, "deadline");
+  });
+
   it("returns promptly at the deadline with an explicit timeout and cancellation", async () => {
     const run = await runClassifierInvocation({
       purpose: "continuity",

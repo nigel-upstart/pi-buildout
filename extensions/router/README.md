@@ -80,12 +80,16 @@ authorization the same way a typed message does. The router's own continuations 
 post-fallback) are custom `model-router-context` messages, which never surface as an input event and so keep their lease
 without relying on any source exemption.
 
-Every router-level fresh-task or continuity classification has one router-owned **15-second wall-clock deadline**. The
-router passes one `AbortSignal` through schema attempts and concrete endpoint calls. A router deadline aborts the
-in-flight call; any `AbortError` or `TimeoutError` is terminal, so the classifier does not retry the attempt, try
-another endpoint, or start/continue secondary escalation. On a continuity failure the current lease, model, effort, and
-profile remain selected. On a fresh-task failure the router does not create a route from synthetic evidence and keeps
-the current model/effort (and an existing lease, if present).
+Every router-level fresh-task or continuity classification is bounded by router-owned stage deadlines. Rather than
+sharing a single combined timer across primary classification and escalation, each classification stage (primary and, if
+escalated, secondary) receives an independent timeout budget configured in code
+([`CLASSIFICATION_STAGE_TIMEOUT_MS`](index.ts)). The router passes an `AbortSignal` through schema attempts and concrete
+endpoint calls for the active stage. A stage deadline aborts the in-flight call; within an active stage, any
+`AbortError` or `TimeoutError` is terminal, so the classifier does not retry the attempt or advance to another endpoint
+in that stage. On a continuity failure the current lease, model, effort, and profile remain selected. On a fresh-task
+failure the router does not create a route from synthetic evidence and keeps the current model/effort (and an existing
+lease, if present). Concrete timeout thresholds can be inspected directly in [`index.ts`](index.ts) and
+[`telemetry.ts`](telemetry.ts).
 
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
 builder, and at least two eligible non-builder-vendor attempts; they never fall back to the builder for a verdict.

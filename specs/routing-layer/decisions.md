@@ -171,12 +171,15 @@ extensions/router/
 
 ## Decision: router-owned classifier deadline and conservative fast paths
 
-The router owns one **15-second** wall-clock deadline for each fresh-task or continuity classification. It wraps the
-whole request rather than resetting a timer for each retry, endpoint, or secondary stage, because those are all one
-user-visible routing decision. One `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and pi-ai
-`complete()` call. The deadline races the whole operation, aborts the signal, and returns the fail-safe result promptly;
-the operation promise has rejection handlers attached so a transport settling after the race cannot create an unhandled
-rejection.
+The router owns independent wall-clock deadlines per classification stage for each fresh-task or continuity request.
+Rather than forcing primary classification and secondary escalation to share a single combined countdown, each stage
+receives its own timeout budget configured in code
+([`CLASSIFICATION_STAGE_TIMEOUT_MS`](../../extensions/router/index.ts)). An `AbortSignal` reaches the schema-attempt
+loop, endpoint iterator, and pi-ai `complete()` call for that stage. The stage deadline races the active stage
+operation, aborts the signal, and returns the fail-safe result promptly; the operation promise has rejection handlers
+attached so a transport settling after the race cannot create an unhandled rejection. Exact timeout constants and
+telemetry handling can be inspected in [`extensions/router/index.ts`](../../extensions/router/index.ts) and
+[`extensions/router/telemetry.ts`](../../extensions/router/telemetry.ts).
 
 `AbortError` and `TimeoutError` are terminal control outcomes, not availability errors. The schema layer does not retry,
 the endpoint iterator does not advance, and primary cancellation never escalates to the provider-diverse secondary (nor
