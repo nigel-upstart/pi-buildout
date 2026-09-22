@@ -1139,7 +1139,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const correction = decideSecondaryCorrection(delta, estimatedCachePenaltyUsd, secondaryGracePolicy);
     if (correction.action === "reject") {
       queuedSecondaryReconciliation = undefined;
-      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
+      // A rejected correction leaves the weaker primary policy installed, so a safety-relevant
+      // delta that was never applied keeps the latch even though the secondary answered.
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run) && !delta.safetyRelevant);
       await rejectQueuedSecondary(ctx, queued, correction.reason, {
         materialDelta: delta.material,
         safetyRelevant: delta.safetyRelevant,
@@ -1157,7 +1159,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       active.lifecycle.policy !== lifecycle.policy;
     if (!boundary.promptRefreshAllowed && promptRefreshRequired && !boundary.continuing) {
       queuedSecondaryReconciliation = undefined;
-      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
+      // The lease survives for a later same-task continuation, so an uninstalled safety-relevant
+      // correction must not hand back mutating tools under the weaker primary lifecycle.
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run) && !delta.safetyRelevant);
       await rejectQueuedSecondary(ctx, queued, "task_ended_no_extra_turn", {
         materialDelta: delta.material,
         safetyRelevant: delta.safetyRelevant,

@@ -1129,6 +1129,41 @@ describe("routerExtension", () => {
     assert.match(blocked.reason, /Secondary safety classification is pending/);
   });
 
+  it("keeps the mutation gate when a safety-relevant correction is never installed", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-uninstalled-safety-delta",
+    });
+
+    // The task has already ended, so this stricter correction cannot be installed; the lease keeps
+    // the weaker primary policy and must stay fail-closed for mutating tools.
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, false);
+    assert.equal(reconciliation?.data.safetyRelevant, true);
+
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-uninstalled-safety-correction",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+  });
+
   it("keeps the low-confidence latch across compaction while discarding the stale secondary", async () => {
     const secondary = deferred();
     let secondarySignal;
