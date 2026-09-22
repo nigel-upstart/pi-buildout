@@ -50,7 +50,8 @@ against `7.442`, at the reference mix with the since-removed `0.83` Bedrock weig
 `1.00001` weight, Bedrock Sol at that mix is `6.532` (`5.938` for `global.`) against an unchanged `7.423` for Opus 5.
 The ability band still favors Opus 5, but the rate no longer does, so Sol at medium is a cost-for-capability tradeoff
 rather than a dominated rung. This record does not reinstate it. That is a policy decision, and the `policy.ts` comment
-now says the cut rests on the ability band alone.
+now says the cut rests on the ability band alone. The decision is tracked in
+[#67](https://github.com/nigel-upstart/pi-buildout/issues/67).
 
 ## Context windows and the long-context pricing guard
 
@@ -84,7 +85,7 @@ The Sol effort guard is unchanged and still necessary: Bedrock Sol still exposes
 `opencode`, `openrouter`, `vercel-ai-gateway`, and `cloudflare-ai-gateway` list `gpt-5.6-sol` at 2/10, half of OpenAI's
 direct rate. The unknown-provider weight (`1.01`) does not offset that gap. If a scope admits one of these gateways, it
 would lead the Sol endpoint order. These rates have not been checked against gateway billing. No routing change is made
-for them.
+for them. Verification is tracked in [#68](https://github.com/nigel-upstart/pi-buildout/issues/68).
 
 ## Unchanged
 
