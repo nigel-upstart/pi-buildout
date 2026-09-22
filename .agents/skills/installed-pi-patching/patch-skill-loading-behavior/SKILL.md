@@ -21,10 +21,6 @@ is usually under:
 /opt/homebrew/Cellar/pi-coding-agent/<version>/libexec/lib/node_modules/@earendil-works/pi-coding-agent
 ```
 
-A mise npm-backend install lives under
-`~/.local/share/mise/installs/npm-earendil-works-pi-coding-agent/<version>/lib/node_modules/@earendil-works/pi-coding-agent`;
-`realpath "$(command -v pi)"` resolves to its `dist/bundle/cli.js`.
-
 For installation methods and platform-specific package-manager instructions, see the upstream
 [Pi Quick Start](https://github.com/earendil-works/pi#quick-start).
 
