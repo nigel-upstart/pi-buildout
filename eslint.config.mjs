@@ -6,14 +6,22 @@ import sonarjs from "eslint-plugin-sonarjs";
 import unicorn from "eslint-plugin-unicorn";
 import tseslint from "typescript-eslint";
 
-const typedFiles = ["extensions/**/*.ts"];
+const typedFiles = ["extensions/**/*.ts", "pi-overlay/*.ts"];
 
 export default tseslint.config(
   {
     // extensions/otel is a vendored Apache-2.0 fork with its own toolchain
     // (extensions/otel/package.json). Linting it here would force a style
     // rewrite that destroys diffability against upstream.
-    ignores: ["node_modules/**", "coverage/**", "patches/**", "extensions/otel/**"],
+    ignores: [
+      "node_modules/**",
+      "coverage/**",
+      "patches/**",
+      "extensions/otel/**",
+      "pi-overlay/versions/**",
+      // Type-checked by upstream's tsgo inside a Pi source tree, where its imports resolve.
+      "pi-overlay/skill-management.ts",
+    ],
   },
   eslint.configs.recommended,
   {
@@ -28,10 +36,14 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: { globals: globals.node },
+  },
   ...tseslint.configs.strictTypeChecked.map((config) => ({ ...config, files: typedFiles })),
   ...tseslint.configs.stylisticTypeChecked.map((config) => ({ ...config, files: typedFiles })),
   {
-    files: ["extensions/**/*.{ts,mjs}"],
+    files: ["extensions/**/*.{ts,mjs}", "pi-overlay/*.{ts,mjs}"],
     languageOptions: {
       globals: globals.node,
       parserOptions: {

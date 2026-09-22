@@ -267,10 +267,11 @@ for a positive write rate, `no_write_line_item` when reads are priced but writes
 prices are capability proxies rather than marginal billed costs, so Copilot has no effective-cost value and follows all
 eligible token-billed routes.
 
-Bedrock `gpt-5.6-sol` is excluded above 272,000 estimated finished tokens until its registry entry supplies a
-long-context rate; the router never extends its short-context rate beyond that boundary. Residency remains a scope
-choice, not an ordering preference: scope in only the regional inference profiles permitted for the workload and scope
-out Global or other profiles that violate the requirement. Cost ordering never adds or revives an out-of-scope endpoint.
+Bedrock `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` are excluded above 272,000 estimated finished tokens until
+their registry entries supply a long-context rate; the router never extends their short-context rates beyond that
+boundary. Residency remains a scope choice, not an ordering preference: scope in only the regional inference profiles
+permitted for the workload and scope out Global or other profiles that violate the requirement. Cost ordering never adds
+or revives an out-of-scope endpoint.
 
 Direct `google` endpoints are eligible only for `code_review`, preserving the low direct-Gemini request quota for an
 independent reviewer. Gemini 3.8 Flash at high effort leads the Google review ladder when its exact ID is available;

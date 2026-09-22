@@ -638,3 +638,22 @@ grouping and all v7 consequence gates remain in force. The scoped-candidate comp
    `$4.86` per pass. But Astra has only that one benchmark source and reports zero peak-context telemetry, while the
    pinned package registry does not yet declare it even though some runtime registries do. It remains a challenger for a
    future acceptance-gated admission rather than silently replacing a two-source default.
+
+## Registry refresh to pi 0.85.1, 2026-09-22
+
+Evidence: [`registry-refresh-2026-09-22.md`](registry-refresh-2026-09-22.md).
+
+1. **The Bedrock long-context pricing guard covers every GPT-5.6 model.** Pi 0.85.1 widens the Bedrock context windows
+   for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` to 1,050,000 tokens without registering a long-context rate.
+   All three are now ineligible on Bedrock above 272,000 estimated finished tokens. This extends the Sol rule in
+   decision 4 of the `router-policy-v6` section. Leases are revalidated through the same check, so the policy version is
+   unchanged.
+
+2. **The rate premise of cutting Sol at medium no longer holds, and the cut stands.** Decision 5 of the 2026-08-13
+   section cut `gpt-5.6-sol` at medium partly because Opus 5 medium was cheaper. Under 0.85.1 and the current Bedrock
+   weight, Sol is `6.532` against `7.423` for Opus 5 at the same mix, so only the ability band still favors Opus 5. The
+   cut is not reversed here; whether to reinstate Sol at medium is an open policy question, tracked in
+   [#67](https://github.com/nigel-upstart/pi-buildout/issues/67).
+
+3. **GPT-6 Astra remains unrouted.** 0.85.1 declares `gpt-6-astra`, which resolves one of the three reasons in decision
+   6 of the 2026-09-10 section. The single benchmark source and missing peak-context telemetry still apply.

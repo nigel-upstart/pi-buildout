@@ -270,9 +270,11 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
     // any tier in this ladder. It stays in the ladder only as the availability backup for gpt-oss,
     // which is reachable on a single Amazon Bedrock route and is therefore absent on most machines.
     //
-    // gpt-5.6-sol at medium is gone. Under the pinned registry it is strictly dominated by the
+    // gpt-5.6-sol at medium is gone. Under the pi 0.84.1 registry it was strictly dominated by the
     // claude-opus-5 medium rung behind it, which is a higher ability band (3 against 2) and a lower
-    // effective rate (6.161 against 7.442), so it added a rung without adding a reason.
+    // effective rate (6.161 against 7.442), so it added a rung without adding a reason. Pi 0.85.1 cuts
+    // Sol below Opus 5 (6.532 against 7.423 at the current Bedrock weight), so the cut now rests on
+    // the ability band alone; see specs/routing-layer/registry-refresh-2026-09-22.md.
     //
     // claude-opus-5 at high replaces it as the second high-consequence rung, and the reason is
     // routability rather than capability. Irreversible consequence bars every band-1 rung here and the

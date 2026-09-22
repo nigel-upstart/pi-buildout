@@ -57,9 +57,10 @@ describe("endpoint effective cost", () => {
 
   it("pins weighted effective costs from the installed registry, including regional markup", () => {
     const cases = [
-      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 26.12526125],
+      [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 17.600176],
+      [requiredModel("amazon-bedrock", "global.openai.gpt-5.6-sol"), 16.00016],
       [requiredModel("openai-codex", "gpt-5.6-sol"), 23.75],
-      [requiredModel("openai", "gpt-5.6-sol"), 23.77375],
+      [requiredModel("openai", "gpt-5.6-sol"), 16.016],
       [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 8.00008],
       [requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), 8.800088],
       [requiredModel("anthropic", "claude-sonnet-5"), 8],
@@ -191,19 +192,19 @@ describe("cache-write classification", () => {
       assert.ok(Math.abs(writeMultiplier - 1.25) <= 0.001, `${provider}/${model.id}`);
     }
 
+    // Pi 0.84.1 listed no Cloudflare Sol cache write. Pi 0.85.1 prices one, but at 1.5625 times input
+    // (cache read 0.125) rather than the 1.25 and 0.1 every billed route carries. This pins the observed
+    // registry value; it is not evidence that Cloudflare bills at that ratio.
     const cloudflare = requiredModel("cloudflare-ai-gateway", "gpt-5.6-sol");
-    assert.equal(
-      classifyCacheWriteRate(cloudflare.cost),
-      "no_write_line_item",
-      `${cloudflare.provider}/${cloudflare.id}`,
-    );
+    assert.equal(classifyCacheWriteRate(cloudflare.cost), "priced_write", `${cloudflare.provider}/${cloudflare.id}`);
+    assert.equal(cloudflare.cost.cacheWrite / cloudflare.cost.input, 1.5625);
   });
 
-  it("pins the 0.84.1 registry boundary and its Opus 5 observation", async () => {
+  it("pins the 0.85.1 registry boundary and its Opus 5 observation", async () => {
     const packageJson = JSON.parse(
       await readFile(new URL("../../../node_modules/@earendil-works/pi-ai/package.json", import.meta.url), "utf8"),
     );
-    assert.equal(packageJson.version, "0.84.1");
+    assert.equal(packageJson.version, "0.85.1");
     assert.ok(getModel("anthropic", "claude-opus-5"));
   });
 });
@@ -226,7 +227,7 @@ describe("installed pi cost semantics", () => {
 });
 
 describe("reference-mix effective cost", () => {
-  // Rates read from @earendil-works/pi-ai@0.84.1, amazon-bedrock, under the slight resale preference
+  // Rates read from @earendil-works/pi-ai@0.85.1, amazon-bedrock, under the slight resale preference
   // penalty. These pin the inputs to the scoped-model reassessment; a registry bump that moves a
   // rate fails here rather than silently invalidating the comparison.
   const BEDROCK = {
@@ -240,14 +241,29 @@ describe("reference-mix effective cost", () => {
     "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, expected: 1.485 },
     "openai.gpt-5.6-terra": { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75, expected: 3.583 },
     "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, expected: 7.423 },
-    "openai.gpt-5.6-sol": { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 6.88, expected: 8.958 },
+    "openai.gpt-5.6-sol": { input: 4.4, output: 22, cacheRead: 0.44, cacheWrite: 5.5, expected: 6.532 },
   };
   const BEDROCK_PREFERENCE_WEIGHT = 1.00001;
+  // The two Anthropic rows are keyed by logical model; these are the Bedrock registry entries they record.
+  const BEDROCK_REGISTRY_ID = {
+    "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-opus-5": "global.anthropic.claude-opus-5",
+  };
 
   function rates(modelId) {
     const { input, output, cacheRead, cacheWrite } = BEDROCK[modelId];
     return { provider: "amazon-bedrock", costPerMillion: { input, output, cacheRead, cacheWrite } };
   }
+
+  it("records the installed registry's rates for every audited endpoint", () => {
+    for (const modelId of Object.keys(BEDROCK)) {
+      const { input, output, cacheRead, cacheWrite } = requiredModel(
+        "amazon-bedrock",
+        BEDROCK_REGISTRY_ID[modelId] ?? modelId,
+      ).cost;
+      assert.deepEqual(rates(modelId).costPerMillion, { input, output, cacheRead, cacheWrite }, modelId);
+    }
+  });
 
   it("reproduces the recorded weighted figures for every audited endpoint", () => {
     for (const [modelId, row] of Object.entries(BEDROCK)) {
@@ -295,7 +311,7 @@ describe("reference-mix effective cost", () => {
     // The reference mix is diagnostic. Endpoint ordering within one logical model still uses the fixed
     // 25/75 blend, so adding this function must not change any route.
     const sol = rates("openai.gpt-5.6-sol");
-    assert.equal(blendedEndpointCost(sol), 0.25 * 5.5 + 0.75 * 33);
+    assert.equal(blendedEndpointCost(sol), 0.25 * 4.4 + 0.75 * 22);
     assert.notEqual(blendedEndpointCost(sol), referenceMixEndpointCost(sol));
   });
 

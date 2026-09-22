@@ -210,18 +210,22 @@ const FOREGROUND_WAIT_MULTIPLIER = 8;
  */
 const DEFAULT_NEAR_TIE_FRACTION = 0.05;
 
-/** Bedrock Sol exposes only its short-context rate; direct OpenAI changes tiers above this boundary. */
-const BEDROCK_SOL_SHORT_CONTEXT_LIMIT = 272_000;
+/**
+ * Bedrock GPT-5.6 exposes only its short-context rate; direct OpenAI changes tiers above this
+ * boundary. Pi 0.85.1 widened the Bedrock context windows to 1,050,000 without adding a tier.
+ */
+const BEDROCK_GPT_56_SHORT_CONTEXT_LIMIT = 272_000;
+const BEDROCK_GPT_56_MODELS: ReadonlySet<string> = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
 
 /** Applies the missing-price guard to both new route selection and persisted-lease revalidation. */
-export function bedrockSolLongContextPricingUnavailable(
+export function bedrockLongContextPricingUnavailable(
   model: Pick<RegistryModelSnapshot, "provider" | "modelId">,
   estimatedFinishedTokens: number,
 ): boolean {
   return (
     model.provider === "amazon-bedrock" &&
-    canonicalModelId(model.modelId) === "gpt-5.6-sol" &&
-    estimatedFinishedTokens > BEDROCK_SOL_SHORT_CONTEXT_LIMIT
+    BEDROCK_GPT_56_MODELS.has(canonicalModelId(model.modelId)) &&
+    estimatedFinishedTokens > BEDROCK_GPT_56_SHORT_CONTEXT_LIMIT
   );
 }
 
@@ -596,16 +600,16 @@ function evaluateCandidate(
 ): RouteChoice[] {
   const scopedEndpoints = registry.filter((model) => canonicalModelId(model.modelId) === ref.logicalModelId);
   // Filter this pricing guard before resolution computes endpoint cost: a larger request must never
-  // be compared at Bedrock Sol's short-context rate, even transiently before eligibility rejects it.
+  // be compared at a Bedrock GPT-5.6 short-context rate, even transiently before eligibility rejects it.
   const priceableEndpoints = scopedEndpoints.filter((model) => {
-    if (!bedrockSolLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return true;
+    if (!bedrockLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return true;
     const supported = model.supportedEfforts.includes(ref.effort);
     exclusions.push(
       supported
         ? {
             candidate: `${model.provider}/${model.modelId}`,
             code: "long_context_pricing_unavailable",
-            detail: `Bedrock Sol has no registered price above ${String(BEDROCK_SOL_SHORT_CONTEXT_LIMIT)} estimated tokens`,
+            detail: `Bedrock ${canonicalModelId(model.modelId)} has no registered price above ${String(BEDROCK_GPT_56_SHORT_CONTEXT_LIMIT)} estimated tokens`,
           }
         : {
             candidate: `${model.provider}/${model.modelId}`,

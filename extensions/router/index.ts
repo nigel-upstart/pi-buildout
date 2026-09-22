@@ -39,7 +39,7 @@ import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import { providerWeightFor } from "./core/provider-weights.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import {
-  bedrockSolLongContextPricingUnavailable,
+  bedrockLongContextPricingUnavailable,
   deriveRoutingContext,
   isStandaloneReviewRequest,
   registrySnapshotId,
@@ -783,7 +783,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
     if (!model?.available) return false;
     const requirements = routeRequirements(currentTokens(ctx), lease.features, hasImages);
-    if (bedrockSolLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return false;
+    if (bedrockLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return false;
     if (requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.7)) return false;
     if (requirements.requiresImages && !model.inputTypes.includes("image")) return false;
     if (requirements.requiresTools && !model.toolCapable) return false;
