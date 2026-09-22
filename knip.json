@@ -3,6 +3,6 @@
   "entry": ["extensions/*/index.ts", "extensions/**/*.test.mjs", "extensions/subagents/auth-bridge.ts"],
   "project": ["extensions/**/*.{ts,mjs}"],
   "ignore": ["extensions/otel/**"],
-  "ignoreBinaries": ["shellcheck", "taskkill"],
+  "ignoreBinaries": ["patch", "shellcheck", "taskkill"],
   "ignoreDependencies": ["@secretlint/secretlint-rule-preset-recommend"]
 }

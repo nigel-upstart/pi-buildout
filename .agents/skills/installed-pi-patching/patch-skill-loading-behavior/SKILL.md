@@ -47,6 +47,10 @@ docs/skills.md                    # skill docs
 README.md                         # high-level docs and CLI table
 ```
 
+Pi 0.84.4 and 0.85.1 dispatch the installed `pi` command and RPC entrypoint through `dist/bundle/`; their versioned
+patches therefore also replace those two bundled entrypoints with wrappers around the patched unbundled runtime. Include
+any such entrypoint files in the patch and checksum manifests when a release switches its package bin layout.
+
 Source maps may exist, but the editable runtime is `dist/*.js`. Prefer changing the smallest runtime surface that proves
 the behavior.
 
@@ -91,6 +95,14 @@ all become:
 github.com:earendil-works/pi-mono
 ```
 
+Starting with the 0.85.1 patch, preserve non-default remote ports in repository keys. Normalize explicit default SSH
+port `22` (and Git protocol port `9418`) to the same key as the port-omitted and SCP-like forms. Do not retrofit this
+repository-key change into earlier versioned patches unless explicitly requested.
+
+Starting with the 0.85.1 patch, valid JSON with a non-object top-level value in `skills.json` or `repo-skills.json` is a
+configuration error rather than an empty configuration. Strict command paths report that error; loader paths warn and
+ignore it.
+
 ## Interactive and CLI Skill Management
 
 The command surfaces are deliberately thin wrappers around `dist/core/skill-management.js`:
@@ -104,6 +116,11 @@ The command surfaces are deliberately thin wrappers around `dist/core/skill-mana
 Avoid adding separate configuration semantics in the TUI and CLI. Keep parsing, repo-key resolution, persistence, and
 catalog queries in the shared core module.
 
+Catalog resolution is asynchronous. It keeps fixed global and trusted-project directory discovery first, then reuses
+`DefaultPackageManager.resolve()` for package and settings skills rather than approximating manifest, filter, scope, or
+precedence behavior. Both `runSkillsCommand()` callers must await it and pass the active `SettingsManager`; name-based
+activation in `DefaultResourceLoader` awaits that same catalog so package and settings names resolve consistently.
+
 ## Verification Ideas
 
 Create temp skills and temp agent dirs. Exercise these behaviors without network calls:
@@ -112,6 +129,8 @@ Create temp skills and temp agent dirs. Exercise these behaviors without network
 - `additionalSkillPaths` loads a session skill
 - `agentDir/skills.json` enables a global skill
 - `agentDir/repo-skills.json` enables a repo skill by normalized upstream URL
+- non-default remote ports stay distinct while explicit default ports retain canonical repository keys
+- non-object top-level JSON values fail strict configuration reads
 - `noSkills: true` ignores global/repo active skills
 
 Example shape:

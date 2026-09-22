@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const patchPath = fileURLToPath(new URL("../patches/pi-0.84.2/skills.patch", import.meta.url));
+const patchPath = fileURLToPath(new URL("../patches/pi-0.85.1/skills.patch", import.meta.url));
 
 function countOccurrences(text, character) {
   return text.split(character).length - 1;
@@ -37,8 +37,9 @@ function extractAddedBlock(patchText, signature) {
 
 async function loadPatchedHandler() {
   const patchText = await readFile(patchPath, "utf8");
+  const commandNameSource = extractAddedBlock(patchText, "function commandName(");
   const usageSource = extractAddedBlock(patchText, "function usage(");
-  const runSkillsCommandSource = extractAddedBlock(patchText, "export function runSkillsCommand(");
+  const runSkillsCommandSource = extractAddedBlock(patchText, "export async function runSkillsCommand(");
   const handlerSource = extractAddedBlock(patchText, "async handleSkillsCommand(");
 
   // Catalog and persistence helpers throw so that any dispatch beyond the paths under test is loud.
@@ -52,6 +53,7 @@ async function loadPatchedHandler() {
     'const getSkillCatalog = unavailable("getSkillCatalog");',
     'const updatePersistedSkill = unavailable("updatePersistedSkill");',
     'const scopeFromArgs = unavailable("scopeFromArgs");',
+    commandNameSource,
     usageSource,
     runSkillsCommandSource,
     "export function attachSkillsHandler(instance, { getAgentDir, Spacer, Text }) {",
