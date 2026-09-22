@@ -2418,6 +2418,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const classification = turnClassification.classification;
       const requiresNewLease = turnClassification.requiresNewLease;
       if (turnClassification.boundaryReason) lastRoute.boundaryReason = turnClassification.boundaryReason;
+      // A committed new-task boundary settles the previous task's secondary question even when this
+      // task's classification or route then fails and the previous lease stays installed; otherwise
+      // that late result would still pass every stale check and act on this prompt's run.
+      if (requiresNewLease) await abortSecondaryWork(ctx, "superseded_task");
 
       if (requiresNewLease && classification) {
         const routedClassification = classification;
@@ -2539,7 +2543,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           repositoryLanguageBucket: languageBucket,
           contextSizeBucket: contextBucket,
         });
-        await abortSecondaryWork(ctx, "superseded_task");
         state = installLease(state, lease);
         accumulatedTaskCosts.set(lease.taskId, 0);
         taskStartedAt.set(lease.taskId, Date.now());

@@ -975,6 +975,47 @@ describe("routerExtension", () => {
     );
   });
 
+  it("aborts prior secondary work at a new-task boundary even when the new task keeps the old lease", async () => {
+    const firstSecondary = deferred();
+    let firstSignal;
+    const result = await runAdapterTurn({
+      classifyTask: successfulClassifier(1, { taskContinuity: "new_task" }),
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        firstSignal = signal;
+        return firstSecondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-new-task-retained-lease",
+    });
+
+    // The new task is unroutable, so the router keeps the previous lease; the previous task's
+    // secondary must still stop rather than reconcile against the new prompt's run.
+    result.ctx.modelRegistry = { ...result.ctx.modelRegistry, getAll: () => [], getAvailable: () => [] };
+    await result.hooks.get("input")(
+      { text: "Implement a different bounded repository change", source: "interactive" },
+      result.ctx,
+    );
+    await result.hooks.get("before_agent_start")(
+      { prompt: "Implement a different bounded repository change", systemPrompt: "system", images: [] },
+      result.ctx,
+    );
+
+    assert.ok(
+      result.events.some(({ kind, data }) => kind === "route_decision" && data.kind === "unroutable"),
+      "the new task must take the retained-lease path",
+    );
+    assert.equal(firstSignal.aborted, true);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "superseded_task",
+    );
+    firstSecondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+  });
+
   it("aborts prior secondary work when a new lease supersedes it", async () => {
     const firstSecondary = deferred();
     const secondSecondary = deferred();
