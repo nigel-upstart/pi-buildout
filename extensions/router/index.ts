@@ -2618,6 +2618,21 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (!active) return;
       active = await prepareActiveLeaseForTurn(ctx, active, pending);
       if (!active) return;
+      // A continuation starts no secondary of its own, and any lease's secondary can settle while
+      // this handler awaits classification or model preparation. Apply it before the first provider
+      // request rather than after that turn's tools have run, and prepare a corrected lease again.
+      if (queuedSecondaryReconciliation) {
+        const prepared: TaskLease = active;
+        await drainSecondaryReconciliation(ctx, {
+          kind: "before_first_request",
+          promptRefreshAllowed: true,
+          continuing: true,
+        });
+        if (state.active?.taskId === prepared.taskId && state.active !== prepared) {
+          active = await prepareActiveLeaseForTurn(ctx, state.active, pending);
+          if (!active) return;
+        }
+      }
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
       exposedSafetyLifecycle = active.lifecycle;

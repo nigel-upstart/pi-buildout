@@ -975,6 +975,46 @@ describe("routerExtension", () => {
     );
   });
 
+  it("applies a secondary that settles during a continuation before the first provider request", async () => {
+    const secondary = deferred();
+    const continuity = successfulClassifier(1, { taskContinuity: "clear_continuation" });
+    let continuityCalls = 0;
+    const result = await runAdapterTurn({
+      classifyTask: async (input) => {
+        continuityCalls++;
+        // The previous prompt's secondary lands while this continuation is still being classified.
+        secondary.resolve(
+          classificationResult(2, {
+            confidence: 0.95,
+            risk: "critical",
+            verificationStrength: "security_and_policy",
+            independenceRequirement: "different_vendor_review",
+          }),
+        );
+        await flushMicrotasks();
+        return continuity(input);
+      },
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-continuation-pre-request",
+    });
+
+    await result.hooks.get("input")({ text: "Continue with the same change", source: "interactive" }, result.ctx);
+    await result.hooks.get("before_agent_start")(
+      { prompt: "Continue with the same change", systemPrompt: "system", images: [] },
+      result.ctx,
+    );
+
+    assert.equal(continuityCalls, 1);
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "prompt_refresh_before_first_request");
+    assert.equal(result.abortCount, 0);
+  });
+
   it("aborts prior secondary work at a new-task boundary even when the new task keeps the old lease", async () => {
     const firstSecondary = deferred();
     let firstSignal;
