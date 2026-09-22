@@ -30,8 +30,9 @@ Consequences:
   direct route dropped to 4/20, so the Codex and direct routes are no longer near parity.
 - **Bedrock `openai.gpt-5.6-sol` is still a 10% markup on direct, not a parity pair.** The 2026-08-11 finding still
   holds for that id. The new `global.openai.gpt-5.6-sol` profile is at parity with direct, and the Bedrock preference
-  weight (`1.00001` against OpenAI's `1.001`) places it first. With the `0.83` contract term recorded in the 2026-08-13
-  analysis, Bedrock `openai.` Sol costs 14.61 against 16.02 direct, so Bedrock Sol still wins.
+  weight (`1.00001` against OpenAI's `1.001`) places it first. Bedrock `openai.` Sol (17.600176) now follows direct
+  OpenAI (16.016). The `0.83` contract term that let it win in the 2026-08-13 analysis was removed in
+  `router-policy-v8`.
 - **Evidence-ranked cross-model ordering does not move.** It uses `costPerPassUsd` from the evidence priors, and the
   evidence generators do not read the registry. `npm run evidence:check` and `npm run single-attempt:check` pass
   unchanged.
@@ -45,10 +46,11 @@ Consequences:
 Item 5 of the [decisions record](decisions.md) and the matching comment in
 [`core/policy.ts`](../../extensions/router/core/policy.ts) cut `gpt-5.6-sol` at medium from `fast_classification`
 because the Opus 5 medium rung behind it is dominant on both ability band (3 against 2) and effective rate (`6.161`
-against `7.442`, at the reference mix with the `0.83` contract term). Under 0.85.1, Bedrock Sol at that mix is `5.422`
-(`4.929` for `global.`) against an unchanged `6.161` for Opus 5. The ability band still favors Opus 5, but the rate no
-longer does, so Sol at medium is a cost-for-capability tradeoff rather than a dominated rung. This record does not
-reinstate it. That is a policy decision, and the `policy.ts` comment now says the cut rests on the ability band alone.
+against `7.442`, at the reference mix with the since-removed `0.83` Bedrock weight). Under 0.85.1 and the current
+`1.00001` weight, Bedrock Sol at that mix is `6.532` (`5.938` for `global.`) against an unchanged `7.423` for Opus 5.
+The ability band still favors Opus 5, but the rate no longer does, so Sol at medium is a cost-for-capability tradeoff
+rather than a dominated rung. This record does not reinstate it. That is a policy decision, and the `policy.ts` comment
+now says the cut rests on the ability band alone.
 
 ## Context windows and the long-context pricing guard
 
