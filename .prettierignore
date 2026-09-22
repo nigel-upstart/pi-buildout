@@ -3,3 +3,4 @@ coverage/
 patches/
 extensions/otel/
 .serena/project.yml
+pi-overlay/versions/
