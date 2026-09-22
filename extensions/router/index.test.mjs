@@ -1066,6 +1066,147 @@ describe("routerExtension", () => {
     );
   });
 
+  it("retains the low-confidence mutation gate when the secondary never returns a usable answer", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        throw new Error("secondary transport failed");
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-unresolved-gate",
+    });
+
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "secondary_failed",
+    );
+
+    // The safety question the gate exists for was never answered, so the latch must not lift just
+    // because the attempt is terminal.
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-unresolved-secondary",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+
+    // A manual override is the operator's escape hatch and clears the retained latch.
+    await result.hooks.get("model_select")({ source: "user", model: standardRoutingModels()[1] }, result.ctx);
+    const afterOverride = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-manual-override",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    if (afterOverride?.block) assert.doesNotMatch(afterOverride.reason, /Secondary safety classification is pending/);
+  });
+
+  it("lets a manual override during awaited reconciliation work win over the captured correction", async () => {
+    const secondary = deferred();
+    const overrideApplied = deferred();
+    const routeReadReached = deferred();
+    let blockRouteRead = false;
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+        },
+        // `route()` inside the drain awaits this read. Take the override during that await so the
+        // drain resumes with a snapshot that is no longer valid.
+        read: async () => {
+          if (blockRouteRead) {
+            blockRouteRead = false;
+            routeReadReached.resolve();
+            await overrideApplied.promise;
+          }
+          return [];
+        },
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-late-override",
+    });
+
+    result.hooks.get("agent_start")({}, result.ctx);
+    result.hooks.get("turn_start")({}, result.ctx);
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await waitUntil(() =>
+      events.some(
+        (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+      ),
+    );
+
+    // A continuing turn boundary is the path that reaches the lease mutation, so block inside the
+    // drain's awaited route telemetry and override while it is suspended there.
+    blockRouteRead = true;
+    const turnEnd = result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] },
+      result.ctx,
+    );
+    await routeReadReached.promise;
+    await result.hooks.get("model_select")({ source: "user", model: standardRoutingModels()[1] }, result.ctx);
+    overrideApplied.resolve();
+    await turnEnd;
+    await flushMicrotasks();
+
+    // The captured correction must not be installed after the override, and the task records exactly
+    // one reconciliation outcome rather than one per drain path.
+    const reconciliations = events.filter(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliations.length, 1);
+    assert.equal(reconciliations[0].data.accepted, false);
+    assert.equal(reconciliations[0].data.reason, "manual_override");
+    const persisted = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data;
+    assert.notEqual(persisted?.active?.features.risk, "critical");
+  });
+
+  it("reports a secondary arrival during tool execution as during_tool_execution", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-arrival-during-tool",
+    });
+
+    // pi emits tool_execution_start/tool_call/tool_execution_end inside the turn, so the provider
+    // turn is still open while a tool runs; the narrower arrival category must still win.
+    result.hooks.get("agent_start")({}, result.ctx);
+    result.hooks.get("turn_start")({}, result.ctx);
+    result.hooks.get("tool_execution_start")({ toolCallId: "arrival-tool" });
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+    await waitUntil(() =>
+      result.events.some(
+        (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+      ),
+    );
+    result.hooks.get("tool_execution_end")({ toolCallId: "arrival-tool", isError: false });
+    await result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] },
+      result.ctx,
+    );
+
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.secondaryArrival,
+      "during_tool_execution",
+    );
+  });
+
   it("keeps the low-confidence mutation gate while settlement telemetry is pending", async () => {
     const secondary = deferred();
     const telemetryStarted = deferred();
@@ -1339,6 +1480,12 @@ describe("routerExtension", () => {
     const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
     assert.equal(reconciliation?.data.accepted, true);
     assert.equal(reconciliation?.data.handoff, "clean_stop_resume");
+    // `classifyTaskSecondary` returns the primary attempts plus the secondary ones; reconciliation
+    // telemetry must record only the secondary stage rather than counting primary attempts twice.
+    assert.deepEqual(
+      reconciliation?.data.secondaryClassifierAttempts.map(({ stage }) => stage),
+      ["secondary"],
+    );
     assert.equal(result.abortCount, 1);
     assert.equal(result.sentMessages.length, 1);
     assert.equal(result.sentMessages[0].options.triggerTurn, true);

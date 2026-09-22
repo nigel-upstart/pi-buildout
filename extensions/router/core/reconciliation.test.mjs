@@ -136,6 +136,21 @@ describe("secondary reconciliation policy", () => {
     );
   });
 
+  it("charges no cache-switch penalty when the correction keeps the incumbent endpoint", () => {
+    const incumbent = routeChoice();
+    // Same provider and model, e.g. an effort-only correction: the existing cache is preserved, so
+    // pricing a fresh cache write here would reject a correction that costs nothing.
+    const corrected = routeChoice({ effort: "high" });
+    const registry = [
+      registryEntry("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+    ];
+
+    assert.equal(
+      estimateCacheSwitchPenaltyUsd({ cachedTokens: 100_000, expectedReuseRatio: 0.5 }, incumbent, corrected, registry),
+      0,
+    );
+  });
+
   it("does not substitute the input rate when a corrected endpoint has no cache-write line item", () => {
     const incumbent = routeChoice();
     const corrected = routeChoice({ provider: "uncached", modelId: "uncached-model" });

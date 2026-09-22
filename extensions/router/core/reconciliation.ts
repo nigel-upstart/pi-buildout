@@ -117,12 +117,23 @@ function correctedCacheWriteRate(endpointSnapshot: RegistryModelSnapshot | undef
   return nonnegativeFinite(endpointSnapshot.costPerMillion.cacheWrite);
 }
 
+function sameEndpoint(
+  incumbent: Pick<RouteChoice, "provider" | "modelId">,
+  corrected: Pick<RouteChoice, "provider" | "modelId">,
+): boolean {
+  return incumbent.provider === corrected.provider && incumbent.modelId === corrected.modelId;
+}
+
 export function estimateCacheSwitchPenaltyUsd(
   cache: CacheValueEstimate,
   incumbent: Pick<RouteChoice, "provider" | "modelId">,
   corrected: Pick<RouteChoice, "provider" | "modelId">,
   registry: readonly RegistryModelSnapshot[],
 ): number {
+  // A correction that keeps the incumbent endpoint (for example an effort-only change) keeps that
+  // endpoint's existing cache, so there is no cache-switch penalty to price. Charging a fresh
+  // cache write here would make the benefit test reject free corrections.
+  if (sameEndpoint(incumbent, corrected)) return 0;
   const tokens = expectedReusableTokens(cache);
   if (tokens <= 0) return 0;
   const incumbentCacheReadRate = endpoint(registry, incumbent)?.costPerMillion.cacheRead ?? 0;

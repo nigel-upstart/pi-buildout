@@ -453,6 +453,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   const secondaryTasks = new Set<SecondaryReconciliationTask>();
   let queuedSecondaryReconciliation: QueuedSecondaryReconciliation | undefined;
   let pendingSecondarySafetyGate: SecondaryReconciliationTask | undefined;
+  /**
+   * A gated low-confidence primary keeps its mutation latch until a schema-valid, provider-diverse
+   * secondary answer has actually been reconciled. A timeout, transport error, schema-invalid
+   * answer, vendor-diversity failure, or unroutable correction leaves that safety question
+   * unresolved, so the latch is retained for the task rather than released when the attempt
+   * settles. A manual override, a new task boundary, or shutdown clears it via `abortSecondaryWork`.
+   */
+  let unresolvedSecondarySafetyGate: SecondaryReconciliationTask | undefined;
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
   let agentRunPhase: AgentRunPhase = "before_start";
@@ -627,8 +635,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   function secondaryArrival(): SecondaryArrival {
     if (agentRunPhase === "before_start") return "before_agent_run";
     if (agentRunPhase === "settled") return "after_agent_run";
-    if (insideProviderTurn) return "during_provider_turn";
+    // Tool execution happens inside a provider turn (pi emits tool_execution_start/tool_call/
+    // tool_execution_end between turn_start and turn_end), so `insideProviderTurn` is also true
+    // while a tool runs. Check the narrower condition first or `during_tool_execution` is
+    // unreachable for every ordinary in-turn tool call.
     if (activeToolExecutions > 0) return "during_tool_execution";
+    if (insideProviderTurn) return "during_provider_turn";
     return "between_turns";
   }
 
@@ -784,6 +796,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     queuedSecondaryReconciliation = undefined;
     if (pendingSecondarySafetyGate) pendingSecondarySafetyGate.pendingSafetyGate = false;
     pendingSecondarySafetyGate = undefined;
+    if (unresolvedSecondarySafetyGate) unresolvedSecondarySafetyGate.pendingSafetyGate = false;
+    unresolvedSecondarySafetyGate = undefined;
     if (ctx && queued) await rejectQueuedSecondary(ctx, queued, reason);
     for (const task of [...secondaryTasks]) {
       task.pendingSafetyGate = false;
@@ -962,10 +976,30 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       );
   }
 
+  /** True when the secondary produced a schema-valid, provider-diverse answer to compare. */
+  function secondaryResolvedSafety(run: ClassifierInvocationRun<ClassificationResult>): boolean {
+    return run.status === "completed" && !run.value.failedClosed;
+  }
+
+  /**
+   * Release or retain the mutation latch for a gated task once its result is terminal. Retaining is
+   * fail-closed: the latch stays until an override, a new task boundary, or shutdown clears it.
+   */
+  function settleSecondarySafetyGate(queued: QueuedSecondaryReconciliation, resolved: boolean): void {
+    if (!queued.task.pendingSafetyGate) return;
+    if (resolved) {
+      queued.task.pendingSafetyGate = false;
+      if (unresolvedSecondarySafetyGate === queued.task) unresolvedSecondarySafetyGate = undefined;
+      return;
+    }
+    unresolvedSecondarySafetyGate = queued.task;
+  }
+
   function secondarySafetyBlockReason(toolName: string, input: Record<string, unknown>): string | undefined {
     const pending =
       pendingSecondarySafetyGate ??
       queuedSecondaryReconciliation?.task ??
+      unresolvedSecondarySafetyGate ??
       [...secondaryTasks].find((task) => !task.settled);
     if (!pending?.pendingSafetyGate || state.active?.taskId !== pending.binding.taskId) return undefined;
     if (!isPotentiallyMutatingTool(toolName, input)) return undefined;
@@ -1010,6 +1044,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (queued.run.status !== "completed") {
       queuedSecondaryReconciliation = undefined;
       const summary = queued.run.summary;
+      // No provider-diverse answer arrived, so a gated low-confidence primary keeps its latch.
+      settleSecondarySafetyGate(queued, false);
       await rejectQueuedSecondary(
         ctx,
         queued,
@@ -1027,8 +1063,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       queued.task.contextBucket,
       queued.task.explorationKey,
     );
+    // `route()` awaits telemetry I/O, so an override, a superseding lease, or another drain can run
+    // between the checks above and the mutation below. Re-validate ownership and staleness after
+    // every await rather than acting on the snapshot captured before it.
+    const lateRejection = (): string | undefined => {
+      if (queuedSecondaryReconciliation !== queued) return "superseded_secondary_result";
+      if (state.active !== active) return "lease_replaced_during_reconciliation";
+      return secondaryStaleReason(queued.task);
+    };
+    const afterRouteRejection = lateRejection();
+    if (afterRouteRejection) {
+      // Whoever took the queue already recorded its rejection, so do not record a second one for
+      // the same task; just stop before mutating state this drain no longer owns.
+      if (queuedSecondaryReconciliation !== queued) return;
+      queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
+      await rejectQueuedSecondary(ctx, queued, afterRouteRejection);
+      return;
+    }
     if (routed.decision.kind === "unroutable") {
       queuedSecondaryReconciliation = undefined;
+      // An unroutable correction never reconciled the safety question either.
+      settleSecondarySafetyGate(queued, false);
       await rejectQueuedSecondary(ctx, queued, "secondary_route_unroutable", {
         routeReason: routed.decision.reason,
         exclusions: routed.decision.exclusions,
@@ -1050,6 +1106,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const correction = decideSecondaryCorrection(delta, estimatedCachePenaltyUsd, secondaryGracePolicy);
     if (correction.action === "reject") {
       queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
       await rejectQueuedSecondary(ctx, queued, correction.reason, {
         materialDelta: delta.material,
         safetyRelevant: delta.safetyRelevant,
@@ -1067,6 +1124,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       active.lifecycle.policy !== lifecycle.policy;
     if (!boundary.promptRefreshAllowed && promptRefreshRequired && !boundary.continuing) {
       queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
       await rejectQueuedSecondary(ctx, queued, "task_ended_no_extra_turn", {
         materialDelta: delta.material,
         safetyRelevant: delta.safetyRelevant,
@@ -1092,6 +1150,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     };
     if (state.mode === "active" && !(await applyChoice(ctx, correctedLease.selected))) {
       queuedSecondaryReconciliation = undefined;
+      // A safety-relevant correction that could not be applied leaves the gate unresolved.
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run) && !delta.safetyRelevant);
       await rejectQueuedSecondary(ctx, queued, "correction_apply_failed", {
         materialDelta: delta.material,
         safetyRelevant: delta.safetyRelevant,
@@ -1102,10 +1162,20 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       return;
     }
 
+    // `applyChoice` awaits the provider selection, so re-validate immediately before mutating.
+    const beforeInstallRejection = lateRejection();
+    if (beforeInstallRejection) {
+      if (queuedSecondaryReconciliation !== queued) return;
+      queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
+      await rejectQueuedSecondary(ctx, queued, beforeInstallRejection);
+      return;
+    }
     state = installLease(state, correctedLease);
     persistState();
     updateStatus(ctx);
     queuedSecondaryReconciliation = undefined;
+    settleSecondarySafetyGate(queued, true);
     const handoff = promptRefreshRequired
       ? boundary.promptRefreshAllowed
         ? "prompt_refresh_before_first_request"
@@ -1121,7 +1191,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       estimatedCachePenaltyUsd,
       expectedBenefitUsd: correction.expectedBenefitUsd,
       secondaryClassifierOutput: sanitizeClassifierFeatures(queued.run.value.features),
-      secondaryClassifierAttempts: queued.run.value.attempts.map(sanitizeClassifierAttempt),
+      // `classifyTaskSecondary` returns the primary attempts it was given plus the secondary ones,
+      // so record only the secondary stage here instead of double-counting primary attempts.
+      secondaryClassifierAttempts: queued.run.value.attempts
+        .filter((attempt) => attempt.stage === "secondary")
+        .map(sanitizeClassifierAttempt),
     });
     if (handoff === "clean_stop_resume") {
       ctx.abort();
