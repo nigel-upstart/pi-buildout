@@ -432,6 +432,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let lastRoute: LastRoute = {};
   let lastUpstream: string | undefined;
   let applyingSelection = false;
+  /** The exact selection an in-flight `applyChoice` is applying, so only its echo is suppressed. */
+  let programmaticSelection: { provider: string; modelId: string } | undefined;
   let lastProviderFailure: FailureKind | undefined;
   let attemptStartedAt = 0;
   let attemptTurns = 0;
@@ -857,6 +859,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const staleReason = secondaryStaleReason(task);
     if (staleReason) {
       if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
+      settleSecondarySafetyGate(queued, staleReasonResolvesSafetyGate(staleReason));
       await rejectQueuedSecondary(ctx, queued, staleReason);
       return;
     }
@@ -1053,6 +1056,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    * Release or retain the mutation latch for a gated task once its result is terminal. Retaining is
    * fail-closed: the latch stays until an override, a new task boundary, or shutdown clears it.
    */
+  /**
+   * Whether a stale result also settles the safety question.
+   *
+   * `no_active_lease` and `superseded_task` mean there is no longer a task to gate, and
+   * `manual_override` means the operator took control. The remaining reasons (input fingerprint,
+   * registry snapshot, lease revision — the last of which a provider fallback alone can cause)
+   * leave the same low-confidence task active with no reconciliation, so the latch is retained.
+   */
+  function staleReasonResolvesSafetyGate(reason: string): boolean {
+    return reason === "no_active_lease" || reason === "superseded_task" || reason === "manual_override";
+  }
+
   function settleSecondarySafetyGate(queued: QueuedSecondaryReconciliation, resolved: boolean): void {
     if (!queued.task.pendingSafetyGate) return;
     if (resolved) {
@@ -1104,6 +1119,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const staleReason = secondaryStaleReason(queued.task);
     if (staleReason) {
       queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, staleReasonResolvesSafetyGate(staleReason));
       await rejectQueuedSecondary(ctx, queued, staleReason);
       return;
     }
@@ -1560,6 +1576,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   async function applyChoice(ctx: ExtensionContext, choice: RouteChoice): Promise<boolean> {
     applyingSelection = true;
+    // `pi.setModel` is asynchronous, so a real user model selection can arrive while the flag is
+    // set. Record the exact selection this call is making so only its own echo is suppressed.
+    programmaticSelection = { provider: choice.provider, modelId: choice.modelId };
     try {
       if (ctx.model?.provider === choice.provider && ctx.model.id === choice.modelId) {
         if (pi.getThinkingLevel() !== choice.effort) pi.setThinkingLevel(choice.effort);
@@ -1575,6 +1594,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       return false;
     } finally {
       applyingSelection = false;
+      programmaticSelection = undefined;
     }
   }
 
@@ -2617,7 +2637,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (applyingSelection || event.source === "restore") return;
+    if (event.source === "restore") return;
+    // Suppress only the echo of the selection the router is applying. `event.source` cannot
+    // distinguish a programmatic `setModel` from a user picking a model (both report "set"), so a
+    // different model arriving while the apply is in flight is a real override and must win.
+    if (
+      applyingSelection &&
+      (programmaticSelection === undefined ||
+        (event.model.provider === programmaticSelection.provider && event.model.id === programmaticSelection.modelId))
+    ) {
+      return;
+    }
     await abortSecondaryWork(ctx, "manual_override");
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual model override") };
     state = markManualOverride(state);
