@@ -868,7 +868,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
     queuedSecondaryReconciliation = queued;
     if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
-    if (task.agentStartReleasedAtMs !== undefined && agentRunPhase !== "active" && attemptDisposition !== "pending") {
+    // Drain eagerly only once the run has settled. A result that lands after `before_agent_start`
+    // released the run but before `agent_start` stays queued for the run's own turn boundaries.
+    if (task.agentStartReleasedAtMs !== undefined && agentRunPhase === "settled" && attemptDisposition !== "pending") {
       await drainSecondaryReconciliation(ctx, {
         kind: "agent_settled",
         promptRefreshAllowed: false,

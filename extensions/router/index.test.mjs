@@ -537,6 +537,41 @@ async function runAdapterTurn({
   };
 }
 
+// Drive the Pi agent-run boundaries the router observes, so a secondary result reaches the same
+// drain points it would in production rather than settling in the gap before `agent_start`.
+function startAgentRun(result) {
+  result.hooks.get("agent_start")({}, result.ctx);
+  result.hooks.get("turn_start")({}, result.ctx);
+}
+
+async function endAgentTurn(result) {
+  await result.hooks.get("turn_end")(
+    { message: { role: "assistant", stopReason: "stop" }, toolResults: [] },
+    result.ctx,
+  );
+}
+
+async function settleAgentRun(result, { stopReason = "stop" } = {}) {
+  const active = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+  result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+  await endAgentTurn(result);
+  await result.hooks.get("agent_end")(
+    {
+      messages: [
+        {
+          role: "assistant",
+          provider: active.selected.provider,
+          model: active.selected.modelId,
+          stopReason,
+          usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+        },
+      ],
+    },
+    result.ctx,
+  );
+  await result.hooks.get("agent_settled")({}, result.ctx);
+}
+
 function restoreEnv({ previousAgentDir, previousMode, previousLastModePath }) {
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -1043,6 +1078,7 @@ describe("routerExtension", () => {
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-pending-safety",
     });
+    startAgentRun(result);
 
     const blocked = result.hooks.get("tool_call")({
       toolCallId: "edit-while-pending",
@@ -1054,6 +1090,7 @@ describe("routerExtension", () => {
 
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
     await flushMicrotasks();
+    await endAgentTurn(result);
     const allowed = result.hooks.get("tool_call")({
       toolCallId: "edit-after-reconcile",
       toolName: "edit",
@@ -1077,6 +1114,8 @@ describe("routerExtension", () => {
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-unresolved-gate",
     });
+    startAgentRun(result);
+    await settleAgentRun(result);
 
     await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
     assert.equal(
@@ -1117,7 +1156,9 @@ describe("routerExtension", () => {
 
     // `classifyTaskSecondary` returns the primary features with `failedClosed` false when the
     // secondary exhausts schema-invalid responses: no `secondaryFeatures`, no `secondaryVendor`.
+    startAgentRun(result);
     secondary.resolve({ ...classificationResult(1, { confidence: 0.6 }), escalated: true });
+    await settleAgentRun(result);
     await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
 
     const blocked = result.hooks.get("tool_call")({
@@ -1189,6 +1230,8 @@ describe("routerExtension", () => {
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-uninstalled-safety-delta",
     });
+    startAgentRun(result);
+    await settleAgentRun(result);
 
     // The task has already ended, so this stricter correction cannot be installed; the lease keeps
     // the weaker primary policy and must stay fail-closed for mutating tools.
@@ -1413,6 +1456,7 @@ describe("routerExtension", () => {
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-pending-telemetry-gate",
     });
+    startAgentRun(result);
 
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
     await telemetryStarted.promise;
@@ -1425,6 +1469,8 @@ describe("routerExtension", () => {
     assert.match(blocked.reason, /Secondary safety classification is pending/);
 
     releaseTelemetry.resolve();
+    await flushMicrotasks();
+    await endAgentTurn(result);
     await waitUntil(() => events.some(({ kind }) => kind === "secondary_reconciliation"));
     const allowed = result.hooks.get("tool_call")({
       toolCallId: "edit-after-settlement-telemetry",
@@ -1444,6 +1490,7 @@ describe("routerExtension", () => {
       prompt: "Implement one high-risk bounded repository change",
       sessionId: "async-secondary-updated-at",
     });
+    startAgentRun(result);
 
     const allowed = result.hooks.get("tool_call")({
       toolCallId: "edit-before-secondary",
@@ -1456,6 +1503,7 @@ describe("routerExtension", () => {
 
     secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
     await flushMicrotasks();
+    await endAgentTurn(result);
     assert.equal(
       result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
       "no_material_delta",
@@ -1473,13 +1521,50 @@ describe("routerExtension", () => {
       sessionId: "async-secondary-stuck-tool-counter",
     });
 
+    startAgentRun(result);
     result.hooks.get("tool_execution_start")({ toolCallId: "stuck-tool" });
     secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
     await flushMicrotasks();
+    // A turn boundary with a tool still counted as running must not drain the result.
+    await endAgentTurn(result);
+    assert.equal(
+      result.events.some(({ kind }) => kind === "secondary_reconciliation"),
+      false,
+    );
+    // An aborted attempt skips the settlement lifecycle work, so this isolates the terminal drain
+    // from a lease revision the evidence-repair path would otherwise install first.
+    await settleAgentRun(result, { stopReason: "aborted" });
     assert.equal(
       result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
       "no_material_delta",
     );
+  });
+
+  it("keeps a secondary result that settles before agent_start queued until a run boundary", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-before-agent-start",
+    });
+
+    // `before_agent_start` has released the run, but Pi has not fired `agent_start` yet. The run has
+    // not settled, so this must not drain as if it had.
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+    await flushMicrotasks();
+    assert.equal(
+      result.events.some(({ kind }) => kind === "secondary_reconciliation"),
+      false,
+    );
+
+    startAgentRun(result);
+    await endAgentTurn(result);
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.reason, "no_material_delta");
+    assert.equal(reconciliation?.data.secondaryArrival, "before_agent_run");
   });
 
   it("lets manual overrides win by aborting pending secondary work", async () => {
@@ -1563,9 +1648,11 @@ describe("routerExtension", () => {
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-configured-deadline",
     });
+    startAgentRun(result);
 
     await new Promise((resolve) => setTimeout(resolve, 25));
     await flushMicrotasks();
+    await settleAgentRun(result);
     await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
     const invocation = result.events.find(
       (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
