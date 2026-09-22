@@ -65,24 +65,20 @@ export function resolveFallback(
   options?: { skipProvider?: string },
 ): FallbackResolution {
   const skipProvider = options?.skipProvider;
-  let nextAttemptIndex = lease.attemptIndex;
+  const remainingFallbacks =
+    skipProvider !== undefined ? lease.fallbacks.filter((choice) => choice.provider !== skipProvider) : lease.fallbacks;
+  const isSkipped = remainingFallbacks.length < lease.fallbacks.length;
 
-  if (skipProvider !== undefined) {
-    while (nextAttemptIndex < lease.fallbacks.length && lease.fallbacks[nextAttemptIndex]?.provider === skipProvider) {
-      nextAttemptIndex++;
-    }
-  }
-
-  const nextAttempt = nextAttemptIndex + 1;
-  const nextChoice = lease.fallbacks[nextAttemptIndex];
+  const nextAttempt = lease.attemptIndex + 1;
+  const nextChoice = remainingFallbacks[lease.attemptIndex];
   if (nextChoice) {
     const isBuilderFallback = false;
-    const isSkipped = nextAttemptIndex > lease.attemptIndex;
     const updated: TaskLease = {
       ...lease,
       updatedAt: now,
       attemptIndex: nextAttempt,
       selected: nextChoice,
+      fallbacks: remainingFallbacks,
       promptProfileId: nextChoice.profileId,
     };
     return {
@@ -98,12 +94,16 @@ export function resolveFallback(
   }
 
   if (lease.archetype === "code_review" && lease.lifecycle.phase === "review") {
-    return { action: "skip_review", lease, reason: "all review attempts failed; preserve the parent task lease" };
+    return {
+      action: "skip_review",
+      lease: { ...lease, fallbacks: remainingFallbacks },
+      reason: "all review attempts failed; preserve the parent task lease",
+    };
   }
   return {
     action: "restore_previous",
     ...(lease.previousSelection ? { choice: lease.previousSelection } : {}),
-    lease,
+    lease: { ...lease, fallbacks: remainingFallbacks },
     reason:
       lease.archetype === "code_review"
         ? "all standalone review attempts failed; restoring the previous selection"

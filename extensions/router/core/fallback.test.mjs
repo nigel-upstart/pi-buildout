@@ -82,14 +82,44 @@ describe("ordinary fallback", () => {
     });
     assert.equal(skipped.action, "use_choice");
     assert.equal(skipped.choice.provider, "anthropic");
-    assert.equal(skipped.lease.attemptIndex, 4);
+    assert.equal(skipped.lease.attemptIndex, 1);
     assert.match(skipped.reason, /fast-skipped exhausted provider openai-codex/);
 
     // Next sequential fallback from anthropic proceeds normally to amazon-bedrock
     const next = resolveFallback(skipped.lease, "availability", "2026-07-17T00:02:00.000Z");
     assert.equal(next.action, "use_choice");
     assert.equal(next.choice.provider, "amazon-bedrock");
-    assert.equal(next.lease.attemptIndex, 5);
+    assert.equal(next.lease.attemptIndex, 2);
+  });
+
+  it("removes exhausted providers across interleaved provider fallback chains", () => {
+    const interleaved = taskLease(
+      "deliberate_tool_workflow",
+      choice("openai-codex", "gpt-5.6-sol", "openai-gpt-5.6-agent-v1"),
+      [
+        choice("anthropic", "claude-sonnet-5", "anthropic-claude-fast-agent-v1"),
+        choice("openai-codex", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
+        choice("amazon-bedrock", "us.anthropic.claude-opus-5", "anthropic-claude-planning-v1"),
+      ],
+    );
+    // When openai-codex fails with quota exhaustion, it skips directly to anthropic and filters out
+    // the subsequent openai-codex candidate so it is never revisited.
+    const first = resolveFallback(interleaved, "model_error", "2026-07-17T00:01:00.000Z", {
+      skipProvider: "openai-codex",
+    });
+    assert.equal(first.action, "use_choice");
+    assert.equal(first.choice.provider, "anthropic");
+    assert.equal(first.lease.attemptIndex, 1);
+    assert.deepEqual(
+      first.lease.fallbacks.map((c) => c.provider),
+      ["anthropic", "amazon-bedrock"],
+    );
+
+    // If anthropic now fails on availability, the next candidate must be amazon-bedrock, not openai-codex
+    const second = resolveFallback(first.lease, "availability", "2026-07-17T00:02:00.000Z");
+    assert.equal(second.action, "use_choice");
+    assert.equal(second.choice.provider, "amazon-bedrock");
+    assert.equal(second.lease.attemptIndex, 2);
   });
 });
 

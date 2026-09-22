@@ -2057,15 +2057,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         },
         { triggerTurn: true, deliverAs: "followUp" },
       );
-    } else if (deterministicVerificationFailed || planValidationMissing || safetyReviewMissing) {
-      attemptDisposition = "failed";
-      await transitionFallback(ctx, "deterministic_verification", true);
     } else if (isActiveAttempt && (last?.stopReason === "error" || (!last && lastProviderFailure !== undefined))) {
       attemptDisposition = "failed";
       const failure = lastProviderFailure ?? "model_error";
       lastProviderFailure = undefined;
       const skipProvider = isProviderQuotaExhaustionError(last?.errorMessage) ? attemptedProvider : undefined;
       await transitionFallback(ctx, failure, true, skipProvider ? { skipProvider } : undefined);
+    } else if (deterministicVerificationFailed || planValidationMissing || safetyReviewMissing) {
+      attemptDisposition = "failed";
+      await transitionFallback(ctx, "deterministic_verification", true);
     } else if (isActiveAttempt && last?.stopReason === "length") {
       attemptDisposition = "failed";
       await transitionFallback(ctx, "quality", true);

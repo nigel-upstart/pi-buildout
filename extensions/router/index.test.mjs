@@ -2292,7 +2292,11 @@ describe("routerExtension", () => {
       );
       assert.equal(latestLease().selected.provider, "anthropic");
       assert.equal(latestLease().selected.modelId, "claude-opus-5");
-      assert.equal(latestLease().attemptIndex, 3);
+      assert.equal(latestLease().attemptIndex, 1);
+      assert.deepEqual(
+        latestLease().fallbacks.map((c) => c.provider),
+        ["anthropic"],
+      );
       assert.deepEqual(
         selectedModels.map((model) => model.provider),
         ["anthropic"],
