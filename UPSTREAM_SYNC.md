@@ -11,9 +11,9 @@ recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this
 | ------------------- | ------------------------------------------------------------ |
 | Upstream remote     | `zew1me` → <https://github.com/zew1me/pi-buildout.git>       |
 | Upstream branch     | `main`                                                       |
-| Last synced SHA     | `bc127ebf439d0827bfc4f660fdc205595caaa544` (2026-09-19, #61) |
+| Last synced SHA     | `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22)      |
 | Last sync date      | 2026-09-22                                                   |
-| Previous sync point | `57b1a5fe86c04eab65566a871c34e4bd43f3dc89` (2026-09-08, #43) |
+| Previous sync point | `bc127ebf439d0827bfc4f660fdc205595caaa544` (2026-09-19, #61) |
 | Sync branch         | `chore/sync-upstream-zew1me`                                 |
 | Outbound fixes owed | None (see [Outbound](#outbound))                             |
 
@@ -21,10 +21,23 @@ To find the next batch of upstream work:
 
 ```bash
 git fetch zew1me
-git log --oneline bc127ebf439d0827bfc4f660fdc205595caaa544..zew1me/main
+git log --oneline 502c13a0402362d8cda667a1115fc176e0ffa120..zew1me/main
 ```
 
-## 2026-09-22 sync
+## 2026-09-22 sync (`502c13a0`)
+
+| Upstream   | Upstream change                                                  | Status | Local change |
+| ---------- | ---------------------------------------------------------------- | ------ | ------------ |
+| `502c13a0` | feat(patches): generate the 0.85.1 /skills patch from TypeScript | Ported | This sync    |
+
+Notes:
+
+- Adds `pi-overlay/` and the `patches:build` / `patches:check` generation pipeline. `patches/pi-0.85.1` files match
+  upstream byte for byte.
+- Lint, knip, TypeScript, lefthook, and test globs merge upstream's `pi-overlay` entries with the fork's router and
+  vendored OpenTelemetry entries.
+
+## 2026-09-22 sync (`bc127ebf`)
 
 Upstream commits after the merge base `f7902c04`, oldest first. "Already ported" means an earlier local change brought
 the same content; the file state was compared against upstream rather than relying on patch identity.

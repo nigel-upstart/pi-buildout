@@ -307,6 +307,35 @@ sources while preserving Pi's precedence and project-trust behavior. It intentio
 of every discovered skill, concurrent-update locking, configured-path confinement, new public resource-loader mutator
 APIs, or changes to Pi's unrelated extension, prompt, theme, package, trust, and provider behavior.
 
+## Pi `/skills` TypeScript overlay
+
+- Source: `@earendil-works/pi-coding-agent@0.85.1`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`), taken from the npm registry's
+  `gitHead` for that release
+- Source acquired from the release asset `pi-0.85.1-source.tar.gz`, verified against upstream's published `SHA256SUMS`
+- License declared by the package: MIT
+
+[`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under `patches/pi-0.85.1/`
+are generated from it.
+
+`pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
+are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
+informed by Pi's resource-loading and command conventions rather than copied from an upstream file. They additionally
+absorb logic that earlier versions of the patch inlined into upstream files, so those files now receive only imports and
+call sites.
+
+`pi-overlay/versions/0.85.1/integration.patch` is a modified-code patch against Pi's MIT-licensed TypeScript sources:
+`src/core/resource-loader.ts`, `src/core/slash-commands.ts`, `src/main.ts`, `src/modes/interactive/interactive-mode.ts`,
+and `docs/skills.md`. Its unchanged context and modified lines derive from the MIT-licensed Pi package.
+
+`pi-overlay/versions/0.85.1/replacements/dist/bundle/cli.js` and `rpc-entry.js` are original hand-written wrappers, not
+derived from upstream's generated bundle output. They replace Pi's esbuild-produced bundled entrypoints so the patched
+unbundled runtime handles CLI and RPC execution.
+
+This repository vendors no upstream source and maintains no fork. Upstream source is fetched per generation run against
+pinned, checksum-verified inputs, and is not committed here.
+
 ## Pi documentation and examples
 
 - Source: `@earendil-works/pi-coding-agent`
@@ -440,7 +469,7 @@ failed LLM request's span, both of which upstream omits.
 
 - Source: `zew1me/pi-buildout`
 - Canonical repository: <https://github.com/zew1me/pi-buildout>
-- Revision last synced: `bc127ebf439d0827bfc4f660fdc205595caaa544` (2026-09-19)
+- Revision last synced: `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22)
 - License declared by the source: MIT (© 2026 Nigel Stuke)
 
 This repository is a fork of `zew1me/pi-buildout`. Upstream changes are ported by cherry-picking commits rather than by
@@ -452,7 +481,9 @@ recognized-state upgrade manifests for installs patched by this repository's ear
 settings skill catalog for the pi 0.84.2 patch; the manifest-driven patch file set, recognized-state upgrade path,
 Homebrew package lookup, and legacy top-level entrypoint cleanup in `scripts/install-extensions.sh`; and the tests that
 cover them (`scripts/skills-catalog.test.mjs`, `scripts/skills-patch-entrypoint.test.mjs`,
-`scripts/install-extensions.test.mjs`).
+`scripts/install-extensions.test.mjs`). The sync at `502c13a0` adds, as copied code, the `pi-overlay/` TypeScript source
+for the 0.85.1 `/skills` patch, the `scripts/build-pi-patch.mjs` generation pipeline and its tests, and the
+`patch-drift` CI workflow.
 
 What was intentionally not adopted: upstream's removal of the router and vendored OpenTelemetry extensions from the
 installer and documentation; upstream's dependency overrides and scripts where this fork carries its own; and upstream's

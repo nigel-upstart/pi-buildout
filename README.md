@@ -12,6 +12,7 @@ Local pi customizations and supporting notes used to make pi the desired coding-
 | `extensions/otel`                      | Vendored OpenTelemetry fork: GenAI spans, metrics, and logs over OTLP (opt-in)              | [`extensions/otel/README.md`](extensions/otel/README.md)                             |
 | `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior                                  | [skill README](.agents/skills/installed-pi-patching/README.md)                       |
 | `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-0.85.1/README.md`](patches/pi-0.85.1/README.md)                         |
+| `pi-overlay`                           | Authored TypeScript the newest `/skills` patch is generated from                            | [`pi-overlay/README.md`](pi-overlay/README.md)                                       |
 
 ## Installation
 
@@ -48,6 +49,22 @@ The vendored OpenTelemetry extension is opt-in, because only one OpenTelemetry S
 
 Remove any `npm:pi-otel` entry from pi settings first, or whichever loads first will own the global providers and the
 other will silently stop exporting. See [`specs/otel-ownership-decision.md`](specs/otel-ownership-decision.md).
+
+### Where the `/skills` patch comes from
+
+From pi 0.85.1 the patch is **generated, not hand-authored**. Reviewed TypeScript in [`pi-overlay`](pi-overlay) is the
+source of truth, and `patches/pi-0.85.1/*` is produced from it:
+
+```bash
+npm run patches:build # regenerate the patch and its checksum manifests
+npm run patches:check # fail if the committed artifacts are stale
+```
+
+The pipeline fetches the pinned upstream release source archive and npm tarball, verifies both against checksums
+committed in `pi-overlay/versions/<version>/upstream.json`, and proves the unmodified pinned source rebuilds the
+published runtime byte-for-byte before it will emit anything. It also holds edits to pre-existing upstream files to a
+declared budget, so logic that creeps into pi's own files fails the build. Regeneration is network-bound and builds pi's
+workspace packages, so it runs in its own scheduled CI job rather than on every pull request.
 
 ## Development and quality checks
 

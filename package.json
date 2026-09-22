@@ -33,11 +33,13 @@
     "lint:markdown": "markdownlint-cli2 \"**/*.md\"",
     "lint:shell": "shellcheck scripts/*.sh",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-skip-pattern='real Bifrost routing evaluation' 'extensions/**/*.test.mjs' 'scripts/*.test.mjs'",
+    "test": "node --test --test-skip-pattern='real Bifrost routing evaluation' 'extensions/**/*.test.mjs' 'pi-overlay/*.test.mjs' 'scripts/*.test.mjs'",
     "test:eval:real": "node --test extensions/router/eval/real.test.mjs",
     "knip": "knip",
     "secrets": "secretlint \"**/*\"",
     "check": "npm run format:check && npm run evidence:check && npm run single-attempt:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run secrets",
+    "patches:build": "node scripts/build-pi-patch.mjs",
+    "patches:check": "node scripts/build-pi-patch.mjs --check",
     "audit": "node scripts/check-audit.mjs"
   },
   "devDependencies": {
