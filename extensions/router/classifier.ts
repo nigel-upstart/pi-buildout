@@ -332,7 +332,11 @@ export async function classifyTaskSecondary(input: {
   );
   const secondaryVendor = secondaryResult.vendor ?? input.secondaryVendor;
   const secondaryFeatures = secondaryResult.features;
-  const primaryVendor = input.primaryVendor ?? input.primary.primaryVendor;
+  // Compare against the vendor that actually produced the primary result. The caller-selected
+  // vendor is only a fallback for a primary transport that failed before returning one, so
+  // preferring it here could check diversity against a vendor that never answered — and would
+  // disagree with the `primaryVendor` this function reports.
+  const primaryVendor = input.primary.primaryVendor ?? input.primaryVendor;
   if (primaryVendor && secondaryVendor && primaryVendor === secondaryVendor) {
     features = conservativeFeatures("Secondary classifier used the same vendor as primary");
     failedClosed = true;
@@ -346,7 +350,7 @@ export async function classifyTaskSecondary(input: {
     escalated: true,
     failedClosed,
     attempts,
-    ...(input.primary.primaryVendor ? { primaryVendor: input.primary.primaryVendor } : {}),
+    ...(primaryVendor ? { primaryVendor } : {}),
     ...(secondaryVendor ? { secondaryVendor } : {}),
     primaryFeatures,
     ...(secondaryFeatures ? { secondaryFeatures } : {}),

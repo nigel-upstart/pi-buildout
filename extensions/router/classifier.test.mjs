@@ -325,6 +325,23 @@ describe("classifyTask", () => {
     assert.equal(result.secondaryVendor, "openai");
     assert.match(result.features.evidence[0], /same vendor/);
   });
+
+  it("checks provider diversity against the vendor that actually answered the primary stage", async () => {
+    const result = await classifyTask({
+      prompt: "Risky task",
+      synopsis,
+      // The primary answered from anthropic even though openai was the selected vendor, so the
+      // diversity check must compare the secondary against anthropic.
+      primary: transport(features({ risk: "high" }), "anthropic"),
+      secondary: transport(features({ risk: "high" }), "anthropic"),
+      primaryVendor: "openai",
+      secondaryVendor: "openai",
+    });
+    assert.equal(result.primaryVendor, "anthropic");
+    assert.equal(result.secondaryVendor, "anthropic");
+    assert.equal(result.failedClosed, true);
+    assert.match(result.features.evidence[0], /same vendor/);
+  });
 });
 
 describe("reconcileFeatures", () => {
