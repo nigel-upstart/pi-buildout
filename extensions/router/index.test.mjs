@@ -1837,6 +1837,8 @@ describe("routerExtension", () => {
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-transport-timeout-budget",
     });
+    startAgentRun(result);
+    await settleAgentRun(result);
 
     await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
     const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
@@ -1892,7 +1894,10 @@ describe("routerExtension", () => {
       sessionId: "async-secondary-budget-on-success",
     });
 
+    startAgentRun(result);
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+    await endAgentTurn(result);
     await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
 
     const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
