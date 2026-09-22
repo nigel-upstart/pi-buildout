@@ -263,12 +263,12 @@ describe("classifier invocation telemetry", () => {
   it("allows each stage its own timeout budget when stageTimeoutMs is configured", async () => {
     const run = await runClassifierInvocation({
       purpose: "fresh_task",
-      timeoutMs: 50,
-      stageTimeoutMs: 30,
+      timeoutMs: 150,
+      stageTimeoutMs: 1_000,
       invoke: async (signal, observe) => {
-        // Stage 1 takes 20ms (< 30ms stage timeout)
+        // Stage 1 sleeps well inside its own stage budget.
         observe({ stage: "primary", try: 1, state: "started" });
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 100));
         signal.throwIfAborted();
         observe({
           stage: "primary",
@@ -277,12 +277,13 @@ describe("classifier invocation telemetry", () => {
           outcome: "valid",
           provider: "openai-codex",
           modelId: "gpt-5.6-luna",
-          latencyMs: 20,
+          latencyMs: 100,
         });
 
-        // Stage 2 takes another 20ms (< 30ms stage timeout, but total elapsed is 40ms > primary stage limit)
+        // Stage 2 sleeps inside its own fresh budget, even though the combined
+        // elapsed time already exceeds the single-clock timeoutMs above.
         observe({ stage: "secondary", try: 1, state: "started" });
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 100));
         signal.throwIfAborted();
         observe({
           stage: "secondary",
@@ -291,7 +292,7 @@ describe("classifier invocation telemetry", () => {
           outcome: "valid",
           provider: "anthropic",
           modelId: "claude-sonnet-5",
-          latencyMs: 20,
+          latencyMs: 100,
         });
         return "reconciled";
       },
@@ -301,14 +302,14 @@ describe("classifier invocation telemetry", () => {
     assert.equal(run.value, "reconciled");
     assert.equal(run.summary.attemptCount, 2);
     assert.equal(run.summary.timedOut, false);
-    assert.ok(run.summary.wallLatencyMs >= 35);
+    assert.ok(run.summary.wallLatencyMs >= 150);
   });
 
   it("times out the secondary stage when it exceeds its own stageTimeoutMs", async () => {
     const run = await runClassifierInvocation({
       purpose: "fresh_task",
-      timeoutMs: 100,
-      stageTimeoutMs: 25,
+      timeoutMs: 10_000,
+      stageTimeoutMs: 100,
       invoke: async (signal, observe) => {
         observe({ stage: "primary", try: 1, state: "started" });
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -324,9 +325,9 @@ describe("classifier invocation telemetry", () => {
         });
 
         observe({ stage: "secondary", try: 1, state: "started" });
-        // Secondary takes 50ms (> 25ms stageTimeoutMs)
+        // Secondary would run far past its own stage budget.
         await new Promise((resolve, reject) => {
-          const timeout = setTimeout(resolve, 50);
+          const timeout = setTimeout(resolve, 5_000);
           signal.addEventListener("abort", () => {
             clearTimeout(timeout);
             observe({ stage: "secondary", try: 1, state: "completed", outcome: "cancelled" });
