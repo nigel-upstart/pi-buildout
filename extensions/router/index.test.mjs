@@ -20,7 +20,6 @@ import { transportFromCandidates } from "./pi-classifier.ts";
 import { JsonlTelemetryStore, runClassifierInvocation } from "./telemetry.ts";
 import routerExtension, {
   CLASSIFICATION_STAGE_TIMEOUT_MS,
-  CLASSIFICATION_TIMEOUT_MS,
   activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
   deterministicCheckCommand,
@@ -186,7 +185,7 @@ describe("classifier deadline", () => {
 
     const run = await runClassifierInvocation({
       purpose: "fresh_task",
-      timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+      timeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
       stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
       invoke: (signal, onAttempt) =>
         classifyTask({
@@ -244,7 +243,7 @@ describe("classifier deadline", () => {
 
     const run = await runClassifierInvocation({
       purpose: "fresh_task",
-      timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+      timeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
       stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
       invoke: (signal, onAttempt) =>
         classifyTask({
@@ -325,7 +324,7 @@ describe("classifier deadline", () => {
     // Timer scheduling and performance.now() rounding can differ by roughly one millisecond.
     assert.ok(run.summary.wallLatencyMs >= deadlineMs - 2, `expired after only ${String(run.summary.wallLatencyMs)}ms`);
     assert.ok(
-      performance.now() - startedAt < CLASSIFICATION_TIMEOUT_MS,
+      performance.now() - startedAt < CLASSIFICATION_STAGE_TIMEOUT_MS,
       "expiration must not wait for the full budget",
     );
     await assert.rejects(classification, (error) => error.name === "AbortError");

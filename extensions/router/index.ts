@@ -264,10 +264,9 @@ export function safetyToolBlockReason(
 // overruns aborts the in-flight request (via the shared AbortSignal, so the underlying network call
 // is actually cancelled rather than merely abandoned) and ends the invocation; the caller then keeps
 // whatever model/task is already selected instead of routing on a call that never returned.
-// CLASSIFICATION_STAGE_TIMEOUT_MS is the value enforced in production and reported to the user.
-// CLASSIFICATION_TIMEOUT_MS bounds the window before the first stage reports that it started.
+// One constant governs every stage, so the deadline the router enforces is always the deadline it
+// reports to the user. It also bounds the window before the first stage reports that it started.
 export const CLASSIFICATION_STAGE_TIMEOUT_MS = 15_000;
-export const CLASSIFICATION_TIMEOUT_MS = CLASSIFICATION_STAGE_TIMEOUT_MS;
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
@@ -278,7 +277,7 @@ async function classifyWithTimeout(
 ) {
   return runClassifierInvocation<ClassificationResult>({
     purpose,
-    timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+    timeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
     stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
     invoke: (signal, onAttempt) =>
       classify({
