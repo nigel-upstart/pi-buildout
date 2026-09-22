@@ -119,6 +119,18 @@ function resolveClassifierTiers(
   return logicalModelIds.flatMap((logicalModelId) => resolveClassifierTier(registry, logicalModelId));
 }
 
+function selectSecondaryClassifierModels(
+  registry: readonly RegistryModelSnapshot[],
+  primaryVendor: ModelVendor | undefined,
+): ClassifierModel[] {
+  if (!primaryVendor) return [];
+  return resolveClassifierTiers(registry, secondaryClassifierTiers(primaryVendor)).filter(
+    // Independence is enforced here rather than assumed from the tier table, so a vendor that
+    // declares no secondary tier of its own still cannot reconcile against itself.
+    (candidate) => candidate.vendor !== primaryVendor,
+  );
+}
+
 export function selectClassifierModels(registry: readonly RegistryModelSnapshot[]): {
   primary: ClassifierModel[];
   secondary: ClassifierModel[];
@@ -126,15 +138,7 @@ export function selectClassifierModels(registry: readonly RegistryModelSnapshot[
   const primary = resolveClassifierTiers(registry, PRIMARY_CLASSIFIER_TIERS);
   // The vendor guess only decides which independent secondary tier to search; tier order (Luna
   // before Haiku) means this reflects whichever logical tier has any eligible scoped endpoint.
-  const primaryVendorGuess = primary[0]?.vendor;
-  const secondary = primaryVendorGuess
-    ? resolveClassifierTiers(registry, secondaryClassifierTiers(primaryVendorGuess)).filter(
-        // Independence is enforced here rather than assumed from the tier table, so a vendor that
-        // declares no secondary tier of its own still cannot reconcile against itself.
-        (candidate) => candidate.vendor !== primaryVendorGuess,
-      )
-    : [];
-  return { primary, secondary };
+  return { primary, secondary: selectSecondaryClassifierModels(registry, primary[0]?.vendor) };
 }
 
 type CandidateCaller = (candidate: ClassifierModel, request: ClassifierRequest) => Promise<ClassifierTransportResult>;
@@ -297,12 +301,16 @@ export async function classifyTaskSecondaryWithPi(input: {
 }): Promise<ClassificationResult> {
   const selected = selectClassifierModels(input.registry);
   const primaryVendor = input.primary.primaryVendor ?? selected.primary[0]?.vendor;
-  const secondaryVendor = selected.secondary[0]?.vendor;
+  // Choose the independent tier from the vendor that actually answered. The primary transport falls
+  // through Luna to Haiku, so the first-candidate guess can name a vendor that never produced the
+  // result, and a secondary chosen from it would share the answering vendor and fail closed.
+  const secondary = selectSecondaryClassifierModels(input.registry, primaryVendor);
+  const secondaryVendor = secondary[0]?.vendor;
   return classifyTaskSecondary({
     prompt: input.prompt,
     synopsis: input.synopsis,
     primary: input.primary,
-    secondary: transportFor(input.ctx, selected.secondary),
+    secondary: transportFor(input.ctx, secondary),
     ...(primaryVendor ? { primaryVendor } : {}),
     ...(secondaryVendor ? { secondaryVendor } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
