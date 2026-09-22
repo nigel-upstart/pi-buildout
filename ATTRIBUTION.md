@@ -455,7 +455,9 @@ cover them (`scripts/skills-catalog.test.mjs`, `scripts/skills-patch-entrypoint.
 `scripts/install-extensions.test.mjs`).
 
 What was intentionally not adopted: upstream's removal of the router and vendored OpenTelemetry extensions from the
-installer and documentation; upstream's dependency overrides and scripts where this fork carries its own; the pi 0.84.4
-and 0.85.1 development package bumps, because the router's cost tests pin the pi 0.84.1 model registry and a registry
-bump is a separate evidence refresh; and upstream's subagent fallback effort handling, where this fork keeps its own
-explicit model and effort resolution.
+installer and documentation; upstream's dependency overrides and scripts where this fork carries its own; and upstream's
+subagent fallback effort handling, where this fork keeps its own explicit model and effort resolution.
+
+The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from the sync at `bc127ebf` because the
+router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
+evidence review; only the version numbers are shared with upstream.

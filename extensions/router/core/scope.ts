@@ -80,7 +80,7 @@ export function canonicalModelId(modelId: string): string {
   // Case is folded because catalogs disagree on it for the same model: Bedrock spells Z.ai's model
   // `zai.glm-5` while the Hugging Face and Together catalogs spell it `zai-org/GLM-5`, and the same
   // split affects Kimi, MiniMax, Qwen and DeepSeek entries. Folding is safe rather than merely
-  // convenient: across all 1,065 entries of the pinned registry no two IDs within one provider differ
+  // convenient: across all 1,354 entries of the pinned registry no two IDs within one provider differ
   // only by case, and every incumbent ID is already lower-case, so no incumbent identity moves.
   let bare = (modelId.split("/").at(-1) ?? modelId).toLowerCase();
   bare = normalizeVendorPath(bare.replace(BEDROCK_REGION_PREFIX, ""));
