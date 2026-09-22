@@ -257,12 +257,25 @@ export function safetyToolBlockReason(
   return lifecycleToolBlockReason(lease?.lifecycle, toolName, input);
 }
 
-// A hung classifier/selection call must never block the agent turn indefinitely. Fifteen seconds
-// accommodates observed classifier latency while keeping the deadline bounded; past that we abort
-// the in-flight request (via the shared AbortSignal, so the underlying network call is actually
-// cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
-// selected instead of routing on a call that never returned.
-export const CLASSIFICATION_TIMEOUT_MS = 15_000;
+// A hung classifier/selection call must never block the agent turn indefinitely, so the router owns
+// the deadline rather than trusting the transport. The budget is per classification stage: the
+// primary stage gets its own deadline, and if the classifier escalates, the secondary stage starts
+// a fresh one. Retries and endpoint iteration inside a stage share that stage's budget. A stage that
+// overruns aborts the in-flight request (via the shared AbortSignal, so the underlying network call
+// is actually cancelled rather than merely abandoned) and ends the invocation; the caller then keeps
+// whatever model/task is already selected instead of routing on a call that never returned.
+// One constant governs every stage of a synchronous classifier invocation, so the deadline the
+// router enforces is always the deadline it reports to the user. It also bounds the window before
+// the first stage reports that it started.
+//
+// Scope: this constant times the invocations run through `classifyWithTimeout` — fresh-task primary
+// classification, and continuity classification, which still escalates primary to secondary inside
+// the same invocation (so the secondary stage there really does start a fresh budget).
+// Background fresh-task secondary reconciliation is a separate invocation and is NOT timed by this
+// constant: see `classifySecondaryWithTimeout`, which uses the configurable
+// `secondaryGracePolicy.secondaryDeadlineMs` (defaulted in `core/reconciliation.ts`). Changing this
+// value does not change the background reconciliation budget, and vice versa.
+export const CLASSIFICATION_STAGE_TIMEOUT_MS = 15_000;
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
@@ -273,7 +286,8 @@ async function classifyWithTimeout(
 ) {
   return runClassifierInvocation<ClassificationResult>({
     purpose,
-    timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+    timeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
+    stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
     invoke: (signal, onAttempt) =>
       classify({
         ctx,
@@ -1417,9 +1431,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       } else {
         const summary = result.invocation.summary;
         const reason = summary.timedOut ? "timed out" : summary.cancelled ? "was cancelled" : "failed";
+        // Only a router-owned stage deadline can be reported as the router's fixed stage budget. A
+        // provider-thrown TimeoutError also sets `timedOut`, but it is categorized as
+        // `transport_timeout` and can fire well inside the stage budget, so it takes the generic
+        // wording derived from `reason` instead of claiming the router's deadline elapsed.
         ctx.ui.notify(
-          summary.timedOut
-            ? `Router continuity classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current task and model selection`
+          summary.errorCategory === "deadline"
+            ? `Router continuity classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current task and model selection`
             : `Router continuity classification ${reason}; keeping the current task and model selection`,
           "warning",
         );
@@ -1435,9 +1453,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         classification = result.value;
       } else {
         const reason = result.summary.timedOut ? "timed out" : result.summary.cancelled ? "was cancelled" : "failed";
+        // See the continuity branch above: only `deadline` means the router's own stage budget
+        // elapsed, so a transport timeout must not be reported as the fixed stage deadline.
         ctx.ui.notify(
-          result.summary.timedOut
-            ? `Router classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current model selection`
+          result.summary.errorCategory === "deadline"
+            ? `Router classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current model selection`
             : `Router classification ${reason}; keeping the current model selection`,
           "warning",
         );

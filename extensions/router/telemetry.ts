@@ -160,15 +160,46 @@ function classifierInvocationSummary(
 export async function runClassifierInvocation<T>(input: {
   purpose: ClassifierInvocationPurpose;
   timeoutMs: number;
+  stageTimeoutMs?: number;
   invoke: (signal: AbortSignal, onAttempt: (observation: ClassifierAttemptObservation) => void) => Promise<T>;
 }): Promise<ClassifierInvocationRun<T>> {
   const startedAt = performance.now();
   const controller = new AbortController();
   const tracked = new Map<string, TrackedClassifierAttempt>();
+
+  type Settled = { kind: "success"; value: T } | { kind: "error"; error: unknown } | { kind: "deadline" };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stageTimer: ReturnType<typeof setTimeout> | undefined;
+  let deadlineResolve: ((value: Settled) => void) | undefined;
+
+  const resetStageTimer = (stageTimeoutMs: number) => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (stageTimer) clearTimeout(stageTimer);
+    stageTimer = setTimeout(
+      () => {
+        controller.abort();
+        deadlineResolve?.({ kind: "deadline" });
+      },
+      Math.max(0, stageTimeoutMs),
+    );
+  };
+
   const observe = (observation: ClassifierAttemptObservation): void => {
     const key = `${observation.stage}:${String(observation.try)}`;
     const existing = tracked.get(key) ?? { stage: observation.stage, try: observation.try };
-    if (observation.state === "completed") {
+    if (observation.state === "started") {
+      // Each stage opens with its own independent deadline. Retries and endpoint iteration inside a
+      // stage share that stage's budget, so only the first attempt of a stage restarts the clock.
+      // Cancellation stays terminal: the signal handed to `invoke` is never replaced, so once a
+      // stage deadline aborts it the whole invocation ends rather than silently continuing.
+      if (input.stageTimeoutMs !== undefined && observation.try === 1 && !controller.signal.aborted) {
+        resetStageTimer(input.stageTimeoutMs);
+      }
+      tracked.set(key, existing);
+    } else {
       const provider = telemetryIdentifier(observation.provider);
       const modelId = telemetryIdentifier(observation.modelId);
       const latencyMs = finiteNonnegative(observation.latencyMs);
@@ -179,20 +210,18 @@ export async function runClassifierInvocation<T>(input: {
         ...(modelId ? { modelId } : {}),
         ...(latencyMs === undefined ? {} : { latencyMs }),
       });
-    } else {
-      tracked.set(key, existing);
     }
   };
 
-  type Settled = { kind: "success"; value: T } | { kind: "error"; error: unknown } | { kind: "deadline" };
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<Settled>((resolve) => {
+    deadlineResolve = resolve;
+    const initialTimeout = input.stageTimeoutMs ?? input.timeoutMs;
     timer = setTimeout(
       () => {
         controller.abort();
         resolve({ kind: "deadline" });
       },
-      Math.max(0, input.timeoutMs),
+      Math.max(0, initialTimeout),
     );
   });
   const operation: Promise<Settled> = Promise.resolve()
@@ -203,6 +232,7 @@ export async function runClassifierInvocation<T>(input: {
     );
   const settled = await Promise.race([operation, deadline]);
   if (timer) clearTimeout(timer);
+  if (stageTimer) clearTimeout(stageTimer);
   const wallLatencyMs = Math.max(0, Math.round(performance.now() - startedAt));
 
   if (settled.kind === "success") {
