@@ -305,6 +305,42 @@ describe("classifier invocation telemetry", () => {
     assert.ok(run.summary.wallLatencyMs >= 150);
   });
 
+  it("times out the primary stage when it exceeds its own stageTimeoutMs", async () => {
+    let secondaryStarted = false;
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 10_000,
+      stageTimeoutMs: 100,
+      invoke: async (signal, observe) => {
+        observe({ stage: "primary", try: 1, state: "started" });
+        // The primary stage would run far past its own stage budget.
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(resolve, 5_000);
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timeout);
+              observe({ stage: "primary", try: 1, state: "completed", outcome: "cancelled" });
+              const error = new Error("aborted");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        });
+        secondaryStarted = true;
+        observe({ stage: "secondary", try: 1, state: "started" });
+        return "unreachable";
+      },
+    });
+
+    assert.equal(run.status, "failed");
+    assert.equal(run.summary.timedOut, true);
+    assert.equal(run.summary.errorCategory, "deadline");
+    assert.equal(secondaryStarted, false, "primary deadline must end the invocation before escalation");
+    assert.ok(run.summary.wallLatencyMs < 2_000);
+  });
+
   it("times out the secondary stage when it exceeds its own stageTimeoutMs", async () => {
     const run = await runClassifierInvocation({
       purpose: "fresh_task",

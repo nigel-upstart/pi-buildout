@@ -257,13 +257,17 @@ export function safetyToolBlockReason(
   return lifecycleToolBlockReason(lease?.lifecycle, toolName, input);
 }
 
-// A hung classifier/selection call must never block the agent turn indefinitely. Fifteen seconds
-// accommodates observed classifier latency while keeping the deadline bounded; past that we abort
-// the in-flight request (via the shared AbortSignal, so the underlying network call is actually
-// cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
-// selected instead of routing on a call that never returned.
-export const CLASSIFICATION_TIMEOUT_MS = 15_000;
+// A hung classifier/selection call must never block the agent turn indefinitely, so the router owns
+// the deadline rather than trusting the transport. The budget is per classification stage: the
+// primary stage gets its own deadline, and if the classifier escalates, the secondary stage starts
+// a fresh one. Retries and endpoint iteration inside a stage share that stage's budget. A stage that
+// overruns aborts the in-flight request (via the shared AbortSignal, so the underlying network call
+// is actually cancelled rather than merely abandoned) and ends the invocation; the caller then keeps
+// whatever model/task is already selected instead of routing on a call that never returned.
+// CLASSIFICATION_STAGE_TIMEOUT_MS is the value enforced in production and reported to the user.
+// CLASSIFICATION_TIMEOUT_MS bounds the window before the first stage reports that it started.
 export const CLASSIFICATION_STAGE_TIMEOUT_MS = 15_000;
+export const CLASSIFICATION_TIMEOUT_MS = CLASSIFICATION_STAGE_TIMEOUT_MS;
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
@@ -1421,7 +1425,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const reason = summary.timedOut ? "timed out" : summary.cancelled ? "was cancelled" : "failed";
         ctx.ui.notify(
           summary.timedOut
-            ? `Router continuity classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current task and model selection`
+            ? `Router continuity classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current task and model selection`
             : `Router continuity classification ${reason}; keeping the current task and model selection`,
           "warning",
         );
@@ -1439,7 +1443,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const reason = result.summary.timedOut ? "timed out" : result.summary.cancelled ? "was cancelled" : "failed";
         ctx.ui.notify(
           result.summary.timedOut
-            ? `Router classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current model selection`
+            ? `Router classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current model selection`
             : `Router classification ${reason}; keeping the current model selection`,
           "warning",
         );

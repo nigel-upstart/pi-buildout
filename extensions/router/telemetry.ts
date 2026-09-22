@@ -164,7 +164,7 @@ export async function runClassifierInvocation<T>(input: {
   invoke: (signal: AbortSignal, onAttempt: (observation: ClassifierAttemptObservation) => void) => Promise<T>;
 }): Promise<ClassifierInvocationRun<T>> {
   const startedAt = performance.now();
-  let controller = new AbortController();
+  const controller = new AbortController();
   const tracked = new Map<string, TrackedClassifierAttempt>();
 
   type Settled = { kind: "success"; value: T } | { kind: "error"; error: unknown } | { kind: "deadline" };
@@ -191,16 +191,12 @@ export async function runClassifierInvocation<T>(input: {
     const key = `${observation.stage}:${String(observation.try)}`;
     const existing = tracked.get(key) ?? { stage: observation.stage, try: observation.try };
     if (observation.state === "started") {
-      if (input.stageTimeoutMs !== undefined) {
-        if (observation.stage === "secondary" && observation.try === 1) {
-          // Secondary stage starts with its own fresh stage deadline
-          if (controller.signal.aborted) {
-            controller = new AbortController();
-          }
-          resetStageTimer(input.stageTimeoutMs);
-        } else if (observation.stage === "primary" && observation.try === 1) {
-          resetStageTimer(input.stageTimeoutMs);
-        }
+      // Each stage opens with its own independent deadline. Retries and endpoint iteration inside a
+      // stage share that stage's budget, so only the first attempt of a stage restarts the clock.
+      // Cancellation stays terminal: the signal handed to `invoke` is never replaced, so once a
+      // stage deadline aborts it the whole invocation ends rather than silently continuing.
+      if (input.stageTimeoutMs !== undefined && observation.try === 1 && !controller.signal.aborted) {
+        resetStageTimer(input.stageTimeoutMs);
       }
       tracked.set(key, existing);
     } else {
