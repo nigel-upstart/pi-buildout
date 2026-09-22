@@ -1288,7 +1288,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         .filter((attempt) => attempt.stage === "secondary")
         .map(sanitizeClassifierAttempt),
     });
-    if (handoff === "clean_stop_resume") {
+    // Shadow routing never applies the refreshed profile, so interrupting the run would only cost the
+    // user a turn; the telemetry above still records the handoff active mode would have taken.
+    if (handoff === "clean_stop_resume" && state.mode === "active") {
       ctx.abort();
       pi.sendMessage(
         {

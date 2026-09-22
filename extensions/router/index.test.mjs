@@ -1762,6 +1762,44 @@ describe("routerExtension", () => {
     assert.equal(result.sentMessages[0].options.deliverAs, "followUp");
   });
 
+  it("records but does not perform a clean stop/resume handoff in shadow mode", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "shadow",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-shadow-clean-resume",
+    });
+
+    startAgentRun(result);
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await flushMicrotasks();
+    await waitUntil(() =>
+      result.events.some(
+        (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+      ),
+    );
+    await result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] },
+      result.ctx,
+    );
+
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "clean_stop_resume");
+    assert.equal(result.abortCount, 0);
+    assert.equal(result.sentMessages.length, 0);
+  });
+
   it("bounds stalled telemetry, fails active routing safe, and consumes late settlement", async (t) => {
     for (const lateOutcome of ["resolve", "reject"]) {
       await t.test(lateOutcome, async () => {
