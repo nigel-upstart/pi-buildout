@@ -51,9 +51,11 @@ other will silently stop exporting. See [`specs/otel-ownership-decision.md`](spe
 
 ## Development and quality checks
 
-Use Node.js 22.19 or newer. The authored extensions and test suite target Pi `0.85.1`; compatibility with older Pi
-versions is not guaranteed. Install [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which
-also installs the repository's Git hooks:
+Use Node.js 22.19 or newer. The authored extensions and test suite pin the Pi `0.84.1` development packages, because the
+router's cost tests pin that model registry; compatibility with older Pi versions is not guaranteed. The pi 0.85.1
+catalog test in `scripts/skills-catalog.test.mjs` skips unless pi 0.85.1 is installed. Install
+[ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
+hooks:
 
 ```bash
 brew install shellcheck # macOS; use the equivalent package on other platforms
