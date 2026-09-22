@@ -789,8 +789,9 @@ describe("routerExtension", () => {
     const selectedModels = [];
     const selectedEfforts = [];
     const workingMessages = [];
+    const notifications = [];
     let classifications = 0;
-    let activeTools = ["read", "bash", "submit_action_plan"];
+    let activeTools = ["read", "bash", "submit_implementation_plan", "submit_action_plan"];
     const active = {
       ...adapterLease(),
       lifecycle: {
@@ -834,7 +835,7 @@ describe("routerExtension", () => {
         setStatus: () => {},
         setWorkingMessage: (message) => workingMessages.push(message),
         setWorkingVisible: () => {},
-        notify: () => {},
+        notify: (message, type) => notifications.push({ message, type }),
       },
     };
     routerExtension(pi, {
@@ -865,6 +866,13 @@ describe("routerExtension", () => {
     );
     assert.equal(telemetryEvents.length, telemetryAfterOff, "off-mode selection hooks must not emit routing telemetry");
 
+    for (const args of ["accept", "reject", "fail availability"]) {
+      await commands.get("route").handler(args, ctx);
+      assert.match(notifications.at(-1).message, /router is off/i, `/route ${args} must be inert while off`);
+    }
+    assert.equal(telemetryEvents.length, telemetryAfterOff, "off mode must not label or fail over a routed attempt");
+    assert.deepEqual(selectedModels, []);
+
     await commands.get("route").handler("active", ctx);
     await hooks.get("input")({ text: "Queue a route, then disable it", source: "interactive" }, ctx);
     await commands.get("route").handler("off", ctx);
@@ -890,11 +898,112 @@ describe("routerExtension", () => {
     assert.equal(telemetryEvents.length, telemetryAfterPendingOff, "off-mode hooks must not emit routing telemetry");
 
     await commands.get("route").handler("active", ctx);
+    assert.deepEqual(activeTools, ["read", "bash", "submit_implementation_plan"], "re-enabling restores the validator");
     assert.match(
       hooks.get("tool_call")({ toolCallId: "active-edit", toolName: "edit", input: { path: "README.md" } }).reason,
       /preflight/,
       "re-enabling active mode must restore the existing safety lifecycle",
     );
+  });
+
+  it("discards routing work already in flight when /route off lands", async (t) => {
+    // off → shadow proves the generation check, not merely the off-mode guards, discards the result.
+    for (const reenable of [undefined, "shadow"]) {
+      await t.test(reenable ?? "off", async () => {
+        const hooks = new Map();
+        const commands = new Map();
+        const appended = [];
+        const telemetryEvents = [];
+        const selectedModels = [];
+        const selectedEfforts = [];
+        const classifierStarted = deferred();
+        const classifierResult = deferred();
+        let activeTools = ["read", "bash", "submit_implementation_plan"];
+        const active = {
+          ...adapterLease(),
+          lifecycle: {
+            phase: "preflight",
+            policy: "authorization_then_completion_review",
+            taskFingerprint: "task-fingerprint",
+          },
+        };
+        const leasedModel = registryModelForChoice(active.selected);
+        const branch = [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { mode: "active", manualOverride: false, active },
+          },
+        ];
+        const pi = {
+          on: (event, handler) => hooks.set(event, handler),
+          registerCommand: (name, command) => commands.set(name, command),
+          registerTool: () => {},
+          appendEntry: (customType, data) => appended.push({ customType, data }),
+          exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+          getActiveTools: () => activeTools,
+          setActiveTools: (tools) => {
+            activeTools = tools;
+          },
+          getThinkingLevel: () => "low",
+          setThinkingLevel: (effort) => selectedEfforts.push(effort),
+          setModel: async (model) => {
+            selectedModels.push(model);
+            return true;
+          },
+        };
+        const ctx = {
+          cwd: "/repo",
+          // The current model differs from the lease, so an applied route would have to call setModel.
+          model: { ...leasedModel, provider: "openai" },
+          modelRegistry: {
+            getAll: () => [leasedModel],
+            getAvailable: () => [leasedModel],
+            find: (provider, id) =>
+              provider === leasedModel.provider && id === leasedModel.id ? leasedModel : undefined,
+          },
+          sessionManager: { getBranch: () => branch, getSessionId: () => "in-flight-off-session" },
+          getContextUsage: () => ({ tokens: 0, contextWindow: 128_000 }),
+          ui: {
+            theme: { fg: (_color, text) => text },
+            setStatus: () => {},
+            setWorkingMessage: () => {},
+            setWorkingVisible: () => {},
+            notify: () => {},
+          },
+        };
+        routerExtension(pi, {
+          telemetry: { append: async (event) => telemetryEvents.push(event), read: async () => [] },
+          classifyTask: async () => {
+            classifierStarted.resolve();
+            return classifierResult.promise;
+          },
+        });
+
+        await hooks.get("session_start")({ reason: "reload" }, ctx);
+        const prompt = "Continue the credential rotation plan";
+        await hooks.get("input")({ text: prompt, source: "interactive" }, ctx);
+        const start = hooks.get("before_agent_start")({ prompt, systemPrompt: "base", images: [] }, ctx);
+        await classifierStarted.promise;
+        await commands.get("route").handler("off", ctx);
+        if (reenable) await commands.get("route").handler(reenable, ctx);
+        const entriesAfterOff = appended.length;
+        const telemetryAfterOff = telemetryEvents.length;
+        classifierResult.resolve(classificationResult(1, { taskContinuity: "clear_continuation" }));
+
+        assert.equal(await start, undefined, "a superseded hook must not return a compiled prompt");
+        assert.deepEqual(selectedModels, [], "a superseded hook must not apply the leased model");
+        assert.deepEqual(selectedEfforts, [], "a superseded hook must not apply the leased effort");
+        assert.equal(appended.length, entriesAfterOff, "a superseded hook must not persist a lease");
+        assert.equal(telemetryEvents.length, telemetryAfterOff, "a superseded hook must not emit routing telemetry");
+        assert.equal(
+          activeTools.includes("submit_action_plan"),
+          false,
+          "a superseded hook must not re-expose lifecycle validators",
+        );
+        assert.equal(activeTools.includes("submit_implementation_plan"), reenable !== undefined);
+      });
+    }
   });
 
   it("bounds stalled telemetry, fails active routing safe, and consumes late settlement", async (t) => {
