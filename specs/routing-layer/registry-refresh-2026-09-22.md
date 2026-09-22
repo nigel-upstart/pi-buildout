@@ -90,8 +90,18 @@ for them.
 - Direct Luna at 0.20/1.20, so the three-times admission ceiling stays at 2.85.
 - Claude Sonnet 5 and Opus 5 rates on every compared route, including regional Bedrock markups.
 
-## Not assessed
+## Newly declared models
 
-0.85.1 adds registry entries that the router policy does not name: `claude-fable-5-1` (Anthropic and Bedrock),
-`xai.grok-4.6` on Bedrock, `gemini-3.7-flash` and `gemini-3.8-flash` (Google and Vertex), and `gpt-6-astra` (OpenAI and
-Codex). The router does not route to logical models outside its policy, so this record does not evaluate them.
+0.85.1 declares two models that the router policy already names:
+
+- **`gemini-3.8-flash`** is now in the pinned registry on `google` and `google-vertex` (0.75/3.75, context 1,048,576).
+  It is admitted only to tracked review (decision 2 of the 2026-09-10 section in [`decisions.md`](decisions.md)), and
+  runtimes that already exposed it were routing it there. That admission is unchanged.
+- **`gpt-6-astra`** is now in the pinned registry on `openai` and `openai-codex` (10/50, with a tier above 272,000 input
+  tokens). Decision 6 of the same section kept Astra unrouted, citing a single benchmark source, zero peak-context
+  telemetry, and its absence from the pinned registry. Only the last of those reasons is resolved, so Astra stays
+  unrouted.
+
+The router policy does not name the other added entries: `claude-fable-5-1` (Anthropic and Bedrock), `xai.grok-4.6` on
+Bedrock, and `gemini-3.7-flash` (Google and Vertex). The router does not route to logical models outside its policy, so
+this record does not evaluate them.
