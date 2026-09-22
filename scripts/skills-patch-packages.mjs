@@ -61,8 +61,34 @@ function candidatePackageRoots() {
   return [...configured, join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent")];
 }
 
+/**
+ * Reads the committed baseline manifests that describe a clean `version` package.
+ *
+ * These are repository artifacts, not candidate state, so a missing or unreadable manifest is a broken
+ * checkout rather than a rejected candidate. Reading them here, outside the per-candidate error handling in
+ * {@link findCleanPackage}, keeps that failure loud instead of turning it into a skipped test.
+ */
+export async function readBaselineManifest(version) {
+  const patchDirectory = patchDirectoryFor(version);
+  const baseline = await readFile(join(patchDirectory, "baseline.sha256"), "utf8");
+  const absent = await readFile(join(patchDirectory, "baseline.absent"), "utf8");
+  return {
+    present: baseline
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [expected, relativePath] = line.trim().split(/\s+/u, 2);
+        return { expected, relativePath };
+      }),
+    absent: absent
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+  };
+}
+
 /** Explains why `packageRoot` is not a clean package for `version`, or returns undefined when it is. */
-async function cleanPackageProblem(packageRoot, version, requireDependencies) {
+async function cleanPackageProblem(packageRoot, version, requireDependencies, manifest) {
   const packageJsonPath = join(packageRoot, "package.json");
   if (!(await exists(packageJsonPath))) return `${packageRoot} has no package.json`;
   const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
@@ -70,20 +96,13 @@ async function cleanPackageProblem(packageRoot, version, requireDependencies) {
   if (requireDependencies && !(await exists(join(packageRoot, "node_modules"))))
     return `${packageRoot} has no node_modules`;
 
-  const patchDirectory = patchDirectoryFor(version);
-  const baseline = await readFile(join(patchDirectory, "baseline.sha256"), "utf8");
-  for (const line of baseline.trim().split("\n")) {
-    const [expected, relativePath] = line.trim().split(/\s+/u, 2);
+  for (const { expected, relativePath } of manifest.present) {
     const path = relativePath ? join(packageRoot, relativePath) : undefined;
     if (!expected || !path || !(await exists(path)) || (await sha256(path)) !== expected) {
       return `${packageRoot} does not match the ${version} baseline at ${relativePath ?? "an unknown path"}`;
     }
   }
-  const absent = await readFile(join(patchDirectory, "baseline.absent"), "utf8");
-  for (const relativePath of absent
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)) {
+  for (const relativePath of manifest.absent) {
     if (await exists(join(packageRoot, relativePath))) {
       return `${packageRoot} does not match the ${version} baseline at ${relativePath}`;
     }
@@ -100,10 +119,11 @@ async function cleanPackageProblem(packageRoot, version, requireDependencies) {
  */
 export async function findCleanPackage(version, { requireDependencies = true } = {}) {
   const problems = [];
+  const manifest = await readBaselineManifest(version);
   for (const packageRoot of candidatePackageRoots()) {
     let problem;
     try {
-      problem = await cleanPackageProblem(packageRoot, version, requireDependencies);
+      problem = await cleanPackageProblem(packageRoot, version, requireDependencies, manifest);
     } catch (error) {
       // An unreadable or malformed candidate is a diagnostic for that candidate, not a reason to stop looking.
       problem = `${packageRoot} could not be inspected: ${error instanceof Error ? error.message : String(error)}`;
