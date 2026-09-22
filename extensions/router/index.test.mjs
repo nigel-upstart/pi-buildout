@@ -1852,6 +1852,47 @@ describe("routerExtension", () => {
     assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
   });
 
+  it("keeps failure attribution when an abort consumes a settled secondary during its telemetry write", async () => {
+    const telemetryStarted = deferred();
+    const releaseTelemetry = deferred();
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        const error = new Error("provider timed out");
+        error.name = "TimeoutError";
+        throw error;
+      },
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            telemetryStarted.resolve();
+            await releaseTelemetry.promise;
+          }
+        },
+        read: async () => [],
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-abort-during-settlement-telemetry",
+    });
+
+    // The run has settled and its invocation telemetry is in flight when compaction discards it.
+    await telemetryStarted.promise;
+    await result.hooks.get("session_compact")({}, result.ctx);
+    releaseTelemetry.resolve();
+    await waitUntil(() => events.some(({ kind }) => kind === "secondary_reconciliation"));
+
+    const reconciliation = events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, false);
+    assert.equal(reconciliation?.data.secondaryOutcome, "timeout");
+    assert.equal(reconciliation?.data.secondaryErrorCategory, "transport_timeout");
+    assert.equal(typeof reconciliation?.data.secondaryWallLatencyMs, "number");
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, undefined);
+  });
+
   it("omits router budget attribution when a cancelled secondary is discarded", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({

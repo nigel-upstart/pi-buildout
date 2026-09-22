@@ -166,6 +166,8 @@ type SecondaryReconciliationTask = {
   agentStartReleasedAtMs?: number;
   pendingSafetyGate: boolean;
   settled: boolean;
+  /** The settled run, kept so an abort during its settlement telemetry can still attribute it. */
+  settledRun?: ClassifierInvocationRun<ClassificationResult>;
   /** Set when an abort path consumed this task, including while its settlement telemetry awaits. */
   abandoned?: boolean;
   /** The single in-progress settlement, so the grace window can await an already-started one. */
@@ -820,9 +822,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         secondaryArrival: secondaryArrival(),
         secondaryArrivalLatencyMs: Math.max(0, now - task.primaryCompletedAtMs),
         workCompletedBeforeReconciliation: safeWorkCounters(),
-        // An aborted task never settled, so there is no invocation summary to attribute; only the
-        // budget it was running against is known.
-        ...secondaryBudgetFields(undefined),
+        // A task aborted before it settled has no invocation summary, so only its budget is known.
+        // One aborted during its settlement telemetry write keeps the summary of the run it settled.
+        ...secondaryBudgetFields(task.settledRun?.summary),
         accepted: false,
         reason,
       },
@@ -894,6 +896,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   ): Promise<void> {
     if (task.settled) return;
     task.settled = true;
+    task.settledRun = run;
     const queued: QueuedSecondaryReconciliation = {
       task,
       run,
