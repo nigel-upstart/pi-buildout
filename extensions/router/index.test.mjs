@@ -2069,10 +2069,144 @@ describe("routerExtension", () => {
       (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
     );
     assert.equal(invocation?.data.timedOut, true);
-    assert.equal(
-      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
-      "secondary_timeout",
-    );
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.reason, "secondary_timeout");
+    // The reconciliation record must name the budget that actually expired: background
+    // reconciliation answers to the configurable secondary deadline, not the stage constant.
+    assert.equal(reconciliation?.data.secondaryDeadlineMs, 5);
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, 5);
+    assert.equal(reconciliation?.data.secondaryErrorCategory, "deadline");
+    assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined, "no stage reported a start");
+    assert.equal(reconciliation?.data.secondaryOutcome, "timeout");
+    assert.equal(typeof reconciliation?.data.secondaryWallLatencyMs, "number");
+    assert.ok(reconciliation.data.secondaryWallLatencyMs >= 0);
+  });
+
+  it("omits router budget attribution when the secondary failure is transport-owned", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        // A provider-thrown timeout is the transport's deadline, not the router's budget.
+        const error = new Error("provider timed out");
+        error.name = "TimeoutError";
+        throw error;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-transport-timeout-budget",
+    });
+    startAgentRun(result);
+    await settleAgentRun(result);
+
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.reason, "secondary_timeout");
+    assert.equal(reconciliation?.data.secondaryOutcome, "timeout");
+    assert.equal(reconciliation?.data.secondaryErrorCategory, "transport_timeout");
+    assert.equal(typeof reconciliation?.data.secondaryWallLatencyMs, "number");
+    // The configured budget is still reported, but nothing claims the router enforced a deadline.
+    assert.equal(reconciliation?.data.secondaryDeadlineMs, 15_000);
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, undefined);
+    assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
+  });
+
+  it("keeps failure attribution when an abort consumes a settled secondary during its telemetry write", async () => {
+    const telemetryStarted = deferred();
+    const releaseTelemetry = deferred();
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        const error = new Error("provider timed out");
+        error.name = "TimeoutError";
+        throw error;
+      },
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            telemetryStarted.resolve();
+            await releaseTelemetry.promise;
+          }
+        },
+        read: async () => [],
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-abort-during-settlement-telemetry",
+    });
+
+    // The run has settled and its invocation telemetry is in flight when compaction discards it.
+    await telemetryStarted.promise;
+    await result.hooks.get("session_compact")({}, result.ctx);
+    releaseTelemetry.resolve();
+    await waitUntil(() => events.some(({ kind }) => kind === "secondary_reconciliation"));
+
+    const reconciliation = events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, false);
+    assert.equal(reconciliation?.data.secondaryOutcome, "timeout");
+    assert.equal(reconciliation?.data.secondaryErrorCategory, "transport_timeout");
+    assert.equal(typeof reconciliation?.data.secondaryWallLatencyMs, "number");
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, undefined);
+  });
+
+  it("omits router budget attribution when a cancelled secondary is discarded", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            secondary.reject(error);
+          },
+          { once: true },
+        );
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-cancelled-budget",
+    });
+
+    await result.hooks.get("session_compact")({}, result.ctx);
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, false);
+    assert.equal(reconciliation?.data.secondaryDeadlineMs, 15_000);
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, undefined);
+    assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
+  });
+
+  it("records the secondary budget without failure attribution for an accepted correction", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-budget-on-success",
+    });
+
+    startAgentRun(result);
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+    await endAgentTurn(result);
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    // A completed run consumed no deadline, so only the configured budget is recorded.
+    assert.equal(reconciliation?.data.secondaryDeadlineMs, 15_000);
+    assert.equal(reconciliation?.data.secondaryOutcome, undefined);
+    assert.equal(reconciliation?.data.secondaryErrorCategory, undefined);
+    assert.equal(reconciliation?.data.secondaryEnforcedBudgetMs, undefined);
+    assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
   });
 
   it("does not manufacture an extra turn for a task-ending cross-profile correction", async () => {
