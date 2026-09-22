@@ -168,6 +168,8 @@ type SecondaryReconciliationTask = {
   settled: boolean;
   /** Set when an abort path consumed this task, including while its settlement telemetry awaits. */
   abandoned?: boolean;
+  /** The single in-progress settlement, so the grace window can await an already-started one. */
+  settlement?: Promise<void>;
 };
 
 type QueuedSecondaryReconciliation = {
@@ -952,10 +954,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (task.pendingSafetyGate) pendingSecondarySafetyGate = task;
     void task.promise.then(
       (run) => {
-        void settleSecondaryReconciliation(input.ctx, task, run);
+        void beginSecondarySettlement(input.ctx, task, run);
       },
       (error: unknown) => {
-        void settleSecondaryReconciliation(input.ctx, task, {
+        void beginSecondarySettlement(input.ctx, task, {
           status: "failed",
           error,
           summary: {
@@ -978,6 +980,22 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return task;
   }
 
+  /**
+   * Start at most one settlement per task and keep it awaitable.
+   *
+   * The eager completion handler starts settling as soon as the classifier answers, so a second
+   * caller (the grace window) would otherwise see `task.settled` and return before the result is
+   * queued. Reusing the same promise lets that caller await the settlement already in flight.
+   */
+  function beginSecondarySettlement(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+    run: ClassifierInvocationRun<ClassificationResult>,
+  ): Promise<void> {
+    task.settlement ??= settleSecondaryReconciliation(ctx, task, run).catch(() => undefined);
+    return task.settlement;
+  }
+
   async function waitForSecondaryGrace(ctx: ExtensionContext, task: SecondaryReconciliationTask): Promise<void> {
     if (task.grace.graceMs <= 0) return;
     const startedAt = Date.now();
@@ -993,11 +1011,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }),
     ]);
     task.graceUsedMs = Math.max(0, Date.now() - startedAt);
-    if (settled)
-      await task.promise.then(
-        (run) => settleSecondaryReconciliation(ctx, task, run),
-        () => undefined,
-      );
+    if (!settled) return;
+    const settlement = task.promise.then(
+      (run) => beginSecondarySettlement(ctx, task, run),
+      () => task.settlement,
+    );
+    // Settlement writes its invocation telemetry before queueing the result, and that append is
+    // asynchronous. Await it so a result that arrived inside the grace window can still reach the
+    // pre-request correction boundary, but keep the operator-visible start latency inside the grace
+    // budget that was chosen for this task rather than adding the telemetry deadline on top.
+    const remainingGraceMs = Math.max(0, task.grace.graceMs - (Date.now() - startedAt));
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        settlement,
+        new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, remainingGraceMs);
+        }),
+      ]);
+    } finally {
+      if (graceTimer) clearTimeout(graceTimer);
+    }
+    task.graceUsedMs = Math.max(0, Date.now() - startedAt);
   }
 
   /**

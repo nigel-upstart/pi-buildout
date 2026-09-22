@@ -1129,6 +1129,56 @@ describe("routerExtension", () => {
     assert.match(blocked.reason, /Secondary safety classification is pending/);
   });
 
+  it("reaches the pre-request boundary when settlement telemetry is slower than the classifier", async () => {
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () =>
+        classificationResult(2, {
+          confidence: 0.95,
+          risk: "critical",
+          verificationStrength: "security_and_policy",
+          independenceRequirement: "different_vendor_review",
+        }),
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          // Production JSONL appends are asynchronous. The eager settlement handler suspends here
+          // before queueing, so the grace window must await that in-flight settlement.
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        },
+        read: async () => [],
+      },
+      secondaryGracePolicy: {
+        maxGraceMs: 400,
+        secondaryDeadlineMs: 15_000,
+        lowPenaltyUsd: 0.001,
+        mediumPenaltyUsd: 0.01,
+        lowPenaltyGraceMs: 5,
+        mediumPenaltyGraceMs: 20,
+        // Comfortably longer than the simulated telemetry append below, so the grace budget itself
+        // is never the reason the result misses the boundary.
+        highPenaltyGraceMs: 200,
+        materialCorrectionBenefitUsd: 0.02,
+        safetyCorrectionBenefitUsd: 25,
+      },
+      // A cached context is what earns a nonzero grace window.
+      branchEntries: [cachedAssistantEntry()],
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-grace-settlement-race",
+    });
+
+    const reconciliation = events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.ok(reconciliation?.data.graceChosenMs > 0, "cached context must choose a bounded grace");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "prompt_refresh_before_first_request");
+    assert.equal(result.abortCount, 0);
+  });
+
   it("keeps the mutation gate when a safety-relevant correction is never installed", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
