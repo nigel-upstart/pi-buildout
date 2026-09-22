@@ -155,7 +155,7 @@ classification and synchronous continuity escalation, where primary and secondar
 
 Background fresh-task secondary reconciliation is normatively a different control: it runs as its own classifier
 invocation bounded by the configurable `secondaryGracePolicy.secondaryDeadlineMs`
-([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts), 15s by default), with `maxGraceMs` bounding
+([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts)), with `maxGraceMs` bounding
 only the pre-release grace window. `CLASSIFICATION_STAGE_TIMEOUT_MS` must not be treated as the control for that path.
 An `AbortSignal` is passed through those layers to the underlying `complete()` call for that stage. At the deadline the
 router aborts the active stage request and returns without waiting indefinitely for a provider transport to settle.
