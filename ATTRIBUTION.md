@@ -146,8 +146,9 @@ generated runtime and documentation, generated from the TypeScript overlay below
 `dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
 lines derive from the MIT-licensed Pi package. The bundled runtime and RPC entrypoints become thin wrappers so the
 patched unbundled runtime handles CLI and RPC execution; upstream's `dist/bundle/cli.js` compile-cache loader is left
-unchanged and not included. The added `dist/core/skill-management.js` and `dist/core/skill-management-core.js` are
-compiled from this repository's original overlay code and are byte-identical to the 0.85.1 patch's copies.
+unchanged and is only pinned by checksum in both manifests. The added `dist/core/skill-management.js` and
+`dist/core/skill-management-core.js` are compiled from this repository's original overlay code and are byte-identical to
+the 0.85.1 patch's copies.
 
 The patch adopts the same behavior as the 0.85.1 patch: explicit global, repository, and session skill activation; a
 discoverable-but-inactive catalog built on Pi's package manager; normalized repository identity with non-default ports

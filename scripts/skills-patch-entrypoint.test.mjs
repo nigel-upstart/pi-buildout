@@ -81,7 +81,9 @@ test("pi 0.85.1 bundled CLI delegates to the patched unbundled runtime", async (
  * Pi 0.87.1 split the bundled bin: `dist/bundle/cli.js` enables Node's compile cache and then loads
  * `dist/bundle/cli-runtime.js` through `createRequire(...)`, and only the latter holds the bundled runtime. The
  * patch therefore replaces `cli-runtime.js` and leaves upstream's `cli.js` alone, which keeps the compile cache
- * and relies on `require()` of an ES module graph. The stand-in loader below has the same shape as upstream's.
+ * and relies on `require()` of an ES module graph. Both manifests pin that loader to its upstream bytes, so the
+ * installer refuses a package whose loader differs; the stand-in below is checked against that same checksum, which
+ * makes it byte-identical to the published loader rather than a lookalike.
  */
 test("pi 0.87.1 bundled CLI loader reaches the patched unbundled runtime through cli-runtime.js", async (context) => {
   const [patch, baselineManifest, patchedManifest] = await Promise.all([
@@ -89,8 +91,26 @@ test("pi 0.87.1 bundled CLI loader reaches the patched unbundled runtime through
     readFile(join(patchDirectory0871, "baseline.sha256"), "utf8"),
     readFile(join(patchDirectory0871, "patched.sha256"), "utf8"),
   ]);
+  const loaderPath = "dist/bundle/cli.js";
+  const loader = [
+    "#!/usr/bin/env node",
+    'import { createRequire, enableCompileCache } from "node:module";',
+    "",
+    "enableCompileCache();",
+    'createRequire(import.meta.url)("./cli-runtime.js");',
+    "",
+  ].join("\n");
   assert.doesNotMatch(patch, /^diff --git a\/dist\/bundle\/cli\.js /mu, "upstream's cli.js loader stays untouched");
-  assert.doesNotMatch(patchedManifest, / {2}dist\/bundle\/cli\.js$/mu);
+  assert.equal(
+    manifestChecksum(patchedManifest, loaderPath),
+    manifestChecksum(baselineManifest, loaderPath),
+    "the loader is verified, not modified",
+  );
+  assert.equal(
+    createHash("sha256").update(loader).digest("hex"),
+    manifestChecksum(baselineManifest, loaderPath),
+    "the stand-in loader is byte-identical to the published one",
+  );
 
   const runtime = patchedFileSource(patch, "dist/bundle/cli-runtime.js");
   const rpcEntry = patchedFileSource(patch, "dist/bundle/rpc-entry.js");
@@ -120,17 +140,7 @@ test("pi 0.87.1 bundled CLI loader reaches the patched unbundled runtime through
       join(packageDirectory, "dist", "main.js"),
       "export function main(args) { process.stdout.write(`main ${process.title} ${JSON.stringify(args)}\\n`); }\n",
     ),
-    writeFile(
-      join(packageDirectory, "dist", "bundle", "cli.js"),
-      [
-        "#!/usr/bin/env node",
-        'import { createRequire, enableCompileCache } from "node:module";',
-        "",
-        "enableCompileCache();",
-        'createRequire(import.meta.url)("./cli-runtime.js");',
-        "",
-      ].join("\n"),
-    ),
+    writeFile(join(packageDirectory, loaderPath), loader),
     writeFile(join(packageDirectory, "dist", "bundle", "cli-runtime.js"), runtime),
     writeFile(join(packageDirectory, "dist", "bundle", "rpc-entry.js"), rpcEntry),
   ]);

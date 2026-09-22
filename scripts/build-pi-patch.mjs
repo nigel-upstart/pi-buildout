@@ -258,10 +258,17 @@ function assertBuildReproducesBaseline(builtRoot, baselineRoot, manifest) {
   console.log(`  clean build reproduces npm for all ${checked} pre-existing built files`);
 }
 
-/** Assembles the patched package tree: baseline, overwritten by built, documented and replacement files. */
+/**
+ * Assembles the patched package tree: baseline, overwritten by built, documented and replacement files.
+ *
+ * An `unchanged` entry keeps its baseline bytes. It is tracked only so both manifests pin it, for a file the patch
+ * depends on without editing, such as 0.87.1's `dist/bundle/cli.js` loader that selects the replaced
+ * `cli-runtime.js`. The installer then refuses a package whose copy of it differs.
+ */
 async function assemblePatchedTree(target, baselineRoot, builtRoot, patchedSourceRoot, overlayDir, manifest) {
   await cp(baselineRoot, target, { recursive: true });
   for (const entry of manifest.trackedFiles) {
+    if (entry.source === "unchanged") continue;
     const destination = join(target, entry.path);
     await mkdir(dirname(destination), { recursive: true });
     if (entry.source === "built") await cp(join(builtRoot, entry.path), destination);
@@ -521,6 +528,11 @@ async function buildVersion(version, options) {
 
     const addedPaths = new Set(manifest.trackedFiles.filter((e) => e.added).map((e) => e.path));
     const files = patchedFileList(patchText);
+    const unchangedPaths = new Set(manifest.trackedFiles.filter((e) => e.source === "unchanged").map((e) => e.path));
+    const touchedUnchanged = files.filter((file) => unchangedPaths.has(file.path)).map((file) => file.path);
+    if (touchedUnchanged.length > 0) {
+      throw new Error(`Patch touches paths declared unchanged: ${touchedUnchanged.join(", ")}`);
+    }
     const expectedPaths = new Set(manifest.trackedFiles.map((entry) => entry.path));
     const unexpected = files.filter((file) => !expectedPaths.has(file.path)).map((file) => file.path);
     if (unexpected.length > 0) throw new Error(`Patch touches untracked paths: ${unexpected.join(", ")}`);

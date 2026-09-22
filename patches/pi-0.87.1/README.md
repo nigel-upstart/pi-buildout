@@ -29,9 +29,11 @@ declared budget.
 ## Contents
 
 - `skills.patch` — the runtime, bundled-entrypoint, and documentation changes.
-- `baseline.sha256` — checksums for files that must match the clean 0.87.1 package.
+- `baseline.sha256` — checksums for files that must match the clean 0.87.1 package, including the
+  untouched `dist/bundle/cli.js` loader.
 - `baseline.absent` — paths that must not exist in the clean package.
-- `patched.sha256` — checksums expected after applying `skills.patch`.
+- `patched.sha256` — checksums expected after applying `skills.patch`; the loader's entry equals its
+  baseline.
 
 There are no upgrade states: this repository never shipped an earlier 0.87.1 patch, so the installer
 recognizes only the clean package and this patch's own result.
@@ -44,7 +46,10 @@ runtime itself lives in `cli-runtime.js` and its content-hashed `chunks/`.
 
 The patch therefore replaces `dist/bundle/cli-runtime.js`, not `cli.js`, with a thin wrapper around the
 patched unbundled runtime (`../cli/setup.js` and `../main.js`), and replaces `dist/bundle/rpc-entry.js` the
-same way. Upstream's `cli.js` loader and its compile cache are kept unchanged. `pi`, `pi skills …`, RPC child
+same way. Upstream's `cli.js` loader and its compile cache are kept unchanged, but because the patch only
+takes effect through that loader, `baseline.sha256` and `patched.sha256` both pin it to its published
+checksum: the installer refuses a package whose loader differs instead of patching a runtime the bin might
+never reach. `pi`, `pi skills …`, RPC child
 sessions started through the bin with `--mode rpc` (as the subagents extension does), and consumers of the
 `./rpc-entry` export all run the patched skill loader. `dist/bundle/chunks/` and `dist/bundle/index.js` are
 left in place and are no longer reached from either entrypoint.
