@@ -260,6 +260,199 @@ describe("classifier invocation telemetry", () => {
     assert.ok(summary.wallLatencyMs >= 0);
   });
 
+  it("allows each stage its own timeout budget when stageTimeoutMs is configured", async () => {
+    // The stage budget is deliberately larger than either individual stage but smaller than their
+    // combined duration. A single clock started once (no reset at secondary start) therefore
+    // expires mid-secondary, so this invocation can only complete if each stage really does get its
+    // own fresh deadline.
+    const stageSleepMs = 200;
+    const stageTimeoutMs = 350;
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      // Unused once stageTimeoutMs is configured; kept far below the stage budget so a regression
+      // that falls back to the single-clock timeout fails loudly instead of passing by accident.
+      timeoutMs: 150,
+      stageTimeoutMs,
+      invoke: async (signal, observe) => {
+        // Stage 1 sleeps well inside its own stage budget.
+        observe({ stage: "primary", try: 1, state: "started" });
+        await new Promise((resolve) => setTimeout(resolve, stageSleepMs));
+        signal.throwIfAborted();
+        observe({
+          stage: "primary",
+          try: 1,
+          state: "completed",
+          outcome: "valid",
+          provider: "openai-codex",
+          modelId: "gpt-5.6-luna",
+          latencyMs: stageSleepMs,
+        });
+
+        // Stage 2 sleeps inside its own fresh budget, even though the combined elapsed time already
+        // exceeds both the single-clock timeoutMs and one stage budget.
+        observe({ stage: "secondary", try: 1, state: "started" });
+        await new Promise((resolve) => setTimeout(resolve, stageSleepMs));
+        signal.throwIfAborted();
+        observe({
+          stage: "secondary",
+          try: 1,
+          state: "completed",
+          outcome: "valid",
+          provider: "anthropic",
+          modelId: "claude-sonnet-5",
+          latencyMs: stageSleepMs,
+        });
+        return "reconciled";
+      },
+    });
+
+    assert.equal(run.status, "completed");
+    assert.equal(run.value, "reconciled");
+    assert.equal(run.summary.attemptCount, 2);
+    assert.equal(run.summary.timedOut, false);
+    assert.ok(
+      run.summary.wallLatencyMs > stageTimeoutMs,
+      `expected the invocation to outlive one stage budget (${String(run.summary.wallLatencyMs)}ms)`,
+    );
+  });
+
+  it("times out the primary stage when it exceeds its own stageTimeoutMs", async () => {
+    let secondaryStarted = false;
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 10_000,
+      stageTimeoutMs: 100,
+      invoke: async (signal, observe) => {
+        observe({ stage: "primary", try: 1, state: "started" });
+        // The primary stage would run far past its own stage budget.
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(resolve, 5_000);
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timeout);
+              observe({ stage: "primary", try: 1, state: "completed", outcome: "cancelled" });
+              const error = new Error("aborted");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        });
+        secondaryStarted = true;
+        observe({ stage: "secondary", try: 1, state: "started" });
+        return "unreachable";
+      },
+    });
+
+    assert.equal(run.status, "failed");
+    assert.equal(run.summary.timedOut, true);
+    assert.equal(run.summary.errorCategory, "deadline");
+    assert.equal(run.summary.deadlineStage, "primary");
+    assert.equal(run.summary.stageBudgetMs, 100);
+    assert.equal(secondaryStarted, false, "primary deadline must end the invocation before escalation");
+    assert.ok(run.summary.wallLatencyMs < 2_000);
+  });
+
+  it("times out the secondary stage when it exceeds its own stageTimeoutMs", async () => {
+    const run = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 10_000,
+      stageTimeoutMs: 100,
+      invoke: async (signal, observe) => {
+        observe({ stage: "primary", try: 1, state: "started" });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        signal.throwIfAborted();
+        observe({
+          stage: "primary",
+          try: 1,
+          state: "completed",
+          outcome: "valid",
+          provider: "openai-codex",
+          modelId: "gpt-5.6-luna",
+          latencyMs: 10,
+        });
+
+        observe({ stage: "secondary", try: 1, state: "started" });
+        // Secondary would run far past its own stage budget.
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(resolve, 5_000);
+          signal.addEventListener("abort", () => {
+            clearTimeout(timeout);
+            observe({ stage: "secondary", try: 1, state: "completed", outcome: "cancelled" });
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+        return "unreachable";
+      },
+    });
+
+    assert.equal(run.status, "failed");
+    assert.equal(run.summary.timedOut, true);
+    assert.equal(run.summary.errorCategory, "deadline");
+    // The budget that actually expired belonged to the secondary stage, and the summary says so
+    // rather than leaving consumers to infer it from the attempt left `incomplete`.
+    assert.equal(run.summary.deadlineStage, "secondary");
+    assert.equal(run.summary.stageBudgetMs, 100);
+  });
+
+  it("attributes no stage or budget when the router deadline never elapsed", async () => {
+    const succeeded = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 1_000,
+      invoke: async (_signal, observe) => {
+        observe({ stage: "primary", try: 1, state: "started" });
+        observe({ stage: "primary", try: 1, state: "completed", outcome: "valid" });
+        return "classified";
+      },
+    });
+    assert.equal(succeeded.status, "completed");
+    assert.equal(succeeded.summary.deadlineStage, undefined);
+    assert.equal(succeeded.summary.stageBudgetMs, undefined);
+
+    // A provider-thrown TimeoutError is the transport's deadline, not the router's budget, so it
+    // must not claim a stage budget it never enforced.
+    const transportTimeout = await runClassifierInvocation({
+      purpose: "fresh_task",
+      timeoutMs: 1_000,
+      invoke: async (_signal, observe) => {
+        observe({ stage: "primary", try: 1, state: "started" });
+        const error = new Error("provider timed out");
+        error.name = "TimeoutError";
+        throw error;
+      },
+    });
+    assert.equal(transportTimeout.summary.errorCategory, "transport_timeout");
+    assert.equal(transportTimeout.summary.timedOut, true);
+    assert.equal(transportTimeout.summary.deadlineStage, undefined);
+    assert.equal(transportTimeout.summary.stageBudgetMs, undefined);
+  });
+
+  it("reports the enforced budget when the deadline fires before any stage starts", async () => {
+    const run = await runClassifierInvocation({
+      purpose: "continuity",
+      timeoutMs: 20,
+      invoke: async (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              const error = new Error("aborted");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        }),
+    });
+
+    assert.equal(run.summary.errorCategory, "deadline");
+    assert.equal(run.summary.stageBudgetMs, 20);
+    assert.equal(run.summary.deadlineStage, undefined, "no stage had started, so none is attributed");
+  });
+
   it("returns promptly at the deadline with an explicit timeout and cancellation", async () => {
     const run = await runClassifierInvocation({
       purpose: "continuity",
@@ -360,7 +553,44 @@ describe("classifier invocation telemetry", () => {
     );
     assert.equal(events.filter(([name]) => name === "router.classifier.attempt").length, 1);
     assert.equal(events.filter(([name]) => name === "router.classifier.completed").length, 1);
+    // A successful invocation enforced no deadline, so neither field is exported.
+    assert.equal(
+      attributes.find(([name]) => name === "router.classifier.deadline_stage"),
+      undefined,
+    );
+    assert.equal(
+      attributes.find(([name]) => name === "router.classifier.stage_budget_ms"),
+      undefined,
+    );
     assert.doesNotMatch(JSON.stringify({ attributes, events }), /prompt|synopsis|credential|error\.message/i);
+
+    const deadlineAttributes = [];
+    const deadlineEvents = [];
+    annotateClassifierSpan(
+      {
+        setAttribute: (name, value) => deadlineAttributes.push([name, value]),
+        addEvent: (name, values) => deadlineEvents.push([name, values]),
+      },
+      {
+        ...summary,
+        outcome: "timeout",
+        timedOut: true,
+        errorCategory: "deadline",
+        deadlineStage: "secondary",
+        stageBudgetMs: 15_000,
+      },
+    );
+    assert.deepEqual(
+      deadlineAttributes.find(([name]) => name === "router.classifier.deadline_stage"),
+      ["router.classifier.deadline_stage", "secondary"],
+    );
+    assert.deepEqual(
+      deadlineAttributes.find(([name]) => name === "router.classifier.stage_budget_ms"),
+      ["router.classifier.stage_budget_ms", 15_000],
+    );
+    const completed = deadlineEvents.find(([name]) => name === "router.classifier.completed");
+    assert.equal(completed?.[1]["router.classifier.deadline_stage"], "secondary");
+    assert.equal(completed?.[1]["router.classifier.stage_budget_ms"], 15_000);
   });
 
   it("keeps annotations best-effort when an optional span implementation throws", () => {

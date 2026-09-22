@@ -73,9 +73,10 @@ describe("classifier request", () => {
 });
 
 describe("classifyTask", () => {
-  it("reports bounded attempt lifecycle metadata for valid, invalid, and transport-error attempts", async () => {
+  it("reports bounded primary attempt metadata and fails closed before secondary rescue", async () => {
     const observations = [];
     let calls = 0;
+    let secondaryCalls = 0;
     const result = await classifyTask({
       prompt: "Implement it",
       synopsis,
@@ -92,11 +93,15 @@ describe("classifyTask", () => {
         }
         throw new Error("raw credential and prompt must remain internal");
       },
-      secondary: transport(features(), "anthropic"),
+      secondary: async () => {
+        secondaryCalls++;
+        return transport(features(), "anthropic")();
+      },
       onAttempt: (observation) => observations.push(observation),
     });
 
-    assert.equal(result.failedClosed, false);
+    assert.equal(result.failedClosed, true);
+    assert.equal(secondaryCalls, 0);
     assert.deepEqual(
       observations.map(({ stage, try: attempt, state, outcome }) => [stage, attempt, state, outcome]),
       [
@@ -104,8 +109,6 @@ describe("classifyTask", () => {
         ["primary", 1, "completed", "invalid"],
         ["primary", 2, "started", undefined],
         ["primary", 2, "completed", "error"],
-        ["secondary", 1, "started", undefined],
-        ["secondary", 1, "completed", "valid"],
       ],
     );
     assert.doesNotMatch(JSON.stringify(observations), /credential|prompt must remain internal/);
@@ -221,8 +224,9 @@ describe("classifyTask", () => {
     assert.deepEqual([result.primaryVendor, result.secondaryVendor], ["openai", "anthropic"]);
   });
 
-  it("uses a validated secondary failover without merging synthetic conservative defaults", async () => {
+  it("fails closed instead of using secondary failover when the primary transport never validates", async () => {
     let primaryCalls = 0;
+    let secondaryCalls = 0;
     const secondaryFeatures = features({
       intent: "operate",
       workflowType: "noncoding_tool_workflow",
@@ -243,17 +247,20 @@ describe("classifyTask", () => {
         primaryCalls++;
         throw new Error("primary transport unavailable");
       },
-      secondary: transport(secondaryFeatures, "anthropic"),
+      secondary: async () => {
+        secondaryCalls++;
+        return transport(secondaryFeatures, "anthropic")();
+      },
       primaryVendor: "openai",
       secondaryVendor: "anthropic",
     });
     assert.equal(primaryCalls, 2);
-    assert.equal(result.escalated, true);
-    assert.equal(result.failedClosed, false);
-    assert.equal(result.features, secondaryFeatures);
-    assert.equal(result.features.risk, "low");
-    assert.equal(result.features.horizon, "one_response");
-    assert.equal(result.archetype.archetype, "deliberate_tool_workflow");
+    assert.equal(secondaryCalls, 0);
+    assert.equal(result.escalated, false);
+    assert.equal(result.failedClosed, true);
+    assert.notEqual(result.features, secondaryFeatures);
+    assert.equal(result.features.risk, "high");
+    assert.equal(result.archetype.archetype, "highest_risk_advisory");
   });
 
   it("fails closed when a primary transport failure cannot be independently verified", async () => {
@@ -268,7 +275,7 @@ describe("classifyTask", () => {
       secondaryVendor: "openai",
     });
     assert.equal(result.failedClosed, true);
-    assert.match(result.features.evidence[0], /same vendor/);
+    assert.match(result.features.evidence[0], /Primary classifier failed schema validation/);
   });
 
   it("retries malformed output and fails closed when validation never succeeds", async () => {
@@ -287,7 +294,7 @@ describe("classifyTask", () => {
       },
     });
     assert.equal(primaryCalls, 2);
-    assert.equal(secondaryCalls, 2);
+    assert.equal(secondaryCalls, 0);
     assert.equal(result.failedClosed, true);
     assert.equal(result.features.risk, "high");
     assert.equal(result.features.confidence, 0);
@@ -301,6 +308,37 @@ describe("classifyTask", () => {
       primary: transport(features({ risk: "high" }), "openai"),
       secondary: transport(features({ risk: "high" }), "openai"),
     });
+    assert.equal(result.failedClosed, true);
+    assert.match(result.features.evidence[0], /same vendor/);
+  });
+
+  it("uses the secondary response vendor for provider-diversity checks", async () => {
+    const result = await classifyTask({
+      prompt: "Risky task",
+      synopsis,
+      primary: transport(features({ risk: "high" }), "openai"),
+      secondary: transport(features({ risk: "high" }), "openai"),
+      primaryVendor: "openai",
+      secondaryVendor: "anthropic",
+    });
+    assert.equal(result.failedClosed, true);
+    assert.equal(result.secondaryVendor, "openai");
+    assert.match(result.features.evidence[0], /same vendor/);
+  });
+
+  it("checks provider diversity against the vendor that actually answered the primary stage", async () => {
+    const result = await classifyTask({
+      prompt: "Risky task",
+      synopsis,
+      // The primary answered from anthropic even though openai was the selected vendor, so the
+      // diversity check must compare the secondary against anthropic.
+      primary: transport(features({ risk: "high" }), "anthropic"),
+      secondary: transport(features({ risk: "high" }), "anthropic"),
+      primaryVendor: "openai",
+      secondaryVendor: "openai",
+    });
+    assert.equal(result.primaryVendor, "anthropic");
+    assert.equal(result.secondaryVendor, "anthropic");
     assert.equal(result.failedClosed, true);
     assert.match(result.features.evidence[0], /same vendor/);
   });

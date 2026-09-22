@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { classifyTaskWithPi, selectClassifierModels, transportFromCandidates } from "./pi-classifier.ts";
+import { conservativeFeatures } from "./core/features.ts";
+import {
+  classifyTaskSecondaryWithPi,
+  classifyTaskWithPi,
+  selectClassifierModels,
+  transportFromCandidates,
+} from "./pi-classifier.ts";
 
 function model(provider, id) {
   return { provider, id };
@@ -261,10 +267,10 @@ describe("selectClassifierModels", () => {
     });
     assert.equal(result.failedClosed, true);
     assert.equal(registryLookups, 0);
-    assert.equal(result.attempts.length, 4);
+    assert.equal(result.attempts.length, 2);
     assert.ok(result.attempts.every((attempt) => attempt.valid === false));
-    assert.equal(observations.filter((observation) => observation.state === "started").length, 4);
-    assert.equal(observations.filter((observation) => observation.outcome === "error").length, 4);
+    assert.equal(observations.filter((observation) => observation.state === "started").length, 2);
+    assert.equal(observations.filter((observation) => observation.outcome === "error").length, 2);
   });
 
   it("does not call an alternate endpoint when the provider returns an aborted response", async () => {
@@ -297,6 +303,42 @@ describe("selectClassifierModels", () => {
     } finally {
       faux.unregister();
     }
+  });
+});
+
+describe("classifyTaskSecondaryWithPi", () => {
+  it("chooses the independent tier from the vendor that answered the primary, not the first candidate", async () => {
+    const registryLookups = [];
+    const features = conservativeFeatures("fixture");
+    await classifyTaskSecondaryWithPi({
+      ctx: {
+        modelRegistry: {
+          find: (provider, modelId) => {
+            registryLookups.push(`${provider}/${modelId}`);
+            return undefined;
+          },
+        },
+      },
+      registry: [
+        snapshot("openai", "gpt-5.6-luna"),
+        snapshot("anthropic", "claude-haiku-4-5"),
+        snapshot("anthropic", "claude-sonnet-5"),
+        snapshot("openai", "gpt-5.6-terra"),
+      ],
+      prompt: "Implement the change",
+      synopsis: {},
+      // Luna is the first primary candidate, but Haiku answered after Luna failed over.
+      primary: {
+        features,
+        primaryFeatures: features,
+        escalated: true,
+        failedClosed: false,
+        attempts: [],
+        primaryVendor: "anthropic",
+      },
+    });
+    assert.ok(registryLookups.length > 0, "the secondary stage must consult at least one endpoint");
+    assert.deepEqual([...new Set(registryLookups)], ["openai/gpt-5.6-terra"]);
   });
 });
 
