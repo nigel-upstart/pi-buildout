@@ -51,15 +51,19 @@ Notes:
   and legacy entrypoint cleanup. It keeps the fork's `router` extension, the opt-in `--with-otel` extension, and
   manifest-declared entrypoints.
 
+### Follow-up: pi 0.85.1 development packages (#64)
+
+The pi 0.84.4 and 0.85.1 development package bumps from upstream #44 and #42 were held back in this sync, because the
+router's cost tests pin the model registry. Issue #64 bumps all four `@earendil-works/*` development packages to 0.85.1
+and re-pins the router tests after an evidence review, recorded in
+[`specs/routing-layer/registry-refresh-2026-09-22.md`](specs/routing-layer/registry-refresh-2026-09-22.md). The fork now
+matches upstream's development package versions, and `scripts/skills-catalog.test.mjs` runs in CI. The vendored
+`extensions/otel` package keeps its own `pi-coding-agent` 0.84.1 development pin, which upstream does not carry.
+
 ## Intentional divergences
 
 - **Router and OpenTelemetry extensions.** The fork keeps `extensions/router` and `extensions/otel`, which upstream does
   not ship.
-- **Pi development packages stay at 0.84.1.** Upstream bumps them to 0.84.4 and then 0.85.1. The router's cost tests pin
-  the pi 0.84.1 model registry, and a registry bump is a separate evidence refresh. A mixed pin (only `pi-coding-agent`
-  at 0.85.1) does not typecheck, because its shrinkwrapped `pi-agent-core` types conflict with the top-level copy. As a
-  result, `scripts/skills-catalog.test.mjs` skips in this repository's CI. It was run and passed locally against pi
-  0.85.1 during this sync.
 - **Dependency overrides and scripts.** The fork keeps its own overrides and npm scripts, taking only upstream's
   `browserslist` override bump.
 - **Subagent fallback effort.** The fork keeps its explicit model and effort resolution from `2d12a930` instead of
