@@ -178,16 +178,21 @@ settlement cannot retry the event, re-enable routing, or apply the fail-safe twi
 While telemetry is healthy, each router-level classification request makes one privacy-safe `classifier_invocation`
 append attempt with `invocationCount: 1`. Its request fields are `purpose` (`fresh_task` or `continuity`), `outcome`,
 `resolution`, `wallLatencyMs`, `timedOut`, and `cancelled`, plus aggregate attempt counts, per-stage counts, sanitized
-attempt entries, and an optional bounded error category. Attempt entries can contain only stage/try/outcome and
-validated provider/model/latency identifiers; prompts, synopses, classifier evidence, and free-form errors are never
-included. Count request volume and rates only from `classifier_invocation`. The legacy `classifier_attempt` event is a
-non-additive downstream diagnostic emitted only when a completed classification proceeds into new-lease routing; zero or
-several can belong to one request. Never sum the two kinds.
+attempt entries, and an optional bounded error category. When the router's own deadline elapsed
+(`errorCategory: "deadline"`), the record also names the stage that held the budget in `deadlineStage` and the budget it
+enforced in `stageBudgetMs`, so no consumer has to infer the stage from whichever attempt was left `incomplete`. Both
+fields are absent on success and on a provider-thrown `transport_timeout`, which is the transport's deadline rather than
+the router's. Attempt entries can contain only stage/try/outcome and validated provider/model/latency identifiers;
+prompts, synopses, classifier evidence, and free-form errors are never included. Count request volume and rates only
+from `classifier_invocation`. The legacy `classifier_attempt` event is a non-additive downstream diagnostic emitted only
+when a completed classification proceeds into new-lease routing; zero or several can belong to one request. Never sum
+the two kinds.
 
 When `pi-telemetry-otel` is installed separately, `router.classify` and `router.classify_continuity` spans attach
 through its global Symbol registries. They receive bounded `router.classifier.*` summary attributes, one
 `router.classifier.attempt` event per observed attempt, and a `router.classifier.completed` event, with no prompt,
-synopsis, evidence, or free-form error text. The router has no additional runtime dependencies and works without OTel.
+synopsis, evidence, or free-form error text. A router deadline additionally exports `router.classifier.deadline_stage`
+and `router.classifier.stage_budget_ms`. The router has no additional runtime dependencies and works without OTel.
 
 ## Real Bifrost evaluation
 

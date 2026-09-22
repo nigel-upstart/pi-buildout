@@ -276,6 +276,16 @@ export function safetyToolBlockReason(
 // `secondaryGracePolicy.secondaryDeadlineMs` (defaulted in `core/reconciliation.ts`). Changing this
 // value does not change the background reconciliation budget, and vice versa.
 export const CLASSIFICATION_STAGE_TIMEOUT_MS = 15_000;
+
+/**
+ * Name the stage that consumed the budget when the router knows it.
+ *
+ * A deadline can fire before any stage reports that it started (for example a classifier that
+ * hangs before its first attempt), so the unattributed wording stays available.
+ */
+export function stageDeadlineDescription(summary: Pick<ClassifierInvocationSummary, "deadlineStage">): string {
+  return summary.deadlineStage ? `in the ${summary.deadlineStage} stage` : "in one stage";
+}
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
@@ -1437,7 +1447,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         // wording derived from `reason` instead of claiming the router's deadline elapsed.
         ctx.ui.notify(
           summary.errorCategory === "deadline"
-            ? `Router continuity classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current task and model selection`
+            ? `Router continuity classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s ${stageDeadlineDescription(summary)}; keeping the current task and model selection`
             : `Router continuity classification ${reason}; keeping the current task and model selection`,
           "warning",
         );
@@ -1457,7 +1467,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         // elapsed, so a transport timeout must not be reported as the fixed stage deadline.
         ctx.ui.notify(
           result.summary.errorCategory === "deadline"
-            ? `Router classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current model selection`
+            ? `Router classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s ${stageDeadlineDescription(result.summary)}; keeping the current model selection`
             : `Router classification ${reason}; keeping the current model selection`,
           "warning",
         );

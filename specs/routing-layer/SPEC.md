@@ -426,7 +426,10 @@ durable data contains:
 - request totals `attemptCount`, `completedAttemptCount`, and `validAttemptCount`;
 - the same three counts grouped into `primary`/`secondary` stage entries;
 - an attempt list containing only stage, try number, bounded outcome, and sanitized optional provider/model/latency;
-- optional `failedClosed` and bounded `errorCategory` values.
+- optional `failedClosed` and bounded `errorCategory` values;
+- for a router-owned deadline only (`errorCategory: "deadline"`), the `deadlineStage` that held the budget and the
+  enforced `stageBudgetMs`. Stage attribution is therefore explicit rather than inferred from the attempt left
+  `incomplete`, and it is absent for a success or a provider-thrown `transport_timeout`.
 
 `attemptCount` counts unique observed stage/try starts, including a call still `incomplete` when the router returns;
 `completedAttemptCount` counts `valid`, `invalid`, `error`, or `cancelled` observer completions; and `validAttemptCount`
