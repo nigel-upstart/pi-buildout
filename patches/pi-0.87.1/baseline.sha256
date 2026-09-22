@@ -5,3 +5,4 @@
 5b9805525b194474ef1fe5455a0917ef15ed7f710aa9bec2eee11879556469e5  docs/skills.md
 9ca136a7caa977d936aa789d7448a3dfb17851677ff5ac8c0dbcf23c31a02142  dist/bundle/cli-runtime.js
 c28825e86cc275c246acb6c703583c8383eae808b3eda8cf47fea815bf5a42e4  dist/bundle/rpc-entry.js
+e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774  dist/bundle/cli.js

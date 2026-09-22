@@ -58,10 +58,11 @@ any such entrypoint files in the patch and checksum manifests when a release swi
 Pi 0.87.1 switched it again. `dist/bundle/cli.js` (the `bin`) is now a loader that calls `enableCompileCache()` and then
 `createRequire(import.meta.url)("./cli-runtime.js")`; the bundled runtime lives in `dist/bundle/cli-runtime.js` plus
 content-hashed `dist/bundle/chunks/`. The 0.87.1 patch replaces `dist/bundle/cli-runtime.js` and
-`dist/bundle/rpc-entry.js` and leaves upstream's loader alone, which relies on `require()` of the unbundled ES module
-graph (Node 22.19+, no top-level await in that graph). Subagents start RPC children by re-running the bin with
-`--mode rpc`, so they reach the patched runtime through that loader. For a new release, read `package.json` `bin` and
-`exports["./rpc-entry"]` and follow each file to the first one that holds bundled code; that is the file to replace.
+`dist/bundle/rpc-entry.js` and leaves upstream's loader alone (pinned by checksum through an `"unchanged"` tracked file,
+so the installer still verifies it), which relies on `require()` of the unbundled ES module graph (Node 22.19+, no
+top-level await in that graph). Subagents start RPC children by re-running the bin with `--mode rpc`, so they reach the
+patched runtime through that loader. For a new release, read `package.json` `bin` and `exports["./rpc-entry"]` and
+follow each file to the first one that holds bundled code; that is the file to replace.
 
 Source maps may exist, but the editable runtime is `dist/*.js`. Prefer changing the smallest runtime surface that proves
 the behavior.

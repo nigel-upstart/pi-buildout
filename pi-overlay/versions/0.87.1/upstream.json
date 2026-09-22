@@ -41,7 +41,8 @@
     { "path": "dist/core/skill-management-core.js", "source": "built", "added": true },
     { "path": "docs/skills.md", "source": "patched-source" },
     { "path": "dist/bundle/cli-runtime.js", "source": "replacement" },
-    { "path": "dist/bundle/rpc-entry.js", "source": "replacement" }
+    { "path": "dist/bundle/rpc-entry.js", "source": "replacement" },
+    { "path": "dist/bundle/cli.js", "source": "unchanged" }
   ],
   "maxUpstreamEditedLines": 48
 }

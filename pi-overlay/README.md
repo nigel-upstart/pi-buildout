@@ -113,7 +113,8 @@ Two caveats the pipeline must respect:
   the npm tarball. Which files those are depends on the release's bin layout: 0.85.1 replaces `dist/bundle/cli.js` and
   `dist/bundle/rpc-entry.js`. 0.87.1 made `dist/bundle/cli.js` a loader that enables Node's compile cache and then
   `require()`s `dist/bundle/cli-runtime.js`, so it replaces `cli-runtime.js` and `rpc-entry.js` and keeps upstream's
-  loader.
+  loader. The loader is declared with `"source": "unchanged"`: it never appears in the patch, but both checksum
+  manifests pin it, so the installer rejects a package whose loader would bypass the replaced runtime.
 - The 0.85.1 source archive does not build cleanly end to end offline: `packages/ai`'s `generate-models` does not emit
   `src/providers/kimi-coding.models.ts`, so `tsgo` reports `TS2307` for that package. It still emits usable output, so
   `packages/coding-agent` is unaffected — but the pipeline must build the workspace chain explicitly and gate on the

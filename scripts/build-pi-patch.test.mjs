@@ -153,13 +153,33 @@ for (const version of overlayVersions) {
     const patchText = readFileSync(join(patchDirectory, "skills.patch"), "utf8");
     assert.equal(manifest.version, version);
 
-    const declared = manifest.trackedFiles.map((entry) => ({ path: entry.path, added: entry.added === true }));
+    // `unchanged` entries are pinned by both manifests but never appear in the patch itself.
+    const declared = manifest.trackedFiles
+      .filter((entry) => entry.source !== "unchanged")
+      .map((entry) => ({ path: entry.path, added: entry.added === true }));
     const byPath = (left, right) => left.path.localeCompare(right.path);
     assert.deepEqual(patchedFileList(patchText).sort(byPath), [...declared].sort(byPath));
     assert.deepEqual(
       parseChecksumManifest(readFileSync(join(patchDirectory, "patched.sha256"), "utf8")).map((entry) => entry.path),
       manifest.trackedFiles.map((entry) => entry.path),
     );
+
+    const baselineByPath = new Map(
+      parseChecksumManifest(readFileSync(join(patchDirectory, "baseline.sha256"), "utf8")).map((entry) => [
+        entry.path,
+        entry.sha256,
+      ]),
+    );
+    const patchedByPath = new Map(
+      parseChecksumManifest(readFileSync(join(patchDirectory, "patched.sha256"), "utf8")).map((entry) => [
+        entry.path,
+        entry.sha256,
+      ]),
+    );
+    for (const entry of manifest.trackedFiles.filter((file) => file.source === "unchanged")) {
+      assert.match(baselineByPath.get(entry.path) ?? "", /^[0-9a-f]{64}$/u, `${entry.path} is pinned by the baseline`);
+      assert.equal(patchedByPath.get(entry.path), baselineByPath.get(entry.path), `${entry.path} stays unchanged`);
+    }
 
     for (const entry of manifest.trackedFiles.filter((file) => file.source === "replacement")) {
       const replacement = readFileSync(join(versionsRoot, version, "replacements", entry.path), "utf8");

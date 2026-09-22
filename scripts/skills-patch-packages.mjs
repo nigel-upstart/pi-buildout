@@ -101,7 +101,13 @@ async function cleanPackageProblem(packageRoot, version, requireDependencies) {
 export async function findCleanPackage(version, { requireDependencies = true } = {}) {
   const problems = [];
   for (const packageRoot of candidatePackageRoots()) {
-    const problem = await cleanPackageProblem(packageRoot, version, requireDependencies);
+    let problem;
+    try {
+      problem = await cleanPackageProblem(packageRoot, version, requireDependencies);
+    } catch (error) {
+      // An unreadable or malformed candidate is a diagnostic for that candidate, not a reason to stop looking.
+      problem = `${packageRoot} could not be inspected: ${error instanceof Error ? error.message : String(error)}`;
+    }
     if (problem === undefined) return { packageRoot };
     problems.push(problem);
   }
