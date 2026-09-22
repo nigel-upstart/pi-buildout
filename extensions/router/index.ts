@@ -264,8 +264,17 @@ export function safetyToolBlockReason(
 // overruns aborts the in-flight request (via the shared AbortSignal, so the underlying network call
 // is actually cancelled rather than merely abandoned) and ends the invocation; the caller then keeps
 // whatever model/task is already selected instead of routing on a call that never returned.
-// One constant governs every stage, so the deadline the router enforces is always the deadline it
-// reports to the user. It also bounds the window before the first stage reports that it started.
+// One constant governs every stage of a synchronous classifier invocation, so the deadline the
+// router enforces is always the deadline it reports to the user. It also bounds the window before
+// the first stage reports that it started.
+//
+// Scope: this constant times the invocations run through `classifyWithTimeout` — fresh-task primary
+// classification, and continuity classification, which still escalates primary to secondary inside
+// the same invocation (so the secondary stage there really does start a fresh budget).
+// Background fresh-task secondary reconciliation is a separate invocation and is NOT timed by this
+// constant: see `classifySecondaryWithTimeout`, which uses the configurable
+// `secondaryGracePolicy.secondaryDeadlineMs` (defaulted in `core/reconciliation.ts`). Changing this
+// value does not change the background reconciliation budget, and vice versa.
 export const CLASSIFICATION_STAGE_TIMEOUT_MS = 15_000;
 async function classifyWithTimeout(
   ctx: ExtensionContext,

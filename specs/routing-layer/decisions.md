@@ -172,13 +172,21 @@ extensions/router/
 ## Decision: router-owned classifier deadline and conservative fast paths
 
 The router owns independent wall-clock deadlines per classification stage for each fresh-task or continuity request.
-Rather than forcing primary classification and secondary escalation to share a single combined countdown, each stage
-receives its own timeout budget configured in code
-([`CLASSIFICATION_STAGE_TIMEOUT_MS`](../../extensions/router/index.ts)). An `AbortSignal` reaches the schema-attempt
-loop, endpoint iterator, and pi-ai `complete()` call for that stage. The stage deadline races the active stage
-operation, aborts the signal, and returns the fail-safe result promptly; the operation promise has rejection handlers
-attached so a transport settling after the race cannot create an unhandled rejection. Exact timeout constants and
-telemetry handling can be inspected in [`extensions/router/index.ts`](../../extensions/router/index.ts) and
+Rather than forcing primary classification and secondary escalation to share a single combined countdown, each stage of
+a synchronous classifier invocation receives its own timeout budget configured in code
+([`CLASSIFICATION_STAGE_TIMEOUT_MS`](../../extensions/router/index.ts)): fresh-task primary classification, and
+continuity classification, which still escalates primary to secondary within one invocation.
+
+The architecture therefore has two timeout owners by design. Background fresh-task secondary reconciliation is
+asynchronous — a separate invocation started after the primary result is accepted — and is bounded by the configurable
+`secondaryGracePolicy.secondaryDeadlineMs` ([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts),
+15s by default) rather than by the stage constant, with `maxGraceMs` bounding only how long the router delays the first
+provider request. Splitting the budgets keeps the blocking path's deadline the one reported to the user while letting
+operators tune background reconciliation independently. An `AbortSignal` reaches the schema-attempt loop, endpoint
+iterator, and pi-ai `complete()` call for that stage. The stage deadline races the active stage operation, aborts the
+signal, and returns the fail-safe result promptly; the operation promise has rejection handlers attached so a transport
+settling after the race cannot create an unhandled rejection. Exact timeout constants and telemetry handling can be
+inspected in [`extensions/router/index.ts`](../../extensions/router/index.ts) and
 [`extensions/router/telemetry.ts`](../../extensions/router/telemetry.ts).
 
 `AbortError` and `TimeoutError` are terminal control outcomes, not availability errors. The schema layer does not retry,

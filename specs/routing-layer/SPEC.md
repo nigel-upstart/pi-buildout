@@ -148,12 +148,19 @@ arguments — never accept free-form JSON parsed out of prose.
 ### Deadline, cancellation, and fail-safe selection
 
 Each fresh-task or continuity request is bounded by router-owned stage deadlines. Rather than enforcing a single
-combined clock across primary classification and escalation, each classification stage (primary and, if triggered,
-secondary) receives an independent timeout budget defined in code
-([`CLASSIFICATION_STAGE_TIMEOUT_MS`](../../extensions/router/index.ts)). An `AbortSignal` is passed through those layers
-to the underlying `complete()` call for that stage. At the deadline the router aborts the active stage request and
-returns without waiting indefinitely for a provider transport to settle. Concrete timeout values and invocation wrappers
-can be inspected in [`extensions/router/index.ts`](../../extensions/router/index.ts) and
+combined clock across primary classification and escalation, each classification stage of a synchronous classifier
+invocation receives an independent timeout budget defined in code
+([`CLASSIFICATION_STAGE_TIMEOUT_MS`](../../extensions/router/index.ts)). That budget governs fresh-task primary
+classification and synchronous continuity escalation, where primary and secondary stages run inside one invocation.
+
+Background fresh-task secondary reconciliation is normatively a different control: it runs as its own classifier
+invocation bounded by the configurable `secondaryGracePolicy.secondaryDeadlineMs`
+([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts), 15s by default), with `maxGraceMs` bounding
+only the pre-release grace window. `CLASSIFICATION_STAGE_TIMEOUT_MS` must not be treated as the control for that path.
+An `AbortSignal` is passed through those layers to the underlying `complete()` call for that stage. At the deadline the
+router aborts the active stage request and returns without waiting indefinitely for a provider transport to settle.
+Concrete timeout values and invocation wrappers can be inspected in
+[`extensions/router/index.ts`](../../extensions/router/index.ts) and
 [`extensions/router/telemetry.ts`](../../extensions/router/telemetry.ts).
 
 Cancellation is terminal at every classifier layer. An aborted signal or an `AbortError`/`TimeoutError` stops the
