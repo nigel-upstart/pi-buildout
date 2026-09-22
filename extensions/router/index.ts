@@ -166,6 +166,8 @@ type SecondaryReconciliationTask = {
   agentStartReleasedAtMs?: number;
   pendingSafetyGate: boolean;
   settled: boolean;
+  /** Set when an abort path consumed this task, including while its settlement telemetry awaits. */
+  abandoned?: boolean;
 };
 
 type QueuedSecondaryReconciliation = {
@@ -791,17 +793,35 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    * aborts its signal, removes it from `secondaryTasks`, and records a single rejection when a context
    * is available.
    */
-  async function abortSecondaryWork(ctx: ExtensionContext | undefined, reason: string): Promise<void> {
+  async function abortSecondaryWork(
+    ctx: ExtensionContext | undefined,
+    reason: string,
+    options: { retainSafetyLatch?: boolean } = {},
+  ): Promise<void> {
     const queued = queuedSecondaryReconciliation;
     queuedSecondaryReconciliation = undefined;
-    if (pendingSecondarySafetyGate) pendingSecondarySafetyGate.pendingSafetyGate = false;
+    // Compaction keeps the lease and lets a running turn finish, so discarding the stale request
+    // must not also re-enable mutating tools for a low-confidence primary that was never
+    // reconciled. Other abort paths (override, new task, shutdown) do resolve the question.
+    const latched = options.retainSafetyLatch
+      ? (pendingSecondarySafetyGate ??
+        unresolvedSecondarySafetyGate ??
+        (queued?.task.pendingSafetyGate ? queued.task : undefined) ??
+        [...secondaryTasks].find((task) => task.pendingSafetyGate))
+      : undefined;
+    if (pendingSecondarySafetyGate && pendingSecondarySafetyGate !== latched) {
+      pendingSecondarySafetyGate.pendingSafetyGate = false;
+    }
     pendingSecondarySafetyGate = undefined;
-    if (unresolvedSecondarySafetyGate) unresolvedSecondarySafetyGate.pendingSafetyGate = false;
-    unresolvedSecondarySafetyGate = undefined;
+    if (unresolvedSecondarySafetyGate && unresolvedSecondarySafetyGate !== latched) {
+      unresolvedSecondarySafetyGate.pendingSafetyGate = false;
+    }
+    unresolvedSecondarySafetyGate = latched;
     if (ctx && queued) await rejectQueuedSecondary(ctx, queued, reason);
     for (const task of [...secondaryTasks]) {
-      task.pendingSafetyGate = false;
+      if (task !== latched) task.pendingSafetyGate = false;
       task.settled = true;
+      task.abandoned = true;
       task.controller.abort();
       secondaryTasks.delete(task);
       if (ctx) await recordAbortedSecondaryTask(ctx, task, reason);
@@ -815,7 +835,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   ): Promise<void> {
     if (task.settled) return;
     task.settled = true;
-    secondaryTasks.delete(task);
     const queued: QueuedSecondaryReconciliation = {
       task,
       run,
@@ -828,6 +847,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       run.status === "completed" ? run.value : undefined,
       task.binding.taskId,
     );
+    // The task stays discoverable in `secondaryTasks` across the awaited write above, so an abort
+    // path that runs during it consumes this task and records its own outcome. Do not queue or
+    // apply a result that a shutdown, compaction, or override already discarded.
+    if (task.abandoned) return;
+    secondaryTasks.delete(task);
     const staleReason = secondaryStaleReason(task);
     if (staleReason) {
       if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
@@ -976,9 +1000,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       );
   }
 
-  /** True when the secondary produced a schema-valid, provider-diverse answer to compare. */
+  /**
+   * True only when the secondary actually produced a schema-valid, provider-diverse answer.
+   *
+   * `classifyTaskSecondary` returns the primary features with `failedClosed` false when the
+   * secondary exhausts schema-invalid responses, so completion alone does not mean the safety
+   * question was answered. Explicit secondary features and a distinct vendor are required.
+   */
   function secondaryResolvedSafety(run: ClassifierInvocationRun<ClassificationResult>): boolean {
-    return run.status === "completed" && !run.value.failedClosed;
+    if (run.status !== "completed") return false;
+    const result = run.value;
+    if (result.failedClosed || result.secondaryFeatures === undefined) return false;
+    return result.secondaryVendor !== undefined && result.secondaryVendor !== result.primaryVendor;
   }
 
   /**
@@ -2200,7 +2233,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    await abortSecondaryWork(ctx, "session_compact");
+    await abortSecondaryWork(ctx, "session_compact", { retainSafetyLatch: true });
     // Compaction rewrites history, not enablement. The mode stays in force, and re-persisting it puts
     // the mode after the compaction cut so a later resume of this session still sees it. The lease is
     // kept and a pending post_compaction boundary is recorded instead, so the next ordinary user

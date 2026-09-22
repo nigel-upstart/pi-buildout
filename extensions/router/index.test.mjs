@@ -1104,6 +1104,104 @@ describe("routerExtension", () => {
     if (afterOverride?.block) assert.doesNotMatch(afterOverride.reason, /Secondary safety classification is pending/);
   });
 
+  it("retains the mutation gate when the secondary returns no schema-valid provider-diverse answer", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-schema-exhausted-gate",
+    });
+
+    // `classifyTaskSecondary` returns the primary features with `failedClosed` false when the
+    // secondary exhausts schema-invalid responses: no `secondaryFeatures`, no `secondaryVendor`.
+    secondary.resolve({ ...classificationResult(1, { confidence: 0.6 }), escalated: true });
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-schema-exhausted-secondary",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+  });
+
+  it("keeps the low-confidence latch across compaction while discarding the stale secondary", async () => {
+    const secondary = deferred();
+    let secondarySignal;
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        secondarySignal = signal;
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-compaction-latch",
+    });
+
+    await result.hooks.get("session_compact")({}, result.ctx);
+    assert.equal(secondarySignal.aborted, true);
+
+    // Compaction keeps the lease and lets a running turn finish, so the unreconciled
+    // low-confidence primary must stay fail-closed for mutating tools.
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-compaction",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+
+    const reconciliationCount = result.events.filter(({ kind }) => kind === "secondary_reconciliation").length;
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+    assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, reconciliationCount);
+  });
+
+  it("discards a secondary result abandoned by shutdown during its settlement telemetry", async () => {
+    const secondary = deferred();
+    const telemetryStarted = deferred();
+    const releaseTelemetry = deferred();
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            telemetryStarted.resolve();
+            await releaseTelemetry.promise;
+          }
+        },
+        read: async () => [],
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-abandoned-during-settlement",
+    });
+
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "critical" }));
+    await telemetryStarted.promise;
+    // The task must remain discoverable while its settlement telemetry awaits, so this abort
+    // consumes it instead of leaving a continuation that queues against the old session.
+    await result.hooks.get("session_shutdown")({ reason: "quit" });
+    releaseTelemetry.resolve();
+    await flushMicrotasks();
+
+    // Shutdown aborts without an extension context, so no reconciliation outcome is recorded at
+    // all; the point is that the abandoned continuation neither queues nor applies its correction.
+    assert.equal(events.filter(({ kind }) => kind === "secondary_reconciliation").length, 0);
+    const persisted = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data;
+    assert.notEqual(persisted?.active?.features.risk, "critical");
+  });
+
   it("lets a manual override during awaited reconciliation work win over the captured correction", async () => {
     const secondary = deferred();
     const overrideApplied = deferred();
