@@ -166,6 +166,8 @@ type SecondaryReconciliationTask = {
   agentStartReleasedAtMs?: number;
   pendingSafetyGate: boolean;
   settled: boolean;
+  /** The settled run, kept so an abort during its settlement telemetry can still attribute it. */
+  settledRun?: ClassifierInvocationRun<ClassificationResult>;
   /** Set when an abort path consumed this task, including while its settlement telemetry awaits. */
   abandoned?: boolean;
   /** The single in-progress settlement, so the grace window can await an already-started one. */
@@ -699,6 +701,33 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return undefined;
   }
 
+  /**
+   * Name the budget the background secondary was running against, and what the router observed
+   * when that budget mattered.
+   *
+   * Background reconciliation is bounded by the configurable `secondaryGracePolicy.secondaryDeadlineMs`,
+   * not by `CLASSIFICATION_STAGE_TIMEOUT_MS`, so a `secondary_timeout` record is only actionable if
+   * it also says which budget expired. The failure fields come from the invocation summary and are
+   * omitted for a completed run, matching the summary's own contract: `stageBudgetMs` and
+   * `deadlineStage` exist only for a router-owned deadline, never for a provider transport timeout.
+   */
+  function secondaryBudgetFields(
+    summary: ClassifierInvocationSummary | undefined,
+  ): Record<string, string | number | boolean> {
+    return {
+      secondaryDeadlineMs: secondaryGracePolicy.secondaryDeadlineMs,
+      ...(summary === undefined || summary.outcome === "success"
+        ? {}
+        : {
+            secondaryOutcome: summary.outcome,
+            secondaryWallLatencyMs: summary.wallLatencyMs,
+            ...(summary.errorCategory ? { secondaryErrorCategory: summary.errorCategory } : {}),
+            ...(summary.deadlineStage ? { secondaryDeadlineStage: summary.deadlineStage } : {}),
+            ...(summary.stageBudgetMs === undefined ? {} : { secondaryEnforcedBudgetMs: summary.stageBudgetMs }),
+          }),
+    };
+  }
+
   async function recordSecondaryReconciliation(
     ctx: ExtensionContext,
     queued: QueuedSecondaryReconciliation,
@@ -731,6 +760,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         secondaryArrival: queued.arrival,
         secondaryArrivalLatencyMs: Math.max(0, queued.arrivedAtMs - queued.task.primaryCompletedAtMs),
         workCompletedBeforeReconciliation: safeWorkCounters(),
+        ...secondaryBudgetFields(queued.run.summary),
         ...data,
       },
       {
@@ -792,6 +822,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         secondaryArrival: secondaryArrival(),
         secondaryArrivalLatencyMs: Math.max(0, now - task.primaryCompletedAtMs),
         workCompletedBeforeReconciliation: safeWorkCounters(),
+        // A task aborted before it settled has no invocation summary, so only its budget is known.
+        // One aborted during its settlement telemetry write keeps the summary of the run it settled.
+        ...secondaryBudgetFields(task.settledRun?.summary),
         accepted: false,
         reason,
       },
@@ -863,6 +896,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   ): Promise<void> {
     if (task.settled) return;
     task.settled = true;
+    task.settledRun = run;
     const queued: QueuedSecondaryReconciliation = {
       task,
       run,
