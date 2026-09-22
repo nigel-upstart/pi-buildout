@@ -261,14 +261,22 @@ describe("classifier invocation telemetry", () => {
   });
 
   it("allows each stage its own timeout budget when stageTimeoutMs is configured", async () => {
+    // The stage budget is deliberately larger than either individual stage but smaller than their
+    // combined duration. A single clock started once (no reset at secondary start) therefore
+    // expires mid-secondary, so this invocation can only complete if each stage really does get its
+    // own fresh deadline.
+    const stageSleepMs = 200;
+    const stageTimeoutMs = 350;
     const run = await runClassifierInvocation({
       purpose: "fresh_task",
+      // Unused once stageTimeoutMs is configured; kept far below the stage budget so a regression
+      // that falls back to the single-clock timeout fails loudly instead of passing by accident.
       timeoutMs: 150,
-      stageTimeoutMs: 1_000,
+      stageTimeoutMs,
       invoke: async (signal, observe) => {
         // Stage 1 sleeps well inside its own stage budget.
         observe({ stage: "primary", try: 1, state: "started" });
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, stageSleepMs));
         signal.throwIfAborted();
         observe({
           stage: "primary",
@@ -277,13 +285,13 @@ describe("classifier invocation telemetry", () => {
           outcome: "valid",
           provider: "openai-codex",
           modelId: "gpt-5.6-luna",
-          latencyMs: 100,
+          latencyMs: stageSleepMs,
         });
 
-        // Stage 2 sleeps inside its own fresh budget, even though the combined
-        // elapsed time already exceeds the single-clock timeoutMs above.
+        // Stage 2 sleeps inside its own fresh budget, even though the combined elapsed time already
+        // exceeds both the single-clock timeoutMs and one stage budget.
         observe({ stage: "secondary", try: 1, state: "started" });
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, stageSleepMs));
         signal.throwIfAborted();
         observe({
           stage: "secondary",
@@ -292,7 +300,7 @@ describe("classifier invocation telemetry", () => {
           outcome: "valid",
           provider: "anthropic",
           modelId: "claude-sonnet-5",
-          latencyMs: 100,
+          latencyMs: stageSleepMs,
         });
         return "reconciled";
       },
@@ -302,7 +310,10 @@ describe("classifier invocation telemetry", () => {
     assert.equal(run.value, "reconciled");
     assert.equal(run.summary.attemptCount, 2);
     assert.equal(run.summary.timedOut, false);
-    assert.ok(run.summary.wallLatencyMs >= 150);
+    assert.ok(
+      run.summary.wallLatencyMs > stageTimeoutMs,
+      `expected the invocation to outlive one stage budget (${String(run.summary.wallLatencyMs)}ms)`,
+    );
   });
 
   it("times out the primary stage when it exceeds its own stageTimeoutMs", async () => {

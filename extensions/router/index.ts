@@ -1422,8 +1422,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       } else {
         const summary = result.invocation.summary;
         const reason = summary.timedOut ? "timed out" : summary.cancelled ? "was cancelled" : "failed";
+        // Only a router-owned stage deadline can be reported as the router's fixed stage budget. A
+        // provider-thrown TimeoutError also sets `timedOut`, but it is categorized as
+        // `transport_timeout` and can fire well inside the stage budget, so it takes the generic
+        // wording derived from `reason` instead of claiming the router's deadline elapsed.
         ctx.ui.notify(
-          summary.timedOut
+          summary.errorCategory === "deadline"
             ? `Router continuity classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current task and model selection`
             : `Router continuity classification ${reason}; keeping the current task and model selection`,
           "warning",
@@ -1440,8 +1444,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         classification = result.value;
       } else {
         const reason = result.summary.timedOut ? "timed out" : result.summary.cancelled ? "was cancelled" : "failed";
+        // See the continuity branch above: only `deadline` means the router's own stage budget
+        // elapsed, so a transport timeout must not be reported as the fixed stage deadline.
         ctx.ui.notify(
-          result.summary.timedOut
+          result.summary.errorCategory === "deadline"
             ? `Router classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s in one stage; keeping the current model selection`
             : `Router classification ${reason}; keeping the current model selection`,
           "warning",
