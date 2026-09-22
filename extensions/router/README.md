@@ -89,7 +89,7 @@ starts a fresh budget.
 
 There are two timeout owners, and changing one does not affect the other. Background fresh-task secondary reconciliation
 runs as a separate classifier invocation bounded by the configurable
-[`secondaryGracePolicy.secondaryDeadlineMs`](core/reconciliation.ts) (15s by default), not by
+[`secondaryGracePolicy.secondaryDeadlineMs`](core/reconciliation.ts), not by
 `CLASSIFICATION_STAGE_TIMEOUT_MS`; the companion `maxGraceMs` bounds only how long the router pauses before releasing
 the first provider request, after which the secondary classifier keeps running until its own deadline and may reconcile
 at a later safe boundary. The router passes an `AbortSignal` through schema attempts and concrete endpoint calls for the
