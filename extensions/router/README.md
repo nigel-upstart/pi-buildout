@@ -38,9 +38,9 @@ removes every router-only tool (including `submit_implementation_plan`), and sto
 automatic model/effort changes, manual selection tracking, lifecycle blocking and evidence collection,
 fallbacks/reviews, `/route accept|reject|fail`, and all router telemetry. Routing work already in flight is not
 cancelled, but its result is discarded: it installs no lease, applies no model or effort, returns no prompt, re-exposes
-no tools, and records no telemetry, even if routing is re-enabled before it finishes. The last lease remains dormant so
-`/route active` can safely restore the existing lifecycle; while off, the router does not restrict models, reasoning
-efforts, ordinary tools, or turns.
+no tools, and submits no new telemetry, even if routing is re-enabled before it finishes. Telemetry writes and spans
+already accepted before off may still finish. The last lease remains dormant so `/route active` can safely restore the
+existing lifecycle; while off, the router does not restrict models, reasoning efforts, ordinary tools, or turns.
 
 Planning routes must call `submit_implementation_plan`; the tool validates the PR dependency DAG, acceptance criteria,
 rollout, and rollback. A normal response that omits the tool gets one same-lease corrective follow-up before the bounded
