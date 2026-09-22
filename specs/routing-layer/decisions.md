@@ -179,8 +179,8 @@ continuity classification, which still escalates primary to secondary within one
 
 The architecture therefore has two timeout owners by design. Background fresh-task secondary reconciliation is
 asynchronous — a separate invocation started after the primary result is accepted — and is bounded by the configurable
-`secondaryGracePolicy.secondaryDeadlineMs` ([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts),
-15s by default) rather than by the stage constant, with `maxGraceMs` bounding only how long the router delays the first
+`secondaryGracePolicy.secondaryDeadlineMs` ([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts))
+rather than by the stage constant, with `maxGraceMs` bounding only how long the router delays the first
 provider request. Splitting the budgets keeps the blocking path's deadline the one reported to the user while letting
 operators tune background reconciliation independently. An `AbortSignal` reaches the schema-attempt loop, endpoint
 iterator, and pi-ai `complete()` call for that stage. The stage deadline races the active stage operation, aborts the
