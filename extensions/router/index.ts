@@ -3065,14 +3065,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         }
       }
     } finally {
-      await drainSecondaryReconciliation(ctx, {
-        kind: "agent_settled",
-        promptRefreshAllowed: false,
-        continuing: false,
-      });
+      const settled: ReconciliationBoundary = { kind: "agent_settled", promptRefreshAllowed: false, continuing: false };
+      await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
       insideProviderTurn = false;
       activeToolExecutions = 0;
+      // A result queued while the drain above was awaited missed it, and the eager drain only runs
+      // once the phase is settled, so drain again rather than leave it for the next run.
+      await drainSecondaryReconciliation(ctx, settled);
     }
   });
 
