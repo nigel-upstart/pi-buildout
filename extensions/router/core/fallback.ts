@@ -3,7 +3,7 @@ import { MINIMUM_INDEPENDENT_REVIEWERS } from "./routing.ts";
 import type { RouteChoice } from "./routing.ts";
 
 // Cross-lease endpoint circuit breaking and background health recovery are tracked in
-// https://github.com/nigel-upstart/pi-buildout/issues/53 and #54; this module intentionally handles only bounded in-lease fallback.
+// nigel-upstart/pi-buildout/issues/53 and #54; this module intentionally handles only bounded in-lease fallback.
 export type FailureKind = "availability" | "model_error" | "quality" | "deterministic_verification";
 
 const NON_RETRYABLE_PROVIDER_QUOTA_ERROR_PATTERN =
