@@ -26,6 +26,7 @@ import routerExtension, {
   resumeCompletedLifecycle,
   routeChoicesForNewLease,
   safetyToolBlockReason,
+  stageDeadlineDescription,
 } from "./index.ts";
 
 function deferred() {
@@ -737,6 +738,26 @@ describe("manual route selection at a new task boundary", () => {
       rankReason: "bootstrap",
     };
     assert.deepEqual(routeChoicesForNewLease(selected, [selected], selected, true).fallbacks, []);
+  });
+});
+
+describe("stageDeadlineDescription", () => {
+  it("names the stage that consumed the budget when the router knows it", () => {
+    assert.equal(stageDeadlineDescription({ deadlineStage: "primary" }), "in the primary stage");
+    assert.equal(stageDeadlineDescription({ deadlineStage: "secondary" }), "in the secondary stage");
+  });
+
+  it("stays unattributed when the deadline fired before any stage started", () => {
+    assert.equal(stageDeadlineDescription({}), "in one stage");
+  });
+
+  it("is wired into both classifier timeout notices", async () => {
+    // The notices are only reachable behind a real 15s deadline, so pin the wording contract here
+    // and assert the sources interpolate this helper rather than a hardcoded phrase.
+    const source = await readFile(new URL("./index.ts", import.meta.url), "utf8");
+    const interpolations = source.match(/\$\{stageDeadlineDescription\(/g) ?? [];
+    assert.equal(interpolations.length, 2, "continuity and fresh-task notices must both name the stage");
+    assert.doesNotMatch(source, /s in one stage; keeping/, "no notice may hardcode the unattributed phrase");
   });
 });
 

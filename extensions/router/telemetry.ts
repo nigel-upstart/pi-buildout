@@ -83,6 +83,14 @@ export type ClassifierInvocationSummary = {
   stages: ClassifierInvocationStage[];
   attempts: ClassifierInvocationAttempt[];
   errorCategory?: "deadline" | "transport_timeout" | "cancelled" | "unexpected";
+  /**
+   * The stage that held the budget when a router-owned deadline elapsed, and the budget it was
+   * given. Present only for `errorCategory: "deadline"`: a provider-thrown timeout is the
+   * transport's deadline, not the router's, and a success consumed no budget. Consumers no longer
+   * have to infer the stage from the attempt whose outcome is `incomplete`.
+   */
+  deadlineStage?: "primary" | "secondary";
+  stageBudgetMs?: number;
 };
 
 export type ClassifierInvocationRun<T> =
@@ -115,6 +123,7 @@ function classifierInvocationSummary(
   cancelled: boolean,
   tracked: ReadonlyMap<string, TrackedClassifierAttempt>,
   errorCategory?: ClassifierInvocationSummary["errorCategory"],
+  deadline?: { stage?: "primary" | "secondary"; budgetMs: number },
 ): ClassifierInvocationSummary {
   const attempts = [...tracked.values()].map<ClassifierInvocationAttempt>((attempt) => {
     const provider = telemetryIdentifier(attempt.provider);
@@ -153,6 +162,8 @@ function classifierInvocationSummary(
     stages,
     attempts,
     ...(errorCategory ? { errorCategory } : {}),
+    ...(deadline?.stage ? { deadlineStage: deadline.stage } : {}),
+    ...(deadline === undefined ? {} : { stageBudgetMs: Math.max(0, Math.round(deadline.budgetMs)) }),
   };
 }
 
@@ -168,6 +179,10 @@ export async function runClassifierInvocation<T>(input: {
   const tracked = new Map<string, TrackedClassifierAttempt>();
 
   type Settled = { kind: "success"; value: T } | { kind: "error"; error: unknown } | { kind: "deadline" };
+  // Every stage of one invocation is governed by the same budget, so the enforced deadline the
+  // router reports is always the deadline it applied.
+  const enforcedBudgetMs = input.stageTimeoutMs ?? input.timeoutMs;
+  let activeStage: "primary" | "secondary" | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stageTimer: ReturnType<typeof setTimeout> | undefined;
   let deadlineResolve: ((value: Settled) => void) | undefined;
@@ -191,6 +206,9 @@ export async function runClassifierInvocation<T>(input: {
     const key = `${observation.stage}:${String(observation.try)}`;
     const existing = tracked.get(key) ?? { stage: observation.stage, try: observation.try };
     if (observation.state === "started") {
+      // The stage that most recently started is the one holding the budget, so a deadline can name
+      // it instead of leaving consumers to infer it from attempt outcomes.
+      activeStage = observation.stage;
       // Each stage opens with its own independent deadline. Retries and endpoint iteration inside a
       // stage share that stage's budget, so only the first attempt of a stage restarts the clock.
       // Cancellation stays terminal: the signal handed to `invoke` is never replaced, so once a
@@ -215,7 +233,7 @@ export async function runClassifierInvocation<T>(input: {
 
   const deadline = new Promise<Settled>((resolve) => {
     deadlineResolve = resolve;
-    const initialTimeout = input.stageTimeoutMs ?? input.timeoutMs;
+    const initialTimeout = enforcedBudgetMs;
     timer = setTimeout(
       () => {
         controller.abort();
@@ -245,7 +263,10 @@ export async function runClassifierInvocation<T>(input: {
   if (settled.kind === "deadline") {
     return {
       status: "failed",
-      summary: classifierInvocationSummary(input.purpose, "timeout", wallLatencyMs, true, true, tracked, "deadline"),
+      summary: classifierInvocationSummary(input.purpose, "timeout", wallLatencyMs, true, true, tracked, "deadline", {
+        ...(activeStage ? { stage: activeStage } : {}),
+        budgetMs: enforcedBudgetMs,
+      }),
     };
   }
 
@@ -370,6 +391,8 @@ export function annotateClassifierSpan(
     "router.classifier.valid_attempt_count": summary.validAttemptCount,
     ...(summary.failedClosed === undefined ? {} : { "router.classifier.failed_closed": summary.failedClosed }),
     ...(summary.errorCategory ? { "router.classifier.error_category": summary.errorCategory } : {}),
+    ...(summary.deadlineStage ? { "router.classifier.deadline_stage": summary.deadlineStage } : {}),
+    ...(summary.stageBudgetMs === undefined ? {} : { "router.classifier.stage_budget_ms": summary.stageBudgetMs }),
   };
   for (const stage of summary.stages) {
     attributes[`router.classifier.${stage.stage}.attempt_count`] = stage.attemptCount;
