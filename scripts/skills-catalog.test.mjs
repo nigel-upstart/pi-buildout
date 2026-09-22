@@ -11,6 +11,10 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const patchDirectory = join(repositoryRoot, "patches", "pi-0.85.1");
 const patchPath = join(patchDirectory, "skills.patch");
 const packageRoot = join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent");
+// The catalog fixture replaces HOME, but the installer locates pi through PI_PACKAGE_DIR and
+// PI_AGENT_DIR, so it keeps the real HOME. Version-manager shims such as mise resolve `node` and
+// `npm` from configuration under HOME and fail when it points at the fixture.
+const installerHome = process.env.HOME;
 
 async function exists(path) {
   try {
@@ -142,7 +146,7 @@ async function createPatchedPackage(target) {
 async function runInstaller(packageDirectory, agentDirectory) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("bash", [join(repositoryRoot, "scripts", "install-extensions.sh")], {
-      env: { ...process.env, PI_AGENT_DIR: agentDirectory, PI_PACKAGE_DIR: packageDirectory },
+      env: { ...process.env, HOME: installerHome, PI_AGENT_DIR: agentDirectory, PI_PACKAGE_DIR: packageDirectory },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
