@@ -245,6 +245,25 @@ scale, because the cost-bearing Verified population tops out at a prior-generati
 router's cost-to-done model requires and single-attempt submissions cannot measure were not estimated or defaulted, and
 the data is structurally barred from that model rather than down-weighted within it. No model became routable.
 
+## Pi 0.84.2 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@0.84.2`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `914cf1472e715297caa30db4b9535d534a9eb718`
+- License declared by the package: MIT
+
+[`patches/pi-0.84.2/skills.patch`](patches/pi-0.84.2/skills.patch) is a modified-code patch against Pi's published,
+generated runtime and documentation. It modifies upstream `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
+`dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
+lines derive from the MIT-licensed Pi package. The added `dist/core/skill-management.js` is an original implementation
+for this repository, informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
+
+The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
+normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
+checksum-guarded installation. It intentionally does not adopt automatic loading of every discovered skill,
+concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
+unrelated extension, prompt, theme, package, trust, and provider behavior.
+
 ## Pi 0.84.4 `/skills` runtime patch
 
 - Source: `@earendil-works/pi-coding-agent@0.84.4`
@@ -416,3 +435,27 @@ replacing the pre-1.44 spellings rather than dual-writing them, and corrections 
 the configured endpoint's own host (rejecting non-HTTP schemes and unbracketing IPv6 literals) and start announces only
 a dashboard that actually came up. It also resets the session-start bookkeeping across session transitions and marks a
 failed LLM request's span, both of which upstream omits.
+
+## `zew1me/pi-buildout` (upstream of this fork)
+
+- Source: `zew1me/pi-buildout`
+- Canonical repository: <https://github.com/zew1me/pi-buildout>
+- Revision last synced: `bc127ebf439d0827bfc4f660fdc205595caaa544` (2026-09-19)
+- License declared by the source: MIT (© 2026 Nigel Stuke)
+
+This repository is a fork of `zew1me/pi-buildout`. Upstream changes are ported by cherry-picking commits rather than by
+merging, so each ported commit records its upstream SHA in a `(cherry picked from commit …)` trailer, and
+[`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md) records the last synced revision and the status of each upstream commit.
+
+What was adopted, as copied code: the pi 0.84.4 and 0.85.1 `/skills` patch sets under `patches/`, including the
+recognized-state upgrade manifests for installs patched by this repository's earlier 0.85.1 patch; the package and
+settings skill catalog for the pi 0.84.2 patch; the manifest-driven patch file set, recognized-state upgrade path,
+Homebrew package lookup, and legacy top-level entrypoint cleanup in `scripts/install-extensions.sh`; and the tests that
+cover them (`scripts/skills-catalog.test.mjs`, `scripts/skills-patch-entrypoint.test.mjs`,
+`scripts/install-extensions.test.mjs`).
+
+What was intentionally not adopted: upstream's removal of the router and vendored OpenTelemetry extensions from the
+installer and documentation; upstream's dependency overrides and scripts where this fork carries its own; the pi 0.84.4
+and 0.85.1 development package bumps, because the router's cost tests pin the pi 0.84.1 model registry and a registry
+bump is a separate evidence refresh; and upstream's subagent fallback effort handling, where this fork keeps its own
+explicit model and effort resolution.
