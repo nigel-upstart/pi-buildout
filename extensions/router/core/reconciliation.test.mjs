@@ -175,12 +175,24 @@ describe("secondary reconciliation policy", () => {
       profileId: "anthropic-opus-5-stack-v1",
     });
 
-    const none = reconciliationDelta(features(), features(), incumbent, sameRoute);
+    const sameArchetype = {
+      incumbent: "median_repository_implementation",
+      corrected: "median_repository_implementation",
+    };
+    const none = reconciliationDelta(features(), features(), incumbent, sameRoute, sameArchetype);
     assert.equal(none.material, false);
     assert.equal(decideSecondaryCorrection(none, 0, policy).reason, "no_material_delta");
 
-    const material = reconciliationDelta(features(), features(), incumbent, newProfile);
+    const material = reconciliationDelta(features(), features(), incumbent, newProfile, sameArchetype);
     assert.deepEqual(material.reasons, ["prompt_profile_changed", "logical_model_changed"]);
+
+    const archetypeOnly = reconciliationDelta(features(), features(), incumbent, sameRoute, {
+      incumbent: "median_repository_implementation",
+      corrected: "implementation_planning",
+    });
+    assert.equal(archetypeOnly.material, true);
+    assert.equal(archetypeOnly.safetyRelevant, false);
+    assert.deepEqual(archetypeOnly.reasons, ["archetype_changed"]);
     assert.equal(decideSecondaryCorrection(material, 0.03, policy).reason, "cache_penalty_exceeds_benefit");
 
     const safety = reconciliationDelta(
@@ -192,6 +204,7 @@ describe("secondary reconciliation policy", () => {
       }),
       incumbent,
       sameRoute,
+      sameArchetype,
     );
     assert.equal(safety.safetyRelevant, true);
     assert.equal(decideSecondaryCorrection(safety, 0.03, policy).action, "accept");

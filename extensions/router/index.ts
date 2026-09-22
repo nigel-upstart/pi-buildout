@@ -1182,6 +1182,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       queued.run.value.features,
       active.selected,
       routed.decision.primary,
+      { incumbent: active.archetype, corrected: routed.decision.archetype },
     );
     const estimatedCachePenaltyUsd = estimateCacheSwitchPenaltyUsd(
       queued.task.cache,

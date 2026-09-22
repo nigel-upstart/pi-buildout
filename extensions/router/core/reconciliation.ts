@@ -1,3 +1,4 @@
+import type { Archetype } from "./archetype.ts";
 import type { TaskFeatures } from "./features.ts";
 import { deriveSafetyPolicy } from "./safety.ts";
 import type { SafetyPolicy } from "./safety.ts";
@@ -187,6 +188,7 @@ export function reconciliationDelta(
   corrected: TaskFeatures,
   incumbent: RouteChoice,
   correctedChoice: RouteChoice,
+  archetypes: { incumbent: Archetype; corrected: Archetype },
 ): ReconciliationDelta {
   const reasons: string[] = [];
   if (stricter(primary.risk, corrected.risk, RISK_RANK)) reasons.push("risk_stricter");
@@ -210,6 +212,9 @@ export function reconciliationDelta(
   if (incumbent.logicalModelId !== correctedChoice.logicalModelId) reasons.push("logical_model_changed");
   if (incumbent.effort !== correctedChoice.effort) reasons.push("effort_changed");
   if (incumbent.ability !== correctedChoice.ability) reasons.push("capability_band_changed");
+  // The archetype selects lifecycle tools and review flows on its own, so a corrected archetype is
+  // material even when the route keeps the same model, profile, and effort.
+  if (archetypes.incumbent !== archetypes.corrected) reasons.push("archetype_changed");
   if (!primary.decompositionRecommended && corrected.decompositionRecommended) reasons.push("decomposition_required");
   if (primary.independenceRequirement !== corrected.independenceRequirement) reasons.push("independence_changed");
 
