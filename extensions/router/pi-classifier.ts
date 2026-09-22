@@ -1,12 +1,18 @@
 import { complete, validateToolArguments } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, Tool } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CLASSIFIER_TOOL_NAME, classifyTask, isClassifierCancellationError } from "./classifier.ts";
+import {
+  CLASSIFIER_TOOL_NAME,
+  classifyTaskPrimary,
+  classifyTaskSecondary,
+  isClassifierCancellationError,
+} from "./classifier.ts";
 import type {
   ClassificationResult,
   ClassifierAttemptObservation,
   ClassifierRequest,
   ClassifierTransport,
+  PrimaryClassificationResult,
 } from "./classifier.ts";
 import { calculateEndpointEffectiveCost, compareEndpointEffectiveCost } from "./core/endpoint-cost.ts";
 import type { EndpointEffectiveCostComparable } from "./core/endpoint-cost.ts";
@@ -113,6 +119,18 @@ function resolveClassifierTiers(
   return logicalModelIds.flatMap((logicalModelId) => resolveClassifierTier(registry, logicalModelId));
 }
 
+function selectSecondaryClassifierModels(
+  registry: readonly RegistryModelSnapshot[],
+  primaryVendor: ModelVendor | undefined,
+): ClassifierModel[] {
+  if (!primaryVendor) return [];
+  return resolveClassifierTiers(registry, secondaryClassifierTiers(primaryVendor)).filter(
+    // Independence is enforced here rather than assumed from the tier table, so a vendor that
+    // declares no secondary tier of its own still cannot reconcile against itself.
+    (candidate) => candidate.vendor !== primaryVendor,
+  );
+}
+
 export function selectClassifierModels(registry: readonly RegistryModelSnapshot[]): {
   primary: ClassifierModel[];
   secondary: ClassifierModel[];
@@ -120,15 +138,7 @@ export function selectClassifierModels(registry: readonly RegistryModelSnapshot[
   const primary = resolveClassifierTiers(registry, PRIMARY_CLASSIFIER_TIERS);
   // The vendor guess only decides which independent secondary tier to search; tier order (Luna
   // before Haiku) means this reflects whichever logical tier has any eligible scoped endpoint.
-  const primaryVendorGuess = primary[0]?.vendor;
-  const secondary = primaryVendorGuess
-    ? resolveClassifierTiers(registry, secondaryClassifierTiers(primaryVendorGuess)).filter(
-        // Independence is enforced here rather than assumed from the tier table, so a vendor that
-        // declares no secondary tier of its own still cannot reconcile against itself.
-        (candidate) => candidate.vendor !== primaryVendorGuess,
-      )
-    : [];
-  return { primary, secondary };
+  return { primary, secondary: selectSecondaryClassifierModels(registry, primary[0]?.vendor) };
 }
 
 type CandidateCaller = (candidate: ClassifierModel, request: ClassifierRequest) => Promise<ClassifierTransportResult>;
@@ -237,14 +247,70 @@ export async function classifyTaskWithPi(input: {
   signal?: AbortSignal;
   onAttempt?: (observation: ClassifierAttemptObservation) => void;
 }): Promise<ClassificationResult> {
+  const primary = await classifyTaskPrimaryWithPi(input);
+  if (!primary.escalated) return primary;
+  return classifyTaskSecondaryWithPi({ ...input, primary });
+}
+
+/**
+ * Run only the first classifier stage against the scoped Pi model registry.
+ *
+ * The router uses this on the critical path for fresh-task routing so it can select a provisional
+ * model quickly and launch secondary reconciliation only when the primary result escalates. It is a
+ * separate function rather than a mode flag on `classifyTaskWithPi` because the return type exposes
+ * primary-only metadata that callers must handle before a final reconciled `ClassificationResult`
+ * exists.
+ */
+export async function classifyTaskPrimaryWithPi(input: {
+  ctx: ExtensionContext;
+  registry: readonly RegistryModelSnapshot[];
+  prompt: string;
+  synopsis: SessionSynopsis;
+  signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
+}): Promise<PrimaryClassificationResult> {
   const selected = selectClassifierModels(input.registry);
   const primaryVendor = selected.primary[0]?.vendor;
-  const secondaryVendor = selected.secondary[0]?.vendor;
-  return classifyTask({
+  return classifyTaskPrimary({
     prompt: input.prompt,
     synopsis: input.synopsis,
     primary: transportFor(input.ctx, selected.primary),
-    secondary: transportFor(input.ctx, selected.secondary),
+    ...(primaryVendor ? { primaryVendor } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.onAttempt ? { onAttempt: input.onAttempt } : {}),
+  });
+}
+
+/**
+ * Run the provider-diverse secondary classifier for an already completed primary result.
+ *
+ * This preserves the same transport and registry selection rules as `classifyTaskWithPi`, but it is
+ * callable independently so the router can execute it in the background with its own abort signal,
+ * timeout, telemetry purpose, and safe-boundary reconciliation. Keeping the primary and secondary
+ * entrypoints distinct makes the async lifecycle explicit in the type system instead of threading a
+ * boolean or string mode parameter through one overloaded function.
+ */
+export async function classifyTaskSecondaryWithPi(input: {
+  ctx: ExtensionContext;
+  registry: readonly RegistryModelSnapshot[];
+  prompt: string;
+  synopsis: SessionSynopsis;
+  primary: PrimaryClassificationResult;
+  signal?: AbortSignal;
+  onAttempt?: (observation: ClassifierAttemptObservation) => void;
+}): Promise<ClassificationResult> {
+  const selected = selectClassifierModels(input.registry);
+  const primaryVendor = input.primary.primaryVendor ?? selected.primary[0]?.vendor;
+  // Choose the independent tier from the vendor that actually answered. The primary transport falls
+  // through Luna to Haiku, so the first-candidate guess can name a vendor that never produced the
+  // result, and a secondary chosen from it would share the answering vendor and fail closed.
+  const secondary = selectSecondaryClassifierModels(input.registry, primaryVendor);
+  const secondaryVendor = secondary[0]?.vendor;
+  return classifyTaskSecondary({
+    prompt: input.prompt,
+    synopsis: input.synopsis,
+    primary: input.primary,
+    secondary: transportFor(input.ctx, secondary),
     ...(primaryVendor ? { primaryVendor } : {}),
     ...(secondaryVendor ? { secondaryVendor } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

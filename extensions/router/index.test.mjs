@@ -85,6 +85,30 @@ function classificationResult(attempts = 1, overrides = {}) {
   };
 }
 
+function primaryClassificationResult(overrides = {}) {
+  const features = implementationFeatures(overrides);
+  return {
+    features,
+    archetype: deriveArchetype(features),
+    escalated: features.confidence < 0.8 || features.risk === "high" || features.risk === "critical",
+    failedClosed: false,
+    attempts: [
+      {
+        stage: "primary",
+        try: 1,
+        valid: true,
+        provider: "openai-codex",
+        modelId: "gpt-5.6-luna",
+        vendor: "openai",
+        latencyMs: 1,
+        errors: [],
+      },
+    ],
+    primaryVendor: "openai",
+    primaryFeatures: features,
+  };
+}
+
 function successfulClassifier(attempts = 1, overrides = {}) {
   return async ({ onAttempt }) => {
     for (let index = 0; index < attempts; index++) {
@@ -142,13 +166,15 @@ describe("classifier deadline", () => {
       vendor: entry.vendor,
       latencyMs: 1,
     });
+    let primaryBCalls = 0;
     const primary = transportFromCandidates(
       [candidate("primary-a", "gpt-5.6-luna", "openai"), candidate("primary-b", "gpt-5.6-luna", "openai")],
       async (entry, request) => {
         endpointCalls.push(`${request.stage}:${entry.model.provider}`);
         signals.add(request.signal);
         if (entry.model.provider === "primary-a") throw new Error("retry endpoint");
-        return response(entry, { invalid: true });
+        primaryBCalls++;
+        return response(entry, primaryBCalls === 1 ? { invalid: true } : implementationFeatures({ risk: "high" }));
       },
     );
     const secondary = transportFromCandidates(
@@ -352,14 +378,68 @@ function registryModelForChoice(choice) {
   };
 }
 
+function routingModel(provider, id, cost = { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2 }) {
+  return {
+    provider,
+    id,
+    name: id,
+    api: provider === "anthropic" ? "anthropic" : "openai-responses",
+    baseUrl: "https://models.invalid",
+    reasoning: true,
+    thinkingLevelMap: { minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+    input: ["text"],
+    cost,
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  };
+}
+
+function standardRoutingModels() {
+  return [
+    routingModel("anthropic", "claude-opus-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
+    routingModel("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+    routingModel("openai-codex", "gpt-5.6-terra", { input: 4, output: 24, cacheRead: 0.4, cacheWrite: 5 }),
+  ];
+}
+
+function cachedAssistantEntry({ input = 100_000, output = 100, cacheRead = 80_000 } = {}) {
+  return {
+    type: "message",
+    message: {
+      role: "assistant",
+      usage: { input, output, cacheRead, cost: { total: 0.01 } },
+    },
+  };
+}
+
+async function flushMicrotasks() {
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+}
+
+async function waitUntil(predicate) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (predicate()) return;
+    await new Promise(setImmediate);
+  }
+  assert.equal(predicate(), true);
+}
+
 async function runAdapterTurn({
   classifyTask: classifyTaskFixture,
+  classifyPrimaryTask,
+  classifySecondaryTask,
+  secondaryGracePolicy,
+  telemetry: telemetryOverride,
   active,
   prompt,
   sessionId,
   source = "interactive",
   reason = "reload",
   mode = "shadow",
+  models,
+  branchEntries = [],
+  contextUsage = { tokens: 0, contextWindow: 128_000 },
 }) {
   const hooks = new Map();
   const commands = new Map();
@@ -368,6 +448,8 @@ async function runAdapterTurn({
   const selectedModels = [];
   const selectedEfforts = [];
   const notifications = [];
+  const sentMessages = [];
+  let abortCount = 0;
   let activeTools = [];
   const branch = [
     {
@@ -375,6 +457,7 @@ async function runAdapterTurn({
       customType: "model-router-state",
       data: { mode, manualOverride: false, ...(active ? { active } : {}) },
     },
+    ...branchEntries,
   ];
   const pi = {
     on: (event, handler) => hooks.set(event, handler),
@@ -392,8 +475,11 @@ async function runAdapterTurn({
       selectedModels.push(model);
       return true;
     },
+    sendMessage: (message, options) => {
+      sentMessages.push({ message, options });
+    },
   };
-  const telemetry = {
+  const telemetry = telemetryOverride ?? {
     append: async (event) => {
       events.push(event);
     },
@@ -402,7 +488,7 @@ async function runAdapterTurn({
   // Active mode only means something when the leased choice is reachable, so the registry and the
   // current model mirror the lease. A retention assertion then proves the router left that selection
   // alone rather than merely never reaching the apply step.
-  const registryModels = mode === "active" && active ? [registryModelForChoice(active.selected)] : [];
+  const registryModels = models ?? (mode === "active" && active ? [registryModelForChoice(active.selected)] : []);
   const ctx = {
     cwd: "/repo",
     model: registryModels[0],
@@ -412,7 +498,10 @@ async function runAdapterTurn({
       find: (provider, id) => registryModels.find((model) => model.provider === provider && model.id === id),
     },
     sessionManager: { getBranch: () => branch, getSessionId: () => sessionId },
-    getContextUsage: () => ({ tokens: 0, contextWindow: 128_000 }),
+    getContextUsage: () => contextUsage,
+    abort: () => {
+      abortCount++;
+    },
     ui: {
       theme: { fg: (_color, text) => text },
       setStatus: () => {},
@@ -421,11 +510,66 @@ async function runAdapterTurn({
       notify: (message, type) => notifications.push({ message, type }),
     },
   };
-  routerExtension(pi, { telemetry, classifyTask: classifyTaskFixture });
+  routerExtension(pi, {
+    telemetry,
+    ...(classifyTaskFixture ? { classifyTask: classifyTaskFixture } : {}),
+    ...(classifyPrimaryTask ? { classifyPrimaryTask } : {}),
+    ...(classifySecondaryTask ? { classifySecondaryTask } : {}),
+    ...(secondaryGracePolicy ? { secondaryGracePolicy } : {}),
+  });
   await hooks.get("session_start")({ reason }, ctx);
   await hooks.get("input")({ text: prompt, source }, ctx);
-  await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
-  return { commands, ctx, events, appended, selectedModels, selectedEfforts, notifications };
+  const beforeAgentStart = await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
+  return {
+    hooks,
+    commands,
+    ctx,
+    events,
+    appended,
+    selectedModels,
+    selectedEfforts,
+    notifications,
+    sentMessages,
+    get abortCount() {
+      return abortCount;
+    },
+    beforeAgentStart,
+  };
+}
+
+// Drive the Pi agent-run boundaries the router observes, so a secondary result reaches the same
+// drain points it would in production rather than settling in the gap before `agent_start`.
+function startAgentRun(result) {
+  result.hooks.get("agent_start")({}, result.ctx);
+  result.hooks.get("turn_start")({}, result.ctx);
+}
+
+async function endAgentTurn(result) {
+  await result.hooks.get("turn_end")(
+    { message: { role: "assistant", stopReason: "stop" }, toolResults: [] },
+    result.ctx,
+  );
+}
+
+async function settleAgentRun(result, { stopReason = "stop" } = {}) {
+  const active = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+  result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+  await endAgentTurn(result);
+  await result.hooks.get("agent_end")(
+    {
+      messages: [
+        {
+          role: "assistant",
+          provider: active.selected.provider,
+          model: active.selected.modelId,
+          stopReason,
+          usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+        },
+      ],
+    },
+    result.ctx,
+  );
+  await result.hooks.get("agent_settled")({}, result.ctx);
 }
 
 function restoreEnv({ previousAgentDir, previousMode, previousLastModePath }) {
@@ -767,6 +911,8 @@ describe("routerExtension", () => {
       "thinking_level_select",
       "agent_start",
       "turn_start",
+      "turn_end",
+      "tool_execution_start",
       "tool_execution_end",
       "tool_call",
       "after_provider_response",
@@ -779,6 +925,960 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_implementation_plan"), true);
     assert.equal(tools.has("submit_action_plan"), true);
     assert.equal(tools.has("submit_safety_review"), true);
+  });
+
+  it("dispatches no-cache secondary classification off the critical path", async () => {
+    const secondary = deferred();
+    let secondaryStartedAt = 0;
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        secondaryStartedAt = Date.now();
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-no-cache",
+    });
+
+    assert.ok(secondaryStartedAt > 0, "the provider-diverse secondary must start in the background");
+    assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 1);
+    assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, 0);
+
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+  });
+
+  it("does not start background reconciliation after an already reconciled continuity classification", async () => {
+    let secondaryCalls = 0;
+    const result = await runAdapterTurn({
+      active: adapterLease(),
+      classifyTask: successfulClassifier(2, { confidence: 0.6, risk: "high", taskContinuity: "new_task" }),
+      classifySecondaryTask: async () => {
+        secondaryCalls++;
+        return classificationResult(2, { confidence: 0.95 });
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Please inspect the remaining details",
+      sessionId: "async-secondary-already-reconciled",
+    });
+
+    assert.equal(secondaryCalls, 0);
+    assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, 0);
+    assert.equal(
+      result.events.filter(
+        ({ kind, data }) => kind === "classifier_invocation" && data.purpose === "secondary_reconciliation",
+      ).length,
+      0,
+    );
+  });
+
+  it("applies a secondary that settles during a continuation before the first provider request", async () => {
+    const secondary = deferred();
+    const continuity = successfulClassifier(1, { taskContinuity: "clear_continuation" });
+    let continuityCalls = 0;
+    const result = await runAdapterTurn({
+      classifyTask: async (input) => {
+        continuityCalls++;
+        // The previous prompt's secondary lands while this continuation is still being classified.
+        secondary.resolve(
+          classificationResult(2, {
+            confidence: 0.95,
+            risk: "critical",
+            verificationStrength: "security_and_policy",
+            independenceRequirement: "different_vendor_review",
+          }),
+        );
+        await flushMicrotasks();
+        return continuity(input);
+      },
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-continuation-pre-request",
+    });
+
+    await result.hooks.get("input")({ text: "Continue with the same change", source: "interactive" }, result.ctx);
+    await result.hooks.get("before_agent_start")(
+      { prompt: "Continue with the same change", systemPrompt: "system", images: [] },
+      result.ctx,
+    );
+
+    assert.equal(continuityCalls, 1);
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "prompt_refresh_before_first_request");
+    assert.equal(result.abortCount, 0);
+  });
+
+  it("aborts prior secondary work at a new-task boundary even when the new task keeps the old lease", async () => {
+    const firstSecondary = deferred();
+    let firstSignal;
+    const result = await runAdapterTurn({
+      classifyTask: successfulClassifier(1, { taskContinuity: "new_task" }),
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        firstSignal = signal;
+        return firstSecondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-new-task-retained-lease",
+    });
+
+    // The new task is unroutable, so the router keeps the previous lease; the previous task's
+    // secondary must still stop rather than reconcile against the new prompt's run.
+    result.ctx.modelRegistry = { ...result.ctx.modelRegistry, getAll: () => [], getAvailable: () => [] };
+    await result.hooks.get("input")(
+      { text: "Implement a different bounded repository change", source: "interactive" },
+      result.ctx,
+    );
+    await result.hooks.get("before_agent_start")(
+      { prompt: "Implement a different bounded repository change", systemPrompt: "system", images: [] },
+      result.ctx,
+    );
+
+    assert.ok(
+      result.events.some(({ kind, data }) => kind === "route_decision" && data.kind === "unroutable"),
+      "the new task must take the retained-lease path",
+    );
+    assert.equal(firstSignal.aborted, true);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "superseded_task",
+    );
+    firstSecondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+  });
+
+  it("aborts prior secondary work when a new lease supersedes it", async () => {
+    const firstSecondary = deferred();
+    const secondSecondary = deferred();
+    let secondaryCalls = 0;
+    let firstSignal;
+    let secondSignal;
+    const result = await runAdapterTurn({
+      classifyTask: successfulClassifier(1, { taskContinuity: "new_task" }),
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        secondaryCalls++;
+        if (secondaryCalls === 1) {
+          firstSignal = signal;
+          return firstSecondary.promise;
+        }
+        secondSignal = signal;
+        return secondSecondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-superseded-lease",
+    });
+
+    await result.hooks.get("input")(
+      { text: "Implement a different bounded repository change", source: "interactive" },
+      result.ctx,
+    );
+    await result.hooks.get("before_agent_start")(
+      { prompt: "Implement a different bounded repository change", systemPrompt: "system", images: [] },
+      result.ctx,
+    );
+
+    assert.equal(firstSignal.aborted, true);
+    assert.equal(secondSignal?.aborted ?? false, false);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "superseded_task",
+    );
+
+    firstSecondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    secondSecondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+  });
+
+  it("uses cache-priced grace to apply a safe secondary correction before the first provider request", async () => {
+    const gracePolicy = {
+      maxGraceMs: 80,
+      secondaryDeadlineMs: 1_000,
+      lowPenaltyUsd: 0.000_001,
+      mediumPenaltyUsd: 0.000_002,
+      lowPenaltyGraceMs: 10,
+      mediumPenaltyGraceMs: 20,
+      highPenaltyGraceMs: 80,
+      materialCorrectionBenefitUsd: 0.02,
+      safetyCorrectionBenefitUsd: 25,
+    };
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6, risk: "medium" }),
+      classifySecondaryTask: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return classificationResult(2, {
+          confidence: 0.95,
+          risk: "critical",
+          verificationStrength: "security_and_policy",
+          independenceRequirement: "different_vendor_review",
+        });
+      },
+      secondaryGracePolicy: gracePolicy,
+      branchEntries: [cachedAssistantEntry()],
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-cache-grace",
+    });
+
+    const reconciliation = result.events.find(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "prompt_refresh_before_first_request");
+    assert.ok(reconciliation.data.graceChosenMs > 0, "cached context must choose a bounded grace");
+    assert.ok(reconciliation.data.graceUsedMs > 0, "the turn should consume only the needed grace");
+    assert.ok(
+      reconciliation.data.primaryToStartLatencyMs >= reconciliation.data.graceUsedMs,
+      "startup latency must measure through release of the first agent request",
+    );
+    assert.equal(result.abortCount, 0);
+    assert.equal(result.sentMessages.length, 0);
+    const persisted = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    assert.equal(persisted.features.risk, "critical");
+    assert.equal(persisted.lifecycle.policy, "completion_review");
+    assert.equal(result.beforeAgentStart.message.details.profileId, persisted.promptProfileId);
+  });
+
+  it("keeps conservative mutating-tool gates while low-confidence secondary safety is pending", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-pending-safety",
+    });
+    startAgentRun(result);
+
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-while-pending",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+    await endAgentTurn(result);
+    const allowed = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-reconcile",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(allowed, undefined);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "no_material_delta",
+    );
+  });
+
+  it("retains the low-confidence mutation gate when the secondary never returns a usable answer", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        throw new Error("secondary transport failed");
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-unresolved-gate",
+    });
+    startAgentRun(result);
+    await settleAgentRun(result);
+
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "secondary_failed",
+    );
+
+    // The safety question the gate exists for was never answered, so the latch must not lift just
+    // because the attempt is terminal.
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-unresolved-secondary",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+
+    // A manual override is the operator's escape hatch and clears the retained latch.
+    await result.hooks.get("model_select")({ source: "user", model: standardRoutingModels()[1] }, result.ctx);
+    const afterOverride = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-manual-override",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    if (afterOverride?.block) assert.doesNotMatch(afterOverride.reason, /Secondary safety classification is pending/);
+  });
+
+  it("retains the mutation gate when the secondary returns no schema-valid provider-diverse answer", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-schema-exhausted-gate",
+    });
+
+    // `classifyTaskSecondary` returns the primary features with `failedClosed` false when the
+    // secondary exhausts schema-invalid responses: no `secondaryFeatures`, no `secondaryVendor`.
+    startAgentRun(result);
+    secondary.resolve({ ...classificationResult(1, { confidence: 0.6 }), escalated: true });
+    await settleAgentRun(result);
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-schema-exhausted-secondary",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+  });
+
+  it("reaches the pre-request boundary when settlement telemetry is slower than the classifier", async () => {
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () =>
+        classificationResult(2, {
+          confidence: 0.95,
+          risk: "critical",
+          verificationStrength: "security_and_policy",
+          independenceRequirement: "different_vendor_review",
+        }),
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          // Production JSONL appends are asynchronous. The eager settlement handler suspends here
+          // before queueing, so the grace window must await that in-flight settlement.
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        },
+        read: async () => [],
+      },
+      secondaryGracePolicy: {
+        maxGraceMs: 400,
+        secondaryDeadlineMs: 15_000,
+        lowPenaltyUsd: 0.001,
+        mediumPenaltyUsd: 0.01,
+        lowPenaltyGraceMs: 5,
+        mediumPenaltyGraceMs: 20,
+        // Comfortably longer than the simulated telemetry append below, so the grace budget itself
+        // is never the reason the result misses the boundary.
+        highPenaltyGraceMs: 200,
+        materialCorrectionBenefitUsd: 0.02,
+        safetyCorrectionBenefitUsd: 25,
+      },
+      // A cached context is what earns a nonzero grace window.
+      branchEntries: [cachedAssistantEntry()],
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-grace-settlement-race",
+    });
+
+    const reconciliation = events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.ok(reconciliation?.data.graceChosenMs > 0, "cached context must choose a bounded grace");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "prompt_refresh_before_first_request");
+    assert.equal(result.abortCount, 0);
+  });
+
+  it("keeps the mutation gate when a safety-relevant correction is never installed", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-uninstalled-safety-delta",
+    });
+    startAgentRun(result);
+    await settleAgentRun(result);
+
+    // The task has already ended, so this stricter correction cannot be installed; the lease keeps
+    // the weaker primary policy and must stay fail-closed for mutating tools.
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, false);
+    assert.equal(reconciliation?.data.safetyRelevant, true);
+
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-uninstalled-safety-correction",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+  });
+
+  it("keeps the low-confidence latch across compaction while discarding the stale secondary", async () => {
+    const secondary = deferred();
+    let secondarySignal;
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        secondarySignal = signal;
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-compaction-latch",
+    });
+
+    await result.hooks.get("session_compact")({}, result.ctx);
+    assert.equal(secondarySignal.aborted, true);
+
+    // Compaction keeps the lease and lets a running turn finish, so the unreconciled
+    // low-confidence primary must stay fail-closed for mutating tools.
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-compaction",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+
+    const reconciliationCount = result.events.filter(({ kind }) => kind === "secondary_reconciliation").length;
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+    assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, reconciliationCount);
+  });
+
+  it("discards a secondary result abandoned by shutdown during its settlement telemetry", async () => {
+    const secondary = deferred();
+    const telemetryStarted = deferred();
+    const releaseTelemetry = deferred();
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            telemetryStarted.resolve();
+            await releaseTelemetry.promise;
+          }
+        },
+        read: async () => [],
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-abandoned-during-settlement",
+    });
+
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "critical" }));
+    await telemetryStarted.promise;
+    // The task must remain discoverable while its settlement telemetry awaits, so this abort
+    // consumes it instead of leaving a continuation that queues against the old session.
+    await result.hooks.get("session_shutdown")({ reason: "quit" });
+    releaseTelemetry.resolve();
+    await flushMicrotasks();
+
+    // Shutdown aborts without an extension context, so no reconciliation outcome is recorded at
+    // all; the point is that the abandoned continuation neither queues nor applies its correction.
+    assert.equal(events.filter(({ kind }) => kind === "secondary_reconciliation").length, 0);
+    const persisted = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data;
+    assert.notEqual(persisted?.active?.features.risk, "critical");
+  });
+
+  it("lets a manual override during awaited reconciliation work win over the captured correction", async () => {
+    const secondary = deferred();
+    const overrideApplied = deferred();
+    const routeReadReached = deferred();
+    let blockRouteRead = false;
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+        },
+        // `route()` inside the drain awaits this read. Take the override during that await so the
+        // drain resumes with a snapshot that is no longer valid.
+        read: async () => {
+          if (blockRouteRead) {
+            blockRouteRead = false;
+            routeReadReached.resolve();
+            await overrideApplied.promise;
+          }
+          return [];
+        },
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-late-override",
+    });
+
+    result.hooks.get("agent_start")({}, result.ctx);
+    result.hooks.get("turn_start")({}, result.ctx);
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await waitUntil(() =>
+      events.some(
+        (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+      ),
+    );
+
+    // A continuing turn boundary is the path that reaches the lease mutation, so block inside the
+    // drain's awaited route telemetry and override while it is suspended there.
+    blockRouteRead = true;
+    const turnEnd = result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] },
+      result.ctx,
+    );
+    await routeReadReached.promise;
+    await result.hooks.get("model_select")({ source: "user", model: standardRoutingModels()[1] }, result.ctx);
+    overrideApplied.resolve();
+    await turnEnd;
+    await flushMicrotasks();
+
+    // The captured correction must not be installed after the override, and the task records exactly
+    // one reconciliation outcome rather than one per drain path.
+    const reconciliations = events.filter(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliations.length, 1);
+    assert.equal(reconciliations[0].data.accepted, false);
+    assert.equal(reconciliations[0].data.reason, "manual_override");
+    const persisted = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data;
+    assert.notEqual(persisted?.active?.features.risk, "critical");
+  });
+
+  it("reports a secondary arrival during tool execution as during_tool_execution", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-arrival-during-tool",
+    });
+
+    // pi emits tool_execution_start/tool_call/tool_execution_end inside the turn, so the provider
+    // turn is still open while a tool runs; the narrower arrival category must still win.
+    result.hooks.get("agent_start")({}, result.ctx);
+    result.hooks.get("turn_start")({}, result.ctx);
+    result.hooks.get("tool_execution_start")({ toolCallId: "arrival-tool" });
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+    await waitUntil(() =>
+      result.events.some(
+        (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+      ),
+    );
+    result.hooks.get("tool_execution_end")({ toolCallId: "arrival-tool", isError: false });
+    await result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] },
+      result.ctx,
+    );
+
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.secondaryArrival,
+      "during_tool_execution",
+    );
+  });
+
+  it("keeps the low-confidence mutation gate while settlement telemetry is pending", async () => {
+    const secondary = deferred();
+    const telemetryStarted = deferred();
+    const releaseTelemetry = deferred();
+    const events = [];
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      telemetry: {
+        append: async (event) => {
+          events.push(event);
+          if (event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation") {
+            telemetryStarted.resolve();
+            await releaseTelemetry.promise;
+          }
+        },
+        read: async () => [],
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-pending-telemetry-gate",
+    });
+    startAgentRun(result);
+
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await telemetryStarted.promise;
+    const blocked = result.hooks.get("tool_call")({
+      toolCallId: "edit-during-settlement-telemetry",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+
+    releaseTelemetry.resolve();
+    await flushMicrotasks();
+    await endAgentTurn(result);
+    await waitUntil(() => events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const allowed = result.hooks.get("tool_call")({
+      toolCallId: "edit-after-settlement-telemetry",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(allowed, undefined);
+  });
+
+  it("keeps secondary reconciliation valid across ordinary lease timestamp updates", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-updated-at",
+    });
+    startAgentRun(result);
+
+    const allowed = result.hooks.get("tool_call")({
+      toolCallId: "edit-before-secondary",
+      toolName: "edit",
+      input: { path: "README.md", oldString: "old", newString: "new" },
+    });
+    assert.equal(allowed, undefined);
+    result.hooks.get("tool_execution_start")({ toolCallId: "edit-before-secondary" });
+    result.hooks.get("tool_execution_end")({ toolCallId: "edit-before-secondary", isError: false });
+
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+    await flushMicrotasks();
+    await endAgentTurn(result);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "no_material_delta",
+    );
+  });
+
+  it("drains queued secondary reconciliation at agent settlement despite a stuck tool counter", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-stuck-tool-counter",
+    });
+
+    startAgentRun(result);
+    result.hooks.get("tool_execution_start")({ toolCallId: "stuck-tool" });
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+    await flushMicrotasks();
+    // A turn boundary with a tool still counted as running must not drain the result.
+    await endAgentTurn(result);
+    assert.equal(
+      result.events.some(({ kind }) => kind === "secondary_reconciliation"),
+      false,
+    );
+    // An aborted attempt skips the settlement lifecycle work, so this isolates the terminal drain
+    // from a lease revision the evidence-repair path would otherwise install first.
+    await settleAgentRun(result, { stopReason: "aborted" });
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "no_material_delta",
+    );
+  });
+
+  it("keeps a secondary result that settles before agent_start queued until a run boundary", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "async-secondary-before-agent-start",
+    });
+
+    // `before_agent_start` has released the run, but Pi has not fired `agent_start` yet. The run has
+    // not settled, so this must not drain as if it had.
+    secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+    await flushMicrotasks();
+    assert.equal(
+      result.events.some(({ kind }) => kind === "secondary_reconciliation"),
+      false,
+    );
+
+    startAgentRun(result);
+    await endAgentTurn(result);
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.reason, "no_material_delta");
+    assert.equal(reconciliation?.data.secondaryArrival, "before_agent_run");
+  });
+
+  it("lets manual overrides win by aborting pending secondary work", async () => {
+    const secondary = deferred();
+    let secondarySignal;
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        secondarySignal = signal;
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-manual-override",
+    });
+
+    await result.hooks.get("model_select")({ source: "user", model: standardRoutingModels()[1] }, result.ctx);
+    assert.equal(secondarySignal.aborted, true);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "manual_override",
+    );
+    const reconciliationCount = result.events.filter(({ kind }) => kind === "secondary_reconciliation").length;
+    secondary.resolve(classificationResult(2, { risk: "critical" }));
+    await flushMicrotasks();
+    assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, reconciliationCount);
+  });
+
+  it("aborts and consumes pending secondary work on shutdown", async () => {
+    const secondary = deferred();
+    let secondarySignal;
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) => {
+        secondarySignal = signal;
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-shutdown",
+    });
+
+    await result.hooks.get("session_shutdown")({ reason: "quit" });
+    assert.equal(secondarySignal.aborted, true);
+    const reconciliationCount = result.events.filter(({ kind }) => kind === "secondary_reconciliation").length;
+    secondary.resolve(classificationResult(2, { risk: "critical" }));
+    await flushMicrotasks();
+    assert.equal(result.events.filter(({ kind }) => kind === "secondary_reconciliation").length, reconciliationCount);
+  });
+
+  it("uses the configured secondary deadline for background reconciliation", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              const error = new Error("configured secondary deadline expired");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        }),
+      secondaryGracePolicy: {
+        maxGraceMs: 0,
+        secondaryDeadlineMs: 5,
+        lowPenaltyUsd: 0.001,
+        mediumPenaltyUsd: 0.01,
+        lowPenaltyGraceMs: 0,
+        mediumPenaltyGraceMs: 0,
+        highPenaltyGraceMs: 0,
+        materialCorrectionBenefitUsd: 0.02,
+        safetyCorrectionBenefitUsd: 25,
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-configured-deadline",
+    });
+    startAgentRun(result);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await flushMicrotasks();
+    await settleAgentRun(result);
+    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+    const invocation = result.events.find(
+      (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+    );
+    assert.equal(invocation?.data.timedOut, true);
+    assert.equal(
+      result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
+      "secondary_timeout",
+    );
+  });
+
+  it("does not manufacture an extra turn for a task-ending cross-profile correction", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-task-ended",
+    });
+    const active = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+
+    result.hooks.get("agent_start")({}, result.ctx);
+    result.hooks.get("turn_start")({}, result.ctx);
+    await result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "stop" }, toolResults: [] },
+      result.ctx,
+    );
+    await result.hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: active.selected.provider,
+            model: active.selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      result.ctx,
+    );
+    await result.hooks.get("agent_settled")({}, result.ctx);
+
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await flushMicrotasks();
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.reason, "task_ended_no_extra_turn");
+    assert.equal(reconciliation?.data.secondaryArrival, "after_agent_run");
+    assert.equal(result.abortCount, 0);
+    assert.equal(result.sentMessages.length, 0);
+  });
+
+  it("uses a clean stop/resume handoff for cross-profile corrections at continuing turn boundaries", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-clean-resume",
+    });
+
+    result.hooks.get("agent_start")({}, result.ctx);
+    result.hooks.get("turn_start")({}, result.ctx);
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await flushMicrotasks();
+    await waitUntil(() =>
+      result.events.some(
+        (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+      ),
+    );
+    await result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] },
+      result.ctx,
+    );
+
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "clean_stop_resume");
+    // `classifyTaskSecondary` returns the primary attempts plus the secondary ones; reconciliation
+    // telemetry must record only the secondary stage rather than counting primary attempts twice.
+    assert.deepEqual(
+      reconciliation?.data.secondaryClassifierAttempts.map(({ stage }) => stage),
+      ["secondary"],
+    );
+    assert.equal(result.abortCount, 1);
+    assert.equal(result.sentMessages.length, 1);
+    assert.equal(result.sentMessages[0].options.triggerTurn, true);
+    assert.equal(result.sentMessages[0].options.deliverAs, "followUp");
+  });
+
+  it("records but does not perform a clean stop/resume handoff in shadow mode", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "shadow",
+      prompt: "Implement one bounded repository change",
+      sessionId: "async-secondary-shadow-clean-resume",
+    });
+
+    startAgentRun(result);
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await flushMicrotasks();
+    await waitUntil(() =>
+      result.events.some(
+        (event) => event.kind === "classifier_invocation" && event.data.purpose === "secondary_reconciliation",
+      ),
+    );
+    await result.hooks.get("turn_end")(
+      { message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] },
+      result.ctx,
+    );
+
+    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+    assert.equal(reconciliation?.data.accepted, true);
+    assert.equal(reconciliation?.data.handoff, "clean_stop_resume");
+    assert.equal(result.abortCount, 0);
+    assert.equal(result.sentMessages.length, 0);
   });
 
   it("bounds stalled telemetry, fails active routing safe, and consumes late settlement", async (t) => {
@@ -1040,7 +2140,7 @@ describe("routerExtension", () => {
       assert.equal(invocations[0].data.outcome, "success");
       assert.equal(invocations[0].data.resolution, "failed_closed");
       assert.equal(invocations[0].data.invocationCount, 1);
-      assert.equal(invocations[0].data.attemptCount, 4);
+      assert.equal(invocations[0].data.attemptCount, 2);
       assert.doesNotMatch(JSON.stringify(invocations[0]), /Implement the change|system|No configured/);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
@@ -1149,7 +2249,7 @@ describe("routerExtension", () => {
       assert.equal(invocations[0].data.outcome, "success");
       assert.equal(invocations[0].data.resolution, "retained_continuity");
       assert.equal(invocations[0].data.failedClosed, true);
-      assert.equal(invocations[0].data.attemptCount, 4);
+      assert.equal(invocations[0].data.attemptCount, 2);
       assert.doesNotMatch(JSON.stringify(invocations[0]), /do-not-record|private system prompt|No configured/);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
