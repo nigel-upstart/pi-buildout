@@ -15,7 +15,7 @@ recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this
 | Last sync date      | 2026-09-22                                                   |
 | Previous sync point | `bc127ebf439d0827bfc4f660fdc205595caaa544` (2026-09-19, #61) |
 | Sync branch         | `chore/sync-upstream-zew1me`                                 |
-| Outbound fixes owed | None (see [Outbound](#outbound))                             |
+| Outbound fixes owed | pi 0.87.1 `/skills` patch (see [Outbound](#outbound))        |
 
 To find the next batch of upstream work:
 
@@ -85,6 +85,11 @@ matches upstream's development package versions, and `scripts/skills-catalog.tes
 ## Outbound
 
 Fixes made here that should be proposed upstream: none from this sync.
+
+- `feat(patches): add pi 0.87.1 skills patch generated from the TypeScript overlay` adds `pi-overlay/versions/0.87.1`,
+  `patches/pi-0.87.1`, the pipeline's `--all` mode, and version-parametrized patch tests. It should be proposed to
+  `zew1me/pi-buildout`. The fork-only parts (the catalog test's real-`HOME` installer environment and the
+  router-registry reason for keeping the development packages at 0.85.1) need adapting there.
 
 - `fix(test): keep the real HOME for the installer in the catalog test` is fork-only. The fork's installer runs `npm ci`
   for the router's runtime dependencies, and with the fixture `HOME` a mise `npm` shim fails on untrusted configuration.

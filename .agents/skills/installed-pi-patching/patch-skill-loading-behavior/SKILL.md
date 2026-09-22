@@ -21,6 +21,10 @@ is usually under:
 /opt/homebrew/Cellar/pi-coding-agent/<version>/libexec/lib/node_modules/@earendil-works/pi-coding-agent
 ```
 
+A mise npm-backend install lives under
+`~/.local/share/mise/installs/npm-earendil-works-pi-coding-agent/<version>/lib/node_modules/@earendil-works/pi-coding-agent`;
+`realpath "$(command -v pi)"` resolves to its `dist/bundle/cli.js`.
+
 For installation methods and platform-specific package-manager instructions, see the upstream
 [Pi Quick Start](https://github.com/earendil-works/pi#quick-start).
 
@@ -51,6 +55,14 @@ Pi 0.84.4 and 0.85.1 dispatch the installed `pi` command and RPC entrypoint thro
 patches therefore also replace those two bundled entrypoints with wrappers around the patched unbundled runtime. Include
 any such entrypoint files in the patch and checksum manifests when a release switches its package bin layout.
 
+Pi 0.87.1 switched it again. `dist/bundle/cli.js` (the `bin`) is now a loader that calls `enableCompileCache()` and then
+`createRequire(import.meta.url)("./cli-runtime.js")`; the bundled runtime lives in `dist/bundle/cli-runtime.js` plus
+content-hashed `dist/bundle/chunks/`. The 0.87.1 patch replaces `dist/bundle/cli-runtime.js` and
+`dist/bundle/rpc-entry.js` and leaves upstream's loader alone, which relies on `require()` of the unbundled ES module
+graph (Node 22.19+, no top-level await in that graph). Subagents start RPC children by re-running the bin with
+`--mode rpc`, so they reach the patched runtime through that loader. For a new release, read `package.json` `bin` and
+`exports["./rpc-entry"]` and follow each file to the first one that holds bundled code; that is the file to replace.
+
 Source maps may exist, but the editable runtime is `dist/*.js`. Prefer changing the smallest runtime surface that proves
 the behavior.
 
@@ -69,7 +81,14 @@ overlay in [`pi-overlay/`](../../../../pi-overlay), and `patches/pi-<version>/*`
 3. Touch upstream files only through `pi-overlay/versions/<version>/integration.patch`, and only to add an import and a
    call site. The pipeline enforces a line budget on those edits and fails the build if it is exceeded, so logic that
    grows inside an upstream file is a build error rather than a review comment.
-4. Run `npm run patches:build`, then `npm test`.
+4. Run `npm run patches:build`, then `npm test`. Both regenerate and check every version under `pi-overlay/versions/`;
+   add `PI_SKILLS_TEST_PACKAGES=<clean package dir>` so the dispatch and catalog tests also run against a version the
+   development dependencies do not pin.
+
+To support a new pi release, add `pi-overlay/versions/<version>/` with an `upstream.json` (pinned source archive and npm
+tarball checksums, `gitHead`, the release's workspace build order, tracked files), an `integration.patch` rebased by
+re-reading that release's sources, and any bundled-entrypoint `replacements/`. Then run
+`node scripts/build-pi-patch.mjs --version <version>` and set `maxUpstreamEditedLines` to the count it measures.
 
 Editing `dist/*.js` by hand is now only for exploring the live install, or for a pi version that has no overlay yet.
 Anything proven that way should be moved into the overlay before it ships.
