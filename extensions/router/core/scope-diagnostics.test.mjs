@@ -37,16 +37,16 @@ function diagnostics(overrides = {}) {
 describe("scope diagnostics", () => {
   it("groups resolved models and reuses the endpoint cost comparator's selection order", () => {
     const registry = [
-      model("openai", "gpt-5.6-sol"),
-      model("github-copilot", "gpt-5.6-sol"),
-      model("amazon-bedrock", "openai.gpt-5.6-sol"),
-      model("openai-codex", "gpt-5.6-sol"),
+      model("openai", "gpt-6-sol"),
+      model("github-copilot", "gpt-6-sol"),
+      model("amazon-bedrock", "openai.gpt-6-sol"),
+      model("openai-codex", "gpt-6-sol"),
     ];
     const result = diagnostics({ registry, allRegistryEndpoints: registry });
 
     assert.deepEqual(
       result.logicalModels.map((entry) => entry.logicalModelId),
-      ["gpt-5.6-sol"],
+      ["gpt-6-sol"],
     );
     const endpoints = result.logicalModels[0].endpoints;
     assert.deepEqual(
@@ -65,12 +65,12 @@ describe("scope diagnostics", () => {
 
   it("matches ordinary-route order for mixed Bedrock, direct, and flat-rate endpoints", () => {
     const registry = [
-      model("openai", "gpt-5.6-sol"),
-      model("github-copilot", "gpt-5.6-sol", {
+      model("openai", "gpt-6-sol"),
+      model("github-copilot", "gpt-6-sol", {
         costPerMillion: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       }),
-      model("amazon-bedrock", "openai.gpt-5.6-sol"),
-      model("openai-codex", "gpt-5.6-sol"),
+      model("amazon-bedrock", "openai.gpt-6-sol"),
+      model("openai-codex", "gpt-6-sol"),
     ];
     const result = diagnostics({ registry, allRegistryEndpoints: registry });
     const displayed = result.logicalModels[0].endpoints.map(({ provider, modelId }) => `${provider}/${modelId}`);
@@ -82,23 +82,23 @@ describe("scope diagnostics", () => {
 
     assert.equal(decision.kind, "ordinary");
     const selected = [decision.primary, ...decision.fallbacks]
-      .filter((choice) => choice.logicalModelId === "gpt-5.6-sol" && choice.effort === "high")
+      .filter((choice) => choice.logicalModelId === "gpt-6-sol" && choice.effort === "high")
       .map(({ provider, modelId }) => `${provider}/${modelId}`);
     assert.deepEqual(displayed, [
-      "openai-codex/gpt-5.6-sol",
-      "amazon-bedrock/openai.gpt-5.6-sol",
-      "openai/gpt-5.6-sol",
-      "github-copilot/gpt-5.6-sol",
+      "openai-codex/gpt-6-sol",
+      "amazon-bedrock/openai.gpt-6-sol",
+      "openai/gpt-6-sol",
+      "github-copilot/gpt-6-sol",
     ]);
     assert.deepEqual(selected, displayed);
   });
 
   it("keeps cache-only diagnostic failures out of routing eligibility", () => {
     const registry = [
-      model("openai-codex", "gpt-5.6-sol", {
+      model("openai-codex", "gpt-6-sol", {
         costPerMillion: { input: 5, output: 30, cacheRead: -1, cacheWrite: 0 },
       }),
-      model("github-copilot", "gpt-5.6-sol", {
+      model("github-copilot", "gpt-6-sol", {
         costPerMillion: { input: -1, output: -1, cacheRead: -1, cacheWrite: -1 },
       }),
     ];
@@ -122,11 +122,11 @@ describe("scope diagnostics", () => {
 
   it("surfaces unmatched patterns, scope and route exclusions, and bounded weight rejections", () => {
     const registry = [
-      model("openai-codex", "gpt-5.6-sol", { available: false }),
-      model("openai", "gpt-5.6-sol", {
+      model("openai-codex", "gpt-6-sol", { available: false }),
+      model("openai", "gpt-6-sol", {
         health: {
           provider: "openai",
-          modelId: "gpt-5.6-sol",
+          modelId: "gpt-6-sol",
           status: "client_error",
           httpStatus: 403,
           detail: "not entitled",
@@ -134,7 +134,7 @@ describe("scope diagnostics", () => {
       }),
     ];
     const result = diagnostics({
-      patterns: ["openai*/gpt-5.6-*", "github-copilot/gemini-2.5-pro"],
+      patterns: ["openai*/gpt-6-*", "github-copilot/gemini-2.5-pro"],
       registry,
       allRegistryEndpoints: registry,
       providerWeightRejections: [
@@ -147,7 +147,7 @@ describe("scope diagnostics", () => {
       ],
       latestRouteExclusions: [
         {
-          candidate: "amazon-bedrock/openai.gpt-5.6-sol@max",
+          candidate: "amazon-bedrock/openai.gpt-6-sol@max",
           code: "effort_unsupported",
           detail: "max effort is unsupported",
         },
@@ -172,10 +172,10 @@ describe("scope diagnostics", () => {
   it("redacts credentials from configured and observed diagnostic text", () => {
     const secret = ["super", "sensitive", "value"].join("-");
     const registry = [
-      model("openai", "gpt-5.6-sol", {
+      model("openai", "gpt-6-sol", {
         health: {
           provider: "openai",
-          modelId: "gpt-5.6-sol",
+          modelId: "gpt-6-sol",
           status: "failed",
           // The bare `Authorization:` form carries no scheme and a token too short to match any
           // known key format, so only the header rule can redact it.
@@ -240,7 +240,7 @@ describe("scope diagnostics", () => {
 
   it("caps pathological output and reports omitted complete lines", () => {
     const registry = Array.from({ length: 200 }, (_, index) =>
-      model(`provider-${String(index)}-${"p".repeat(500)}`, `gpt-5.6-sol-${String(index)}-${"m".repeat(500)}`),
+      model(`provider-${String(index)}-${"p".repeat(500)}`, `gpt-6-sol-${String(index)}-${"m".repeat(500)}`),
     );
     const result = diagnostics({
       patterns: Array.from({ length: 200 }, (_, index) => `provider-${String(index)}/*`),

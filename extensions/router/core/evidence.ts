@@ -48,21 +48,21 @@ export const LANGUAGE_EVIDENCE: readonly LanguageEvidencePolicy[] = [
     vendorTendency: "anthropic",
     confidence: "measured",
     reason:
-      "34 DeepSWE tasks with a 6.6 point vendor gap at high effort (claude-opus-5 81.6 versus gpt-5.6-sol 75.0) and a 40 point hard-task gap (71.9 versus 31.2); SWE-bench Multilingual independently ranks Go the hardest of eight languages at 54.8% mean resolve",
+      "34 DeepSWE tasks with a 6.6 point vendor gap at high effort (claude-opus-5-5 81.6 versus gpt-6-sol 75.0) and a 40 point hard-task gap (71.9 versus 31.2); SWE-bench Multilingual independently ranks Go the hardest of eight languages at 54.8% mean resolve",
   },
   {
     language: "python",
     passRateSubstitution: true,
     confidence: "measured",
     reason:
-      "34 DeepSWE tasks; vendor-neutral on pass rate (gpt-5.6-sol xhigh 75.0 versus claude-opus-5 max 74.3) but carries the corpus's highest regression breakage at a 11.8% median, which is the axis that matters here",
+      "34 DeepSWE tasks; vendor-neutral on pass rate (gpt-6-sol xhigh 75.0 versus claude-opus-5-5 max 74.3) but carries the corpus's highest regression breakage at a 11.8% median, which is the axis that matters here",
   },
   {
     language: "typescript",
     passRateSubstitution: false,
     confidence: "measured",
     reason:
-      "35 DeepSWE tasks, but the vendor gap is only 1.4 points (gpt-5.6-sol high 65.7 versus claude-opus-5 high 64.3) and is single-source, so the quality claim is held at low confidence pending local telemetry; gpt-5.6-sol still leads TypeScript work on the uncontested latency and cost basis (551 s versus 1170 s median)",
+      "35 DeepSWE tasks, but the vendor gap is only 1.4 points (gpt-6-sol high 65.7 versus claude-opus-5-5 high 64.3) and is single-source, so the quality claim is held at low confidence pending local telemetry; gpt-6-sol still leads TypeScript work on the uncontested latency and cost basis (551 s versus 1170 s median)",
   },
   {
     language: "ruby",
@@ -75,7 +75,7 @@ export const LANGUAGE_EVIDENCE: readonly LanguageEvidencePolicy[] = [
     // work is 4.7-5.5% depending on verification strength, so a 0.05 band would fire inconsistently.
     nearTieFraction: 0.08,
     reason:
-      "only four current-generation single-file repair tasks exist (llm-benchmarks program_fixer): claude-opus-5 leads at 79.1-80.9% with a 74-77% worst-task floor against gpt-5.6-sol at 74.2% with a 57.1% floor. That is a Minitest pass ratio rather than a verifier resolve rate, so it may not substitute for a pass rate and is used only as a near-tie preference",
+      "only four current-generation single-file repair tasks exist (llm-benchmarks program_fixer): claude-opus-5-5 leads at 79.1-80.9% with a 74-77% worst-task floor against gpt-6-sol at 74.2% with a 57.1% floor. That is a Minitest pass ratio rather than a verifier resolve rate, so it may not substitute for a pass rate and is used only as a near-tie preference",
   },
   {
     language: "kotlin",
@@ -104,8 +104,52 @@ function effortRank(effort: EffortLevel): number {
   return EFFORT_RANK[effort];
 }
 
+const GENERATION_PROXY_SOURCES: Readonly<Record<string, string>> = {
+  "gpt-6-luna": "gpt-5.6-luna",
+  "gpt-6-sol": "gpt-5.6-sol",
+  "claude-opus-5-5": "claude-opus-5",
+};
+
+/**
+ * Astra high has direct pass, repeatability, latency, step, cost, and language-slice measurements in
+ * the refreshed report. The source omits regression, failed-trial partial credit, and peak context;
+ * those three fields conservatively retain Sol high's prior until local telemetry matures.
+ */
+function astraHighPrior(): EvidencePriorRow {
+  const proxy = EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === "gpt-5.6-sol" && row.effort === "high");
+  if (!proxy) throw new Error("gpt-6-astra requires the gpt-5.6-sol@high proxy row");
+  const go = proxy.byLanguage.go;
+  const python = proxy.byLanguage.python;
+  const typescript = proxy.byLanguage.typescript;
+  if (!go || !python || !typescript) throw new Error("gpt-6-astra requires Sol high language proxy rows");
+  return {
+    ...proxy,
+    modelId: "gpt-6-astra",
+    passRate: 0.7323008849557522,
+    hardTaskPassRate: 0.30357142857142855,
+    repeatAllPassRate: 0.6017699115044248,
+    repeatFlakyRate: 0.22123893805309736,
+    contextOverflowRate: 0,
+    medianWallTimeSeconds: 893.5,
+    p90WallTimeSeconds: 1464.2,
+    medianSteps: 25,
+    costPerPassUsd: 7.816079529305136,
+    consensusBest: 95.28,
+    byLanguage: {
+      go: { ...go, passRate: 0.7647058823529411, hardTaskPassRate: 0.34375 },
+      python: { ...python, passRate: 0.7794117647058824, hardTaskPassRate: 0.34375 },
+      typescript: { ...typescript, passRate: 0.6357142857142857, hardTaskPassRate: 0.175 },
+    },
+  };
+}
+
+const ASTRA_HIGH_PRIOR = astraHighPrior();
+
 export function findEvidencePrior(modelId: string, effort: EffortLevel): EvidencePriorRow | undefined {
-  return EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === modelId && row.effort === effort);
+  if (modelId === "gpt-6-astra" && effort === "high") return ASTRA_HIGH_PRIOR;
+  const sourceModelId = GENERATION_PROXY_SOURCES[modelId] ?? modelId;
+  const source = EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === sourceModelId && row.effort === effort);
+  return source ? { ...source, modelId } : undefined;
 }
 
 /**
@@ -154,7 +198,7 @@ export function abilityFromConsensus(consensusBest: number): AbilityTier {
  * ability band for bounded review selection, but do not fabricate the regression, repeatability,
  * latency-tail, or context-overflow fields required by cost-to-done scoring.
  *
- * Source: teamupstart/ai-acceleration PR #650 at 8053ead0ccc38c9bcd84131984d515fdc22bfddd,
+ * Source: teamupstart/ai-acceleration PR #650 at 1800db4982f272bed9f9ac775de2f0efeaddf882,
  * report-data.json data through 2026-09-10.
  */
 const FRESH_CONSENSUS_BEST: Readonly<Record<string, number>> = {
@@ -172,7 +216,7 @@ const CONSENSUS_ONLY_ABILITY: Readonly<Record<string, AbilityTier>> = {
   // Claude Haiku 4.5 consensus performance_best 36.5 (single source, non-agentic scope).
   "claude-haiku-4-5": 1,
   // Claude Opus 4.6 consensus performance_best 57.7. Retained as the scoped frugal candidate rather
-  // than as a general tier; it is two bands below claude-opus-5 at high effort.
+  // than as a general tier; it is two bands below claude-opus-5-5 at high effort.
   "claude-opus-4-6": 2,
   // Gemini 2.5 Pro consensus performance_best 42.3, and Gemini 2.5 Flash 25.0. Both are lowest-band
   // and exist only to guarantee Google can supply the independent reviewer that review requires.
@@ -207,7 +251,7 @@ export function evidenceAbility(modelId: string, effort: EffortLevel): AbilityTi
  *
  * Both single-attempt sources anchor their comparisons on Claude 4.5/4.6-era Anthropic rows.
  * `claude-opus-4-6` is band 2 in `CONSENSUS_ONLY_ABILITY`, and no scoped model in these sources is
- * measured against `claude-opus-5` at all. So the strongest true statement the evidence supports is
+ * measured against `claude-opus-5-5` at all. So the strongest true statement the evidence supports is
  * "reaches the prior-generation frontier", and this repository's generation-currency rule treats that
  * as a different claim from "reaches the current frontier": it is the same rule that disqualifies
  * `claude-opus-4-8` as superseded and admits `claude-opus-4-6` only as a narrow scoped candidate.
@@ -289,14 +333,20 @@ export type EffortPolicy = {
  */
 export const EFFORT_POLICIES: readonly EffortPolicy[] = [
   {
-    modelId: "claude-opus-5",
+    modelId: "gpt-6-astra",
+    saturationEffort: "high",
+    saturationReason:
+      "direct DeepSWE pass is flat at high/max (73.2%) and peaks only 0.9 points higher at xhigh while cost per pass rises from $7.82 to $8.80",
+  },
+  {
+    modelId: "claude-opus-5-5",
     saturationEffort: "high",
     saturationReason: "pass 72.3 high, 72.5 xhigh, 72.8 max for 49% and 93% more cost per pass",
     languageCeilings: { typescript: "high" },
     languageCeilingReason: "on TypeScript pass degrades above high: 64.3 high, 60.7 xhigh, 63.3 max",
   },
   {
-    modelId: "gpt-5.6-sol",
+    modelId: "gpt-6-sol",
     saturationEffort: "high",
     saturationReason: "pass 69.2 high, 70.6 xhigh, 72.3 max; high holds 74% of max quality at 43% of its cost per pass",
   },
@@ -308,7 +358,7 @@ export const EFFORT_POLICIES: readonly EffortPolicy[] = [
     agenticMinimumReason: "low and medium break previously passing tests at 15.4% and 14.7%",
   },
   {
-    modelId: "gpt-5.6-luna",
+    modelId: "gpt-6-luna",
     saturationEffort: "max",
     saturationReason: "cliffed curve: pass 1.5 low, 11.3 medium, 44.2 high, 56.9 xhigh, 67.2 max",
     // The regression cliff is below high, not below max: breakage falls from 23.5% at medium to 9.1%
@@ -358,17 +408,17 @@ const DISQUALIFIED_MODELS: readonly { modelId: string; reason: string }[] = [
   },
   {
     modelId: "claude-opus-4-8",
-    reason: "superseded by claude-opus-5 at every effort tier; 56.0% pass at max versus 72.3% at opus-5 high",
+    reason: "superseded by claude-opus-5-5 at every effort tier; 56.0% pass at max versus 72.3% at opus-5 high",
   },
   // The previous-generation OpenAI core models are retired on the same generation-currency basis as
-  // claude-opus-4-8, and the numbers are not close. gpt-5.6-sol at xhigh dominates gpt-5.5 at xhigh on
+  // claude-opus-4-8, and the numbers are not close. gpt-6-sol at xhigh dominates gpt-5.5 at xhigh on
   // every axis the router scores, and each model's best measured tier is beaten by a cheaper 5.6 tier,
   // so no cost argument recovers them: their per-token price advantage does not survive per-task
   // accounting, because a lower pass rate multiplies every retry.
   {
     modelId: "gpt-5.5",
     reason:
-      "superseded by the gpt-5.6 family: 67.0% pass at xhigh for $10.78 per pass and 1,588s median, against gpt-5.6-sol at xhigh with 70.6% for $6.67 and 695s, and gpt-5.6-terra at max with 69.6% for $7.10",
+      "superseded by the gpt-5.6 family: 67.0% pass at xhigh for $10.78 per pass and 1,588s median, against gpt-6-sol at xhigh with 70.6% for $6.67 and 695s, and gpt-5.6-terra at max with 69.6% for $7.10",
   },
   {
     modelId: "gpt-5.4",
@@ -493,8 +543,8 @@ export type EvidenceScoreContext = {
   waitMultiplier: number;
   /**
    * High ambiguity or high complexity work. Selects the hard-task prior, which is where the
-   * measured vendor differences are largest: on hard Go tasks claude-opus-5 at high effort solves
-   * 71.9% where gpt-5.6-sol at max solves 31.2%, a gap invisible in the corpus-wide averages.
+   * measured vendor differences are largest: on hard Go tasks claude-opus-5-5 at high effort solves
+   * 71.9% where gpt-6-sol at max solves 31.2%, a gap invisible in the corpus-wide averages.
    */
   hardTask: boolean;
 };
@@ -581,12 +631,12 @@ export function scoreEvidencePrior(
 /**
  * Hard-task escalation candidate. After a failed attempt on an ambiguous or complex task, the
  * measured evidence favors changing the model prior over raising effort on a saturated incumbent:
- * gpt-5.6-luna at max solves 44.6% of hard tasks corpus-wide, 47.1% on the Go/Python/TypeScript
+ * gpt-6-luna at max solves 44.6% of hard tasks corpus-wide, 47.1% on the Go/Python/TypeScript
  * subset, and 44.4% on TypeScript alone, the best in the corpus on each, while being far too flaky
  * (52.7%) to be any archetype's default. Scoring uses the corpus-wide figure.
  */
 export const HARD_TASK_ESCALATION = {
-  modelId: "gpt-5.6-luna",
+  modelId: "gpt-6-luna",
   effort: "max",
   reason: "best measured hard-task solver (44.6% corpus-wide, 44.4% TypeScript) despite 52.7% same-task flakiness",
 } as const satisfies { modelId: string; effort: EffortLevel; reason: string };

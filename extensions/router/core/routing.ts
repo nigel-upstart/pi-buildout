@@ -215,7 +215,7 @@ const DEFAULT_NEAR_TIE_FRACTION = 0.05;
  * boundary. Pi 0.85.1 widened the Bedrock context windows to 1,050,000 without adding a tier.
  */
 const BEDROCK_GPT_56_SHORT_CONTEXT_LIMIT = 272_000;
-const BEDROCK_GPT_56_MODELS: ReadonlySet<string> = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const BEDROCK_GPT_56_MODELS: ReadonlySet<string> = new Set(["gpt-6-sol", "gpt-5.6-terra", "gpt-6-luna"]);
 
 /** Applies the missing-price guard to both new route selection and persisted-lease revalidation. */
 export function bedrockLongContextPricingUnavailable(

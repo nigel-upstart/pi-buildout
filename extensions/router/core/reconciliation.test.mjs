@@ -23,12 +23,12 @@ const policy = {
 function routeChoice(overrides = {}) {
   return {
     provider: "openai-codex",
-    modelId: "gpt-5.6-sol",
-    logicalModelId: "gpt-5.6-sol",
+    modelId: "gpt-6-sol",
+    logicalModelId: "gpt-6-sol",
     vendor: "openai",
     effort: "high",
     ability: 3,
-    profileId: "openai-gpt-5.6-agent-v1",
+    profileId: "openai-gpt-6-agent-v1",
     contextWindow: 1_000_000,
     endpointTier: "manufacturer",
     rankReason: "bootstrap",
@@ -79,8 +79,8 @@ function features(overrides = {}) {
 describe("secondary reconciliation policy", () => {
   it("chooses no grace when no reusable cache value is at risk", () => {
     const registry = [
-      registryEntry("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
-      registryEntry("anthropic", "claude-opus-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
+      registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+      registryEntry("anthropic", "claude-opus-5-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
     ];
 
     const grace = chooseSecondaryGrace({ cachedTokens: 0, expectedReuseRatio: 0 }, routeChoice(), registry, policy);
@@ -94,8 +94,8 @@ describe("secondary reconciliation policy", () => {
 
   it("caps cache-priced grace by both operator policy and the secondary deadline", () => {
     const registry = [
-      registryEntry("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
-      registryEntry("anthropic", "claude-opus-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
+      registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+      registryEntry("anthropic", "claude-opus-5-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
     ];
 
     const grace = chooseSecondaryGrace(
@@ -114,14 +114,14 @@ describe("secondary reconciliation policy", () => {
     const incumbent = routeChoice();
     const corrected = routeChoice({
       provider: "anthropic",
-      modelId: "claude-opus-5",
-      logicalModelId: "claude-opus-5",
+      modelId: "claude-opus-5-5",
+      logicalModelId: "claude-opus-5-5",
       vendor: "anthropic",
       profileId: "anthropic-opus-5-stack-v1",
     });
     const registry = [
-      registryEntry("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
-      registryEntry("anthropic", "claude-opus-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
+      registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+      registryEntry("anthropic", "claude-opus-5-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
     ];
 
     assert.ok(
@@ -142,7 +142,7 @@ describe("secondary reconciliation policy", () => {
     // pricing a fresh cache write here would reject a correction that costs nothing.
     const corrected = routeChoice({ effort: "high" });
     const registry = [
-      registryEntry("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+      registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
     ];
 
     assert.equal(
@@ -155,7 +155,7 @@ describe("secondary reconciliation policy", () => {
     const incumbent = routeChoice();
     const corrected = routeChoice({ provider: "uncached", modelId: "uncached-model" });
     const registry = [
-      registryEntry("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+      registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
       registryEntry("uncached", "uncached-model", { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 }),
     ];
 
@@ -169,8 +169,8 @@ describe("secondary reconciliation policy", () => {
     const incumbent = routeChoice();
     const sameRoute = routeChoice();
     const newProfile = routeChoice({
-      modelId: "claude-opus-5",
-      logicalModelId: "claude-opus-5",
+      modelId: "claude-opus-5-5",
+      logicalModelId: "claude-opus-5-5",
       vendor: "anthropic",
       profileId: "anthropic-opus-5-stack-v1",
     });

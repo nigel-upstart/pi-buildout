@@ -51,7 +51,7 @@ export default function markdownBacklinksExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", (event) => {
-    for (const file of event.systemPromptOptions.contextFiles ?? []) {
+    for (const file of event.systemPromptOptions.contextFiles) {
       inspectMarkdown(file.path, file.content);
     }
 

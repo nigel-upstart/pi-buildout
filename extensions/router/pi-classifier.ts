@@ -41,7 +41,7 @@ type ClassifierModel = {
 // Luna remains preferred over Haiku regardless of endpoint cost; the shared endpoint comparator
 // orders alternatives serving the same logical model. We do not guess an older Sonnet ID: an exact
 // endpoint must canonicalize to one of these validated logical model IDs.
-const PRIMARY_CLASSIFIER_TIERS = ["gpt-5.6-luna", "claude-haiku-4-5"] as const;
+const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "claude-haiku-4-5"] as const;
 
 // The key is the primary tier's canonical vendor; each logical secondary tier deliberately belongs
 // to a different vendor for independent reconciliation. Endpoint providers do not determine this:

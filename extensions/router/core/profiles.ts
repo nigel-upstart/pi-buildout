@@ -59,10 +59,10 @@ const SHARED_CONSTRAINTS = [
 
 export const PROMPT_PROFILES: readonly PromptProfile[] = [
   {
-    id: "openai-gpt-5.6-agent-v1",
+    id: "openai-gpt-6-agent-v1",
     version: 1,
     vendor: "openai",
-    modelIds: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"],
+    modelIds: ["gpt-6-luna", "gpt-6-astra", "gpt-5.6-terra", "gpt-6-sol"],
     archetypes: ALL_ARCHETYPES,
     efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
@@ -182,10 +182,10 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     includeExamples: false,
   },
   {
-    id: "anthropic-claude-opus-5-agent-v1",
+    id: "anthropic-claude-opus-5-5-agent-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: ["claude-opus-5"],
+    modelIds: ["claude-opus-5-5"],
     archetypes: ALL_ARCHETYPES.filter(
       (archetype) =>
         archetype !== "stacked_pr_implementation" &&
@@ -210,7 +210,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-stacked-pr-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: ["claude-opus-5"],
+    modelIds: ["claude-opus-5-5"],
     archetypes: ["stacked_pr_implementation"],
     efforts: ["high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",
@@ -227,7 +227,7 @@ export const PROMPT_PROFILES: readonly PromptProfile[] = [
     id: "anthropic-claude-planning-v1",
     version: 1,
     vendor: "anthropic",
-    modelIds: ["claude-opus-5", "claude-fable-5"],
+    modelIds: ["claude-opus-5-5", "claude-fable-5"],
     archetypes: ["implementation_planning", "large_program_planning", "highest_risk_advisory", "code_review"],
     efforts: ["low", "medium", "high", "xhigh", "max"],
     executionSurface: "pi-coding-agent",

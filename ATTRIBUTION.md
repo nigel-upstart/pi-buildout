@@ -152,20 +152,23 @@ from a local research corpus and the public benchmark captures it aggregates.
 - Initial revision reviewed: capture dated 2026-07-25, spend data through 2026-07-19
 - Latest revision reviewed:
   [`teamupstart/ai-acceleration` PR #650](https://github.com/teamupstart/ai-acceleration/pull/650) at
-  `8053ead0ccc38c9bcd84131984d515fdc22bfddd`, report data through 2026-09-10; latest remote `main` reviewed at
+  `1800db4982f272bed9f9ac775de2f0efeaddf882`, report data through 2026-09-10; latest remote `main` reviewed at
   [`392b967c5ec3ea8d63078ddbc31a8b16a1f22836`](https://github.com/teamupstart/ai-acceleration/commit/392b967c5ec3ea8d63078ddbc31a8b16a1f22836)
 - License: internal working data; not redistributed by this repository
 
 Use: numeric priors (deterministic pass rate, hard-task pass rate, regression-breakage rate, partial credit on failure,
 repeat reliability, wall time, agent steps, p90 peak context, cost per pass) were derived from the initial corpus's
 `analysis/router_capability_slices.py` output and its `ROUTING_LEARNINGS.md` interpretation, then transcribed as typed
-data with per-row provenance. The refreshed report contributes Gemini 3.8 Flash's effort-specific consensus band,
-CursorBench score, and DeepSWE pass/cost/context observations, plus current Artificial Analysis intelligence and speed
-context for the scoped-model gate; pinned pi-ai registry prices bound the Kimi fallbacks. Its Opus low/medium default
-and Sol-high challenger recommendation informs the median coding topology. No corpus or `ai_usage` code, prose, or raw
-benchmark records were copied. GPT-6/unsupported models, the report's Sonnet experiment proposal, frontend task
-heuristics, and automatic cross-model percentile ranking were intentionally not adopted; the router preserves its
-existing consequence gates and requires local acceptance telemetry before automatic promotion.
+data with per-row provenance. The refreshed report contributes GPT-6 Astra's direct DeepSWE pass, hard-task,
+repeatability, latency, steps, cost, and language-slice observations plus its two-source max-tier corroboration; Gemini
+3.8 Flash's effort-specific consensus band, CursorBench score, and DeepSWE observations; and current Artificial Analysis
+intelligence and speed context. GPT-6 Luna/Sol deliberately inherit the corresponding GPT-5.6 Luna/Sol priors, and
+Claude Opus 5.5 inherits Opus 5, as operator-requested generation proxies at the same price point. Astra high retains
+Sol-high regression, failed-trial partial-credit, and p90-peak-context fields only where the Astra source has no
+observation, and is confined to high-intelligence planning/advisory/review ladders. No corpus or `ai_usage` code, prose,
+or raw benchmark records were copied. The report's Sonnet experiment proposal, frontend task heuristics, and automatic
+cross-model percentile ranking were intentionally not adopted; the router preserves its existing consequence gates and
+requires local acceptance telemetry before automatic promotion.
 
 Upstream sources that corpus aggregates, all consumed as published measurements rather than code:
 

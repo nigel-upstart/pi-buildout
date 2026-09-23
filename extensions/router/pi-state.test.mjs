@@ -33,15 +33,15 @@ describe("modelAbility", () => {
   it("defers to the authoritative policy and evidence tables for known (model, effort) pairs", () => {
     // Bands come from measured cross-source consensus, not from model names: Opus 5 reaches the top
     // band at high effort while Sonnet 5 and Terra sit in the lowest band there.
-    assert.equal(modelAbility("claude-opus-5", "high"), 4);
-    assert.equal(modelAbility("claude-opus-5", "medium"), 3);
-    assert.equal(modelAbility("claude-opus-5", "low"), 2);
-    assert.equal(modelAbility("gpt-5.6-sol", "max"), 4);
-    assert.equal(modelAbility("gpt-5.6-sol", "high"), 3);
+    assert.equal(modelAbility("claude-opus-5-5", "high"), 4);
+    assert.equal(modelAbility("claude-opus-5-5", "medium"), 3);
+    assert.equal(modelAbility("claude-opus-5-5", "low"), 2);
+    assert.equal(modelAbility("gpt-6-sol", "max"), 4);
+    assert.equal(modelAbility("gpt-6-sol", "high"), 3);
     assert.equal(modelAbility("claude-sonnet-5", "high"), 1);
     assert.equal(modelAbility("gpt-5.6-terra", "high"), 1);
     // A resale endpoint resolves to the same band as the model it serves.
-    assert.equal(modelAbility("global.anthropic.claude-opus-5", "high"), 4);
+    assert.equal(modelAbility("global.anthropic.claude-opus-5-5", "high"), 4);
   });
 
   it("falls back to a pessimistic heuristic only for unmeasured models", () => {
@@ -71,23 +71,23 @@ describe("modelAbility", () => {
     });
     const registry = [
       registryModel("openai-codex", "gpt-5.6-terra", "openai"),
-      registryModel("openai-codex", "gpt-5.6-sol", "openai"),
-      registryModel("anthropic", "claude-opus-5", "anthropic"),
+      registryModel("openai-codex", "gpt-6-sol", "openai"),
+      registryModel("anthropic", "claude-opus-5-5", "anthropic"),
       registryModel("google-vertex", "gemini-3.6-flash", "google"),
     ];
-    const builder = registry.find((candidate) => candidate.modelId === "gpt-5.6-sol");
+    const builder = registry.find((candidate) => candidate.modelId === "gpt-6-sol");
     const decision = selectReviewRoute(
       registry,
       { estimatedFinishedTokens: 50_000, requiresImages: false, requiresTools: true },
       builder,
       "high",
-      modelAbility("gpt-5.6-sol", "high"),
+      modelAbility("gpt-6-sol", "high"),
     );
     assert.equal(decision.kind, "review");
     const reviewers = new Map([decision.primary, ...decision.fallbacks].map((choice) => [choice.vendor, choice]));
     // An ability-3 builder draws the Anthropic rung at or above its band and Google's only rung,
     // which sits below it and is therefore recorded as a ceiling mismatch instead of passing silently.
-    assert.equal(reviewers.get("anthropic").modelId, "claude-opus-5");
+    assert.equal(reviewers.get("anthropic").modelId, "claude-opus-5-5");
     assert.equal(reviewers.get("anthropic").ability, 3);
     assert.equal(reviewers.get("google").modelId, "gemini-3.6-flash");
     assert.deepEqual(decision.ceilingMismatchVendors, ["google"]);
@@ -169,12 +169,12 @@ describe("router scope configuration", () => {
     const paths = await fixture(t);
     await writeJson(paths.projectSettings, { enabledModels: ["amazon-bedrock/*"] });
     const scope = await readRouterScope(paths.project, {
-      environment: { PI_ROUTER_MODEL_SCOPE: "openai-codex/gpt-5.6-*, anthropic/claude-opus-5" },
+      environment: { PI_ROUTER_MODEL_SCOPE: "openai-codex/gpt-5.6-*, anthropic/claude-opus-5-5" },
       userSettingsPath: paths.userSettings,
       healthPath: paths.health,
     });
 
-    assert.deepEqual(scope.patterns, ["openai-codex/gpt-5.6-*", "anthropic/claude-opus-5"]);
+    assert.deepEqual(scope.patterns, ["openai-codex/gpt-5.6-*", "anthropic/claude-opus-5-5"]);
     assert.equal(scope.patternSource, "environment");
   });
 
@@ -280,12 +280,12 @@ describe("lease restoration and context estimates", () => {
       features: conservativeFeatures(),
       selected: {
         provider: "openai-codex",
-        modelId: "gpt-5.6-sol",
-        logicalModelId: "gpt-5.6-sol",
+        modelId: "gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
         vendor: "openai",
         effort: "max",
         ability: 4,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
@@ -293,8 +293,8 @@ describe("lease restoration and context estimates", () => {
       fallbacks: [
         {
           provider: "anthropic",
-          modelId: "claude-opus-5",
-          logicalModelId: "claude-opus-5",
+          modelId: "claude-opus-5-5",
+          logicalModelId: "claude-opus-5-5",
           vendor: "anthropic",
           effort: "high",
           ability: 3,

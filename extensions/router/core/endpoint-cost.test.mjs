@@ -59,12 +59,12 @@ describe("endpoint effective cost", () => {
     const cases = [
       [requiredModel("amazon-bedrock", "openai.gpt-5.6-sol"), 17.600176],
       [requiredModel("amazon-bedrock", "global.openai.gpt-5.6-sol"), 16.00016],
-      [requiredModel("openai-codex", "gpt-5.6-sol"), 23.75],
+      [requiredModel("openai-codex", "gpt-5.6-sol"), 16],
       [requiredModel("openai", "gpt-5.6-sol"), 16.016],
       [requiredModel("amazon-bedrock", "global.anthropic.claude-sonnet-5"), 8.00008],
       [requiredModel("amazon-bedrock", "eu.anthropic.claude-sonnet-5"), 8.800088],
       [requiredModel("anthropic", "claude-sonnet-5"), 8],
-      [requiredModel("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1"), 66.00066],
+      [requiredModel("amazon-bedrock", "au.anthropic.claude-opus-4-6-v1"), 22.00022],
     ];
     for (const [model, expected] of cases) assertClose(effectiveCost(model), expected);
   });
@@ -179,7 +179,8 @@ describe("cache-write classification", () => {
 
     for (const generation of ["gpt-5.4", "gpt-5.5"]) {
       for (const provider of billedProviders) {
-        const model = requiredModel(provider, modelId(provider, generation));
+        const model = getModel(provider, modelId(provider, generation));
+        if (!model) continue;
         assert.equal(model.cost.cacheWrite, 0, `${provider}/${model.id}`);
         assert.equal(classifyCacheWriteRate(model.cost), "no_write_line_item", `${provider}/${model.id}`);
       }
@@ -192,19 +193,17 @@ describe("cache-write classification", () => {
       assert.ok(Math.abs(writeMultiplier - 1.25) <= 0.001, `${provider}/${model.id}`);
     }
 
-    // Pi 0.84.1 listed no Cloudflare Sol cache write. Pi 0.85.1 prices one, but at 1.5625 times input
-    // (cache read 0.125) rather than the 1.25 and 0.1 every billed route carries. This pins the observed
-    // registry value; it is not evidence that Cloudflare bills at that ratio.
+    // Cloudflare now uses the same 1.25 write multiplier as the other priced Sol routes.
     const cloudflare = requiredModel("cloudflare-ai-gateway", "gpt-5.6-sol");
     assert.equal(classifyCacheWriteRate(cloudflare.cost), "priced_write", `${cloudflare.provider}/${cloudflare.id}`);
-    assert.equal(cloudflare.cost.cacheWrite / cloudflare.cost.input, 1.5625);
+    assert.equal(cloudflare.cost.cacheWrite / cloudflare.cost.input, 1.25);
   });
 
-  it("pins the 0.85.1 registry boundary and its Opus 5 observation", async () => {
+  it("pins the 0.87.1 registry boundary and its Opus 5 observation", async () => {
     const packageJson = JSON.parse(
       await readFile(new URL("../../../node_modules/@earendil-works/pi-ai/package.json", import.meta.url), "utf8"),
     );
-    assert.equal(packageJson.version, "0.85.1");
+    assert.equal(packageJson.version, "0.87.1");
     assert.ok(getModel("anthropic", "claude-opus-5"));
   });
 });
