@@ -18,7 +18,7 @@ const extension = join(root, "extensions", "otel");
  * can depend on them, and they do not constrain this extension.
  */
 const OTEL_FLOOR_PACKAGES = [
-  "@opentelemetry/sdk-node",
+  "@opentelemetry/context-async-hooks",
   "@opentelemetry/sdk-trace-base",
   "@opentelemetry/sdk-metrics",
   "@opentelemetry/sdk-logs",

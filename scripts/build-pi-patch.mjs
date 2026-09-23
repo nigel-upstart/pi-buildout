@@ -19,7 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix, relative, resolve } from "node:path";
@@ -147,6 +147,20 @@ export function diffChecksumManifests(expected, actual) {
   return problems;
 }
 
+/**
+ * Reports which generated patch artifacts are missing or stale.
+ *
+ * @param {Record<string, string>} artifacts
+ * @param {(name: string) => string | undefined} readArtifact
+ */
+export function diffGeneratedArtifacts(artifacts, readArtifact) {
+  return Object.entries(artifacts).flatMap(([name, contents]) => {
+    const existing = readArtifact(name);
+    if (existing === undefined) return [`missing: ${name}`];
+    return existing === contents ? [] : [`changed: ${name}`];
+  });
+}
+
 // ---------------------------------------------------------------------------
 // I/O helpers
 // ---------------------------------------------------------------------------
@@ -163,7 +177,22 @@ export function sha256File(path) {
  */
 function run(command, args, options = {}) {
   try {
-    execFileSync(command, args, { stdio: "inherit", ...options });
+    switch (command) {
+      case "git":
+        execFileSync("git", args, { stdio: "inherit", ...options });
+        break;
+      case "npm":
+        execFileSync("npm", args, { stdio: "inherit", ...options });
+        break;
+      case "tar":
+        execFileSync("tar", args, { stdio: "inherit", ...options });
+        break;
+      case "patch":
+        execFileSync("patch", args, { stdio: "inherit", ...options });
+        break;
+      default:
+        throw new Error(`Unsupported command: ${command}`);
+    }
     return 0;
   } catch (error) {
     return typeof error?.status === "number" ? error.status : 1;
@@ -173,6 +202,23 @@ function run(command, args, options = {}) {
 function runOrThrow(command, args, options = {}) {
   const status = run(command, args, options);
   if (status !== 0) throw new Error(`${command} ${args.join(" ")} failed with status ${status}`);
+}
+
+export function applyPatchText(patchText, directory, { reverse = false, stdio = "ignore" } = {}) {
+  const output = stdio === "inherit" ? "inherit" : "ignore";
+  return run("patch", [reverse ? "--reverse" : "--forward", "--batch", "--strip=1", `--directory=${directory}`], {
+    input: patchText,
+    stdio: ["pipe", output, output],
+  });
+}
+
+export function applyPatchFile(patchFile, directory, options = {}) {
+  return applyPatchText(readFileSync(patchFile, "utf-8"), directory, options);
+}
+
+function applyPatchOrThrow(patchText, directory, options = {}) {
+  const status = applyPatchText(patchText, directory, options);
+  if (status !== 0) throw new Error(`patch failed with status ${status}`);
 }
 
 async function download(url, destination, expectedSha256) {
@@ -299,14 +345,14 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
     const from = join(baselineRoot, path);
     if (!existsSync(from)) continue;
     mkdirSync(dirname(join(repo, path)), { recursive: true });
-    execFileSync("cp", [from, join(repo, path)]);
+    cpSync(from, join(repo, path));
   }
   git("add", "--all");
   git("commit", "--quiet", "--message", "baseline");
 
   for (const path of tracked) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
-    execFileSync("cp", [join(patchedRoot, path), join(repo, path)]);
+    cpSync(join(patchedRoot, path), join(repo, path));
   }
   git("add", "--all");
 
@@ -321,12 +367,8 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
 function assertPatchApplies(workDir, baselineRoot, patchText, patchedManifest) {
   const stage = join(workDir, "apply-check");
   rmSync(stage, { recursive: true, force: true });
-  execFileSync("cp", ["-R", baselineRoot, stage]);
-  const patchFile = join(workDir, "apply-check.patch");
-  writeFileSync(patchFile, patchText);
-  runOrThrow("sh", ["-c", `patch --batch --forward --strip=1 --directory="${stage}" < "${patchFile}"`], {
-    stdio: "ignore",
-  });
+  cpSync(baselineRoot, stage, { recursive: true });
+  applyPatchOrThrow(patchText, stage);
   const problems = parseChecksumManifest(patchedManifest)
     .filter((entry) => sha256File(join(stage, entry.path)) !== entry.sha256)
     .map((entry) => entry.path);
@@ -361,10 +403,8 @@ function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
 
     const stage = join(workDir, `upgrade-check-${state}`);
     rmSync(stage, { recursive: true, force: true });
-    execFileSync("cp", ["-R", patchedRoot, stage]);
-    const reverted = run("sh", ["-c", `patch --batch --reverse --strip=1 --directory="${stage}" < "${upgradePatch}"`], {
-      stdio: "ignore",
-    });
+    cpSync(patchedRoot, stage, { recursive: true });
+    const reverted = applyPatchFile(upgradePatch, stage, { reverse: true });
     if (reverted !== 0) {
       throw new Error(
         `Upgrade state ${state} no longer applies to the generated patch; regenerate it:\n` +
@@ -404,6 +444,22 @@ function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
       );
     }
     console.log(`  upgrade state ${state} round-trips`);
+  }
+}
+
+function stageUpgradeArtifacts(sourceDir, targetDir) {
+  if (!existsSync(sourceDir)) return;
+  for (const name of readdirSync(sourceDir)) {
+    if (
+      name === "skills.patch" ||
+      name === "baseline.sha256" ||
+      name === "baseline.absent" ||
+      name === "patched.sha256" ||
+      (!name.endsWith("-patched.sha256") && !name.endsWith("-upgrade.patch") && !name.endsWith("-absent"))
+    ) {
+      continue;
+    }
+    cpSync(join(sourceDir, name), join(targetDir, name));
   }
 }
 
@@ -514,10 +570,9 @@ async function buildVersion(version, options) {
     for (const file of ["skill-management-core.ts", "skill-management.ts"]) {
       await cp(join(overlayRoot, file), join(codingAgent, "src", "core", file));
     }
-    runOrThrow("sh", [
-      "-c",
-      `patch --batch --forward --strip=1 --directory="${codingAgent}" < "${join(overlayDir, "integration.patch")}"`,
-    ]);
+    applyPatchOrThrow(readFileSync(join(overlayDir, "integration.patch"), "utf-8"), codingAgent, {
+      stdio: "inherit",
+    });
     runOrThrow("npm", ["run", "build:unbundled"], { cwd: codingAgent });
 
     console.log("\n6/7 assembling and diffing");
@@ -572,24 +627,33 @@ async function buildVersion(version, options) {
 
     const outputDir = join(repositoryRoot, "patches", `pi-${version}`);
     if (check) {
-      const drift = Object.entries(artifacts).filter(
-        ([name, contents]) => readFileSync(join(outputDir, name), "utf-8") !== contents,
-      );
+      const drift = diffGeneratedArtifacts(artifacts, (name) => {
+        const path = join(outputDir, name);
+        return existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+      });
       if (drift.length > 0) {
-        throw new Error(`Committed artifacts are stale: ${drift.map(([name]) => name).join(", ")}`);
+        throw new Error(`Committed artifacts are stale: ${drift.join(", ")}`);
       }
       console.log("\nNo drift: committed artifacts match regeneration.");
     } else {
-      mkdirSync(outputDir, { recursive: true });
+      const stagedOutputDir = join(workDir, "staged-artifacts");
+      rmSync(stagedOutputDir, { recursive: true, force: true });
+      mkdirSync(stagedOutputDir, { recursive: true });
       for (const [name, contents] of Object.entries(artifacts)) {
-        writeFileSync(join(outputDir, name), contents);
+        writeFileSync(join(stagedOutputDir, name), contents);
+      }
+      stageUpgradeArtifacts(outputDir, stagedOutputDir);
+      assertUpgradeStatesRoundTrip(workDir, patchedRoot, stagedOutputDir);
+      mkdirSync(outputDir, { recursive: true });
+      for (const [name] of Object.entries(artifacts)) {
+        cpSync(join(stagedOutputDir, name), join(outputDir, name));
       }
       console.log(`\nWrote ${Object.keys(artifacts).length} artifacts to ${relative(repositoryRoot, outputDir)}`);
     }
 
     // Last, because a rebuild invalidates every migration and they are regenerated from the tree this run
     // just produced. Checking earlier would block the write that regenerating them depends on.
-    assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir);
+    if (check) assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir);
   } finally {
     if (!keep && options.workDir === undefined) rmSync(workDir, { recursive: true, force: true });
     else console.log(`\nKept work directory: ${workDir}`);

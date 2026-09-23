@@ -1,4 +1,7 @@
 /**
+ * Modified from upstream pi-otel 0.3.0: W3C trace headers are serialized from
+ * the explicit Pi span context without depending on a global propagator.
+ *
  * Opt-in W3C trace context propagation into the `bash` / `powershell` tools (#1).
  *
  * pi has no hook to mutate the child env of its built-in shell tools, so the
@@ -13,7 +16,11 @@ import type {
   ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import * as piAgent from "@earendil-works/pi-coding-agent";
-import { context as otelContext, propagation } from "@opentelemetry/api";
+import {
+  context as otelContext,
+  isSpanContextValid,
+  trace,
+} from "@opentelemetry/api";
 import type { SpanTracker } from "./spans.js";
 
 type ShellToolFactory = typeof createBashTool;
@@ -36,11 +43,15 @@ export function injectTraceContext(
   env: NodeJS.ProcessEnv,
   ctx = otelContext.active(),
 ): NodeJS.ProcessEnv {
-  const carrier: Record<string, string> = {};
-  propagation.inject(ctx, carrier);
-  if (!carrier.traceparent) return env;
-  const out: NodeJS.ProcessEnv = { ...env, TRACEPARENT: carrier.traceparent };
-  if (carrier.tracestate) out.TRACESTATE = carrier.tracestate;
+  const spanContext = trace.getSpanContext(ctx);
+  if (!spanContext || !isSpanContextValid(spanContext)) return env;
+  const flags = spanContext.traceFlags.toString(16).padStart(2, "0");
+  const out: NodeJS.ProcessEnv = {
+    ...env,
+    TRACEPARENT: `00-${spanContext.traceId}-${spanContext.spanId}-${flags}`,
+  };
+  const tracestate = spanContext.traceState?.serialize();
+  if (tracestate) out.TRACESTATE = tracestate;
   return out;
 }
 

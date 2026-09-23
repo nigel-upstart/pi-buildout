@@ -1,16 +1,21 @@
 /**
  * Modified from upstream pi-otel 0.3.0: migrated to the OpenTelemetry 2.x /
- * 0.2xx SDK train (resource factory, per-signal exporter typing, and the
- * options-object log processor constructor).
+ * 0.2xx SDK train, replaced global registration with provider-scoped signal
+ * pipelines, split process identity out of metric resources, and added export
+ * delivery health.
  *
- * OTel SDK bootstrap. One global SDK per process — pi loads us per session
- * but the SDK is shared across sessions in the same process.
+ * OTel SDK bootstrap. Pi owns provider-scoped signal pipelines so it can
+ * coexist with instrumentation that already registered global providers.
  */
 
 import { randomBytes } from "node:crypto";
 import { createConnection } from "node:net";
-import { diag, metrics, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import {
+  context as otelContext,
+  diag,
+  type Tracer,
+} from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { OTLPLogExporter as LogGrpcExporter } from "@opentelemetry/exporter-logs-otlp-grpc";
 import { OTLPLogExporter as LogHttpExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPLogExporter as LogProtoExporter } from "@opentelemetry/exporter-logs-otlp-proto";
@@ -20,11 +25,25 @@ import { OTLPMetricExporter as MetricProtoExporter } from "@opentelemetry/export
 import { OTLPTraceExporter as GrpcExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPTraceExporter as HttpExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPTraceExporter as ProtoExporter } from "@opentelemetry/exporter-trace-otlp-proto";
-import { resourceFromAttributes } from "@opentelemetry/resources";
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
-import { NodeSDK } from "@opentelemetry/sdk-node";
 import {
+  defaultResource,
+  detectResources,
+  envDetector,
+  hostDetector,
+  processDetector,
+  resourceFromAttributes,
+} from "@opentelemetry/resources";
+import {
+  BatchLogRecordProcessor,
+  LoggerProvider,
+} from "@opentelemetry/sdk-logs";
+import {
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from "@opentelemetry/sdk-metrics";
+import {
+  AlwaysOffSampler,
+  BasicTracerProvider,
   BatchSpanProcessor,
   ParentBasedSampler,
   TraceIdRatioBasedSampler,
@@ -35,15 +54,35 @@ import {
 } from "@opentelemetry/semantic-conventions/incubating";
 import { ATTR_PI_CWD } from "../attrs.js";
 import type { OtelConfig } from "../config.js";
-import { buildBridgeDiagLogger, resetLogHandles } from "./logs.js";
-import { resetMetricHandles } from "./metrics.js";
+import {
+  configureExportHealth,
+  instrumentExporter,
+  resetExportHealth,
+} from "./health.js";
+import {
+  buildBridgeDiagLogger,
+  configureLoggerProvider,
+  resetLogHandles,
+} from "./logs.js";
+import {
+  configureMeterProvider,
+  resetMetricHandles,
+} from "./metrics.js";
 
 export type NotifySeverity = "info" | "warning" | "error";
 export type Notify = (msg: string, severity?: NotifySeverity) => void;
 
-let sdk: NodeSDK | null = null;
+export interface OtelRuntime {
+  tracer: Tracer;
+  forceFlush(): Promise<void>;
+  shutdown(): Promise<void>;
+}
+
+let sdk: OtelRuntime | null = null;
 let initOnce = false;
-let foreignWarned = false;
+let foreignNoticeSent = false;
+let ownedContextManager: AsyncLocalStorageContextManager | null = null;
+let ownsDiagLogger = false;
 
 // @opentelemetry/api and api-logs keep their global provider registry on
 // these Symbol.for keys, shared across module copies. Reading them directly is
@@ -178,93 +217,172 @@ export function initSdk(
   cfg: OtelConfig,
   notify?: Notify,
   opts: { silentSuccess?: boolean } = {},
-): NodeSDK | null {
-  if (!cfg.enabled || !cfg.signals.traces) return null;
+): OtelRuntime | null {
+  if (!cfg.enabled || !Object.values(cfg.signals).some(Boolean)) return null;
   if (initOnce) return sdk;
 
-  // A second registration does not throw: @opentelemetry/api logs a diag
-  // error, keeps the first provider, and every span we start would route to
-  // the other SDK. Bail before building anything (#9).
+  // Providers are intentionally scoped to this extension. A foreign global
+  // provider is informational rather than a reason to discard Pi telemetry.
   const foreign = foreignOtelProviders();
-  if (foreign.length > 0) {
-    if (!foreignWarned) {
-      foreignWarned = true;
-      notify?.(
-        `pi-otel: another OpenTelemetry SDK already registered global providers (${foreign.join(", ")}); pi-otel telemetry is disabled for this process. Unload the other extension, or set PI_OTEL_DISABLED=1 to silence this.`,
-        "warning",
-      );
-    }
-    return null;
+  if (foreign.length > 0 && !foreignNoticeSent) {
+    foreignNoticeSent = true;
+    notify?.(
+      `pi-otel: coexisting with global OpenTelemetry providers (${foreign.join(", ")}) using isolated Pi providers.`,
+      "info",
+    );
   }
-  initOnce = true;
 
-  const instanceId = `${process.pid}-${randomBytes(4).toString("hex")}`;
-  const resource = resourceFromAttributes({
+  configureExportHealth({
+    endpoint: cfg.endpoint,
+    protocol: cfg.protocol,
+    signals: cfg.signals,
+  });
+
+  const baseAttributes = {
     ...cfg.resourceAttributes,
     [ATTR_SERVICE_NAME]: cfg.serviceName,
-    [ATTR_SERVICE_INSTANCE_ID]: instanceId,
     [ATTR_PI_CWD]: cfg.cwd,
-  });
+  };
+  // NodeSDK previously supplied default/env/process/host detection. Preserve
+  // those attributes while replacing only its global-provider registration.
+  const detectedResource = defaultResource().merge(
+    detectResources({ detectors: [envDetector, processDetector, hostDetector] }),
+  );
+  const metricResource = detectedResource.merge(
+    resourceFromAttributes(baseAttributes),
+  );
+  // Per-process identity is useful on traces/logs but creates one permanent
+  // metric series per Pi process after backend resource-attribute promotion.
+  const processResource = metricResource.merge(
+    resourceFromAttributes({
+      [ATTR_SERVICE_INSTANCE_ID]: `${process.pid}-${randomBytes(4).toString("hex")}`,
+    }),
+  );
 
-  const traceExporter = pickByProtocol(cfg, "traces", {
-    grpc: GrpcExporter,
-    proto: ProtoExporter,
-    http: HttpExporter,
-  });
-  const spanProcessor = new BatchSpanProcessor(traceExporter);
-
-  const sampler =
-    cfg.sampleRatio < 1.0
+  // With traces disabled no span processor exists, so recording spans would
+  // only retain attributes that can never be exported. AlwaysOff is used
+  // directly rather than as a ParentBased root: a sampled propagated parent
+  // would otherwise turn recording back on.
+  const sampler = !cfg.signals.traces
+    ? new AlwaysOffSampler()
+    : cfg.sampleRatio < 1.0
       ? new ParentBasedSampler({
           root: new TraceIdRatioBasedSampler(cfg.sampleRatio),
         })
       : undefined;
 
-  const sdkOpts: Record<string, unknown> = {
-    resource,
-    spanProcessor,
-    ...(sampler ? { sampler } : {}),
-  };
-  if (cfg.signals.metrics) {
-    const metricExporter = pickByProtocol(cfg, "metrics", {
-      grpc: MetricGrpcExporter,
-      proto: MetricProtoExporter,
-      http: MetricHttpExporter,
-    });
-    sdkOpts.metricReader = new PeriodicExportingMetricReader({
-      exporter: metricExporter,
-      exportIntervalMillis: 10_000,
-    });
-  }
-  if (cfg.signals.logs) {
-    const logExporter = pickByProtocol(cfg, "logs", {
-      grpc: LogGrpcExporter,
-      proto: LogProtoExporter,
-      http: LogHttpExporter,
-    });
-    sdkOpts.logRecordProcessors = [
-      new BatchLogRecordProcessor({ exporter: logExporter }),
-    ];
-  }
-
-  sdk = new NodeSDK(sdkOpts as ConstructorParameters<typeof NodeSDK>[0]);
-
   try {
-    sdk.start();
+    const traceProcessors = cfg.signals.traces
+      ? [
+          new BatchSpanProcessor(
+            instrumentExporter(
+              "traces",
+              pickByProtocol(cfg, "traces", {
+                grpc: GrpcExporter,
+                proto: ProtoExporter,
+                http: HttpExporter,
+              }),
+            ),
+          ),
+        ]
+      : [];
+    const tracerProvider = new BasicTracerProvider({
+      resource: processResource,
+      spanProcessors: traceProcessors,
+      ...(sampler ? { sampler } : {}),
+    });
+
+    const metricProvider = cfg.signals.metrics
+      ? new MeterProvider({
+          resource: metricResource,
+          readers: [
+            new PeriodicExportingMetricReader({
+              exporter: instrumentExporter(
+                "metrics",
+                pickByProtocol(cfg, "metrics", {
+                  grpc: MetricGrpcExporter,
+                  proto: MetricProtoExporter,
+                  http: MetricHttpExporter,
+                }),
+              ),
+              exportIntervalMillis: 10_000,
+            }),
+          ],
+        })
+      : null;
+
+    const loggerProvider = cfg.signals.logs
+      ? new LoggerProvider({
+          resource: processResource,
+          processors: [
+            new BatchLogRecordProcessor({
+              exporter: instrumentExporter(
+                "logs",
+                pickByProtocol(cfg, "logs", {
+                  grpc: LogGrpcExporter,
+                  proto: LogProtoExporter,
+                  http: LogHttpExporter,
+                }),
+              ),
+            }),
+          ],
+        })
+      : null;
+
+    configureMeterProvider(metricProvider);
+    configureLoggerProvider(loggerProvider);
+
+    // Context is separate from signal providers. Own a context manager only
+    // when another SDK has not already registered one; otherwise use theirs.
+    // An owned manager lives for the process: an SDK that starts after Pi
+    // cannot replace it and relies on it for async propagation, so it is not
+    // torn down with Pi's scoped providers.
+    if (!ownedContextManager) {
+      const contextManager = new AsyncLocalStorageContextManager().enable();
+      if (otelContext.setGlobalContextManager(contextManager)) {
+        ownedContextManager = contextManager;
+      } else {
+        contextManager.disable();
+      }
+    }
+
+    sdk = {
+      tracer: tracerProvider.getTracer("pi-otel", "0.1.0"),
+      forceFlush: async () => {
+        await Promise.all([
+          tracerProvider.forceFlush(),
+          metricProvider?.forceFlush() ?? Promise.resolve(),
+          loggerProvider?.forceFlush() ?? Promise.resolve(),
+        ]);
+      },
+      shutdown: async () => {
+        await Promise.all([
+          tracerProvider.shutdown(),
+          metricProvider?.shutdown() ?? Promise.resolve(),
+          loggerProvider?.shutdown() ?? Promise.resolve(),
+        ]);
+      },
+    };
+    initOnce = true;
   } catch (err) {
     const e = err as Error;
     notify?.(`pi-otel: SDK start failed — ${e.message}`, "error");
     sdk = null;
     initOnce = false;
+    resetExportHealth();
+    resetMetricHandles();
+    resetLogHandles();
     return null;
   }
 
-  // Install bridge AFTER sdk.start() — LoggerProvider must exist first.
-  if (cfg.signals.logs) {
+  // `diag` is global. Never replace a foreign SDK's diagnostic logger; export
+  // callbacks still populate Pi's delivery health in coexistence mode.
+  if (cfg.signals.logs && foreign.length === 0) {
     diag.setLogger(buildBridgeDiagLogger(), {
       logLevel: cfg.logLevel,
       suppressOverrideMessage: true,
     });
+    ownsDiagLogger = true;
   }
 
   if (!opts.silentSuccess) {
@@ -283,16 +401,12 @@ export async function shutdownSdk(): Promise<void> {
   } catch {
     // swallow — silent-drop policy (SPEC §7)
   } finally {
-    // Reset state first so a subsequent initSdk() can proceed even if the
-    // cleanup calls below throw. The global Tracer/Logger/Meter APIs refuse
-    // to replace an already-registered provider — without disabling all
-    // three, a re-init silently keeps the dead providers.
     sdk = null;
     initOnce = false;
-    trace.disable();
-    metrics.disable();
-    logs.disable();
-    diag.disable();
+    if (ownsDiagLogger) {
+      diag.disable();
+      ownsDiagLogger = false;
+    }
     resetMetricHandles();
     resetLogHandles();
   }

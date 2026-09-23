@@ -1,3 +1,8 @@
+/**
+ * Modified from upstream pi-otel 0.3.0: status probes the configured endpoint
+ * and reports resolved signal enablement plus actual exporter delivery health.
+ */
+
 import { spawn, spawnSync } from "node:child_process";
 import {
   mkdirSync,
@@ -10,6 +15,10 @@ import { homedir, platform } from "node:os";
 import { join as joinPath } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveConfig } from "../config.js";
+import {
+  describeSignalHealth,
+  getExportHealth,
+} from "../otel/health.js";
 import { probeTcp } from "../otel/sdk.js";
 
 const OTEL_DIR = joinPath(homedir(), ".pi", "agent", "otel");
@@ -450,11 +459,19 @@ async function statusCmd(
   const baseCfg = cwd ? resolveConfig(cwd) : null;
   const conn = readConn();
   const meta = readMeta();
+  const health = getExportHealth();
 
-  // Active endpoint: conn file overrides resolved config (mirrors pi-otel:dashboard-ready logic)
-  const configuredEndpoint = conn?.endpoint ?? baseCfg?.endpoint;
+  // Once the SDK is running, report the endpoint its exporters actually use so
+  // delivery health and the Connected line describe the same pipeline. The
+  // persisted conn file is shared across processes and can be stale, so it
+  // only overrides resolved config before initialization.
+  const configuredEndpoint = health.configured
+    ? health.endpoint
+    : (conn?.endpoint ?? baseCfg?.endpoint);
   const activeEndpoint = configuredEndpoint ?? "(unknown)";
-  const activeProtocol = conn?.protocol ?? baseCfg?.protocol ?? "grpc";
+  const activeProtocol = health.configured
+    ? (health.protocol ?? "grpc")
+    : (conn?.protocol ?? baseCfg?.protocol ?? "grpc");
 
   // Only probe a real endpoint: the placeholder above is a valid URL hostname,
   // so probing it would spend the timeout on a DNS lookup for "(unknown)".
@@ -463,9 +480,30 @@ async function statusCmd(
     : false;
 
   const lines: string[] = [];
+  lines.push(`Extension: ${baseCfg?.enabled ? "enabled" : "disabled"}`);
+  if (baseCfg) {
+    lines.push(
+      `Signals:   traces=${baseCfg.signals.traces ? "on" : "off"}, metrics=${baseCfg.signals.metrics ? "on" : "off"}, logs=${baseCfg.signals.logs ? "on" : "off"}`,
+    );
+  }
   lines.push(
     `Connected: ${activeEndpoint} (${activeProtocol}) — ${reachable ? "reachable" : "UNREACHABLE"}`,
   );
+
+  for (const signal of ["traces", "metrics", "logs"] as const) {
+    const state = health.signals[signal];
+    // Before SDK initialization, derive enabled/disabled from resolved config
+    // while making the lack of an accepted export explicit.
+    const effective = health.configured
+      ? state
+      : {
+          ...state,
+          enabled: Boolean(baseCfg?.enabled && baseCfg.signals[signal]),
+        };
+    lines.push(
+      `Delivery ${signal.padEnd(7)} ${describeSignalHealth(effective)}`,
+    );
+  }
 
   if (baseCfg && baseCfg.endpoint !== activeEndpoint) {
     lines.push(`  (config default: ${baseCfg.endpoint})`);

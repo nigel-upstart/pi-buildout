@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  commandNeedsProjectTrust,
   configLocation,
   enabledEntries,
   getActiveSkillEntries,
@@ -390,6 +391,16 @@ test("runSkillsCommand rejects add for a skill that is not in the catalog", asyn
   const result = await runSkillsCommand(env, ["add", "ghost", "--global"], { cwd: "/work", agentDir: "/agent" });
   assert.equal(result.exitCode, 1);
   assert.match(firstLine(result), /not found in the catalog/);
+});
+
+test("commandNeedsProjectTrust only opts repo-scoped add and catalog reads into trust resolution", () => {
+  assert.equal(commandNeedsProjectTrust(["list"]), true);
+  assert.equal(commandNeedsProjectTrust(["search", "cache"]), true);
+  assert.equal(commandNeedsProjectTrust(["add", "alpha", "--repo"]), true);
+  assert.equal(commandNeedsProjectTrust(["add", "alpha", "--global"]), false);
+  assert.equal(commandNeedsProjectTrust(["remove", "alpha", "--global"]), false);
+  assert.equal(commandNeedsProjectTrust(["active"]), false);
+  assert.equal(commandNeedsProjectTrust(["add", "alpha"]), false);
 });
 
 test("runSkillsCommand enables a catalog skill and reports removal of a disabled one", async () => {

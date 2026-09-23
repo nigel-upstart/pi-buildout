@@ -6,13 +6,14 @@ AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
 EXTENSIONS=(clear effort markdown-backlinks router subagents)
-# extensions/otel is the vendored OpenTelemetry fork. It stays opt-in because only one
-# OpenTelemetry SDK can own a process: installing it while `npm:pi-otel` is still listed in
-# settings leaves whichever loads first owning the global providers and the other disabled.
+# extensions/otel is the vendored OpenTelemetry fork. It stays opt-in so installation does not
+# enable telemetry unexpectedly. Remove `npm:pi-otel` from settings first: scoped providers allow
+# other OTel SDKs to coexist, but two Pi lifecycle extensions would emit duplicate telemetry.
 # See specs/otel-ownership-decision.md for the migration and rollback steps.
 OPTIONAL_EXTENSIONS=(otel)
 WITH_OTEL=0
 PATCH_FILES=()
+PATCH_STATE_FILES=()
 UPGRADE_SUMS=()
 UPGRADE_PATCHES=()
 UPGRADE_ABSENT=()
@@ -104,6 +105,15 @@ matches_checksum() {
   [[ -f "$2" && "$(sha256 "$2")" == "$1" ]]
 }
 
+track_patch_file() {
+  local candidate existing
+  candidate=$1
+  for existing in "${PATCH_STATE_FILES[@]}"; do
+    [[ "$existing" != "$candidate" ]] || return 0
+  done
+  PATCH_STATE_FILES+=("$candidate")
+}
+
 find_pi_package() {
   local path package_dir
   path=$(realpath "$1" 2> /dev/null) || return 1
@@ -144,8 +154,7 @@ for arg in "$@"; do
     -h | --help)
       printf 'Usage: %s [--skip-skill-loading-patch] [--with-otel]\n' "$(basename "$0")"
       printf '  --with-otel  also install the vendored OpenTelemetry extension (extensions/otel).\n'
-      printf '               Remove npm:pi-otel from pi settings first; two OpenTelemetry SDKs\n'
-      printf '               cannot both own one process.\n'
+      printf '               Remove npm:pi-otel from pi settings first to avoid duplicate Pi telemetry.\n'
       exit 0
       ;;
     *)
@@ -208,6 +217,7 @@ if ((APPLY_SKILLS_PATCH)); then
       exit 1
     fi
     PATCH_FILES+=("$file")
+    track_patch_file "$file"
   done < "$PATCHED_SUMS"
   if ((${#PATCH_FILES[@]} == 0)); then
     printf 'Patched checksum manifest is empty.\n' >&2
@@ -215,6 +225,7 @@ if ((APPLY_SKILLS_PATCH)); then
   fi
 
   for upgrade_sums in "$PATCH_DIR"/*-patched.sha256; do
+    local_upgrade_sums_name=
     [[ -f "$upgrade_sums" ]] || continue
     upgrade_patch=${upgrade_sums%-patched.sha256}-upgrade.patch
     if [[ ! -f "$upgrade_patch" ]]; then
@@ -228,6 +239,25 @@ if ((APPLY_SKILLS_PATCH)); then
     upgrade_absent=${upgrade_sums%-patched.sha256}-absent
     [[ -f "$upgrade_absent" ]] || upgrade_absent=
     UPGRADE_ABSENT+=("$upgrade_absent")
+    local_upgrade_sums_name=$(basename "$upgrade_sums")
+    while read -r checksum file extra; do
+      if [[ ! "$checksum" =~ ^[0-9a-f]{64}$ || -z "$file" || -n "${extra:-}" || "$file" == /* || "$file" == ".." || "$file" == ../* || "$file" == */../* || "$file" == */.. ]]; then
+        printf 'Upgrade checksum manifest %s contains an invalid entry.\n' "$local_upgrade_sums_name" >&2
+        exit 1
+      fi
+      track_patch_file "$file"
+    done < "$upgrade_sums"
+    if [[ -n "$upgrade_absent" ]]; then
+      local_upgrade_absent_name=$(basename "$upgrade_absent")
+      while read -r file extra; do
+        [[ -n "$file" ]] || continue
+        if [[ -n "${extra:-}" || "$file" == /* || "$file" == ".." || "$file" == ../* || "$file" == */../* || "$file" == */.. ]]; then
+          printf 'Upgrade absent manifest %s contains an invalid entry.\n' "$local_upgrade_absent_name" >&2
+          exit 1
+        fi
+        track_patch_file "$file"
+      done < "$upgrade_absent"
+    fi
   done
   for upgrade_patch in "$PATCH_DIR"/*-upgrade.patch; do
     [[ -f "$upgrade_patch" ]] || continue
@@ -268,7 +298,7 @@ if ((APPLY_SKILLS_PATCH)); then
     upgrade_sums=${UPGRADE_SUMS[$upgrade_index]}
     upgrade_absent=${UPGRADE_ABSENT[$upgrade_index]}
     upgrade_matches=1
-    for file in "${PATCH_FILES[@]}"; do
+    for file in "${PATCH_STATE_FILES[@]}"; do
       upgrade_checksum=$(manifest_checksum "$upgrade_sums" "$file")
       if [[ -n "$upgrade_absent" ]] && grep -Fxq "$file" "$upgrade_absent"; then
         if [[ -n "$upgrade_checksum" ]]; then
@@ -313,7 +343,7 @@ if ((APPLY_SKILLS_PATCH)); then
     }
     PATCH_STAGE_DIR=$(mktemp -d "$PI_PACKAGE_DIR/.pi-skills-patch.XXXXXX")
     PATCH_BACKUP_DIR=$(mktemp -d "$PI_PACKAGE_DIR/.pi-skills-backup.XXXXXX")
-    for file in "${PATCH_FILES[@]}"; do
+    for file in "${PATCH_STATE_FILES[@]}"; do
       mkdir -p "$(dirname "$PATCH_STAGE_DIR/$file")" "$(dirname "$PATCH_BACKUP_DIR/$file")"
       if [[ -f "$PI_PACKAGE_DIR/$file" ]]; then
         cp -p "$PI_PACKAGE_DIR/$file" "$PATCH_STAGE_DIR/$file"
