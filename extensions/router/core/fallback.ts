@@ -102,14 +102,15 @@ export function resolveFallback(
   if (lease.archetype === "code_review" && lease.lifecycle.phase === "review") {
     return {
       action: "skip_review",
-      lease: { ...lease, fallbacks: remainingFallbacks },
+      lease,
       reason: "all review attempts failed; preserve the parent task lease",
     };
   }
   return {
     action: "restore_previous",
     ...(lease.previousSelection ? { choice: lease.previousSelection } : {}),
-    lease: { ...lease, fallbacks: remainingFallbacks },
+    // Terminal: keep the original topology so the persisted lease still validates on restore.
+    lease,
     reason:
       lease.archetype === "code_review"
         ? "all standalone review attempts failed; restoring the previous selection"

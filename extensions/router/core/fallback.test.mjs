@@ -154,6 +154,19 @@ describe("ordinary fallback", () => {
     assert.equal(last.lease.attemptIndex, 3);
   });
 
+  it("keeps a restorable topology when quota skipping removes every fallback", () => {
+    const lease = taskLease("deliberate_tool_workflow", choice("openai-codex", "gpt-6-sol"), [
+      choice("openai-codex", "gpt-5.6-terra"),
+      choice("openai-codex", "gpt-6-luna"),
+    ]);
+    const exhausted = resolveFallback(lease, "model_error", "2026-07-17T00:01:00.000Z", {
+      skipProvider: "openai-codex",
+    });
+    assert.equal(exhausted.action, "restore_previous");
+    assert.deepEqual(exhausted.lease.fallbacks, lease.fallbacks);
+    assert.deepEqual(validateFallbackTopology(exhausted.lease), []);
+  });
+
   it("reaches a cross-provider fallback when the exhausted provider also owns the consumed prefix", () => {
     const lease = taskLease("deliberate_tool_workflow", choice("openai", "gpt-5.6-sol"), [
       choice("anthropic", "claude-sonnet-5"),
