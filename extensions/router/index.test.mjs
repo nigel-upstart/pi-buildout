@@ -3702,6 +3702,175 @@ describe("routerExtension", () => {
     }
   });
 
+  it("fast-skips exhausted provider candidates upon provider usage limit error during agent_end", async () => {
+    const hooks = new Map();
+    const appended = [];
+    const selectedModels = [];
+    const notifications = [];
+    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-quota-fast-skip-"));
+    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+    const telemetryPath = join(telemetryDirectory, "events.jsonl");
+    process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
+    const now = new Date().toISOString();
+    const choices = [
+      {
+        provider: "openai-codex",
+        modelId: "gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
+        vendor: "openai",
+        effort: "high",
+        ability: 3,
+        profileId: "openai-gpt-6-agent-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "bootstrap",
+      },
+      {
+        provider: "openai-codex",
+        modelId: "gpt-5.6-terra",
+        logicalModelId: "gpt-5.6-terra",
+        vendor: "openai",
+        effort: "high",
+        ability: 2,
+        profileId: "openai-gpt-6-agent-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "bootstrap",
+      },
+      {
+        provider: "openai-codex",
+        modelId: "gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
+        vendor: "openai",
+        effort: "medium",
+        ability: 2,
+        profileId: "openai-gpt-6-agent-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "bootstrap",
+      },
+      {
+        provider: "anthropic",
+        modelId: "claude-opus-5-5",
+        logicalModelId: "claude-opus-5-5",
+        vendor: "anthropic",
+        effort: "medium",
+        ability: 3,
+        profileId: "anthropic-claude-opus-5-5-agent-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "evidence_prior",
+      },
+    ];
+    const lease = {
+      version: 2,
+      taskId: "quota-fast-skip-task",
+      startedAt: now,
+      updatedAt: now,
+      archetype: "deliberate_tool_workflow",
+      features: conservativeFeatures("quota exhaustion fast-skip test"),
+      selected: choices[0],
+      fallbacks: choices.slice(1),
+      attemptIndex: 0,
+      promptProfileId: choices[0].profileId,
+      modelSnapshotId: "snapshot",
+      policyVersion: POLICY_VERSION,
+      lastPromptFingerprint: "fingerprint",
+      lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task-fingerprint" },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+      manualOverride: false,
+    };
+    const makeModel = (choice) => ({
+      provider: choice.provider,
+      id: choice.modelId,
+      name: choice.modelId,
+      api: choice.vendor === "anthropic" ? "anthropic-messages" : "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
+      contextWindow: choice.contextWindow,
+      maxTokens: 128_000,
+    });
+    const models = choices.map(makeModel);
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "active", manualOverride: false, active: lease },
+      },
+    ];
+    const pi = {
+      on: (event, handler) => hooks.set(event, handler),
+      registerCommand: () => {},
+      registerTool: () => {},
+      appendEntry: (customType, data) => appended.push({ customType, data }),
+      sendMessage: () => {},
+      setModel: async (model) => {
+        selectedModels.push(model);
+        return true;
+      },
+      setThinkingLevel: () => {},
+      getThinkingLevel: () => "high",
+      exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+    };
+    routerExtension(pi);
+    const ctx = {
+      cwd: telemetryDirectory,
+      model: models[0],
+      modelRegistry: {
+        getAll: () => models,
+        getAvailable: () => models,
+        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+      },
+      sessionManager: {
+        getBranch: () => branch,
+        getSessionId: () => "quota-fast-skip-session",
+      },
+      getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        notify: (message, type) => notifications.push({ message, type }),
+      },
+    };
+    const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      ctx.model = models[0];
+      hooks.get("agent_start")();
+      await hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: models[0].provider,
+              model: models[0].id,
+              stopReason: "error",
+              errorMessage: "Codex error: The usage limit has been reached",
+              usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+            },
+          ],
+        },
+        ctx,
+      );
+      assert.equal(latestLease().selected.provider, "anthropic");
+      assert.equal(latestLease().selected.modelId, "claude-opus-5-5");
+      assert.equal(latestLease().attemptIndex, 1);
+      assert.deepEqual(
+        latestLease().fallbacks.map((c) => c.provider),
+        ["anthropic"],
+      );
+      assert.deepEqual(
+        selectedModels.map((model) => model.provider),
+        ["anthropic"],
+      );
+    } finally {
+      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+    }
+  });
+
   it("authorizes only an approved exact irreversible-action plan and invalidates it on user input", async () => {
     const hooks = new Map();
     const tools = new Map();
