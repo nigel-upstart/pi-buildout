@@ -447,6 +447,22 @@ function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
   }
 }
 
+function stageUpgradeArtifacts(sourceDir, targetDir) {
+  if (!existsSync(sourceDir)) return;
+  for (const name of readdirSync(sourceDir)) {
+    if (
+      name === "skills.patch" ||
+      name === "baseline.sha256" ||
+      name === "baseline.absent" ||
+      name === "patched.sha256" ||
+      (!name.endsWith("-patched.sha256") && !name.endsWith("-upgrade.patch") && !name.endsWith("-absent"))
+    ) {
+      continue;
+    }
+    cpSync(join(sourceDir, name), join(targetDir, name));
+  }
+}
+
 /** Every pi version with an authored overlay, i.e. every `pi-overlay/versions/<version>/upstream.json`. */
 function overlayVersions() {
   const versionsRoot = join(repositoryRoot, "pi-overlay", "versions");
@@ -620,16 +636,24 @@ async function buildVersion(version, options) {
       }
       console.log("\nNo drift: committed artifacts match regeneration.");
     } else {
-      mkdirSync(outputDir, { recursive: true });
+      const stagedOutputDir = join(workDir, "staged-artifacts");
+      rmSync(stagedOutputDir, { recursive: true, force: true });
+      mkdirSync(stagedOutputDir, { recursive: true });
       for (const [name, contents] of Object.entries(artifacts)) {
-        writeFileSync(join(outputDir, name), contents);
+        writeFileSync(join(stagedOutputDir, name), contents);
+      }
+      stageUpgradeArtifacts(outputDir, stagedOutputDir);
+      assertUpgradeStatesRoundTrip(workDir, patchedRoot, stagedOutputDir);
+      mkdirSync(outputDir, { recursive: true });
+      for (const [name] of Object.entries(artifacts)) {
+        cpSync(join(stagedOutputDir, name), join(outputDir, name));
       }
       console.log(`\nWrote ${Object.keys(artifacts).length} artifacts to ${relative(repositoryRoot, outputDir)}`);
     }
 
     // Last, because a rebuild invalidates every migration and they are regenerated from the tree this run
     // just produced. Checking earlier would block the write that regenerating them depends on.
-    assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir);
+    if (check) assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir);
   } finally {
     if (!keep && options.workDir === undefined) rmSync(workDir, { recursive: true, force: true });
     else console.log(`\nKept work directory: ${workDir}`);
