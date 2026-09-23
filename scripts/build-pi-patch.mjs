@@ -204,7 +204,7 @@ function runOrThrow(command, args, options = {}) {
   if (status !== 0) throw new Error(`${command} ${args.join(" ")} failed with status ${status}`);
 }
 
-function applyPatch(patchText, directory, { reverse = false, stdio = "ignore" } = {}) {
+export function applyPatchText(patchText, directory, { reverse = false, stdio = "ignore" } = {}) {
   const output = stdio === "inherit" ? "inherit" : "ignore";
   return run("patch", [reverse ? "--reverse" : "--forward", "--batch", "--strip=1", `--directory=${directory}`], {
     input: patchText,
@@ -212,8 +212,12 @@ function applyPatch(patchText, directory, { reverse = false, stdio = "ignore" } 
   });
 }
 
+export function applyPatchFile(patchFile, directory, options = {}) {
+  return applyPatchText(readFileSync(patchFile, "utf-8"), directory, options);
+}
+
 function applyPatchOrThrow(patchText, directory, options = {}) {
-  const status = applyPatch(patchText, directory, options);
+  const status = applyPatchText(patchText, directory, options);
   if (status !== 0) throw new Error(`patch failed with status ${status}`);
 }
 
@@ -400,7 +404,7 @@ function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
     const stage = join(workDir, `upgrade-check-${state}`);
     rmSync(stage, { recursive: true, force: true });
     cpSync(patchedRoot, stage, { recursive: true });
-    const reverted = applyPatch(readFileSync(upgradePatch, "utf-8"), stage, { reverse: true });
+    const reverted = applyPatchFile(upgradePatch, stage, { reverse: true });
     if (reverted !== 0) {
       throw new Error(
         `Upgrade state ${state} no longer applies to the generated patch; regenerate it:\n` +

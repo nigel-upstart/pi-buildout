@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
+import { applyPatchFile } from "./build-pi-patch.mjs";
 import { findCleanPackage, patchDirectoryFor, patchVersions, repositoryRoot } from "./skills-patch-packages.mjs";
 
 // The catalog fixture replaces HOME, but the installer locates pi through PI_PACKAGE_DIR and
@@ -38,26 +39,9 @@ async function verifyManifest(patchDirectory, target, manifestName) {
 }
 
 async function applyPatch(target, source, reverse = false) {
-  const patchContents = await readFile(source);
-  await new Promise((resolvePromise, reject) => {
-    const child = spawn("patch", ["--batch", reverse ? "--reverse" : "--forward", "--strip=1"], {
-      cwd: target,
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.once("error", reject);
-    child.once("close", (code) => {
-      if (code === 0) {
-        resolvePromise();
-      } else {
-        reject(new Error(`patch exited with code ${String(code)}: ${stderr.trim()}`));
-      }
-    });
-    child.stdin.end(patchContents);
-  });
+  if (applyPatchFile(source, target, { reverse }) !== 0) {
+    throw new Error("patch exited with a non-zero status");
+  }
 }
 
 async function runPatchedCli(target, args, { agentDir, cwd }) {

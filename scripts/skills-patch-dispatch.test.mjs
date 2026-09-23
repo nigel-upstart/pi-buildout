@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { access, cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
+import { applyPatchText } from "./build-pi-patch.mjs";
 import { findCleanPackage, patchDirectoryFor, patchVersions } from "./skills-patch-packages.mjs";
 
 /**
@@ -57,22 +57,7 @@ function patchedPaths(text) {
 }
 
 async function applyPatchTo(target, patchText) {
-  await new Promise((resolvePromise, reject) => {
-    const child = spawn("patch", ["--batch", "--forward", "--strip=1"], {
-      cwd: target,
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.once("error", reject);
-    child.once("close", (code) => {
-      if (code === 0) resolvePromise();
-      else reject(new Error(`patch exited with code ${String(code)}: ${stderr.trim()}`));
-    });
-    child.stdin.end(patchText);
-  });
+  if (applyPatchText(patchText, target) !== 0) throw new Error("patch exited with a non-zero status");
 }
 
 for (const version of patchVersions()) {
