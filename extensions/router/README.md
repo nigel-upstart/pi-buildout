@@ -33,6 +33,16 @@ reconstruct behavior from the historical export.
 - `/route fail availability|quality|deterministic_verification` — apply the authorized sequential fallback. Ordinary
   routes continue through every eligible, policy-authorized provider endpoint before restoring the prior selection.
 
+`/route off` is an immediate bypass for this extension within the running session. It discards any pending route,
+removes every router-only tool (including `submit_implementation_plan`), and stops classification, prompt compilation,
+automatic model/effort changes, manual selection tracking, lifecycle blocking and evidence collection,
+fallbacks/reviews, `/route accept|reject|fail`, and all router telemetry. It aborts pending secondary reconciliation,
+keeping any low-confidence safety latch for the dormant lease. Other routing work already in flight is not cancelled,
+but its result is discarded: it installs no lease, applies no model or effort, returns no prompt, re-exposes no tools,
+and submits no new telemetry, even if routing is re-enabled before it finishes. Telemetry writes and spans already
+accepted before off may still finish. The last lease remains dormant so `/route active` can safely restore the existing
+lifecycle; while off, the router does not restrict models, reasoning efforts, ordinary tools, or turns.
+
 Planning routes must call `submit_implementation_plan`; the tool validates the PR dependency DAG, acceptance criteria,
 rollout, and rollback. A normal response that omits the tool gets one same-lease corrective follow-up before the bounded
 fallback policy applies. A request to start implementation always receives a new lease.
@@ -80,12 +90,28 @@ authorization the same way a typed message does. The router's own continuations 
 post-fallback) are custom `model-router-context` messages, which never surface as an input event and so keep their lease
 without relying on any source exemption.
 
-Every router-level fresh-task or continuity classification has one router-owned **15-second wall-clock deadline**. The
-router passes one `AbortSignal` through schema attempts and concrete endpoint calls. A router deadline aborts the
-in-flight call; any `AbortError` or `TimeoutError` is terminal, so the classifier does not retry the attempt, try
-another endpoint, or start/continue secondary escalation. On a continuity failure the current lease, model, effort, and
-profile remain selected. On a fresh-task failure the router does not create a route from synthetic evidence and keeps
-the current model/effort (and an existing lease, if present).
+Every router-level fresh-task or continuity classification is bounded by router-owned stage deadlines. Rather than
+sharing a single combined timer across primary classification and escalation, each classification stage of a synchronous
+classifier invocation receives an independent timeout budget configured in code
+([`CLASSIFICATION_STAGE_TIMEOUT_MS`](index.ts)). That constant owns fresh-task primary classification and continuity
+classification, which still escalates primary to secondary inside the same invocation, so the secondary stage there
+starts a fresh budget.
+
+There are two timeout owners, and changing one does not affect the other. Background fresh-task secondary reconciliation
+runs as a separate classifier invocation bounded by the configurable
+[`secondaryGracePolicy.secondaryDeadlineMs`](core/reconciliation.ts), not by `CLASSIFICATION_STAGE_TIMEOUT_MS`; the
+companion `maxGraceMs` bounds only how long the router pauses before releasing the first provider request, after which
+the secondary classifier keeps running until its own deadline and may reconcile at a later safe boundary. Because the
+two budgets differ, every `secondary_reconciliation` record states the budget it was running against in
+`secondaryDeadlineMs`; a run that did not succeed also records `secondaryOutcome`, `secondaryWallLatencyMs`, and the
+bounded `secondaryErrorCategory`, plus `secondaryEnforcedBudgetMs` and `secondaryDeadlineStage` when a router-owned
+deadline elapsed. A `secondary_timeout` is therefore attributable to a budget without cross-referencing the paired
+`classifier_invocation`. The router passes an `AbortSignal` through schema attempts and concrete endpoint calls for the
+active stage. A stage deadline aborts the in-flight call; within an active stage, any `AbortError` or `TimeoutError` is
+terminal, so the classifier does not retry the attempt or advance to another endpoint in that stage. On a continuity
+failure the current lease, model, effort, and profile remain selected. On a fresh-task failure the router does not
+create a route from synthetic evidence and keeps the current model/effort (and an existing lease, if present). Concrete
+timeout thresholds can be inspected directly in [`index.ts`](index.ts) and [`telemetry.ts`](telemetry.ts).
 
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
 builder, and at least two eligible non-builder-vendor attempts; they never fall back to the builder for a verdict.
@@ -166,16 +192,21 @@ settlement cannot retry the event, re-enable routing, or apply the fail-safe twi
 While telemetry is healthy, each router-level classification request makes one privacy-safe `classifier_invocation`
 append attempt with `invocationCount: 1`. Its request fields are `purpose` (`fresh_task` or `continuity`), `outcome`,
 `resolution`, `wallLatencyMs`, `timedOut`, and `cancelled`, plus aggregate attempt counts, per-stage counts, sanitized
-attempt entries, and an optional bounded error category. Attempt entries can contain only stage/try/outcome and
-validated provider/model/latency identifiers; prompts, synopses, classifier evidence, and free-form errors are never
-included. Count request volume and rates only from `classifier_invocation`. The legacy `classifier_attempt` event is a
-non-additive downstream diagnostic emitted only when a completed classification proceeds into new-lease routing; zero or
-several can belong to one request. Never sum the two kinds.
+attempt entries, and an optional bounded error category. When the router's own deadline elapsed
+(`errorCategory: "deadline"`), the record also names the stage that held the budget in `deadlineStage` and the budget it
+enforced in `stageBudgetMs`, so no consumer has to infer the stage from whichever attempt was left `incomplete`. Both
+fields are absent on success and on a provider-thrown `transport_timeout`, which is the transport's deadline rather than
+the router's. Attempt entries can contain only stage/try/outcome and validated provider/model/latency identifiers;
+prompts, synopses, classifier evidence, and free-form errors are never included. Count request volume and rates only
+from `classifier_invocation`. The legacy `classifier_attempt` event is a non-additive downstream diagnostic emitted only
+when a completed classification proceeds into new-lease routing; zero or several can belong to one request. Never sum
+the two kinds.
 
 When `pi-telemetry-otel` is installed separately, `router.classify` and `router.classify_continuity` spans attach
 through its global Symbol registries. They receive bounded `router.classifier.*` summary attributes, one
 `router.classifier.attempt` event per observed attempt, and a `router.classifier.completed` event, with no prompt,
-synopsis, evidence, or free-form error text. The router has no additional runtime dependencies and works without OTel.
+synopsis, evidence, or free-form error text. A router deadline additionally exports `router.classifier.deadline_stage`
+and `router.classifier.stage_budget_ms`. The router has no additional runtime dependencies and works without OTel.
 
 ## Real Bifrost evaluation
 
@@ -258,10 +289,11 @@ for a positive write rate, `no_write_line_item` when reads are priced but writes
 prices are capability proxies rather than marginal billed costs, so Copilot has no effective-cost value and follows all
 eligible token-billed routes.
 
-Bedrock `gpt-5.6-sol` is excluded above 272,000 estimated finished tokens until its registry entry supplies a
-long-context rate; the router never extends its short-context rate beyond that boundary. Residency remains a scope
-choice, not an ordering preference: scope in only the regional inference profiles permitted for the workload and scope
-out Global or other profiles that violate the requirement. Cost ordering never adds or revives an out-of-scope endpoint.
+Bedrock `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` are excluded above 272,000 estimated finished tokens until
+their registry entries supply a long-context rate; the router never extends their short-context rates beyond that
+boundary. Residency remains a scope choice, not an ordering preference: scope in only the regional inference profiles
+permitted for the workload and scope out Global or other profiles that violate the requirement. Cost ordering never adds
+or revives an out-of-scope endpoint.
 
 Direct `google` endpoints are eligible only for `code_review`, preserving the low direct-Gemini request quota for an
 independent reviewer. Gemini 3.8 Flash at high effort leads the Google review ladder when its exact ID is available;

@@ -5,6 +5,7 @@ import { BOOTSTRAP_ROUTE_POLICIES, MODEL_VENDOR } from "./policy.ts";
 import { conservativeFeatures } from "./features.ts";
 import { deriveSafetyPolicy } from "./safety.ts";
 import {
+  bedrockLongContextPricingUnavailable,
   canonicalVendor,
   deriveRoutingContext,
   isControlledHoldout,
@@ -739,6 +740,46 @@ describe("ordinary route selection", () => {
             exclusion.code === "long_context_pricing_unavailable",
         ),
       );
+    }
+  });
+
+  it("applies the same boundary to Bedrock Terra and Luna, whose context pi 0.85.1 widened", () => {
+    for (const modelId of ["openai.gpt-5.6-terra", "global.openai.gpt-5.6-luna"]) {
+      assert.equal(bedrockLongContextPricingUnavailable({ provider: "amazon-bedrock", modelId }, 272_000), false);
+      assert.equal(bedrockLongContextPricingUnavailable({ provider: "amazon-bedrock", modelId }, 272_001), true);
+      assert.equal(
+        bedrockLongContextPricingUnavailable(
+          { provider: "openai-codex", modelId: modelId.replace(/^.*openai\./u, "") },
+          272_001,
+        ),
+        false,
+      );
+
+      const bedrockEndpoint = {
+        ...model("amazon-bedrock", modelId, "openai"),
+        costPerMillion: { input: Number.NaN, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
+      };
+      let excluded = false;
+      for (const archetype of Object.keys(BOOTSTRAP_ROUTE_POLICIES)) {
+        const decision = selectOrdinaryRoute(archetype, [...registry(), bedrockEndpoint], {
+          ...REQUIREMENTS,
+          estimatedFinishedTokens: 272_001,
+        });
+        if (decision.kind !== "ordinary") continue;
+        assert.ok(
+          [decision.primary, ...decision.fallbacks].every(
+            (choice) => choice.provider !== "amazon-bedrock" || choice.modelId !== modelId,
+          ),
+          `${archetype} must not select ${modelId} above the boundary`,
+        );
+        excluded ||= decision.exclusions.some(
+          (exclusion) =>
+            exclusion.candidate === `amazon-bedrock/${modelId}` &&
+            exclusion.code === "long_context_pricing_unavailable" &&
+            exclusion.detail.startsWith(`Bedrock ${modelId.replace(/^.*openai\./u, "")} has no registered price`),
+        );
+      }
+      assert.ok(excluded, `some archetype must consider and exclude ${modelId}`);
     }
   });
 

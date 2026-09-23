@@ -4,7 +4,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ClassificationResult } from "./classifier.ts";
+import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
+import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
 import { compilePrompt } from "./core/compiler.ts";
 import { isCodeBuilder } from "./core/features.ts";
 import { resolveFallback } from "./core/fallback.ts";
@@ -39,7 +40,15 @@ import { findPromptProfile, PROMPT_PROFILES } from "./core/profiles.ts";
 import { providerWeightFor } from "./core/provider-weights.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 import {
-  bedrockSolLongContextPricingUnavailable,
+  DEFAULT_SECONDARY_GRACE_POLICY,
+  chooseSecondaryGrace,
+  decideSecondaryCorrection,
+  estimateCacheSwitchPenaltyUsd,
+  reconciliationDelta,
+} from "./core/reconciliation.ts";
+import type { SecondaryGraceDecision, SecondaryGracePolicy } from "./core/reconciliation.ts";
+import {
+  bedrockLongContextPricingUnavailable,
   deriveRoutingContext,
   isStandaloneReviewRequest,
   registrySnapshotId,
@@ -53,7 +62,7 @@ import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
 import type { RepositoryMetadata, SessionSynopsis } from "./core/synopsis.ts";
-import { classifyTaskWithPi } from "./pi-classifier.ts";
+import { classifyTaskPrimaryWithPi, classifyTaskSecondaryWithPi, classifyTaskWithPi } from "./pi-classifier.ts";
 import {
   buildRegistrySnapshot,
   EMPTY_SCOPE,
@@ -87,7 +96,12 @@ import {
   sanitizeClassifierFeatures,
   withRouterSpan,
 } from "./telemetry.ts";
-import type { ClassifierInvocationPurpose, ClassifierInvocationSummary, RouterTelemetryEvent } from "./telemetry.ts";
+import type {
+  ClassifierInvocationPurpose,
+  ClassifierInvocationRun,
+  ClassifierInvocationSummary,
+  RouterTelemetryEvent,
+} from "./telemetry.ts";
 
 const STATE_ENTRY = "model-router-state";
 const CONTEXT_MESSAGE = "model-router-context";
@@ -119,6 +133,59 @@ type AttemptMetrics = {
 
 type AttemptDisposition = "unknown" | "pending" | "success" | "aborted" | "incomplete" | "failed";
 
+type SecondaryBinding = {
+  taskId: string;
+  inputFingerprint: string;
+  registrySnapshotId: string;
+  provisionalLeaseRevision: string;
+};
+
+type SecondaryArrival =
+  "before_agent_run" | "during_provider_turn" | "during_tool_execution" | "between_turns" | "after_agent_run";
+
+type AgentRunPhase = "before_start" | "active" | "settled";
+
+type SecondaryReconciliationTask = {
+  binding: SecondaryBinding;
+  controller: AbortController;
+  promise: Promise<ClassifierInvocationRun<ClassificationResult>>;
+  primary: PrimaryClassificationResult;
+  registry: readonly RegistryModelSnapshot[];
+  synopsis: SessionSynopsis;
+  prompt: string;
+  hasImages: boolean;
+  languageBucket: string;
+  languageBuckets: readonly string[];
+  contextBucket: string;
+  explorationKey: string;
+  cache: { cachedTokens: number; expectedReuseRatio: number };
+  grace: SecondaryGraceDecision;
+  graceUsedMs: number;
+  primaryCompletedAtMs: number;
+  secondaryStartedAtMs: number;
+  agentStartReleasedAtMs?: number;
+  pendingSafetyGate: boolean;
+  settled: boolean;
+  /** The settled run, kept so an abort during its settlement telemetry can still attribute it. */
+  settledRun?: ClassifierInvocationRun<ClassificationResult>;
+  /** Set when an abort path consumed this task, including while its settlement telemetry awaits. */
+  abandoned?: boolean;
+  /** The single in-progress settlement, so the grace window can await an already-started one. */
+  settlement?: Promise<void>;
+};
+
+type QueuedSecondaryReconciliation = {
+  task: SecondaryReconciliationTask;
+  run: ClassifierInvocationRun<ClassificationResult>;
+  arrivedAtMs: number;
+  arrival: SecondaryArrival;
+};
+
+type ReconciliationBoundary =
+  | { kind: "before_first_request"; promptRefreshAllowed: true; continuing: true }
+  | { kind: "turn_end"; promptRefreshAllowed: false; continuing: boolean }
+  | { kind: "agent_settled"; promptRefreshAllowed: false; continuing: false };
+
 export function automaticRoutingBlockReason(
   classification: Pick<ClassificationResult, "failedClosed">,
 ): string | undefined {
@@ -136,6 +203,7 @@ export function deterministicCheckCommand(command: string): string | undefined {
 }
 
 const SAFETY_LIFECYCLE_TOOL_NAMES = new Set(["submit_action_plan", "submit_safety_review"]);
+const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
 /** Keep lifecycle validators out of the model's tool surface unless the active phase can accept them. */
 export function activeToolsForSafetyLifecycle(
@@ -192,12 +260,35 @@ export function safetyToolBlockReason(
   return lifecycleToolBlockReason(lease?.lifecycle, toolName, input);
 }
 
-// A hung classifier/selection call must never block the agent turn indefinitely. Fifteen seconds
-// accommodates observed classifier latency while keeping the deadline bounded; past that we abort
-// the in-flight request (via the shared AbortSignal, so the underlying network call is actually
-// cancelled rather than merely abandoned) and the caller keeps whatever model/task is already
-// selected instead of routing on a call that never returned.
-export const CLASSIFICATION_TIMEOUT_MS = 15_000;
+// A hung classifier/selection call must never block the agent turn indefinitely, so the router owns
+// the deadline rather than trusting the transport. The budget is per classification stage: the
+// primary stage gets its own deadline, and if the classifier escalates, the secondary stage starts
+// a fresh one. Retries and endpoint iteration inside a stage share that stage's budget. A stage that
+// overruns aborts the in-flight request (via the shared AbortSignal, so the underlying network call
+// is actually cancelled rather than merely abandoned) and ends the invocation; the caller then keeps
+// whatever model/task is already selected instead of routing on a call that never returned.
+// One constant governs every stage of a synchronous classifier invocation, so the deadline the
+// router enforces is always the deadline it reports to the user. It also bounds the window before
+// the first stage reports that it started.
+//
+// Scope: this constant times the invocations run through `classifyWithTimeout` — fresh-task primary
+// classification, and continuity classification, which still escalates primary to secondary inside
+// the same invocation (so the secondary stage there really does start a fresh budget).
+// Background fresh-task secondary reconciliation is a separate invocation and is NOT timed by this
+// constant: see `classifySecondaryWithTimeout`, which uses the configurable
+// `secondaryGracePolicy.secondaryDeadlineMs` (defaulted in `core/reconciliation.ts`). Changing this
+// value does not change the background reconciliation budget, and vice versa.
+export const CLASSIFICATION_STAGE_TIMEOUT_MS = 15_000;
+
+/**
+ * Name the stage that consumed the budget when the router knows it.
+ *
+ * A deadline can fire before any stage reports that it started (for example a classifier that
+ * hangs before its first attempt), so the unattributed wording stays available.
+ */
+export function stageDeadlineDescription(summary: Pick<ClassifierInvocationSummary, "deadlineStage">): string {
+  return summary.deadlineStage ? `in the ${summary.deadlineStage} stage` : "in one stage";
+}
 async function classifyWithTimeout(
   ctx: ExtensionContext,
   registry: readonly RegistryModelSnapshot[],
@@ -208,7 +299,8 @@ async function classifyWithTimeout(
 ) {
   return runClassifierInvocation<ClassificationResult>({
     purpose,
-    timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+    timeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
+    stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
     invoke: (signal, onAttempt) =>
       classify({
         ctx,
@@ -313,8 +405,18 @@ function previousChoice(
 
 type RouterExtensionOptions = {
   telemetry?: Pick<JsonlTelemetryStore, "append" | "read">;
-  /** Test seam for deterministic adapter failure and telemetry-contract regressions. */
+  /**
+   * Backward-compatible classifier override for tests and embedders that still provide a single
+   * synchronous primary-plus-secondary classifier. When this is the only classifier override, the
+   * router disables async secondary reconciliation so old fixtures keep their historical behavior.
+   * Production does not expose a flag for this path; the default runtime uses the split classifiers.
+   */
   classifyTask?: typeof classifyTaskWithPi;
+  /** Primary classifier override used by fresh-task routing before any background reconciliation. */
+  classifyPrimaryTask?: typeof classifyTaskPrimaryWithPi;
+  /** Secondary classifier override used asynchronously after an escalated primary result. */
+  classifySecondaryTask?: typeof classifyTaskSecondaryWithPi;
+  secondaryGracePolicy?: SecondaryGracePolicy;
 };
 
 export default function routerExtension(pi: ExtensionAPI, options: RouterExtensionOptions = {}): void {
@@ -329,7 +431,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     new JsonlTelemetryStore(
       process.env.PI_ROUTER_TELEMETRY_PATH ?? join(getAgentDir(), "router-telemetry", "events.jsonl"),
     );
+  // Keep the legacy override behavior only for callers that still inject `classifyTask` by itself.
+  // New tests should prefer the split overrides so they exercise the same async path as production.
+  const useSingleCallClassifierOverride =
+    options.classifyTask !== undefined &&
+    options.classifyPrimaryTask === undefined &&
+    options.classifySecondaryTask === undefined;
   const classifyTask = options.classifyTask ?? classifyTaskWithPi;
+  const classifyPrimaryTask = options.classifyPrimaryTask ?? options.classifyTask ?? classifyTaskPrimaryWithPi;
+  const classifySecondaryTask = useSingleCallClassifierOverride
+    ? undefined
+    : (options.classifySecondaryTask ?? classifyTaskSecondaryWithPi);
+  const secondaryGracePolicy = options.secondaryGracePolicy ?? DEFAULT_SECONDARY_GRACE_POLICY;
   let state: LeaseState = { mode: provisionalMode(), manualOverride: false };
   // The replacement session has a new branch, so carry only the enablement mode
   // across /clear. The task lease must still be discarded at the new-session
@@ -346,6 +459,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let lastRoute: LastRoute = {};
   let lastUpstream: string | undefined;
   let applyingSelection = false;
+  /** The exact selection an in-flight `applyChoice` is applying, so only its echo is suppressed. */
+  let programmaticSelection: { provider: string; modelId: string } | undefined;
   let lastProviderFailure: FailureKind | undefined;
   let attemptStartedAt = 0;
   let attemptTurns = 0;
@@ -359,12 +474,50 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let reviewParentAttemptMetrics: AttemptMetrics | undefined;
   const accumulatedTaskCosts = new Map<string, number>();
   const taskStartedAt = new Map<string, number>();
+  /**
+   * In-flight secondary classifier work for the current Node process.
+   *
+   * JavaScript keeps these mutations on one event loop; no worker thread shares this Set or the task
+   * objects. The mutable fields are therefore lifecycle latches for async continuations, not
+   * cross-thread synchronization primitives. Every mutating path marks `settled` before deleting or
+   * aborting a task, so a later promise continuation can observe the latch and return without
+   * recording a duplicate reconciliation event.
+   */
+  const secondaryTasks = new Set<SecondaryReconciliationTask>();
+  let queuedSecondaryReconciliation: QueuedSecondaryReconciliation | undefined;
+  let pendingSecondarySafetyGate: SecondaryReconciliationTask | undefined;
+  /**
+   * A gated low-confidence primary keeps its mutation latch until a schema-valid, provider-diverse
+   * secondary answer has actually been reconciled. A timeout, transport error, schema-invalid
+   * answer, vendor-diversity failure, or unroutable correction leaves that safety question
+   * unresolved, so the latch is retained for the task rather than released when the attempt
+   * settles. A manual override, a new task boundary, or shutdown clears it via `abortSecondaryWork`.
+   */
+  let unresolvedSecondarySafetyGate: SecondaryReconciliationTask | undefined;
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
+  // Bumped by `/route off`. Routing work already in flight still runs to completion, but a hook that
+  // started under an earlier generation discards its result instead of applying it.
+  let routingGeneration = 0;
+  // Off also hides the always-registered planning validator. Remembering that the router hid it lets
+  // re-enabling restore the tool without overriding an operator who removed it deliberately.
+  let planningValidatorHiddenWhileOff = false;
+  let agentRunPhase: AgentRunPhase = "before_start";
+  let insideProviderTurn = false;
+  let activeToolExecutions = 0;
 
-  function syncSafetyLifecycleTools(lifecycle: LeaseLifecycle | undefined): void {
+  function syncRouterTools(lifecycle: LeaseLifecycle | undefined): void {
     const current = pi.getActiveTools();
-    const next = activeToolsForSafetyLifecycle(current, lifecycle);
+    let next = activeToolsForSafetyLifecycle(current, state.mode === "off" ? undefined : lifecycle);
+    if (state.mode === "off") {
+      if (next.includes(PLANNING_VALIDATOR_TOOL_NAME)) {
+        next = next.filter((name) => name !== PLANNING_VALIDATOR_TOOL_NAME);
+        planningValidatorHiddenWhileOff = true;
+      }
+    } else if (planningValidatorHiddenWhileOff) {
+      planningValidatorHiddenWhileOff = false;
+      if (!next.includes(PLANNING_VALIDATOR_TOOL_NAME)) next.push(PLANNING_VALIDATOR_TOOL_NAME);
+    }
     if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
       pi.setActiveTools(next);
     }
@@ -449,7 +602,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
     > = {},
   ): Promise<void> {
-    if (!telemetryHealthy) return;
+    // Off records nothing, including events from routing work that was already in flight.
+    if (!telemetryHealthy || state.mode === "off") return;
     try {
       let endpointFields = {};
       if (extra.provider && extra.modelId) {
@@ -502,6 +656,731 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
   }
 
+  function leaseRevision(lease: TaskLease): string {
+    return safetyFingerprint({
+      taskId: lease.taskId,
+      attemptIndex: lease.attemptIndex,
+      selected: lease.selected,
+      lifecycle: lease.lifecycle,
+      features: lease.features,
+    });
+  }
+
+  function linkAbortSignals(signals: readonly AbortSignal[]): AbortSignal {
+    const controller = new AbortController();
+    const abort = () => {
+      controller.abort();
+    };
+    for (const signal of signals) {
+      if (signal.aborted) {
+        controller.abort();
+        break;
+      }
+      signal.addEventListener("abort", abort, { once: true });
+    }
+    return controller.signal;
+  }
+
+  function secondaryArrival(): SecondaryArrival {
+    if (agentRunPhase === "before_start") return "before_agent_run";
+    if (agentRunPhase === "settled") return "after_agent_run";
+    // Tool execution happens inside a provider turn (pi emits tool_execution_start/tool_call/
+    // tool_execution_end between turn_start and turn_end), so `insideProviderTurn` is also true
+    // while a tool runs. Check the narrower condition first or `during_tool_execution` is
+    // unreachable for every ordinary in-turn tool call.
+    if (activeToolExecutions > 0) return "during_tool_execution";
+    if (insideProviderTurn) return "during_provider_turn";
+    return "between_turns";
+  }
+
+  /**
+   * Snapshot nonnegative work counters for reconciliation telemetry.
+   *
+   * These counters are advisory diagnostics rather than safety gates. Clamping protects telemetry
+   * from hook imbalance, such as a missing tool-end event, without changing the routing state machine.
+   */
+  function safeWorkCounters(): Record<string, number> {
+    return {
+      turns: Math.max(0, attemptTurns),
+      toolCalls: Math.max(0, attemptToolCalls),
+      activeToolExecutions: Math.max(0, activeToolExecutions),
+    };
+  }
+
+  function secondaryStaleReason(task: SecondaryReconciliationTask): string | undefined {
+    const active = state.active;
+    if (!active) return "no_active_lease";
+    if (active.taskId !== task.binding.taskId) return "superseded_task";
+    if (active.lastPromptFingerprint !== task.binding.inputFingerprint) return "input_fingerprint_mismatch";
+    if (active.modelSnapshotId !== task.binding.registrySnapshotId) return "registry_snapshot_mismatch";
+    if (state.manualOverride || active.manualOverride) return "manual_override";
+    if (leaseRevision(active) !== task.binding.provisionalLeaseRevision) return "lease_revision_changed";
+    return undefined;
+  }
+
+  /**
+   * Name the budget the background secondary was running against, and what the router observed
+   * when that budget mattered.
+   *
+   * Background reconciliation is bounded by the configurable `secondaryGracePolicy.secondaryDeadlineMs`,
+   * not by `CLASSIFICATION_STAGE_TIMEOUT_MS`, so a `secondary_timeout` record is only actionable if
+   * it also says which budget expired. The failure fields come from the invocation summary and are
+   * omitted for a completed run, matching the summary's own contract: `stageBudgetMs` and
+   * `deadlineStage` exist only for a router-owned deadline, never for a provider transport timeout.
+   */
+  function secondaryBudgetFields(
+    summary: ClassifierInvocationSummary | undefined,
+  ): Record<string, string | number | boolean> {
+    return {
+      secondaryDeadlineMs: secondaryGracePolicy.secondaryDeadlineMs,
+      ...(summary === undefined || summary.outcome === "success"
+        ? {}
+        : {
+            secondaryOutcome: summary.outcome,
+            secondaryWallLatencyMs: summary.wallLatencyMs,
+            ...(summary.errorCategory ? { secondaryErrorCategory: summary.errorCategory } : {}),
+            ...(summary.deadlineStage ? { secondaryDeadlineStage: summary.deadlineStage } : {}),
+            ...(summary.stageBudgetMs === undefined ? {} : { secondaryEnforcedBudgetMs: summary.stageBudgetMs }),
+          }),
+    };
+  }
+
+  async function recordSecondaryReconciliation(
+    ctx: ExtensionContext,
+    queued: QueuedSecondaryReconciliation,
+    data: Record<string, unknown>,
+    extra: Partial<
+      Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
+    > = {},
+  ): Promise<void> {
+    const active = state.active?.taskId === queued.task.binding.taskId ? state.active : undefined;
+    await record(
+      ctx,
+      "secondary_reconciliation",
+      {
+        taskId: queued.task.binding.taskId,
+        inputFingerprint: queued.task.binding.inputFingerprint,
+        registrySnapshotId: queued.task.binding.registrySnapshotId,
+        provisionalLeaseRevision: queued.task.binding.provisionalLeaseRevision,
+        ...(queued.task.agentStartReleasedAtMs === undefined
+          ? {}
+          : {
+              primaryToStartLatencyMs: Math.max(
+                0,
+                queued.task.agentStartReleasedAtMs - queued.task.primaryCompletedAtMs,
+              ),
+            }),
+        graceChosenMs: queued.task.grace.graceMs,
+        graceUsedMs: queued.task.graceUsedMs,
+        expectedReusableTokens: queued.task.grace.expectedReusableTokens,
+        plausibleCacheMissPenaltyUsd: queued.task.grace.plausibleCacheMissPenaltyUsd,
+        secondaryArrival: queued.arrival,
+        secondaryArrivalLatencyMs: Math.max(0, queued.arrivedAtMs - queued.task.primaryCompletedAtMs),
+        workCompletedBeforeReconciliation: safeWorkCounters(),
+        ...secondaryBudgetFields(queued.run.summary),
+        ...data,
+      },
+      {
+        taskId: queued.task.binding.taskId,
+        ...(active
+          ? {
+              routeKey: active.archetype,
+              archetype: active.archetype,
+              provider: active.selected.provider,
+              modelId: active.selected.modelId,
+              effort: active.selected.effort,
+              promptProfileId: active.promptProfileId,
+              policyVersion: active.policyVersion,
+              modelSnapshotId: active.modelSnapshotId,
+            }
+          : {}),
+        ...extra,
+      },
+    );
+  }
+
+  async function rejectQueuedSecondary(
+    ctx: ExtensionContext,
+    queued: QueuedSecondaryReconciliation,
+    reason: string,
+    extraData: Record<string, unknown> = {},
+  ): Promise<void> {
+    await recordSecondaryReconciliation(ctx, queued, {
+      accepted: false,
+      reason,
+      ...extraData,
+    });
+  }
+
+  async function recordAbortedSecondaryTask(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+    reason: string,
+  ): Promise<void> {
+    const now = Date.now();
+    const active = state.active?.taskId === task.binding.taskId ? state.active : undefined;
+    await record(
+      ctx,
+      "secondary_reconciliation",
+      {
+        taskId: task.binding.taskId,
+        inputFingerprint: task.binding.inputFingerprint,
+        registrySnapshotId: task.binding.registrySnapshotId,
+        provisionalLeaseRevision: task.binding.provisionalLeaseRevision,
+        ...(task.agentStartReleasedAtMs === undefined
+          ? {}
+          : {
+              primaryToStartLatencyMs: Math.max(0, task.agentStartReleasedAtMs - task.primaryCompletedAtMs),
+            }),
+        graceChosenMs: task.grace.graceMs,
+        graceUsedMs: task.graceUsedMs,
+        expectedReusableTokens: task.grace.expectedReusableTokens,
+        plausibleCacheMissPenaltyUsd: task.grace.plausibleCacheMissPenaltyUsd,
+        secondaryArrival: secondaryArrival(),
+        secondaryArrivalLatencyMs: Math.max(0, now - task.primaryCompletedAtMs),
+        workCompletedBeforeReconciliation: safeWorkCounters(),
+        // A task aborted before it settled has no invocation summary, so only its budget is known.
+        // One aborted during its settlement telemetry write keeps the summary of the run it settled.
+        ...secondaryBudgetFields(task.settledRun?.summary),
+        accepted: false,
+        reason,
+      },
+      {
+        taskId: task.binding.taskId,
+        ...(active
+          ? {
+              routeKey: active.archetype,
+              archetype: active.archetype,
+              provider: active.selected.provider,
+              modelId: active.selected.modelId,
+              effort: active.selected.effort,
+              promptProfileId: active.promptProfileId,
+              policyVersion: active.policyVersion,
+              modelSnapshotId: active.modelSnapshotId,
+            }
+          : {}),
+      },
+    );
+  }
+
+  /**
+   * Cancel and consume all secondary work that belongs to a superseded routing context.
+   *
+   * The router calls this when a manual override, shutdown, or new lease makes any pending secondary
+   * answer invalid. It clears the queued reconciliation first, then marks each in-flight task settled,
+   * aborts its signal, removes it from `secondaryTasks`, and records a single rejection when a context
+   * is available.
+   */
+  async function abortSecondaryWork(
+    ctx: ExtensionContext | undefined,
+    reason: string,
+    options: { retainSafetyLatch?: boolean } = {},
+  ): Promise<void> {
+    const queued = queuedSecondaryReconciliation;
+    queuedSecondaryReconciliation = undefined;
+    // Compaction keeps the lease and lets a running turn finish, so discarding the stale request
+    // must not also re-enable mutating tools for a low-confidence primary that was never
+    // reconciled. Other abort paths (override, new task, shutdown) do resolve the question.
+    const latched = options.retainSafetyLatch
+      ? (pendingSecondarySafetyGate ??
+        unresolvedSecondarySafetyGate ??
+        (queued?.task.pendingSafetyGate ? queued.task : undefined) ??
+        [...secondaryTasks].find((task) => task.pendingSafetyGate))
+      : undefined;
+    if (pendingSecondarySafetyGate && pendingSecondarySafetyGate !== latched) {
+      pendingSecondarySafetyGate.pendingSafetyGate = false;
+    }
+    pendingSecondarySafetyGate = undefined;
+    if (unresolvedSecondarySafetyGate && unresolvedSecondarySafetyGate !== latched) {
+      unresolvedSecondarySafetyGate.pendingSafetyGate = false;
+    }
+    unresolvedSecondarySafetyGate = latched;
+    if (ctx && queued) await rejectQueuedSecondary(ctx, queued, reason);
+    for (const task of [...secondaryTasks]) {
+      if (task !== latched) task.pendingSafetyGate = false;
+      task.settled = true;
+      task.abandoned = true;
+      task.controller.abort();
+      secondaryTasks.delete(task);
+      if (ctx) await recordAbortedSecondaryTask(ctx, task, reason);
+    }
+  }
+
+  async function settleSecondaryReconciliation(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+    run: ClassifierInvocationRun<ClassificationResult>,
+  ): Promise<void> {
+    if (task.settled) return;
+    task.settled = true;
+    task.settledRun = run;
+    const queued: QueuedSecondaryReconciliation = {
+      task,
+      run,
+      arrivedAtMs: Date.now(),
+      arrival: secondaryArrival(),
+    };
+    await recordClassifierInvocation(
+      ctx,
+      run.summary,
+      run.status === "completed" ? run.value : undefined,
+      task.binding.taskId,
+    );
+    // The task stays discoverable in `secondaryTasks` across the awaited write above, so an abort
+    // path that runs during it consumes this task and records its own outcome. Do not queue or
+    // apply a result that a shutdown, compaction, or override already discarded.
+    if (task.abandoned) return;
+    secondaryTasks.delete(task);
+    const staleReason = secondaryStaleReason(task);
+    if (staleReason) {
+      if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
+      settleSecondarySafetyGate(queued, staleReasonResolvesSafetyGate(staleReason));
+      await rejectQueuedSecondary(ctx, queued, staleReason);
+      return;
+    }
+    if (queuedSecondaryReconciliation) {
+      await rejectQueuedSecondary(ctx, queuedSecondaryReconciliation, "superseded_secondary_result");
+    }
+    queuedSecondaryReconciliation = queued;
+    if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
+    // Drain eagerly only once the run has settled. A result that lands after `before_agent_start`
+    // released the run but before `agent_start` stays queued for the run's own turn boundaries.
+    if (task.agentStartReleasedAtMs !== undefined && agentRunPhase === "settled" && attemptDisposition !== "pending") {
+      await drainSecondaryReconciliation(ctx, {
+        kind: "agent_settled",
+        promptRefreshAllowed: false,
+        continuing: false,
+      });
+    }
+  }
+
+  async function classifySecondaryWithTimeout(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+  ): Promise<ClassifierInvocationRun<ClassificationResult>> {
+    return runClassifierInvocation<ClassificationResult>({
+      purpose: "secondary_reconciliation",
+      timeoutMs: secondaryGracePolicy.secondaryDeadlineMs,
+      invoke: (signal, onAttempt) => {
+        if (!classifySecondaryTask) throw new Error("secondary classifier is unavailable");
+        return classifySecondaryTask({
+          ctx,
+          registry: task.registry,
+          prompt: task.prompt,
+          synopsis: task.synopsis,
+          primary: task.primary,
+          signal: linkAbortSignals([signal, task.controller.signal]),
+          onAttempt,
+        });
+      },
+    });
+  }
+
+  function startSecondaryReconciliation(input: {
+    ctx: ExtensionContext;
+    registry: readonly RegistryModelSnapshot[];
+    prompt: string;
+    synopsis: SessionSynopsis;
+    classification: PrimaryClassificationResult;
+    lease: TaskLease;
+    hasImages: boolean;
+    languageBucket: string;
+    languageBuckets: readonly string[];
+    contextBucket: string;
+    explorationKey: string;
+    cache: { cachedTokens: number; expectedReuseRatio: number };
+    primaryCompletedAtMs: number;
+  }): SecondaryReconciliationTask | undefined {
+    if (
+      !classifySecondaryTask ||
+      !input.classification.escalated ||
+      input.classification.failedClosed ||
+      input.classification.secondaryFeatures !== undefined
+    )
+      return undefined;
+    const controller = new AbortController();
+    const grace = chooseSecondaryGrace(input.cache, input.lease.selected, input.registry, secondaryGracePolicy);
+    const secondaryStartedAtMs = Date.now();
+    const task: SecondaryReconciliationTask = {
+      binding: {
+        taskId: input.lease.taskId,
+        inputFingerprint: input.lease.lastPromptFingerprint,
+        registrySnapshotId: input.lease.modelSnapshotId,
+        provisionalLeaseRevision: leaseRevision(input.lease),
+      },
+      controller,
+      promise: Promise.resolve(undefined as never),
+      primary: input.classification,
+      registry: input.registry,
+      synopsis: input.synopsis,
+      prompt: input.prompt,
+      hasImages: input.hasImages,
+      languageBucket: input.languageBucket,
+      languageBuckets: input.languageBuckets,
+      contextBucket: input.contextBucket,
+      explorationKey: input.explorationKey,
+      cache: input.cache,
+      grace,
+      graceUsedMs: 0,
+      primaryCompletedAtMs: input.primaryCompletedAtMs,
+      secondaryStartedAtMs,
+      pendingSafetyGate:
+        input.classification.primaryFeatures !== undefined &&
+        input.classification.primaryFeatures.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD,
+      settled: false,
+    };
+    task.promise = classifySecondaryWithTimeout(input.ctx, task);
+    secondaryTasks.add(task);
+    if (task.pendingSafetyGate) pendingSecondarySafetyGate = task;
+    void task.promise.then(
+      (run) => {
+        void beginSecondarySettlement(input.ctx, task, run);
+      },
+      (error: unknown) => {
+        void beginSecondarySettlement(input.ctx, task, {
+          status: "failed",
+          error,
+          summary: {
+            purpose: "secondary_reconciliation",
+            outcome: "error",
+            resolution: "none",
+            wallLatencyMs: 0,
+            timedOut: false,
+            cancelled: controller.signal.aborted,
+            attemptCount: 0,
+            completedAttemptCount: 0,
+            validAttemptCount: 0,
+            stages: [],
+            attempts: [],
+            errorCategory: controller.signal.aborted ? "cancelled" : "unexpected",
+          },
+        });
+      },
+    );
+    return task;
+  }
+
+  /**
+   * Start at most one settlement per task and keep it awaitable.
+   *
+   * The eager completion handler starts settling as soon as the classifier answers, so a second
+   * caller (the grace window) would otherwise see `task.settled` and return before the result is
+   * queued. Reusing the same promise lets that caller await the settlement already in flight.
+   */
+  function beginSecondarySettlement(
+    ctx: ExtensionContext,
+    task: SecondaryReconciliationTask,
+    run: ClassifierInvocationRun<ClassificationResult>,
+  ): Promise<void> {
+    task.settlement ??= settleSecondaryReconciliation(ctx, task, run).catch(() => undefined);
+    return task.settlement;
+  }
+
+  async function waitForSecondaryGrace(ctx: ExtensionContext, task: SecondaryReconciliationTask): Promise<void> {
+    if (task.grace.graceMs <= 0) return;
+    const startedAt = Date.now();
+    const settled = await Promise.race([
+      task.promise.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => {
+        setTimeout(() => {
+          resolve(false);
+        }, task.grace.graceMs);
+      }),
+    ]);
+    task.graceUsedMs = Math.max(0, Date.now() - startedAt);
+    if (!settled) return;
+    const settlement = task.promise.then(
+      (run) => beginSecondarySettlement(ctx, task, run),
+      () => task.settlement,
+    );
+    // Settlement writes its invocation telemetry before queueing the result, and that append is
+    // asynchronous. Await it so a result that arrived inside the grace window can still reach the
+    // pre-request correction boundary, but keep the operator-visible start latency inside the grace
+    // budget that was chosen for this task rather than adding the telemetry deadline on top.
+    const remainingGraceMs = Math.max(0, task.grace.graceMs - (Date.now() - startedAt));
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        settlement,
+        new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, remainingGraceMs);
+        }),
+      ]);
+    } finally {
+      if (graceTimer) clearTimeout(graceTimer);
+    }
+    task.graceUsedMs = Math.max(0, Date.now() - startedAt);
+  }
+
+  /**
+   * True only when the secondary actually produced a schema-valid, provider-diverse answer.
+   *
+   * `classifyTaskSecondary` returns the primary features with `failedClosed` false when the
+   * secondary exhausts schema-invalid responses, so completion alone does not mean the safety
+   * question was answered. Explicit secondary features and a distinct vendor are required.
+   */
+  function secondaryResolvedSafety(run: ClassifierInvocationRun<ClassificationResult>): boolean {
+    if (run.status !== "completed") return false;
+    const result = run.value;
+    if (result.failedClosed || result.secondaryFeatures === undefined) return false;
+    return result.secondaryVendor !== undefined && result.secondaryVendor !== result.primaryVendor;
+  }
+
+  /**
+   * Release or retain the mutation latch for a gated task once its result is terminal. Retaining is
+   * fail-closed: the latch stays until an override, a new task boundary, or shutdown clears it.
+   */
+  /**
+   * Whether a stale result also settles the safety question.
+   *
+   * `no_active_lease` and `superseded_task` mean there is no longer a task to gate, and
+   * `manual_override` means the operator took control. The remaining reasons (input fingerprint,
+   * registry snapshot, lease revision — the last of which a provider fallback alone can cause)
+   * leave the same low-confidence task active with no reconciliation, so the latch is retained.
+   */
+  function staleReasonResolvesSafetyGate(reason: string): boolean {
+    return reason === "no_active_lease" || reason === "superseded_task" || reason === "manual_override";
+  }
+
+  function settleSecondarySafetyGate(queued: QueuedSecondaryReconciliation, resolved: boolean): void {
+    if (!queued.task.pendingSafetyGate) return;
+    if (resolved) {
+      queued.task.pendingSafetyGate = false;
+      if (unresolvedSecondarySafetyGate === queued.task) unresolvedSecondarySafetyGate = undefined;
+      return;
+    }
+    unresolvedSecondarySafetyGate = queued.task;
+  }
+
+  function secondarySafetyBlockReason(toolName: string, input: Record<string, unknown>): string | undefined {
+    const pending =
+      pendingSecondarySafetyGate ??
+      queuedSecondaryReconciliation?.task ??
+      unresolvedSecondarySafetyGate ??
+      [...secondaryTasks].find((task) => !task.settled);
+    if (!pending?.pendingSafetyGate || state.active?.taskId !== pending.binding.taskId) return undefined;
+    if (!isPotentiallyMutatingTool(toolName, input)) return undefined;
+    return "Secondary safety classification is pending after a low-confidence primary; mutating tools are blocked until reconciliation reaches a safe boundary";
+  }
+
+  /**
+   * Derive the lease lifecycle that should remain after accepting a secondary correction.
+   *
+   * A correction that stays in the same safety policy can keep the existing lifecycle progress, as
+   * long as the previous lifecycle has not already completed. Policy changes or completed lifecycles
+   * restart from the initial phase for the original task fingerprint so the refreshed route re-enters
+   * the safety gates appropriate to the secondary classifier's features.
+   */
+  function correctedLifecycle(active: TaskLease, corrected: ClassificationResult): LeaseLifecycle {
+    const nextPolicy = deriveSafetyPolicy(corrected.features);
+    if (active.lifecycle.policy === nextPolicy && active.lifecycle.phase !== "completed") return active.lifecycle;
+    return initialLifecycle(nextPolicy, active.lifecycle.taskFingerprint);
+  }
+
+  /**
+   * Attempt to apply a queued secondary-classifier result at a safe execution boundary.
+   *
+   * The drain rejects stale or failed secondary results, re-routes completed results, compares the
+   * material/safety benefit against cache-switch cost, and either records a rejection or installs the
+   * corrected lease. Boundary metadata controls whether a prompt-refresh correction can happen before
+   * the first request, whether active tool execution should defer the drain, and whether a running
+   * task should be asked to cleanly stop and resume under the refreshed route.
+   */
+  async function drainSecondaryReconciliation(ctx: ExtensionContext, boundary: ReconciliationBoundary): Promise<void> {
+    if (state.mode === "off") return;
+    if (boundary.kind === "turn_end" && activeToolExecutions > 0) return;
+    const queued = queuedSecondaryReconciliation;
+    if (!queued) return;
+    const staleReason = secondaryStaleReason(queued.task);
+    if (staleReason) {
+      queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, staleReasonResolvesSafetyGate(staleReason));
+      await rejectQueuedSecondary(ctx, queued, staleReason);
+      return;
+    }
+    const active = state.active;
+    if (!active) return;
+    if (queued.run.status !== "completed") {
+      queuedSecondaryReconciliation = undefined;
+      const summary = queued.run.summary;
+      // No provider-diverse answer arrived, so a gated low-confidence primary keeps its latch.
+      settleSecondarySafetyGate(queued, false);
+      await rejectQueuedSecondary(
+        ctx,
+        queued,
+        summary.timedOut ? "secondary_timeout" : summary.cancelled ? "secondary_cancelled" : "secondary_failed",
+      );
+      return;
+    }
+    const routed = await route(
+      ctx,
+      queued.task.registry,
+      queued.run.value,
+      queued.task.hasImages,
+      queued.task.languageBucket,
+      queued.task.languageBuckets,
+      queued.task.contextBucket,
+      queued.task.explorationKey,
+    );
+    // `route()` awaits telemetry I/O, so an override, a superseding lease, or another drain can run
+    // between the checks above and the mutation below. Re-validate ownership and staleness after
+    // every await rather than acting on the snapshot captured before it.
+    const lateRejection = (): string | undefined => {
+      if (queuedSecondaryReconciliation !== queued) return "superseded_secondary_result";
+      if (state.active !== active) return "lease_replaced_during_reconciliation";
+      return secondaryStaleReason(queued.task);
+    };
+    const afterRouteRejection = lateRejection();
+    if (afterRouteRejection) {
+      // Whoever took the queue already recorded its rejection, so do not record a second one for
+      // the same task; just stop before mutating state this drain no longer owns.
+      if (queuedSecondaryReconciliation !== queued) return;
+      queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
+      await rejectQueuedSecondary(ctx, queued, afterRouteRejection);
+      return;
+    }
+    if (routed.decision.kind === "unroutable") {
+      queuedSecondaryReconciliation = undefined;
+      // An unroutable correction never reconciled the safety question either.
+      settleSecondarySafetyGate(queued, false);
+      await rejectQueuedSecondary(ctx, queued, "secondary_route_unroutable", {
+        routeReason: routed.decision.reason,
+        exclusions: routed.decision.exclusions,
+      });
+      return;
+    }
+    const delta = reconciliationDelta(
+      active.features,
+      queued.run.value.features,
+      active.selected,
+      routed.decision.primary,
+      { incumbent: active.archetype, corrected: routed.decision.archetype },
+    );
+    const estimatedCachePenaltyUsd = estimateCacheSwitchPenaltyUsd(
+      queued.task.cache,
+      active.selected,
+      routed.decision.primary,
+      queued.task.registry,
+    );
+    const correction = decideSecondaryCorrection(delta, estimatedCachePenaltyUsd, secondaryGracePolicy);
+    if (correction.action === "reject") {
+      queuedSecondaryReconciliation = undefined;
+      // A rejected correction leaves the weaker primary policy installed, so a safety-relevant
+      // delta that was never applied keeps the latch even though the secondary answered.
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run) && !delta.safetyRelevant);
+      await rejectQueuedSecondary(ctx, queued, correction.reason, {
+        materialDelta: delta.material,
+        safetyRelevant: delta.safetyRelevant,
+        deltaReasons: delta.reasons,
+        estimatedCachePenaltyUsd,
+        expectedBenefitUsd: correction.expectedBenefitUsd,
+      });
+      return;
+    }
+
+    const lifecycle = correctedLifecycle(active, queued.run.value);
+    const promptRefreshRequired =
+      active.promptProfileId !== routed.decision.primary.profileId ||
+      active.archetype !== routed.decision.archetype ||
+      active.lifecycle.policy !== lifecycle.policy;
+    if (!boundary.promptRefreshAllowed && promptRefreshRequired && !boundary.continuing) {
+      queuedSecondaryReconciliation = undefined;
+      // The lease survives for a later same-task continuation, so an uninstalled safety-relevant
+      // correction must not hand back mutating tools under the weaker primary lifecycle.
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run) && !delta.safetyRelevant);
+      await rejectQueuedSecondary(ctx, queued, "task_ended_no_extra_turn", {
+        materialDelta: delta.material,
+        safetyRelevant: delta.safetyRelevant,
+        deltaReasons: delta.reasons,
+        estimatedCachePenaltyUsd,
+        expectedBenefitUsd: correction.expectedBenefitUsd,
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const correctedLease: TaskLease = {
+      ...active,
+      updatedAt: now,
+      archetype: routed.decision.archetype,
+      features: queued.run.value.features,
+      selected: routed.decision.primary,
+      fallbacks: routed.decision.fallbacks,
+      promptProfileId: routed.decision.primary.profileId,
+      modelSnapshotId: registrySnapshotId(routed.registry),
+      policyVersion: routed.decision.policyVersion,
+      lifecycle,
+    };
+    if (state.mode === "active" && !(await applyChoice(ctx, correctedLease.selected))) {
+      queuedSecondaryReconciliation = undefined;
+      // A safety-relevant correction that could not be applied leaves the gate unresolved.
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run) && !delta.safetyRelevant);
+      await rejectQueuedSecondary(ctx, queued, "correction_apply_failed", {
+        materialDelta: delta.material,
+        safetyRelevant: delta.safetyRelevant,
+        deltaReasons: delta.reasons,
+        estimatedCachePenaltyUsd,
+        expectedBenefitUsd: correction.expectedBenefitUsd,
+      });
+      return;
+    }
+
+    // `applyChoice` awaits the provider selection, so re-validate immediately before mutating.
+    const beforeInstallRejection = lateRejection();
+    if (beforeInstallRejection) {
+      if (queuedSecondaryReconciliation !== queued) return;
+      queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
+      await rejectQueuedSecondary(ctx, queued, beforeInstallRejection);
+      return;
+    }
+    state = installLease(state, correctedLease);
+    persistState();
+    updateStatus(ctx);
+    queuedSecondaryReconciliation = undefined;
+    settleSecondarySafetyGate(queued, true);
+    const handoff = promptRefreshRequired
+      ? boundary.promptRefreshAllowed
+        ? "prompt_refresh_before_first_request"
+        : "clean_stop_resume"
+      : "same_profile_next_turn";
+    await recordSecondaryReconciliation(ctx, queued, {
+      accepted: true,
+      reason: "accepted",
+      handoff,
+      materialDelta: delta.material,
+      safetyRelevant: delta.safetyRelevant,
+      deltaReasons: delta.reasons,
+      estimatedCachePenaltyUsd,
+      expectedBenefitUsd: correction.expectedBenefitUsd,
+      secondaryClassifierOutput: sanitizeClassifierFeatures(queued.run.value.features),
+      // `classifyTaskSecondary` returns the primary attempts it was given plus the secondary ones,
+      // so record only the secondary stage here instead of double-counting primary attempts.
+      secondaryClassifierAttempts: queued.run.value.attempts
+        .filter((attempt) => attempt.stage === "secondary")
+        .map(sanitizeClassifierAttempt),
+    });
+    // Shadow routing never applies the refreshed profile, so interrupting the run would only cost the
+    // user a turn; the telemetry above still records the handoff active mode would have taken.
+    if (handoff === "clean_stop_resume" && state.mode === "active") {
+      ctx.abort();
+      pi.sendMessage(
+        {
+          customType: CONTEXT_MESSAGE,
+          content:
+            "Secondary classification changed the route profile. Resume the same task under the refreshed router profile and existing evidence; do not broaden scope.",
+          display: false,
+          details: { taskId: correctedLease.taskId, reconciliation: "prompt_profile_refresh" },
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    }
+  }
+
   async function classifyContinuityWithTelemetry(
     ctx: ExtensionContext,
     registry: readonly RegistryModelSnapshot[],
@@ -509,6 +1388,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     taskSynopsis: SessionSynopsis,
     lease: TaskLease,
     cache: { cachedTokens: number; expectedReuseRatio: number },
+    superseded: () => boolean,
   ) {
     return withRouterSpan(
       ctx.sessionManager.getSessionId(),
@@ -532,12 +1412,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         }
         invocation.summary = summary;
         annotateClassifierSpan(span, summary);
-        await recordClassifierInvocation(
-          ctx,
-          summary,
-          invocation.status === "completed" ? invocation.value : undefined,
-          lease.taskId,
-        );
+        if (!superseded()) {
+          await recordClassifierInvocation(
+            ctx,
+            summary,
+            invocation.status === "completed" ? invocation.value : undefined,
+            lease.taskId,
+          );
+        }
         return { invocation, continuity };
       },
     );
@@ -548,24 +1430,34 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     registry: readonly RegistryModelSnapshot[],
     prompt: string,
     taskSynopsis: SessionSynopsis,
+    superseded: () => boolean,
   ) {
     return withRouterSpan(
       ctx.sessionManager.getSessionId(),
       "router.classify",
       { "router.mode": state.mode },
       async (span) => {
-        const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "fresh_task", classifyTask);
+        const invocation = await classifyWithTimeout(
+          ctx,
+          registry,
+          prompt,
+          taskSynopsis,
+          "fresh_task",
+          classifyPrimaryTask,
+        );
         const summary =
           invocation.status === "completed"
             ? completeClassifierInvocation(invocation.summary, "classified", invocation.value.failedClosed)
             : invocation.summary;
         invocation.summary = summary;
         annotateClassifierSpan(span, summary);
-        await recordClassifierInvocation(
-          ctx,
-          summary,
-          invocation.status === "completed" ? invocation.value : undefined,
-        );
+        if (!superseded()) {
+          await recordClassifierInvocation(
+            ctx,
+            summary,
+            invocation.status === "completed" ? invocation.value : undefined,
+          );
+        }
         return invocation;
       },
     );
@@ -578,6 +1470,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     taskSynopsis: SessionSynopsis,
     pending: PendingInput | undefined,
     initialActive: TaskLease | undefined,
+    // Classification outlives `/route off`; its telemetry is dropped once the calling hook is superseded.
+    superseded: () => boolean,
   ): Promise<{
     active?: TaskLease;
     classification?: ClassificationResult;
@@ -598,6 +1492,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         taskSynopsis,
         continuityGate.lease,
         pending.cache,
+        superseded,
       );
       if (result.invocation.status === "completed" && result.continuity) {
         classification = result.invocation.value;
@@ -607,9 +1502,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       } else {
         const summary = result.invocation.summary;
         const reason = summary.timedOut ? "timed out" : summary.cancelled ? "was cancelled" : "failed";
+        // Only a router-owned stage deadline can be reported as the router's fixed stage budget. A
+        // provider-thrown TimeoutError also sets `timedOut`, but it is categorized as
+        // `transport_timeout` and can fire well inside the stage budget, so it takes the generic
+        // wording derived from `reason` instead of claiming the router's deadline elapsed.
         ctx.ui.notify(
-          summary.timedOut
-            ? `Router continuity classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current task and model selection`
+          summary.errorCategory === "deadline"
+            ? `Router continuity classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s ${stageDeadlineDescription(summary)}; keeping the current task and model selection`
             : `Router continuity classification ${reason}; keeping the current task and model selection`,
           "warning",
         );
@@ -620,14 +1519,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
 
     if (requiresNewLease && !classification) {
-      const result = await classifyFreshTaskWithTelemetry(ctx, registry, prompt, taskSynopsis);
+      const result = await classifyFreshTaskWithTelemetry(ctx, registry, prompt, taskSynopsis, superseded);
       if (result.status === "completed") {
         classification = result.value;
       } else {
         const reason = result.summary.timedOut ? "timed out" : result.summary.cancelled ? "was cancelled" : "failed";
+        // See the continuity branch above: only `deadline` means the router's own stage budget
+        // elapsed, so a transport timeout must not be reported as the fixed stage deadline.
         ctx.ui.notify(
-          result.summary.timedOut
-            ? `Router classification timed out after ${String(CLASSIFICATION_TIMEOUT_MS / 1000)}s; keeping the current model selection`
+          result.summary.errorCategory === "deadline"
+            ? `Router classification timed out after ${String(CLASSIFICATION_STAGE_TIMEOUT_MS / 1000)}s ${stageDeadlineDescription(result.summary)}; keeping the current model selection`
             : `Router classification ${reason}; keeping the current model selection`,
           "warning",
         );
@@ -757,7 +1658,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
     if (!model?.available) return false;
     const requirements = routeRequirements(currentTokens(ctx), lease.features, hasImages);
-    if (bedrockSolLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return false;
+    if (bedrockLongContextPricingUnavailable(model, requirements.estimatedFinishedTokens)) return false;
     if (requirements.estimatedFinishedTokens > Math.floor(model.contextWindow * 0.7)) return false;
     if (requirements.requiresImages && !model.inputTypes.includes("image")) return false;
     if (requirements.requiresTools && !model.toolCapable) return false;
@@ -771,6 +1672,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   async function applyChoice(ctx: ExtensionContext, choice: RouteChoice): Promise<boolean> {
     applyingSelection = true;
+    // `pi.setModel` is asynchronous, so a real user model selection can arrive while the flag is
+    // set. Record the exact selection this call is making so only its own echo is suppressed.
+    programmaticSelection = { provider: choice.provider, modelId: choice.modelId };
     try {
       if (ctx.model?.provider === choice.provider && ctx.model.id === choice.modelId) {
         if (pi.getThinkingLevel() !== choice.effort) pi.setThinkingLevel(choice.effort);
@@ -786,6 +1690,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       return false;
     } finally {
       applyingSelection = false;
+      programmaticSelection = undefined;
     }
   }
 
@@ -1239,6 +2144,30 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return { evidence: { ...partial, evidenceFingerprint: safetyFingerprint(partial) } };
   }
 
+  /**
+   * A continuation starts no secondary of its own, and any lease's secondary can settle while
+   * before_agent_start awaits classification or model preparation. Apply it before the first provider
+   * request rather than after that turn's tools have run, and prepare a corrected lease again.
+   * Returns undefined when the turn should proceed unrouted, including when `/route off` superseded it.
+   */
+  async function applyQueuedSecondaryBeforeFirstRequest(
+    ctx: ExtensionContext,
+    prepared: TaskLease,
+    pending: PendingInput | undefined,
+    superseded: () => boolean,
+  ): Promise<TaskLease | undefined> {
+    if (!queuedSecondaryReconciliation) return prepared;
+    await drainSecondaryReconciliation(ctx, {
+      kind: "before_first_request",
+      promptRefreshAllowed: true,
+      continuing: true,
+    });
+    if (superseded()) return undefined;
+    if (state.active?.taskId !== prepared.taskId || state.active === prepared) return prepared;
+    const corrected = await prepareActiveLeaseForTurn(ctx, state.active, pending);
+    return corrected && !superseded() ? corrected : undefined;
+  }
+
   async function prepareActiveLeaseForTurn(
     ctx: ExtensionContext,
     active: TaskLease,
@@ -1422,6 +2351,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_shutdown", async (event) => {
+    await abortSecondaryWork(undefined, "session_shutdown");
     if (event.reason === "new") modeForNextSession = state.mode;
     // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
     // sees the mode in force when a session ends.
@@ -1429,6 +2359,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_start", async (event, ctx) => {
+    await abortSecondaryWork(ctx, "session_start");
     attemptDisposition = "unknown";
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
     scope = await readRouterScope(ctx.cwd);
@@ -1481,6 +2412,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_compact", async (_event, ctx) => {
+    await abortSecondaryWork(ctx, "session_compact", { retainSafetyLatch: true });
     // Compaction rewrites history, not enablement. The mode stays in force, and re-persisting it puts
     // the mode after the compaction cut so a later resume of this session still sees it. The lease is
     // kept and a pending post_compaction boundary is recorded instead, so the next ordinary user
@@ -1506,7 +2438,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("input", (event, ctx) => {
     // The next task boundary is not known yet. Remove phase-scoped validators before Pi builds
     // the turn prompt; before_agent_start restores exactly the validator accepted by the lease.
-    syncSafetyLifecycleTools(undefined);
+    syncRouterTools(undefined);
     if (state.mode === "off") return { action: "continue" as const };
     if (
       state.active &&
@@ -1554,15 +2486,21 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    agentRunPhase = "before_start";
     let exposedSafetyLifecycle: LeaseLifecycle | undefined;
     if (state.mode === "off") {
-      syncSafetyLifecycleTools(undefined);
+      syncRouterTools(undefined);
       return;
     }
+    // `/route off` does not cancel this hook. Each slow step below is followed by a generation check,
+    // so a hook superseded by off installs no lease, applies no model/effort, and returns no prompt.
+    const generation = routingGeneration;
+    const superseded = (): boolean => generation !== routingGeneration;
     try {
       const pending = pendingInput;
       pendingInput = undefined;
       const repository = pending ? await pending.repository : await readRepositoryMetadata(pi, ctx.cwd);
+      if (superseded()) return;
       if (pending && lastUpstream && repository.upstream && repository.upstream !== lastUpstream) {
         state = setHardBoundary(state, "post_push");
         pending.gate = { action: "new_task", reason: "hard boundary: post_push", hardBoundary: "post_push" };
@@ -1594,11 +2532,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         currentSynopsis,
         pending,
         state.active,
+        superseded,
       );
+      const primaryCompletedAtMs = Date.now();
+      if (superseded()) return;
       let active = turnClassification.active;
       const classification = turnClassification.classification;
       const requiresNewLease = turnClassification.requiresNewLease;
       if (turnClassification.boundaryReason) lastRoute.boundaryReason = turnClassification.boundaryReason;
+      // A committed new-task boundary settles the previous task's secondary question even when this
+      // task's classification or route then fails and the previous lease stays installed; otherwise
+      // that late result would still pass every stale check and act on this prompt's run.
+      if (requiresNewLease) await abortSecondaryWork(ctx, "superseded_task");
 
       if (requiresNewLease && classification) {
         const routedClassification = classification;
@@ -1611,6 +2556,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           : undefined;
         const sanitizedClassifierAttempts = routedClassification.attempts.map(sanitizeClassifierAttempt);
         for (const attempt of sanitizedClassifierAttempts) {
+          if (superseded()) return;
           await record(
             ctx,
             "classifier_attempt",
@@ -1656,6 +2602,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             return result;
           },
         );
+        if (superseded()) return;
         lastRoute = { ...lastRoute, classification: routedClassification, decision: routed.decision };
         if (routed.decision.kind === "unroutable") {
           await record(
@@ -1765,10 +2712,39 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             modelSnapshotId: lease.modelSnapshotId,
           },
         );
+        if (superseded()) return;
+        const secondaryTask = startSecondaryReconciliation({
+          ctx,
+          registry: routed.registry,
+          prompt: event.prompt,
+          synopsis: currentSynopsis,
+          classification: routedClassification,
+          lease,
+          hasImages: pending?.hasImages ?? Boolean(event.images?.length),
+          languageBucket,
+          languageBuckets: repository.languageBuckets,
+          contextBucket,
+          explorationKey: promptFingerprint(event.prompt),
+          cache: pending?.cache ?? { cachedTokens: 0, expectedReuseRatio: 0 },
+          primaryCompletedAtMs,
+        });
+        if (secondaryTask) {
+          await waitForSecondaryGrace(ctx, secondaryTask);
+          if (superseded()) return;
+          secondaryTask.agentStartReleasedAtMs = Date.now();
+          await drainSecondaryReconciliation(ctx, {
+            kind: "before_first_request",
+            promptRefreshAllowed: true,
+            continuing: true,
+          });
+          if (state.active?.taskId === lease.taskId) active = state.active;
+        }
       }
 
-      if (!active) return;
+      if (!active || superseded()) return;
       active = await prepareActiveLeaseForTurn(ctx, active, pending);
+      if (!active || superseded()) return;
+      active = await applyQueuedSecondaryBeforeFirstRequest(ctx, active, pending, superseded);
       if (!active) return;
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
@@ -1791,13 +2767,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         },
       };
     } finally {
-      syncSafetyLifecycleTools(exposedSafetyLifecycle);
+      syncRouterTools(superseded() ? undefined : exposedSafetyLifecycle);
       ctx.ui.setWorkingMessage();
     }
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (applyingSelection || event.source === "restore") return;
+    if (state.mode === "off" || event.source === "restore") return;
+    // Suppress only the echo of the selection the router is applying. `event.source` cannot
+    // distinguish a programmatic `setModel` from a user picking a model (both report "set"), so a
+    // different model arriving while the apply is in flight is a real override and must win.
+    if (
+      applyingSelection &&
+      (programmaticSelection === undefined ||
+        (event.model.provider === programmaticSelection.provider && event.model.id === programmaticSelection.modelId))
+    ) {
+      return;
+    }
+    await abortSecondaryWork(ctx, "manual_override");
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual model override") };
     state = markManualOverride(state);
     persistState();
@@ -1822,7 +2809,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("thinking_level_select", async (event, ctx) => {
-    if (applyingSelection) return;
+    if (state.mode === "off" || applyingSelection) return;
+    await abortSecondaryWork(ctx, "manual_override");
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual effort override") };
     const active = state.active;
     const changed = active ? changeEffortWithinLease(active, event.level, new Date().toISOString()) : undefined;
@@ -1855,6 +2843,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_start", () => {
+    // Run-phase bookkeeping tracks Pi itself, so it stays accurate while off for use after re-enable.
+    agentRunPhase = "active";
+    insideProviderTurn = false;
+    activeToolExecutions = 0;
+    if (state.mode === "off") return;
     lastProviderFailure = undefined;
     attemptDisposition = "pending";
     agentRunSequence++;
@@ -1867,10 +2860,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("turn_start", () => {
+    insideProviderTurn = true;
+    if (state.mode === "off") return;
     attemptTurns++;
   });
 
+  pi.on("turn_end", async (event, ctx) => {
+    insideProviderTurn = false;
+    await drainSecondaryReconciliation(ctx, {
+      kind: "turn_end",
+      promptRefreshAllowed: false,
+      continuing:
+        (assistantMessage(event.message) && event.message.stopReason === "toolUse") || event.toolResults.length > 0,
+    });
+  });
+
+  pi.on("tool_execution_start", () => {
+    activeToolExecutions++;
+  });
+
   pi.on("tool_execution_end", (event) => {
+    activeToolExecutions = Math.max(0, activeToolExecutions - 1);
+    if (state.mode === "off") return;
     attemptToolCalls++;
     const check = deterministicCheckCalls.get(event.toolCallId);
     const mutation = potentiallyMutatingCalls.get(event.toolCallId);
@@ -1904,8 +2915,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("tool_call", (event) => {
+    if (state.mode === "off") return undefined;
     const reason = safetyToolBlockReason(state.active, event.toolName, event.input);
     if (reason) return { block: true, reason };
+    const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
+    if (secondaryReason) return { block: true, reason: secondaryReason };
     if (event.toolName === "bash") {
       const command = deterministicCheckCommand(typeof event.input.command === "string" ? event.input.command : "");
       if (command) deterministicCheckCalls.set(event.toolCallId, command);
@@ -1920,6 +2934,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("after_provider_response", (event) => {
+    if (state.mode === "off") return;
     // An invalid/expired token is endpoint availability failure just like a rate
     // limit: move to the next authorized provider instead of failing the lease.
     if (event.status === 401 || event.status === 403 || event.status === 429 || event.status >= 500) {
@@ -1928,6 +2943,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_end", async (event, ctx) => {
+    if (state.mode === "off") return;
     const active = state.active;
     if (!active || active.executionFailed) return;
     const assistants = event.messages.filter(assistantMessage);
@@ -2073,114 +3089,125 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
-    const active = state.active;
-    if (!active || state.mode !== "active" || active.executionFailed) return;
-    if (active.lifecycle.phase === "review") {
-      if (attemptDisposition === "success" && active.lifecycle.submission) {
-        await restoreParentAfterReview(ctx, active, "completed");
-      } else if (attemptDisposition === "aborted") {
-        await restoreParentAfterReview(ctx, active, "skipped");
+    try {
+      const active = state.active;
+      if (!active || state.mode !== "active" || active.executionFailed) return;
+      if (active.lifecycle.phase === "review") {
+        if (attemptDisposition === "success" && active.lifecycle.submission) {
+          await restoreParentAfterReview(ctx, active, "completed");
+        } else if (attemptDisposition === "aborted") {
+          await restoreParentAfterReview(ctx, active, "skipped");
+        }
+        return;
       }
-      return;
-    }
-    if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
+      if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
 
-    if (active.lifecycle.phase === "preflight") {
-      const plan = active.lifecycle.plan;
-      if (plan) {
-        const scopeFingerprint = safetyFingerprint({
-          taskFingerprint: active.lifecycle.taskFingerprint,
-          planFingerprint: plan.planFingerprint,
-        });
+      if (active.lifecycle.phase === "preflight") {
+        const plan = active.lifecycle.plan;
+        if (plan) {
+          const scopeFingerprint = safetyFingerprint({
+            taskFingerprint: active.lifecycle.taskFingerprint,
+            planFingerprint: plan.planFingerprint,
+          });
+          await startIndependentReview(
+            ctx,
+            active,
+            "authorization",
+            scopeFingerprint,
+            [
+              `Review the validated plan ${plan.planFingerprint} for task ${plan.taskFingerprint}.`,
+              `Targets: ${plan.plan.targets.join(", ")}.`,
+              "Verify concrete preconditions, irreversible effects, rollback realism, abort conditions, tool scope, and task/plan alignment. Approval applies only to this exact fingerprint.",
+            ].join("\n"),
+          );
+        } else if (!active.lifecycle.evidenceRepairAttempted) {
+          const repaired = {
+            ...active,
+            updatedAt: new Date().toISOString(),
+            lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
+          };
+          state = installLease(state, repaired);
+          persistState();
+          pi.sendMessage(
+            {
+              customType: CONTEXT_MESSAGE,
+              content:
+                "Preflight is still non-mutating. Inspect the exact targets and call submit_action_plan with concrete steps, preconditions, verification, rollback, abort conditions, irreversible effects, and required tool names.",
+              display: true,
+              details: { taskId: active.taskId, repairReason: "missing_action_plan" },
+            },
+            { triggerTurn: true, deliverAs: "followUp" },
+          );
+        } else {
+          ctx.ui.notify("Irreversible action remains blocked: no validated action plan is available", "error");
+        }
+        return;
+      }
+
+      if (active.lifecycle.phase === "advisory_pending") {
         await startIndependentReview(
           ctx,
           active,
-          "authorization",
-          scopeFingerprint,
-          [
-            `Review the validated plan ${plan.planFingerprint} for task ${plan.taskFingerprint}.`,
-            `Targets: ${plan.plan.targets.join(", ")}.`,
-            "Verify concrete preconditions, irreversible effects, rollback realism, abort conditions, tool scope, and task/plan alignment. Approval applies only to this exact fingerprint.",
-          ].join("\n"),
+          "advisory",
+          safetyFingerprint({ taskFingerprint: active.lifecycle.taskFingerprint, features: active.features }),
+          "Assess the high-risk reversible action before execution. Identify failure modes, safer sequencing, checks, and stop conditions. This is advice, not authorization.",
         );
-      } else if (!active.lifecycle.evidenceRepairAttempted) {
-        const repaired = {
-          ...active,
-          updatedAt: new Date().toISOString(),
-          lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
-        };
-        state = installLease(state, repaired);
-        persistState();
-        pi.sendMessage(
-          {
-            customType: CONTEXT_MESSAGE,
-            content:
-              "Preflight is still non-mutating. Inspect the exact targets and call submit_action_plan with concrete steps, preconditions, verification, rollback, abort conditions, irreversible effects, and required tool names.",
-            display: true,
-            details: { taskId: active.taskId, repairReason: "missing_action_plan" },
-          },
-          { triggerTurn: true, deliverAs: "followUp" },
-        );
-      } else {
-        ctx.ui.notify("Irreversible action remains blocked: no validated action plan is available", "error");
+        return;
       }
-      return;
-    }
 
-    if (active.lifecycle.phase === "advisory_pending") {
-      await startIndependentReview(
-        ctx,
-        active,
-        "advisory",
-        safetyFingerprint({ taskFingerprint: active.lifecycle.taskFingerprint, features: active.features }),
-        "Assess the high-risk reversible action before execution. Identify failure modes, safer sequencing, checks, and stop conditions. This is advice, not authorization.",
-      );
-      return;
-    }
-
-    if (lifecycleRequiresCompletionReview(active.lifecycle)) {
-      const collected = await collectCompletionEvidence(ctx, active);
-      if (collected.evidence) {
-        const codeBuilder = isCodeBuilder(active.features);
-        await startIndependentReview(
-          ctx,
-          active,
-          "completion",
-          collected.evidence.evidenceFingerprint,
-          codeBuilder
-            ? [
-                `Review implementation evidence ${collected.evidence.evidenceFingerprint}.`,
-                `Baseline HEAD: ${collected.evidence.baselineHead ?? "unavailable"}; completed HEAD: ${collected.evidence.completedHead ?? "unavailable"}.`,
-                `Changed files: ${collected.evidence.changedFiles.join(", ") || "committed delta"}.`,
-                `Deterministic checks: ${collected.evidence.checks.map((check) => `${check.passed ? "PASS" : "FAIL"} ${check.command}`).join("; ")}.`,
-                "Inspect working-tree, staged, and baseline-to-HEAD changes; the fingerprints are scope bindings, not a substitute for reading the diff and test evidence.",
-              ].join("\n")
-            : [
-                `Review completion evidence ${collected.evidence.evidenceFingerprint} for the tracked high-risk operation.`,
-                `Recorded successful mutating tools: ${collected.evidence.mutations.map((mutation) => mutation.toolName).join(", ")}.`,
-                "Check observed outcomes against the original task, advisory/authorization constraints, and available verification evidence.",
-              ].join("\n"),
-        );
-      } else if (!("evidenceRepairAttempted" in active.lifecycle) || !active.lifecycle.evidenceRepairAttempted) {
-        const repaired = {
-          ...active,
-          updatedAt: new Date().toISOString(),
-          lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
-        } as TaskLease;
-        state = installLease(state, repaired);
-        persistState();
-        pi.sendMessage(
-          {
-            customType: CONTEXT_MESSAGE,
-            content: `Required completion review has not started: ${collected.reason ?? "validated evidence is missing"}. Produce the missing deterministic diff/test or operation evidence without broadening scope.`,
-            display: true,
-            details: { taskId: active.taskId, repairReason: "missing_completion_evidence" },
-          },
-          { triggerTurn: true, deliverAs: "followUp" },
-        );
-      } else {
-        ctx.ui.notify(`Required completion review is blocked: ${collected.reason ?? "evidence missing"}`, "error");
+      if (lifecycleRequiresCompletionReview(active.lifecycle)) {
+        const collected = await collectCompletionEvidence(ctx, active);
+        if (collected.evidence) {
+          const codeBuilder = isCodeBuilder(active.features);
+          await startIndependentReview(
+            ctx,
+            active,
+            "completion",
+            collected.evidence.evidenceFingerprint,
+            codeBuilder
+              ? [
+                  `Review implementation evidence ${collected.evidence.evidenceFingerprint}.`,
+                  `Baseline HEAD: ${collected.evidence.baselineHead ?? "unavailable"}; completed HEAD: ${collected.evidence.completedHead ?? "unavailable"}.`,
+                  `Changed files: ${collected.evidence.changedFiles.join(", ") || "committed delta"}.`,
+                  `Deterministic checks: ${collected.evidence.checks.map((check) => `${check.passed ? "PASS" : "FAIL"} ${check.command}`).join("; ")}.`,
+                  "Inspect working-tree, staged, and baseline-to-HEAD changes; the fingerprints are scope bindings, not a substitute for reading the diff and test evidence.",
+                ].join("\n")
+              : [
+                  `Review completion evidence ${collected.evidence.evidenceFingerprint} for the tracked high-risk operation.`,
+                  `Recorded successful mutating tools: ${collected.evidence.mutations.map((mutation) => mutation.toolName).join(", ")}.`,
+                  "Check observed outcomes against the original task, advisory/authorization constraints, and available verification evidence.",
+                ].join("\n"),
+          );
+        } else if (!("evidenceRepairAttempted" in active.lifecycle) || !active.lifecycle.evidenceRepairAttempted) {
+          const repaired = {
+            ...active,
+            updatedAt: new Date().toISOString(),
+            lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
+          } as TaskLease;
+          state = installLease(state, repaired);
+          persistState();
+          pi.sendMessage(
+            {
+              customType: CONTEXT_MESSAGE,
+              content: `Required completion review has not started: ${collected.reason ?? "validated evidence is missing"}. Produce the missing deterministic diff/test or operation evidence without broadening scope.`,
+              display: true,
+              details: { taskId: active.taskId, repairReason: "missing_completion_evidence" },
+            },
+            { triggerTurn: true, deliverAs: "followUp" },
+          );
+        } else {
+          ctx.ui.notify(`Required completion review is blocked: ${collected.reason ?? "evidence missing"}`, "error");
+        }
       }
+    } finally {
+      const settled: ReconciliationBoundary = { kind: "agent_settled", promptRefreshAllowed: false, continuing: false };
+      await drainSecondaryReconciliation(ctx, settled);
+      agentRunPhase = "settled";
+      insideProviderTurn = false;
+      activeToolExecutions = 0;
+      // A result queued while the drain above was awaited missed it, and the eager drain only runs
+      // once the phase is settled, so drain again rather than leave it for the next run.
+      await drainSecondaryReconciliation(ctx, settled);
     }
   });
 
@@ -2206,6 +3233,25 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
               }
             : {}),
         };
+        if (command === "off") {
+          // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
+          // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
+          // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
+          if (pendingInput) ctx.ui.setWorkingMessage();
+          pendingInput = undefined;
+          routingGeneration++;
+          // Mode is already off, so this records nothing. Keep the safety latch so a re-enabled lease
+          // still treats an unreconciled low-confidence primary conservatively.
+          await abortSecondaryWork(ctx, "router_off", { retainSafetyLatch: true });
+          lastProviderFailure = undefined;
+          attemptDisposition = "unknown";
+          deterministicCheckCalls.clear();
+          deterministicCheckResults.clear();
+          potentiallyMutatingCalls.clear();
+        }
+        // Off hides every router-only tool; re-enabling restores the planning validator it hid. Phase
+        // validators return at the next before_agent_start, which exposes exactly what the lease accepts.
+        if (command === "off" || planningValidatorHiddenWhileOff) syncRouterTools(undefined);
         if (command === "active" && state.active) {
           accumulatedTaskCosts.set(state.active.taskId, 0);
           taskStartedAt.set(state.active.taskId, Date.now());
@@ -2237,6 +3283,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         persistState();
         updateStatus(ctx);
         ctx.ui.notify("Router lease cleared; next user input is a new task", "info");
+        return;
+      }
+      if ((command === "accept" || command === "reject" || command === "fail") && state.mode === "off") {
+        ctx.ui.notify(`Model router is off; enable routing before /route ${command}`, "warning");
         return;
       }
       if (command === "accept" || command === "reject") {

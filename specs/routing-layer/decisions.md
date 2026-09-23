@@ -171,12 +171,23 @@ extensions/router/
 
 ## Decision: router-owned classifier deadline and conservative fast paths
 
-The router owns one **15-second** wall-clock deadline for each fresh-task or continuity classification. It wraps the
-whole request rather than resetting a timer for each retry, endpoint, or secondary stage, because those are all one
-user-visible routing decision. One `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and pi-ai
-`complete()` call. The deadline races the whole operation, aborts the signal, and returns the fail-safe result promptly;
-the operation promise has rejection handlers attached so a transport settling after the race cannot create an unhandled
-rejection.
+The router owns independent wall-clock deadlines per classification stage for each fresh-task or continuity request.
+Rather than forcing primary classification and secondary escalation to share a single combined countdown, each stage of
+a synchronous classifier invocation receives its own timeout budget configured in code
+([`CLASSIFICATION_STAGE_TIMEOUT_MS`](../../extensions/router/index.ts)): fresh-task primary classification, and
+continuity classification, which still escalates primary to secondary within one invocation.
+
+The architecture therefore has two timeout owners by design. Background fresh-task secondary reconciliation is
+asynchronous — a separate invocation started after the primary result is accepted — and is bounded by the configurable
+`secondaryGracePolicy.secondaryDeadlineMs` ([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts))
+rather than by the stage constant, with `maxGraceMs` bounding only how long the router delays the first provider
+request. Splitting the budgets keeps the blocking path's deadline the one reported to the user while letting operators
+tune background reconciliation independently. An `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and
+pi-ai `complete()` call for that stage. The stage deadline races the active stage operation, aborts the signal, and
+returns the fail-safe result promptly; the operation promise has rejection handlers attached so a transport settling
+after the race cannot create an unhandled rejection. Exact timeout constants and telemetry handling can be inspected in
+[`extensions/router/index.ts`](../../extensions/router/index.ts) and
+[`extensions/router/telemetry.ts`](../../extensions/router/telemetry.ts).
 
 `AbortError` and `TimeoutError` are terminal control outcomes, not availability errors. The schema layer does not retry,
 the endpoint iterator does not advance, and primary cancellation never escalates to the provider-diverse secondary (nor
@@ -638,3 +649,22 @@ grouping and all v7 consequence gates remain in force. The scoped-candidate comp
    `$4.86` per pass. But Astra has only that one benchmark source and reports zero peak-context telemetry, while the
    pinned package registry does not yet declare it even though some runtime registries do. It remains a challenger for a
    future acceptance-gated admission rather than silently replacing a two-source default.
+
+## Registry refresh to pi 0.85.1, 2026-09-22
+
+Evidence: [`registry-refresh-2026-09-22.md`](registry-refresh-2026-09-22.md).
+
+1. **The Bedrock long-context pricing guard covers every GPT-5.6 model.** Pi 0.85.1 widens the Bedrock context windows
+   for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` to 1,050,000 tokens without registering a long-context rate.
+   All three are now ineligible on Bedrock above 272,000 estimated finished tokens. This extends the Sol rule in
+   decision 4 of the `router-policy-v6` section. Leases are revalidated through the same check, so the policy version is
+   unchanged.
+
+2. **The rate premise of cutting Sol at medium no longer holds, and the cut stands.** Decision 5 of the 2026-08-13
+   section cut `gpt-5.6-sol` at medium partly because Opus 5 medium was cheaper. Under 0.85.1 and the current Bedrock
+   weight, Sol is `6.532` against `7.423` for Opus 5 at the same mix, so only the ability band still favors Opus 5. The
+   cut is not reversed here; whether to reinstate Sol at medium is an open policy question, tracked in
+   [#67](https://github.com/nigel-upstart/pi-buildout/issues/67).
+
+3. **GPT-6 Astra remains unrouted.** 0.85.1 declares `gpt-6-astra`, which resolves one of the three reasons in decision
+   6 of the 2026-09-10 section. The single benchmark source and missing peak-context telemetry still apply.

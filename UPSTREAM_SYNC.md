@@ -1,0 +1,96 @@
+# Upstream sync log
+
+This repository is a fork of [`zew1me/pi-buildout`](https://github.com/zew1me/pi-buildout). Upstream changes are ported
+by cherry-picking with `git cherry-pick -x`, not by merging, so `git merge-base main zew1me/main` stays at `f7902c04`
+and cannot show what has been synced. Use the last synced SHA below instead. Attribution for the ported material is
+recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this-fork).
+
+## Current state
+
+| Field               | Value                                                        |
+| ------------------- | ------------------------------------------------------------ |
+| Upstream remote     | `zew1me` → <https://github.com/zew1me/pi-buildout.git>       |
+| Upstream branch     | `main`                                                       |
+| Last synced SHA     | `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22)      |
+| Last sync date      | 2026-09-22                                                   |
+| Previous sync point | `bc127ebf439d0827bfc4f660fdc205595caaa544` (2026-09-19, #61) |
+| Sync branch         | `chore/sync-upstream-zew1me`                                 |
+| Outbound fixes owed | pi 0.87.1 `/skills` patch (see [Outbound](#outbound))        |
+
+To find the next batch of upstream work:
+
+```bash
+git fetch zew1me
+git log --oneline 502c13a0402362d8cda667a1115fc176e0ffa120..zew1me/main
+```
+
+## 2026-09-22 sync (`502c13a0`)
+
+| Upstream   | Upstream change                                                  | Status | Local change |
+| ---------- | ---------------------------------------------------------------- | ------ | ------------ |
+| `502c13a0` | feat(patches): generate the 0.85.1 /skills patch from TypeScript | Ported | This sync    |
+
+Notes:
+
+- Adds `pi-overlay/` and the `patches:build` / `patches:check` generation pipeline. `patches/pi-0.85.1` files match
+  upstream byte for byte.
+- Lint, knip, TypeScript, lefthook, and test globs merge upstream's `pi-overlay` entries with the fork's router and
+  vendored OpenTelemetry entries.
+
+## 2026-09-22 sync (`bc127ebf`)
+
+Upstream commits after the merge base `f7902c04`, oldest first. "Already ported" means an earlier local change brought
+the same content; the file state was compared against upstream rather than relying on patch identity.
+
+| Upstream   | Upstream change                                              | Status         | Local change                                 |
+| ---------- | ------------------------------------------------------------ | -------------- | -------------------------------------------- |
+| `7baf2e15` | feat(patches): add pi 0.84.1 skills patch (#30)              | Already ported | `7bca4d86` (#12), `344e8a89` (#23)           |
+| `66ae8f52` | feat(patches): add pi 0.84.2 skills patch (#32)              | Already ported | `d26ce31b` (#21), `af4d6843` (#22)           |
+| `f8aa3a3b` | fix(subagents): harden child protocol handling (#31)         | Already ported | `166b8ecb`, merged by `61c360f1`             |
+| `fc207308` | fix(patches): reject extra arguments to /skills reload (#36) | Already ported | `eaef268d`                                   |
+| `57b1a5fe` | fix(deps): remediate new audit advisories (#43)              | Equivalent     | `7bcdf23a` (independent remediation)         |
+| `34476e01` | fix(patches): include package and settings skills (#39)      | Ported         | This sync                                    |
+| `0113bf3a` | feat(patches): add Pi 0.84.4 skills patch (#44)              | Ported, merged | This sync; the pi dev package bump not taken |
+| `f082c414` | feat(patches): add pi 0.85.1 skills patch (#42)              | Ported, merged | This sync; supersedes the local 0.85.1 patch |
+| `a4bb5d06` | fix(patches): migrate historical pi 0.85.1 state (#60)       | Ported         | This sync                                    |
+| `bc127ebf` | fix(installer): retire legacy extension entrypoints (#61)    | Ported         | This sync                                    |
+
+Notes:
+
+- Upstream #42 replaces this repository's earlier `patches/pi-0.85.1` set. Its `legacy-patched.sha256` matches the
+  earlier local `patched.sha256` plus the clean bundled entrypoints, so installs patched from this repository are
+  recognized and upgraded instead of rejected. All `patches/` files match upstream byte for byte.
+- `scripts/install-extensions.sh` takes upstream's manifest-driven patch file set, upgrade manifests, Homebrew lookup,
+  and legacy entrypoint cleanup. It keeps the fork's `router` extension, the opt-in `--with-otel` extension, and
+  manifest-declared entrypoints.
+
+### Follow-up: pi 0.85.1 development packages (#64)
+
+The pi 0.84.4 and 0.85.1 development package bumps from upstream #44 and #42 were held back in this sync, because the
+router's cost tests pin the model registry. Issue #64 bumps all four `@earendil-works/*` development packages to 0.85.1
+and re-pins the router tests after an evidence review, recorded in
+[`specs/routing-layer/registry-refresh-2026-09-22.md`](specs/routing-layer/registry-refresh-2026-09-22.md). The fork now
+matches upstream's development package versions, and `scripts/skills-catalog.test.mjs` runs in CI. The vendored
+`extensions/otel` package keeps its own `pi-coding-agent` 0.84.1 development pin, which upstream does not carry.
+
+## Intentional divergences
+
+- **Router and OpenTelemetry extensions.** The fork keeps `extensions/router` and `extensions/otel`, which upstream does
+  not ship.
+- **Dependency overrides and scripts.** The fork keeps its own overrides and npm scripts, taking only upstream's
+  `browserslist` override bump.
+- **Subagent fallback effort.** The fork keeps its explicit model and effort resolution from `2d12a930` instead of
+  upstream's fallback effort handling.
+
+## Outbound
+
+Fixes made here that should be proposed upstream: none from this sync.
+
+- `feat(patches): add pi 0.87.1 skills patch generated from the TypeScript overlay` adds `pi-overlay/versions/0.87.1`,
+  `patches/pi-0.87.1`, the pipeline's `--all` mode, and version-parametrized patch tests. It should be proposed to
+  `zew1me/pi-buildout`. The fork-only parts (the catalog test's real-`HOME` installer environment and the
+  router-registry reason for keeping the development packages at 0.85.1) need adapting there.
+
+- `fix(test): keep the real HOME for the installer in the catalog test` is fork-only. The fork's installer runs `npm ci`
+  for the router's runtime dependencies, and with the fixture `HOME` a mise `npm` shim fails on untrusted configuration.
+  Upstream's installer does not run `npm`, and its catalog test passes unchanged at `bc127ebf`.

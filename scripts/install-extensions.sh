@@ -12,14 +12,10 @@ EXTENSIONS=(clear effort markdown-backlinks router subagents)
 # See specs/otel-ownership-decision.md for the migration and rollback steps.
 OPTIONAL_EXTENSIONS=(otel)
 WITH_OTEL=0
-PATCH_FILES=(
-  dist/core/resource-loader.js
-  dist/core/skill-management.js
-  dist/core/slash-commands.js
-  dist/main.js
-  dist/modes/interactive/interactive-mode.js
-  docs/skills.md
-)
+PATCH_FILES=()
+UPGRADE_SUMS=()
+UPGRADE_PATCHES=()
+UPGRADE_ABSENT=()
 PATCH_STAGE_DIR=
 PATCH_BACKUP_DIR=
 PATCH_COMMIT_IN_PROGRESS=0
@@ -109,8 +105,18 @@ matches_checksum() {
 }
 
 find_pi_package() {
-  local path
+  local path package_dir
   path=$(realpath "$1" 2> /dev/null) || return 1
+  # Homebrew's wrapper lives in <formula>/bin while the package is nested under
+  # <formula>/libexec/lib/node_modules. Check that layout before walking parents.
+  for package_dir in \
+    "$(dirname "$path")/../libexec/lib/node_modules/@earendil-works/pi-coding-agent" \
+    "$(dirname "$path")/../lib/node_modules/@earendil-works/pi-coding-agent"; do
+    if [[ -f "$package_dir/package.json" ]]; then
+      printf '%s\n' "$(realpath "$package_dir")"
+      return 0
+    fi
+  done
   path=$(dirname "$path")
   while [[ "$path" != / ]]; do
     if [[ -f "$path/package.json" ]]; then
@@ -195,6 +201,42 @@ if ((APPLY_SKILLS_PATCH)); then
     exit 1
   fi
 
+  while read -r checksum file extra; do
+    if [[ ! "$checksum" =~ ^[0-9a-f]{64}$ || -z "$file" || -n "${extra:-}" || "$file" == /* || "$file" == ".." || "$file" == ../* || "$file" == */../* || "$file" == */.. ]]; then
+      printf 'Patched checksum manifest contains an invalid entry.\n' >&2
+      exit 1
+    fi
+    PATCH_FILES+=("$file")
+  done < "$PATCHED_SUMS"
+  if ((${#PATCH_FILES[@]} == 0)); then
+    printf 'Patched checksum manifest is empty.\n' >&2
+    exit 1
+  fi
+
+  for upgrade_sums in "$PATCH_DIR"/*-patched.sha256; do
+    [[ -f "$upgrade_sums" ]] || continue
+    upgrade_patch=${upgrade_sums%-patched.sha256}-upgrade.patch
+    if [[ ! -f "$upgrade_patch" ]]; then
+      printf 'The /skills upgrade state %s for pi %s is incomplete.\n' "$(basename "$upgrade_sums")" "$PI_VERSION" >&2
+      exit 1
+    fi
+    UPGRADE_SUMS+=("$upgrade_sums")
+    UPGRADE_PATCHES+=("$upgrade_patch")
+    # Optional, and empty when the state contains every patched file. Lists paths that must not exist in
+    # that state, so a patch which adds a file can still describe the states that predate it.
+    upgrade_absent=${upgrade_sums%-patched.sha256}-absent
+    [[ -f "$upgrade_absent" ]] || upgrade_absent=
+    UPGRADE_ABSENT+=("$upgrade_absent")
+  done
+  for upgrade_patch in "$PATCH_DIR"/*-upgrade.patch; do
+    [[ -f "$upgrade_patch" ]] || continue
+    upgrade_sums=${upgrade_patch%-upgrade.patch}-patched.sha256
+    if [[ ! -f "$upgrade_sums" ]]; then
+      printf 'The /skills upgrade state %s for pi %s is incomplete.\n' "$(basename "$upgrade_patch")" "$PI_VERSION" >&2
+      exit 1
+    fi
+  done
+
   package_is_baseline=1
   package_is_patched=1
   for file in "${PATCH_FILES[@]}"; do
@@ -220,13 +262,50 @@ if ((APPLY_SKILLS_PATCH)); then
     matches_checksum "$patched_checksum" "$PI_PACKAGE_DIR/$file" || package_is_patched=0
   done
 
+  MATCHED_UPGRADE_PATCH=
+  for upgrade_index in "${!UPGRADE_SUMS[@]}"; do
+    upgrade_sums=${UPGRADE_SUMS[$upgrade_index]}
+    upgrade_absent=${UPGRADE_ABSENT[$upgrade_index]}
+    upgrade_matches=1
+    for file in "${PATCH_FILES[@]}"; do
+      upgrade_checksum=$(manifest_checksum "$upgrade_sums" "$file")
+      if [[ -n "$upgrade_absent" ]] && grep -Fxq "$file" "$upgrade_absent"; then
+        if [[ -n "$upgrade_checksum" ]]; then
+          printf 'Upgrade manifests conflict for %s in %s.\n' "$file" "$(basename "$upgrade_sums")" >&2
+          exit 1
+        fi
+        [[ ! -e "$PI_PACKAGE_DIR/$file" && ! -L "$PI_PACKAGE_DIR/$file" ]] || upgrade_matches=0
+        continue
+      fi
+      if [[ ! "$upgrade_checksum" =~ ^[0-9a-f]{64}$ ]]; then
+        printf 'Upgrade checksum manifest %s is invalid for %s.\n' "$(basename "$upgrade_sums")" "$file" >&2
+        exit 1
+      fi
+      matches_checksum "$upgrade_checksum" "$PI_PACKAGE_DIR/$file" || upgrade_matches=0
+    done
+    if ((upgrade_matches)); then
+      if [[ -n "$MATCHED_UPGRADE_PATCH" ]]; then
+        printf 'Installed pi %s matches multiple /skills upgrade states; refusing to modify it.\n' "$PI_VERSION" >&2
+        exit 1
+      fi
+      MATCHED_UPGRADE_PATCH=${UPGRADE_PATCHES[$upgrade_index]}
+    fi
+  done
+
   if ((package_is_patched)); then
     APPLY_SKILLS_PATCH=0
     printf '/skills patch for pi %s is already applied.\n' "$PI_VERSION"
-  elif ((!package_is_baseline)); then
-    printf 'Installed pi %s does not match this patch baseline; refusing to modify it.\n' "$PI_VERSION" >&2
-    exit 1
   else
+    if [[ -n "$MATCHED_UPGRADE_PATCH" ]]; then
+      PATCH_TO_APPLY=$MATCHED_UPGRADE_PATCH
+      printf 'Upgrading a previously applied /skills patch for pi %s.\n' "$PI_VERSION"
+    elif ((!package_is_baseline)); then
+      printf 'Installed pi %s does not match this patch baseline; refusing to modify it.\n' "$PI_VERSION" >&2
+      exit 1
+    else
+      PATCH_TO_APPLY="$PATCH_FILE"
+    fi
+
     command -v patch > /dev/null || {
       printf 'The patch utility is required.\n' >&2
       exit 1
@@ -240,7 +319,7 @@ if ((APPLY_SKILLS_PATCH)); then
         cp -p "$PI_PACKAGE_DIR/$file" "$PATCH_BACKUP_DIR/$file"
       fi
     done
-    patch --batch --forward --strip=1 --directory="$PATCH_STAGE_DIR" < "$PATCH_FILE" > /dev/null
+    patch --batch --forward --strip=1 --directory="$PATCH_STAGE_DIR" < "$PATCH_TO_APPLY" > /dev/null
     for file in "${PATCH_FILES[@]}"; do
       patched_checksum=$(manifest_checksum "$PATCHED_SUMS" "$file")
       if ! matches_checksum "$patched_checksum" "$PATCH_STAGE_DIR/$file"; then
@@ -321,6 +400,13 @@ for extension in "${EXTENSIONS[@]}"; do
   EXTENSION_BACKUP=
   EXTENSION_TARGET=
   EXTENSION_COMMIT_IN_PROGRESS=0
+done
+
+# Pi discovers both extensions/name.ts and extensions/name/index.ts. After every
+# managed directory replacement succeeds, remove any same-name top-level entrypoint
+# left by the legacy layout so each extension loads exactly once.
+for extension in "${EXTENSIONS[@]}"; do
+  rm -f "$EXTENSION_DIR/$extension.ts" "$EXTENSION_DIR/$extension.test.mjs"
 done
 
 if [[ -n "$PATCH_STAGE_DIR" ]]; then
