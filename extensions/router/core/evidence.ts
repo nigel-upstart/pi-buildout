@@ -125,7 +125,9 @@ type GenerationProxy = {
  * measured cost per pass is scaled by that ratio. Nothing else is rescaled, because a rate cut
  * changes what an attempt costs, not how often it passes.
  *
- * Sources: teamupstart/ai-acceleration PR #650 at a99c2d0145952f99ad92f6d786ef0aa19fa15c97.
+ * Sources: teamupstart/ai-acceleration PR #650 at a99c2d0145952f99ad92f6d786ef0aa19fa15c97, checked in as
+ * specs/routing-layer/generation-evidence-2026-09-22.json; evidence.test.mjs asserts this table and the
+ * Astra row below agree with it, so drift fails the build.
  * Rates are `artificialanalysis.ai/pricing-source-data.csv` (vendor list prices retrieved
  * 2026-09-22 for the new releases; 2026-09-09 and 2026-07-25 for the sources). Token totals are
  * `datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv` (capture 2026-09-22), with uncached
@@ -199,7 +201,8 @@ function generationProxyPrior(
 /**
  * Astra high has direct pass, repeatability, latency, step, cost, and language-slice measurements in
  * the refreshed report. The source omits regression, failed-trial partial credit, and peak context;
- * those three fields conservatively retain Sol high's prior until local telemetry matures.
+ * those three fields conservatively retain Sol high's prior until local telemetry matures. Direct values
+ * are pinned against specs/routing-layer/generation-evidence-2026-09-22.json by evidence.test.mjs.
  */
 function astraHighPrior(): EvidencePriorRow {
   const proxy = EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === "gpt-5.6-sol" && row.effort === "high");

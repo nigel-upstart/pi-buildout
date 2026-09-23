@@ -166,14 +166,16 @@ DeepSWE observations; and current Artificial Analysis intelligence and speed con
 inherit the corresponding GPT-5.6 Luna/Sol priors, and Claude Opus 5.5 inherits Opus 5, as operator-requested generation
 proxies. Their cost per pass is repriced from the report's verified vendor list rates
 (`artificialanalysis.ai/pricing-source-data.csv`) applied to each source row's measured DeepSWE token totals
-(`datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv`); only those numbers were transcribed. The single-source
-CursorBench 4.0 and Artificial Analysis observations for GPT-6 Sol/Luna and Opus 5.5 were intentionally not adopted as
-priors, because they supply no regression, repeatability, or latency-tail fields. Astra high retains Sol-high
-regression, failed-trial partial-credit, and p90-peak-context fields only where the Astra source has no observation, and
-is confined to high-intelligence planning/advisory/review ladders. No corpus or `ai_usage` code, prose, or raw benchmark
-records were copied. The report's Sonnet experiment proposal, frontend task heuristics, and automatic cross-model
-percentile ranking were intentionally not adopted; the router preserves its existing consequence gates and requires
-local acceptance telemetry before automatic promotion.
+(`datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv`); only those numbers and Astra's direct row were
+transcribed, into
+[`specs/routing-layer/generation-evidence-2026-09-22.json`](specs/routing-layer/generation-evidence-2026-09-22.json).
+The single-source CursorBench 4.0 and Artificial Analysis observations for GPT-6 Sol/Luna and Opus 5.5 were
+intentionally not adopted as priors, because they supply no regression, repeatability, or latency-tail fields. Astra
+high retains Sol-high regression, failed-trial partial-credit, and p90-peak-context fields only where the Astra source
+has no observation, and is confined to high-intelligence planning/advisory/review ladders. No corpus or `ai_usage` code,
+prose, or raw benchmark records were copied. The report's Sonnet experiment proposal, frontend task heuristics, and
+automatic cross-model percentile ranking were intentionally not adopted; the router preserves its existing consequence
+gates and requires local acceptance telemetry before automatic promotion.
 
 Upstream sources that corpus aggregates, all consumed as published measurements rather than code:
 

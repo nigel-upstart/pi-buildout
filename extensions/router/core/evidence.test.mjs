@@ -20,6 +20,10 @@ import { EVIDENCE_CAPTURE, EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
 
 const specPath = fileURLToPath(new URL("../../../specs/routing-layer/model-evidence-2026-07-25.json", import.meta.url));
 const spec = JSON.parse(readFileSync(specPath, "utf8"));
+const generationSpecPath = fileURLToPath(
+  new URL("../../../specs/routing-layer/generation-evidence-2026-09-22.json", import.meta.url),
+);
+const generationSpec = JSON.parse(readFileSync(generationSpecPath, "utf8"));
 
 describe("generated-data provenance headers", () => {
   // A generated module names the test that guards it against its JSON source. That pointer had rotted:
@@ -135,6 +139,41 @@ describe("evidence data agrees with the checked-in spec artifact", () => {
     }
     // The captured source rows are not rewritten.
     assert.equal(findEvidencePrior("gpt-5.6-sol", "high").costPerPassUsd, 5.0072);
+  });
+
+  it("agrees with the checked-in generation evidence artifact", () => {
+    const { astraHigh, generationProxies } = generationSpec;
+    const astra = findEvidencePrior(astraHigh.modelId, astraHigh.effort);
+    const proxy = findEvidencePrior(astraHigh.proxiedFromSourceModel, astraHigh.effort);
+    assert.ok(astra && proxy);
+    for (const [field, value] of Object.entries(astraHigh)) {
+      if (["modelId", "effort", "byLanguage", "proxiedFromSourceModel", "proxiedFields"].includes(field)) continue;
+      assert.equal(astra[field], value, `gpt-6-astra@high ${field}`);
+    }
+    for (const [language, measured] of Object.entries(astraHigh.byLanguage)) {
+      assert.deepEqual(
+        astra.byLanguage[language],
+        { ...measured, regressionBreakRate: proxy.byLanguage[language].regressionBreakRate },
+        `gpt-6-astra@high ${language}`,
+      );
+    }
+    for (const field of ["regressionBreakRate", "partialCreditOnFailure", "p90PeakContextTokens"]) {
+      assert.ok(astraHigh.proxiedFields.includes(field));
+      assert.equal(astra[field], proxy[field], `gpt-6-astra@high proxied ${field}`);
+    }
+
+    const price = (mix, rates) =>
+      mix.uncachedInput * rates.input + mix.cacheRead * rates.cacheRead + mix.output * rates.output;
+    for (const [modelId, entry] of Object.entries(generationProxies)) {
+      for (const [effort, mix] of Object.entries(entry.sourceTokenMix)) {
+        const expected = price(mix, entry.rates) / price(mix, entry.sourceRates);
+        assert.equal(generationProxyCostRatio(modelId, effort), expected, `${modelId}@${effort}`);
+        assert.equal(
+          findEvidencePrior(modelId, effort).costPerPassUsd,
+          findEvidencePrior(entry.sourceModelId, effort).costPerPassUsd * expected,
+        );
+      }
+    }
   });
 
   it("uses direct Astra high measurements with only the report's missing fields proxied", () => {

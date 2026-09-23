@@ -669,10 +669,12 @@ Evidence: [`registry-refresh-2026-09-22.md`](registry-refresh-2026-09-22.md).
 3. **GPT-6 Astra remains unrouted.** 0.85.1 declares `gpt-6-astra`, which resolves one of the three reasons in decision
    6 of the 2026-09-10 section. The single benchmark source and missing peak-context telemetry still apply.
 
-## Generation-forward routing, 2026-09-10 (`router-policy-v9`)
+## Generation-forward routing, 2026-09-22 (`router-policy-v9`)
 
 Evidence: `teamupstart/ai-acceleration` PR #650 at `a99c2d0145952f99ad92f6d786ef0aa19fa15c97` (DataCurve capture and
-vendor pricing through 2026-09-22), plus the `@earendil-works/pi-ai` 0.87.1 registry.
+vendor pricing through 2026-09-22), transcribed in
+[`generation-evidence-2026-09-22.json`](generation-evidence-2026-09-22.json), plus the `@earendil-works/pi-ai` 0.87.1
+registry.
 
 1. **Current model names may use explicit prior-generation proxies.** GPT-6 Luna and Sol inherit the GPT-5.6 Luna and
    Sol rows, and Claude Opus 5.5 inherits the Opus 5 rows. This is an intentional risk decision, not a claim that the
