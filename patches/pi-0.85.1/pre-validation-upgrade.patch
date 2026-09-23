@@ -100,10 +100,10 @@ index e0153e1..26254a8 100644
          if (this.noSkills && skillPaths.length === 0) {
 diff --git a/dist/core/skill-management-core.js b/dist/core/skill-management-core.js
 new file mode 100644
-index 0000000..915d49d
+index 0000000..f0f7d42
 --- /dev/null
 +++ b/dist/core/skill-management-core.js
-@@ -0,0 +1,469 @@
+@@ -0,0 +1,482 @@
 +/**
 + * Opt-in skill management for the patched Pi runtime.
 + *
@@ -361,6 +361,19 @@ index 0000000..915d49d
 +        ...(allowSession ? [`  ${command} reload`] : []),
 +    ];
 +}
++export function commandNeedsProjectTrust(args) {
++    const [command, ...rest] = args;
++    if (command === "list" || command === "search")
++        return true;
++    if (command !== "add")
++        return false;
++    try {
++        return scopeFromArgs(rest) === "repo";
++    }
++    catch {
++        return false;
++    }
++}
 +function runActiveCommand(env, rest, surface, options) {
 +    if (rest.length !== 0)
 +        throw new Error(`Usage: ${surface} active`);
@@ -575,10 +588,10 @@ index 0000000..915d49d
 +//# sourceMappingURL=skill-management-core.js.map
 \ No newline at end of file
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
-index f8714df..72a6d09 100644
+index f8714df..08e8b56 100644
 --- a/dist/core/skill-management.js
 +++ b/dist/core/skill-management.js
-@@ -1,286 +1,122 @@
+@@ -1,286 +1,123 @@
 +/**
 + * Pi-facing entry point for opt-in skill management.
 + *
@@ -676,6 +689,7 @@ index f8714df..72a6d09 100644
 +};
 +/** Re-exported unchanged: a pure string predicate with no environment dependency. */
 +export const looksLikePath = core.looksLikePath;
++export const commandNeedsProjectTrust = core.commandNeedsProjectTrust;
 +/** Re-exported unchanged: reads a configured entry's source with no environment dependency. */
 +export const sourceOf = core.sourceOf;
 +export function getActiveSkillEntries(options) {
@@ -706,7 +720,7 @@ index f8714df..72a6d09 100644
 +export async function handleSkillsCli(options) {
 +    const { args, cwd, agentDir, settingsManager } = options;
 +    const hasUI = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-+    if (args[0] !== undefined && ["list", "search", "add"].includes(args[0])) {
++    if (core.commandNeedsProjectTrust(args)) {
 +        settingsManager.setProjectTrusted(await resolveProjectTrusted({
 +            cwd,
 +            trustStore: new ProjectTrustStore(agentDir),
