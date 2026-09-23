@@ -334,11 +334,16 @@ export function initSdk(
 
     // Context is separate from signal providers. Own a context manager only
     // when another SDK has not already registered one; otherwise use theirs.
-    const contextManager = new AsyncLocalStorageContextManager().enable();
-    if (otelContext.setGlobalContextManager(contextManager)) {
-      ownedContextManager = contextManager;
-    } else {
-      contextManager.disable();
+    // An owned manager lives for the process: an SDK that starts after Pi
+    // cannot replace it and relies on it for async propagation, so it is not
+    // torn down with Pi's scoped providers.
+    if (!ownedContextManager) {
+      const contextManager = new AsyncLocalStorageContextManager().enable();
+      if (otelContext.setGlobalContextManager(contextManager)) {
+        ownedContextManager = contextManager;
+      } else {
+        contextManager.disable();
+      }
     }
 
     sdk = {
@@ -401,11 +406,6 @@ export async function shutdownSdk(): Promise<void> {
     if (ownsDiagLogger) {
       diag.disable();
       ownsDiagLogger = false;
-    }
-    if (ownedContextManager) {
-      otelContext.disable();
-      ownedContextManager.disable();
-      ownedContextManager = null;
     }
     resetMetricHandles();
     resetLogHandles();

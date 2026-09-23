@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DiagLogLevel, metrics, trace } from "@opentelemetry/api";
+import {
+  context,
+  createContextKey,
+  DiagLogLevel,
+  metrics,
+  trace,
+} from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import {
   foreignOtelProviders,
@@ -105,6 +111,24 @@ test("own scoped init, shutdown, and re-init never registers global providers", 
     JSON.stringify(notes),
   );
   await shutdownSdk();
+  clearGlobals();
+});
+
+test("an owned context manager survives Pi shutdown for SDKs that started later", async () => {
+  clearGlobals();
+  const runtime = initSdk(cfg, () => {}, { silentSuccess: true });
+  assert.ok(runtime);
+  await shutdownSdk();
+
+  const key = createContextKey("pi-otel-test");
+  const seen = await context.with(
+    context.active().setValue(key, "kept"),
+    async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return context.active().getValue(key);
+    },
+  );
+  assert.equal(seen, "kept", "async context propagation must keep working");
   clearGlobals();
 });
 
