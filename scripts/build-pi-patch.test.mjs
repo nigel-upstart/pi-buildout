@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   countUpstreamEditedLines,
+  diffGeneratedArtifacts,
   diffChecksumManifests,
   formatChecksumManifest,
   parseChecksumManifest,
@@ -116,6 +117,15 @@ test("diffChecksumManifests reports missing, changed, and unexpected paths", () 
 test("diffChecksumManifests reports nothing for identical manifests", () => {
   const entries = [{ path: "dist/main.js", sha256: HASH_A }];
   assert.deepEqual(diffChecksumManifests(entries, [...entries]), []);
+});
+
+test("diffGeneratedArtifacts reports missing and changed generated files", () => {
+  const artifacts = { "skills.patch": "alpha", "patched.sha256": "beta" };
+  const actual = new Map([["skills.patch", "stale"]]);
+  assert.deepEqual(
+    diffGeneratedArtifacts(artifacts, (name) => actual.get(name)),
+    ["changed: skills.patch", "missing: patched.sha256"],
+  );
 });
 
 test("sortVersions orders dotted versions numerically rather than lexically", () => {

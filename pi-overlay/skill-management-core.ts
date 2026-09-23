@@ -395,6 +395,17 @@ export function usage(allowSession = false): string[] {
   ];
 }
 
+export function commandNeedsProjectTrust(args: string[]): boolean {
+  const [command, ...rest] = args;
+  if (command === "list" || command === "search") return true;
+  if (command !== "add") return false;
+  try {
+    return scopeFromArgs(rest) === "repo";
+  } catch {
+    return false;
+  }
+}
+
 function runActiveCommand(
   env: SkillEnvironment,
   rest: string[],
