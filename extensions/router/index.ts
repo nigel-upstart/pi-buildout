@@ -203,6 +203,7 @@ export function deterministicCheckCommand(command: string): string | undefined {
 }
 
 const SAFETY_LIFECYCLE_TOOL_NAMES = new Set(["submit_action_plan", "submit_safety_review"]);
+const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
 /** Keep lifecycle validators out of the model's tool surface unless the active phase can accept them. */
 export function activeToolsForSafetyLifecycle(
@@ -495,13 +496,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let unresolvedSecondarySafetyGate: SecondaryReconciliationTask | undefined;
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
+  // Bumped by `/route off`. Routing work already in flight still runs to completion, but a hook that
+  // started under an earlier generation discards its result instead of applying it.
+  let routingGeneration = 0;
+  // Off also hides the always-registered planning validator. Remembering that the router hid it lets
+  // re-enabling restore the tool without overriding an operator who removed it deliberately.
+  let planningValidatorHiddenWhileOff = false;
   let agentRunPhase: AgentRunPhase = "before_start";
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
 
-  function syncSafetyLifecycleTools(lifecycle: LeaseLifecycle | undefined): void {
+  function syncRouterTools(lifecycle: LeaseLifecycle | undefined): void {
     const current = pi.getActiveTools();
-    const next = activeToolsForSafetyLifecycle(current, lifecycle);
+    let next = activeToolsForSafetyLifecycle(current, state.mode === "off" ? undefined : lifecycle);
+    if (state.mode === "off") {
+      if (next.includes(PLANNING_VALIDATOR_TOOL_NAME)) {
+        next = next.filter((name) => name !== PLANNING_VALIDATOR_TOOL_NAME);
+        planningValidatorHiddenWhileOff = true;
+      }
+    } else if (planningValidatorHiddenWhileOff) {
+      planningValidatorHiddenWhileOff = false;
+      if (!next.includes(PLANNING_VALIDATOR_TOOL_NAME)) next.push(PLANNING_VALIDATOR_TOOL_NAME);
+    }
     if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
       pi.setActiveTools(next);
     }
@@ -586,7 +602,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
     > = {},
   ): Promise<void> {
-    if (!telemetryHealthy) return;
+    // Off records nothing, including events from routing work that was already in flight.
+    if (!telemetryHealthy || state.mode === "off") return;
     try {
       let endpointFields = {};
       if (extra.provider && extra.modelId) {
@@ -1173,6 +1190,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    * task should be asked to cleanly stop and resume under the refreshed route.
    */
   async function drainSecondaryReconciliation(ctx: ExtensionContext, boundary: ReconciliationBoundary): Promise<void> {
+    if (state.mode === "off") return;
     if (boundary.kind === "turn_end" && activeToolExecutions > 0) return;
     const queued = queuedSecondaryReconciliation;
     if (!queued) return;
@@ -1370,6 +1388,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     taskSynopsis: SessionSynopsis,
     lease: TaskLease,
     cache: { cachedTokens: number; expectedReuseRatio: number },
+    superseded: () => boolean,
   ) {
     return withRouterSpan(
       ctx.sessionManager.getSessionId(),
@@ -1393,12 +1412,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         }
         invocation.summary = summary;
         annotateClassifierSpan(span, summary);
-        await recordClassifierInvocation(
-          ctx,
-          summary,
-          invocation.status === "completed" ? invocation.value : undefined,
-          lease.taskId,
-        );
+        if (!superseded()) {
+          await recordClassifierInvocation(
+            ctx,
+            summary,
+            invocation.status === "completed" ? invocation.value : undefined,
+            lease.taskId,
+          );
+        }
         return { invocation, continuity };
       },
     );
@@ -1409,6 +1430,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     registry: readonly RegistryModelSnapshot[],
     prompt: string,
     taskSynopsis: SessionSynopsis,
+    superseded: () => boolean,
   ) {
     return withRouterSpan(
       ctx.sessionManager.getSessionId(),
@@ -1429,11 +1451,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             : invocation.summary;
         invocation.summary = summary;
         annotateClassifierSpan(span, summary);
-        await recordClassifierInvocation(
-          ctx,
-          summary,
-          invocation.status === "completed" ? invocation.value : undefined,
-        );
+        if (!superseded()) {
+          await recordClassifierInvocation(
+            ctx,
+            summary,
+            invocation.status === "completed" ? invocation.value : undefined,
+          );
+        }
         return invocation;
       },
     );
@@ -1446,6 +1470,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     taskSynopsis: SessionSynopsis,
     pending: PendingInput | undefined,
     initialActive: TaskLease | undefined,
+    // Classification outlives `/route off`; its telemetry is dropped once the calling hook is superseded.
+    superseded: () => boolean,
   ): Promise<{
     active?: TaskLease;
     classification?: ClassificationResult;
@@ -1466,6 +1492,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         taskSynopsis,
         continuityGate.lease,
         pending.cache,
+        superseded,
       );
       if (result.invocation.status === "completed" && result.continuity) {
         classification = result.invocation.value;
@@ -1492,7 +1519,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
 
     if (requiresNewLease && !classification) {
-      const result = await classifyFreshTaskWithTelemetry(ctx, registry, prompt, taskSynopsis);
+      const result = await classifyFreshTaskWithTelemetry(ctx, registry, prompt, taskSynopsis, superseded);
       if (result.status === "completed") {
         classification = result.value;
       } else {
@@ -2117,6 +2144,30 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return { evidence: { ...partial, evidenceFingerprint: safetyFingerprint(partial) } };
   }
 
+  /**
+   * A continuation starts no secondary of its own, and any lease's secondary can settle while
+   * before_agent_start awaits classification or model preparation. Apply it before the first provider
+   * request rather than after that turn's tools have run, and prepare a corrected lease again.
+   * Returns undefined when the turn should proceed unrouted, including when `/route off` superseded it.
+   */
+  async function applyQueuedSecondaryBeforeFirstRequest(
+    ctx: ExtensionContext,
+    prepared: TaskLease,
+    pending: PendingInput | undefined,
+    superseded: () => boolean,
+  ): Promise<TaskLease | undefined> {
+    if (!queuedSecondaryReconciliation) return prepared;
+    await drainSecondaryReconciliation(ctx, {
+      kind: "before_first_request",
+      promptRefreshAllowed: true,
+      continuing: true,
+    });
+    if (superseded()) return undefined;
+    if (state.active?.taskId !== prepared.taskId || state.active === prepared) return prepared;
+    const corrected = await prepareActiveLeaseForTurn(ctx, state.active, pending);
+    return corrected && !superseded() ? corrected : undefined;
+  }
+
   async function prepareActiveLeaseForTurn(
     ctx: ExtensionContext,
     active: TaskLease,
@@ -2387,7 +2438,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("input", (event, ctx) => {
     // The next task boundary is not known yet. Remove phase-scoped validators before Pi builds
     // the turn prompt; before_agent_start restores exactly the validator accepted by the lease.
-    syncSafetyLifecycleTools(undefined);
+    syncRouterTools(undefined);
     if (state.mode === "off") return { action: "continue" as const };
     if (
       state.active &&
@@ -2438,13 +2489,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     agentRunPhase = "before_start";
     let exposedSafetyLifecycle: LeaseLifecycle | undefined;
     if (state.mode === "off") {
-      syncSafetyLifecycleTools(undefined);
+      syncRouterTools(undefined);
       return;
     }
+    // `/route off` does not cancel this hook. Each slow step below is followed by a generation check,
+    // so a hook superseded by off installs no lease, applies no model/effort, and returns no prompt.
+    const generation = routingGeneration;
+    const superseded = (): boolean => generation !== routingGeneration;
     try {
       const pending = pendingInput;
       pendingInput = undefined;
       const repository = pending ? await pending.repository : await readRepositoryMetadata(pi, ctx.cwd);
+      if (superseded()) return;
       if (pending && lastUpstream && repository.upstream && repository.upstream !== lastUpstream) {
         state = setHardBoundary(state, "post_push");
         pending.gate = { action: "new_task", reason: "hard boundary: post_push", hardBoundary: "post_push" };
@@ -2476,8 +2532,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         currentSynopsis,
         pending,
         state.active,
+        superseded,
       );
       const primaryCompletedAtMs = Date.now();
+      if (superseded()) return;
       let active = turnClassification.active;
       const classification = turnClassification.classification;
       const requiresNewLease = turnClassification.requiresNewLease;
@@ -2498,6 +2556,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           : undefined;
         const sanitizedClassifierAttempts = routedClassification.attempts.map(sanitizeClassifierAttempt);
         for (const attempt of sanitizedClassifierAttempts) {
+          if (superseded()) return;
           await record(
             ctx,
             "classifier_attempt",
@@ -2543,6 +2602,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             return result;
           },
         );
+        if (superseded()) return;
         lastRoute = { ...lastRoute, classification: routedClassification, decision: routed.decision };
         if (routed.decision.kind === "unroutable") {
           await record(
@@ -2652,6 +2712,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             modelSnapshotId: lease.modelSnapshotId,
           },
         );
+        if (superseded()) return;
         const secondaryTask = startSecondaryReconciliation({
           ctx,
           registry: routed.registry,
@@ -2669,6 +2730,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         });
         if (secondaryTask) {
           await waitForSecondaryGrace(ctx, secondaryTask);
+          if (superseded()) return;
           secondaryTask.agentStartReleasedAtMs = Date.now();
           await drainSecondaryReconciliation(ctx, {
             kind: "before_first_request",
@@ -2679,24 +2741,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         }
       }
 
-      if (!active) return;
+      if (!active || superseded()) return;
       active = await prepareActiveLeaseForTurn(ctx, active, pending);
+      if (!active || superseded()) return;
+      active = await applyQueuedSecondaryBeforeFirstRequest(ctx, active, pending, superseded);
       if (!active) return;
-      // A continuation starts no secondary of its own, and any lease's secondary can settle while
-      // this handler awaits classification or model preparation. Apply it before the first provider
-      // request rather than after that turn's tools have run, and prepare a corrected lease again.
-      if (queuedSecondaryReconciliation) {
-        const prepared: TaskLease = active;
-        await drainSecondaryReconciliation(ctx, {
-          kind: "before_first_request",
-          promptRefreshAllowed: true,
-          continuing: true,
-        });
-        if (state.active?.taskId === prepared.taskId && state.active !== prepared) {
-          active = await prepareActiveLeaseForTurn(ctx, state.active, pending);
-          if (!active) return;
-        }
-      }
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
       exposedSafetyLifecycle = active.lifecycle;
@@ -2718,13 +2767,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         },
       };
     } finally {
-      syncSafetyLifecycleTools(exposedSafetyLifecycle);
+      syncRouterTools(superseded() ? undefined : exposedSafetyLifecycle);
       ctx.ui.setWorkingMessage();
     }
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (event.source === "restore") return;
+    if (state.mode === "off" || event.source === "restore") return;
     // Suppress only the echo of the selection the router is applying. `event.source` cannot
     // distinguish a programmatic `setModel` from a user picking a model (both report "set"), so a
     // different model arriving while the apply is in flight is a real override and must win.
@@ -2760,7 +2809,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("thinking_level_select", async (event, ctx) => {
-    if (applyingSelection) return;
+    if (state.mode === "off" || applyingSelection) return;
     await abortSecondaryWork(ctx, "manual_override");
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual effort override") };
     const active = state.active;
@@ -2794,11 +2843,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_start", () => {
-    lastProviderFailure = undefined;
-    attemptDisposition = "pending";
+    // Run-phase bookkeeping tracks Pi itself, so it stays accurate while off for use after re-enable.
     agentRunPhase = "active";
     insideProviderTurn = false;
     activeToolExecutions = 0;
+    if (state.mode === "off") return;
+    lastProviderFailure = undefined;
+    attemptDisposition = "pending";
     agentRunSequence++;
     attemptStartedAt = Date.now();
     attemptTurns = 0;
@@ -2810,6 +2861,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("turn_start", () => {
     insideProviderTurn = true;
+    if (state.mode === "off") return;
     attemptTurns++;
   });
 
@@ -2829,6 +2881,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("tool_execution_end", (event) => {
     activeToolExecutions = Math.max(0, activeToolExecutions - 1);
+    if (state.mode === "off") return;
     attemptToolCalls++;
     const check = deterministicCheckCalls.get(event.toolCallId);
     const mutation = potentiallyMutatingCalls.get(event.toolCallId);
@@ -2862,6 +2915,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("tool_call", (event) => {
+    if (state.mode === "off") return undefined;
     const reason = safetyToolBlockReason(state.active, event.toolName, event.input);
     if (reason) return { block: true, reason };
     const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
@@ -2880,6 +2934,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("after_provider_response", (event) => {
+    if (state.mode === "off") return;
     // An invalid/expired token is endpoint availability failure just like a rate
     // limit: move to the next authorized provider instead of failing the lease.
     if (event.status === 401 || event.status === 403 || event.status === 429 || event.status >= 500) {
@@ -2888,6 +2943,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_end", async (event, ctx) => {
+    if (state.mode === "off") return;
     const active = state.active;
     if (!active || active.executionFailed) return;
     const assistants = event.messages.filter(assistantMessage);
@@ -3177,6 +3233,25 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
               }
             : {}),
         };
+        if (command === "off") {
+          // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
+          // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
+          // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
+          if (pendingInput) ctx.ui.setWorkingMessage();
+          pendingInput = undefined;
+          routingGeneration++;
+          // Mode is already off, so this records nothing. Keep the safety latch so a re-enabled lease
+          // still treats an unreconciled low-confidence primary conservatively.
+          await abortSecondaryWork(ctx, "router_off", { retainSafetyLatch: true });
+          lastProviderFailure = undefined;
+          attemptDisposition = "unknown";
+          deterministicCheckCalls.clear();
+          deterministicCheckResults.clear();
+          potentiallyMutatingCalls.clear();
+        }
+        // Off hides every router-only tool; re-enabling restores the planning validator it hid. Phase
+        // validators return at the next before_agent_start, which exposes exactly what the lease accepts.
+        if (command === "off" || planningValidatorHiddenWhileOff) syncRouterTools(undefined);
         if (command === "active" && state.active) {
           accumulatedTaskCosts.set(state.active.taskId, 0);
           taskStartedAt.set(state.active.taskId, Date.now());
@@ -3208,6 +3283,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         persistState();
         updateStatus(ctx);
         ctx.ui.notify("Router lease cleared; next user input is a new task", "info");
+        return;
+      }
+      if ((command === "accept" || command === "reject" || command === "fail") && state.mode === "off") {
+        ctx.ui.notify(`Model router is off; enable routing before /route ${command}`, "warning");
         return;
       }
       if (command === "accept" || command === "reject") {

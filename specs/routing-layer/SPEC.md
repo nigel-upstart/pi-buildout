@@ -507,6 +507,13 @@ under another model family's prompt profile.
   and a newly detected task receives a fresh lease while preserving the explicitly selected model/effort. Manual
   selection does not bypass preflight/review tool enforcement and invalidates any existing authorization.
 - Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
+- `/route off` takes effect immediately within an active session and bypasses all adapter routing and blocking behavior:
+  no classification, prompt compilation, model/effort application or tracking, router-only tool exposure (lifecycle
+  validators and `submit_implementation_plan`), lifecycle tool enforcement, fallback, review, attempt labeling, evidence
+  collection, or router telemetry. Off aborts pending secondary reconciliation (retaining any low-confidence safety
+  latch for the dormant lease) and applies no correction that settles afterwards. Other routing work already in flight
+  may run to completion, but its result is discarded rather than applied, including when routing is re-enabled before it
+  finishes. The dormant lease may be reused only after routing is explicitly re-enabled.
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.
 - Classifier work is bounded by router-owned per-stage deadlines; abort/timeout is terminal across attempts within that
