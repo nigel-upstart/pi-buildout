@@ -74,6 +74,10 @@ describe("ordinary fallback", () => {
     assert.equal(isProviderQuotaExhaustionError("insufficient_quota"), true);
     assert.equal(isProviderQuotaExhaustionError("Monthly usage limit reached"), true);
     assert.equal(isProviderQuotaExhaustionError("Rate limit exceeded"), false);
+    assert.equal(isProviderQuotaExhaustionError("429 quota exhaustion"), true);
+    assert.equal(isProviderQuotaExhaustionError("Project quota has been exhausted"), true);
+    // Gemini's transient per-minute 429 must keep same-provider fallback.
+    assert.equal(isProviderQuotaExhaustionError("Resource has been exhausted (e.g. check quota)."), false);
     assert.equal(isProviderQuotaExhaustionError(undefined), false);
 
     // Initial failure on openai-codex skips all 3 remaining openai-codex fallbacks directly to anthropic

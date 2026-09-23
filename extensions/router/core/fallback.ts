@@ -7,7 +7,7 @@ import type { RouteChoice } from "./routing.ts";
 export type FailureKind = "availability" | "model_error" | "quality" | "deterministic_verification";
 
 const NON_RETRYABLE_PROVIDER_QUOTA_ERROR_PATTERN =
-  /GoUsageLimitError|FreeUsageLimitError|usage.?limit|insufficient_quota|out of budget|quota exceeded|billing/i;
+  /GoUsageLimitError|FreeUsageLimitError|usage.?limit|insufficient_quota|out of budget|quota exceeded|quota[^.]{0,20}exhaust|billing/i;
 
 export function isProviderQuotaExhaustionError(errorMessage?: string): boolean {
   if (!errorMessage) return false;
