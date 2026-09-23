@@ -65,8 +65,14 @@ export function resolveFallback(
   options?: { skipProvider?: string },
 ): FallbackResolution {
   const skipProvider = options?.skipProvider;
+  // attemptIndex indexes into fallbacks, so only the untried suffix may be filtered.
   const remainingFallbacks =
-    skipProvider !== undefined ? lease.fallbacks.filter((choice) => choice.provider !== skipProvider) : lease.fallbacks;
+    skipProvider !== undefined
+      ? [
+          ...lease.fallbacks.slice(0, lease.attemptIndex),
+          ...lease.fallbacks.slice(lease.attemptIndex).filter((choice) => choice.provider !== skipProvider),
+        ]
+      : lease.fallbacks;
   const isSkipped = remainingFallbacks.length < lease.fallbacks.length;
 
   const nextAttempt = lease.attemptIndex + 1;

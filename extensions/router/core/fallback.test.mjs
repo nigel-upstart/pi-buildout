@@ -121,6 +121,49 @@ describe("ordinary fallback", () => {
     assert.equal(second.choice.provider, "amazon-bedrock");
     assert.equal(second.lease.attemptIndex, 2);
   });
+
+  it("keeps already-attempted fallbacks in place when skipping a provider after an earlier fallback", () => {
+    const lease = taskLease("deliberate_tool_workflow", choice("openai", "gpt-5.6-sol"), [
+      choice("anthropic", "claude-sonnet-5"),
+      choice("openai", "gpt-5.6-terra"),
+      choice("anthropic", "claude-opus-5"),
+      choice("amazon-bedrock", "us.anthropic.claude-opus-5"),
+    ]);
+    const first = resolveFallback(lease, "availability", "2026-07-17T00:01:00.000Z");
+    assert.equal(first.choice.provider, "anthropic");
+    assert.equal(first.lease.attemptIndex, 1);
+
+    const skipped = resolveFallback(first.lease, "model_error", "2026-07-17T00:02:00.000Z", {
+      skipProvider: "anthropic",
+    });
+    assert.equal(skipped.action, "use_choice");
+    assert.equal(skipped.choice.provider, "openai");
+    assert.equal(skipped.choice.modelId, "gpt-5.6-terra");
+    assert.equal(skipped.lease.attemptIndex, 2);
+    assert.deepEqual(
+      skipped.lease.fallbacks.map((c) => `${c.provider}/${c.modelId}`),
+      ["anthropic/claude-sonnet-5", "openai/gpt-5.6-terra", "amazon-bedrock/us.anthropic.claude-opus-5"],
+    );
+
+    const last = resolveFallback(skipped.lease, "availability", "2026-07-17T00:03:00.000Z");
+    assert.equal(last.choice.provider, "amazon-bedrock");
+    assert.equal(last.lease.attemptIndex, 3);
+  });
+
+  it("reaches a cross-provider fallback when the exhausted provider also owns the consumed prefix", () => {
+    const lease = taskLease("deliberate_tool_workflow", choice("openai", "gpt-5.6-sol"), [
+      choice("anthropic", "claude-sonnet-5"),
+      choice("anthropic", "claude-opus-5"),
+      choice("amazon-bedrock", "us.anthropic.claude-opus-5"),
+    ]);
+    const first = resolveFallback(lease, "availability", "2026-07-17T00:01:00.000Z");
+    const skipped = resolveFallback(first.lease, "model_error", "2026-07-17T00:02:00.000Z", {
+      skipProvider: "anthropic",
+    });
+    assert.equal(skipped.action, "use_choice");
+    assert.equal(skipped.choice.provider, "amazon-bedrock");
+    assert.equal(skipped.lease.attemptIndex, 2);
+  });
 });
 
 describe("review fallback", () => {
