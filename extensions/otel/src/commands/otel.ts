@@ -459,11 +459,19 @@ async function statusCmd(
   const baseCfg = cwd ? resolveConfig(cwd) : null;
   const conn = readConn();
   const meta = readMeta();
+  const health = getExportHealth();
 
-  // Active endpoint: conn file overrides resolved config (mirrors pi-otel:dashboard-ready logic)
-  const configuredEndpoint = conn?.endpoint ?? baseCfg?.endpoint;
+  // Once the SDK is running, report the endpoint its exporters actually use so
+  // delivery health and the Connected line describe the same pipeline. The
+  // persisted conn file is shared across processes and can be stale, so it
+  // only overrides resolved config before initialization.
+  const configuredEndpoint = health.configured
+    ? health.endpoint
+    : (conn?.endpoint ?? baseCfg?.endpoint);
   const activeEndpoint = configuredEndpoint ?? "(unknown)";
-  const activeProtocol = conn?.protocol ?? baseCfg?.protocol ?? "grpc";
+  const activeProtocol = health.configured
+    ? (health.protocol ?? "grpc")
+    : (conn?.protocol ?? baseCfg?.protocol ?? "grpc");
 
   // Only probe a real endpoint: the placeholder above is a valid URL hostname,
   // so probing it would spend the timeout on a DNS lookup for "(unknown)".
@@ -482,7 +490,6 @@ async function statusCmd(
     `Connected: ${activeEndpoint} (${activeProtocol}) — ${reachable ? "reachable" : "UNREACHABLE"}`,
   );
 
-  const health = getExportHealth();
   for (const signal of ["traces", "metrics", "logs"] as const) {
     const state = health.signals[signal];
     // Before SDK initialization, derive enabled/disabled from resolved config
@@ -491,7 +498,7 @@ async function statusCmd(
       ? state
       : {
           ...state,
-          enabled: baseCfg?.signals[signal] ?? false,
+          enabled: Boolean(baseCfg?.enabled && baseCfg.signals[signal]),
         };
     lines.push(
       `Delivery ${signal.padEnd(7)} ${describeSignalHealth(effective)}`,

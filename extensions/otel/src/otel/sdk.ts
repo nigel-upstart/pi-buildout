@@ -42,6 +42,7 @@ import {
   PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
 import {
+  AlwaysOffSampler,
   BasicTracerProvider,
   BatchSpanProcessor,
   ParentBasedSampler,
@@ -258,8 +259,13 @@ export function initSdk(
     }),
   );
 
-  const sampler =
-    cfg.sampleRatio < 1.0
+  // With traces disabled no span processor exists, so recording spans would
+  // only retain attributes that can never be exported. AlwaysOff is used
+  // directly rather than as a ParentBased root: a sampled propagated parent
+  // would otherwise turn recording back on.
+  const sampler = !cfg.signals.traces
+    ? new AlwaysOffSampler()
+    : cfg.sampleRatio < 1.0
       ? new ParentBasedSampler({
           root: new TraceIdRatioBasedSampler(cfg.sampleRatio),
         })

@@ -148,3 +148,36 @@ test("/otel status reports enablement, signals, reachability, and delivery", asy
   assert.match(notes[0].message, /Delivery metrics\s+no export attempted yet/);
   assert.match(notes[0].message, /Delivery logs\s+disabled/);
 });
+
+test("/otel status reports every signal disabled when the extension is disabled", async () => {
+  resetExportHealth();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-otel-status-disabled-"));
+  mkdirSync(join(cwd, ".pi"));
+  writeFileSync(
+    join(cwd, ".pi", "settings.json"),
+    JSON.stringify({
+      otel: {
+        enabled: false,
+        endpoint: "http://127.0.0.1:1",
+        signals: { traces: true, metrics: true, logs: true },
+      },
+    }),
+  );
+
+  let command;
+  const pi = {
+    registerCommand: (_name, registered) => {
+      command = registered;
+    },
+  };
+  registerOtelCommand(pi, () => cwd);
+  const notes = [];
+  await command.handler("status", {
+    ui: { notify: (message, level) => notes.push({ message, level }) },
+  });
+
+  assert.match(notes[0].message, /Extension: disabled/);
+  for (const signal of ["traces", "metrics", "logs"]) {
+    assert.match(notes[0].message, new RegExp(`Delivery ${signal}\\s+disabled`));
+  }
+});
