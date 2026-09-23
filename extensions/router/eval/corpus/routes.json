@@ -259,8 +259,9 @@
     "expected": {
       "archetype": "deliberate_tool_workflow",
       "primaryModel": "gpt-6-sol",
-      "primaryEffort": "medium",
-      "fallbackModel": "claude-opus-5-5"
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-5-5",
+      "fallbackEffort": "medium"
     }
   },
   {
@@ -307,8 +308,9 @@
     "expected": {
       "archetype": "deliberate_tool_workflow",
       "primaryModel": "gpt-6-sol",
-      "primaryEffort": "medium",
-      "fallbackModel": "claude-opus-5-5"
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-5-5",
+      "fallbackEffort": "medium"
     }
   },
   {

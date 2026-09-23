@@ -11,6 +11,7 @@ import {
   EFFORT_POLICIES,
   evidenceAbility,
   findEvidencePrior,
+  generationProxyCostRatio,
   HARD_TASK_ESCALATION,
   resolveEvidenceLanguage,
   scoreEvidencePrior,
@@ -107,19 +108,33 @@ describe("evidence data agrees with the checked-in spec artifact", () => {
     }
   });
 
-  it("maps explicit generation proxies without rewriting the captured source rows", () => {
-    for (const [current, source] of [
-      ["gpt-6-luna", "gpt-5.6-luna"],
-      ["gpt-6-sol", "gpt-5.6-sol"],
-      ["claude-opus-5-5", "claude-opus-5"],
-    ]) {
-      const currentRow = findEvidencePrior(current, "high");
-      const sourceRow = findEvidencePrior(source, "high");
-      assert.ok(currentRow && sourceRow);
-      assert.equal(currentRow.modelId, current);
-      assert.equal(currentRow.passRate, sourceRow.passRate);
-      assert.equal(currentRow.costPerPassUsd, sourceRow.costPerPassUsd);
+  it("maps explicit generation proxies, repricing only cost per pass at the new list rates", () => {
+    // Expected ratios price each source's measured DeepSWE token mix at the upstream list rates.
+    const expected = {
+      "gpt-6-luna": ["gpt-5.6-luna", { low: 0.4784, medium: 0.4811, high: 0.4834, xhigh: 0.485, max: 0.4863 }],
+      "gpt-6-sol": ["gpt-5.6-sol", { low: 0.5, medium: 0.5, high: 0.5, xhigh: 0.5, max: 0.5 }],
+      "claude-opus-5-5": ["claude-opus-5", { low: 0.6101, medium: 0.5799, high: 0.5593, xhigh: 0.5486, max: 0.5439 }],
+    };
+    for (const [current, [source, ratios]] of Object.entries(expected)) {
+      for (const [effort, ratio] of Object.entries(ratios)) {
+        const currentRow = findEvidencePrior(current, effort);
+        const sourceRow = findEvidencePrior(source, effort);
+        assert.ok(currentRow && sourceRow, `${current}@${effort}`);
+        assert.equal(currentRow.modelId, current);
+        assert.deepEqual(
+          { ...currentRow, modelId: source, costPerPassUsd: sourceRow.costPerPassUsd },
+          sourceRow,
+          `${current}@${effort} inherits every non-cost field`,
+        );
+        assert.ok(Math.abs(generationProxyCostRatio(current, effort) - ratio) < 5e-5, `${current}@${effort}`);
+        assert.ok(
+          Math.abs(currentRow.costPerPassUsd - sourceRow.costPerPassUsd * ratio) < 1e-3,
+          `${current}@${effort} cost per pass`,
+        );
+      }
     }
+    // The captured source rows are not rewritten.
+    assert.equal(findEvidencePrior("gpt-5.6-sol", "high").costPerPassUsd, 5.0072);
   });
 
   it("uses direct Astra high measurements with only the report's missing fields proxied", () => {
@@ -129,6 +144,7 @@ describe("evidence data agrees with the checked-in spec artifact", () => {
     assert.equal(astra.passRate, 0.7323008849557522);
     assert.equal(astra.consensusBest, 95.28);
     assert.equal(astra.repeatAllPassRate, 0.6017699115044248);
+    assert.equal(astra.costPerPassUsd, 5.35807599244713);
     assert.equal(astra.regressionBreakRate, sol.regressionBreakRate);
     assert.equal(astra.p90PeakContextTokens, sol.p90PeakContextTokens);
   });

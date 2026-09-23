@@ -1119,22 +1119,32 @@ describe("routing context derivation", () => {
 
 describe("weakly evidenced language tendencies", () => {
   it("breaks a Ruby near-tie toward Anthropic without overriding a materially better score", () => {
-    const ruby = selectOrdinaryRoute(
-      "median_repository_implementation",
-      registry(),
-      REQUIREMENTS,
-      [],
-      undefined,
-      undefined,
-      deriveRoutingContext(FEATURES, ["ruby"]),
-    );
-    assert.equal(ruby.kind, "ordinary");
-    // gpt-6-sol@high and claude-opus-5-5@medium sit within the near-tie band on corpus-wide priors,
-    // so Ruby's low-power Anthropic tendency settles it.
-    assert.equal(ruby.primary.modelId, "claude-opus-5-5");
-    assert.equal(ruby.primary.effort, "medium");
+    const route = (features) =>
+      selectOrdinaryRoute(
+        "median_repository_implementation",
+        registry(),
+        REQUIREMENTS,
+        [],
+        undefined,
+        undefined,
+        deriveRoutingContext(features, ["ruby"]),
+      );
+    // With self-check verification, gpt-6-sol@high and claude-opus-5-5@medium sit 7.6% apart, inside
+    // Ruby's 8% band, so its low-power Anthropic tendency settles the tie.
+    const nearTie = route({ ...FEATURES, verificationStrength: "self_check" });
+    assert.equal(nearTie.kind, "ordinary");
+    assert.equal(nearTie.primary.modelId, "claude-opus-5-5");
+    assert.equal(nearTie.primary.effort, "medium");
     // The tendency reorders only; it does not claim a Ruby-specific pass rate.
-    assert.equal(ruby.primary.evidenceLanguage, undefined);
+    assert.equal(nearTie.primary.evidenceLanguage, undefined);
+
+    // Unit tests shrink the regression term for both, leaving GPT-6 Sol's larger rate cut an 8.1% lead:
+    // just outside the band, so the tendency must not promote Opus past it.
+    const materiallyBetter = route(FEATURES);
+    assert.equal(materiallyBetter.kind, "ordinary");
+    assert.equal(materiallyBetter.primary.modelId, "gpt-6-sol");
+    assert.equal(materiallyBetter.primary.effort, "high");
+    assert.ok(materiallyBetter.fallbacks[0].evidenceScore > materiallyBetter.primary.evidenceScore * 1.08);
   });
 
   it("does not let a tendency promote a candidate outside the near-tie band", () => {

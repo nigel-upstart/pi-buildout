@@ -301,12 +301,15 @@ independent reviewer. Gemini 3.8 Flash at high effort leads the Google review la
 
 Median repository implementation uses Opus 5.5 at medium as the generation-forward default and keeps GPT-6 Sol high as
 its cross-provider challenger. GPT-6 Luna/Sol and Opus 5.5 intentionally inherit their GPT-5.6 Luna/Sol and Opus 5
-bootstrap priors: this is an explicit same-price, no-regression assumption until local telemetry matures, not direct
-benchmark evidence. Measured language-specific routes still override that default. GPT-6 Astra high uses its refreshed
-direct measurements (with Sol-high proxies only for the three omitted reliability/context fields) and appears only in
-high-intelligence planning, highest-risk advisory, and independent-review ladders. The bounded read-only classification
-and extraction ladders retain MiniMax M2.5 and GPT-OSS 120B and add Kimi K2.5 plus Kimi K2 Thinking. Kimi remains
-structurally barred from mutating work because its current quality evidence is single-attempt.
+quality, reliability, and latency priors: this is an explicit no-regression assumption until local telemetry matures,
+not direct benchmark evidence. Their cost per pass is repriced from the report's verified list rates (GPT-6 Sol at half
+of GPT-5.6 Sol, Luna at roughly 0.48 of GPT-5.6 Luna, Opus 5.5 at 0.54-0.61 of Opus 5) applied to the source rows' own
+measured token mix. Measured language-specific routes still override that default. GPT-6 Astra high uses its refreshed
+direct measurements, including DataCurve's corrected $5.36 cost per pass (with Sol-high proxies only for the three
+omitted reliability/context fields), and appears only in high-intelligence planning, highest-risk advisory, and
+independent-review ladders. The bounded read-only classification and extraction ladders retain MiniMax M2.5 and GPT-OSS
+120B and add Kimi K2.5 plus Kimi K2 Thinking. Kimi remains structurally barred from mutating work because its current
+quality evidence is single-attempt.
 
 Endpoint tiers remain in route and lease records and break equal-effective-cost ties. Every endpoint for the selected
 logical model and effort still precedes every different-model fallback.

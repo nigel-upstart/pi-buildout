@@ -104,11 +104,97 @@ function effortRank(effort: EffortLevel): number {
   return EFFORT_RANK[effort];
 }
 
-const GENERATION_PROXY_SOURCES: Readonly<Record<string, string>> = {
-  "gpt-6-luna": "gpt-5.6-luna",
-  "gpt-6-sol": "gpt-5.6-sol",
-  "claude-opus-5-5": "claude-opus-5",
+/** Standard short-context list rates, USD per million tokens. */
+type ListRates = { input: number; cacheRead: number; output: number };
+
+/** Measured DeepSWE token totals for one source configuration, split by billing class. */
+type SourceTokenMix = { uncachedInput: number; cacheRead: number; output: number };
+
+type GenerationProxy = {
+  sourceModelId: string;
+  sourceRates: ListRates;
+  rates: ListRates;
+  /** Keyed by effort; every source effort row must carry its measured token mix. */
+  sourceTokenMix: Readonly<Record<string, SourceTokenMix>>;
 };
+
+/**
+ * Current releases that inherit a prior generation's quality, reliability, and latency priors. The
+ * releases are not priced like their sources, so each proxy reprices `costPerPassUsd`: the source's
+ * own measured DeepSWE token mix is priced at the new and the source list rates, and the source's
+ * measured cost per pass is scaled by that ratio. Nothing else is rescaled, because a rate cut
+ * changes what an attempt costs, not how often it passes.
+ *
+ * Sources: teamupstart/ai-acceleration PR #650 at a99c2d0145952f99ad92f6d786ef0aa19fa15c97.
+ * Rates are `artificialanalysis.ai/pricing-source-data.csv` (vendor list prices retrieved
+ * 2026-09-22 for the new releases; 2026-09-09 and 2026-07-25 for the sources). Token totals are
+ * `datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv` (capture 2026-09-22), with uncached
+ * input = total_input_tokens - total_cache_tokens. Cache writes have no separate token column, so they
+ * are priced inside uncached input at the input rate; every proxy scales its write rate by the same
+ * factor as its input rate, so this does not bias the ratio.
+ */
+const GENERATION_PROXIES: Readonly<Record<string, GenerationProxy>> = {
+  "gpt-6-luna": {
+    sourceModelId: "gpt-5.6-luna",
+    sourceRates: { input: 0.2, cacheRead: 0.02, output: 1.2 },
+    rates: { input: 0.1, cacheRead: 0.01, output: 0.5 },
+    sourceTokenMix: {
+      low: { uncachedInput: 19_404_139, cacheRead: 48_410_112, output: 1_413_745 },
+      medium: { uncachedInput: 52_959_141, cacheRead: 226_298_880, output: 3_697_166 },
+      high: { uncachedInput: 143_223_576, cacheRead: 1_381_136_384, output: 11_651_780 },
+      xhigh: { uncachedInput: 232_520_182, cacheRead: 3_207_460_864, output: 20_194_411 },
+      max: { uncachedInput: 348_017_428, cacheRead: 6_570_768_384, output: 32_883_069 },
+    },
+  },
+  "gpt-6-sol": {
+    sourceModelId: "gpt-5.6-sol",
+    sourceRates: { input: 4, cacheRead: 0.4, output: 20 },
+    rates: { input: 2, cacheRead: 0.2, output: 10 },
+    sourceTokenMix: {
+      low: { uncachedInput: 41_098_029, cacheRead: 271_158_784, output: 4_781_772 },
+      medium: { uncachedInput: 55_519_604, cacheRead: 625_099_264, output: 8_328_198 },
+      high: { uncachedInput: 125_717_478, cacheRead: 1_099_147_776, output: 12_862_722 },
+      xhigh: { uncachedInput: 132_042_077, cacheRead: 1_795_639_296, output: 18_428_674 },
+      max: { uncachedInput: 220_238_625, cacheRead: 3_344_424_960, output: 27_133_255 },
+    },
+  },
+  "claude-opus-5-5": {
+    sourceModelId: "claude-opus-5",
+    sourceRates: { input: 5, cacheRead: 0.5, output: 25 },
+    rates: { input: 4, cacheRead: 0.2, output: 20 },
+    sourceTokenMix: {
+      low: { uncachedInput: 30_307_251, cacheRead: 682_547_596, output: 9_041_876 },
+      medium: { uncachedInput: 45_520_287, cacheRead: 1_584_082_107, output: 16_781_796 },
+      high: { uncachedInput: 67_453_248, cacheRead: 3_213_092_094, output: 29_059_277 },
+      xhigh: { uncachedInput: 89_332_467, cacheRead: 5_018_057_356, output: 41_440_745 },
+      max: { uncachedInput: 108_482_475, cacheRead: 6_636_981_041, output: 52_868_399 },
+    },
+  },
+};
+
+function priceTokenMix(mix: SourceTokenMix, rates: ListRates): number {
+  return mix.uncachedInput * rates.input + mix.cacheRead * rates.cacheRead + mix.output * rates.output;
+}
+
+/** New-release list cost of the source's measured token mix, as a fraction of the source's list cost. */
+export function generationProxyCostRatio(modelId: string, effort: EffortLevel): number | undefined {
+  const proxy = GENERATION_PROXIES[modelId];
+  const mix = proxy?.sourceTokenMix[effort];
+  if (!proxy || !mix) return undefined;
+  return priceTokenMix(mix, proxy.rates) / priceTokenMix(mix, proxy.sourceRates);
+}
+
+function generationProxyPrior(
+  modelId: string,
+  proxy: GenerationProxy,
+  effort: EffortLevel,
+): EvidencePriorRow | undefined {
+  const source = EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === proxy.sourceModelId && row.effort === effort);
+  if (!source) return undefined;
+  const ratio = generationProxyCostRatio(modelId, effort);
+  if (ratio === undefined) throw new Error(`${modelId}@${effort} proxy has no measured source token mix`);
+  return { ...source, modelId, costPerPassUsd: source.costPerPassUsd * ratio };
+}
 
 /**
  * Astra high has direct pass, repeatability, latency, step, cost, and language-slice measurements in
@@ -133,7 +219,8 @@ function astraHighPrior(): EvidencePriorRow {
     medianWallTimeSeconds: 893.5,
     p90WallTimeSeconds: 1464.2,
     medianSteps: 25,
-    costPerPassUsd: 7.816079529305136,
+    // DataCurve's 2026-09-22 cost correction for the Astra rollouts (27-39% lower; outcomes unchanged).
+    costPerPassUsd: 5.35807599244713,
     consensusBest: 95.28,
     byLanguage: {
       go: { ...go, passRate: 0.7647058823529411, hardTaskPassRate: 0.34375 },
@@ -147,9 +234,9 @@ const ASTRA_HIGH_PRIOR = astraHighPrior();
 
 export function findEvidencePrior(modelId: string, effort: EffortLevel): EvidencePriorRow | undefined {
   if (modelId === "gpt-6-astra" && effort === "high") return ASTRA_HIGH_PRIOR;
-  const sourceModelId = GENERATION_PROXY_SOURCES[modelId] ?? modelId;
-  const source = EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === sourceModelId && row.effort === effort);
-  return source ? { ...source, modelId } : undefined;
+  const proxy = GENERATION_PROXIES[modelId];
+  if (proxy) return generationProxyPrior(modelId, proxy, effort);
+  return EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === modelId && row.effort === effort);
 }
 
 /**
@@ -336,7 +423,7 @@ export const EFFORT_POLICIES: readonly EffortPolicy[] = [
     modelId: "gpt-6-astra",
     saturationEffort: "high",
     saturationReason:
-      "direct DeepSWE pass is flat at high/max (73.2%) and peaks only 0.9 points higher at xhigh while cost per pass rises from $7.82 to $8.80",
+      "direct DeepSWE pass is flat at high/max (73.2%) and peaks only 0.9 points higher at xhigh while cost per pass rises from $5.36 to $5.98, and to $10.24 at max",
   },
   {
     modelId: "claude-opus-5-5",
