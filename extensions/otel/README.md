@@ -118,9 +118,11 @@ resource attribute; direct binary launches can supply the same key through `OTEL
 records only a positive `usage.cost.total` reported by the provider. Missing cost is omitted, never guessed or emitted
 as zero.
 
-`service.instance.id` remains on traces and logs, where identifying a process is useful, but is deliberately absent from
-the metric resource. Datadog promotes recognized resource attributes into metric tags, so a random per-process value on
-metrics would create unbounded series with no analytical value.
+The extension generates a random per-process `service.instance.id`. It remains on traces and logs, where identifying a
+process is useful, but is deliberately absent from the metric resource. Datadog promotes recognized resource attributes
+into metric tags, so a random per-process value on metrics would create unbounded series with no analytical value. A
+`service.instance.id` an operator sets explicitly through `OTEL_RESOURCE_ATTRIBUTES` is treated as intentional and does
+reach the metric resource; on traces and logs the generated value takes precedence.
 
 ## Provider ownership and export health
 
@@ -155,7 +157,7 @@ does not claim that a downstream backend indexed the payload. The check is obser
 - Provider-scoped trace, metric, and log pipelines coexist with foreign global OTel providers. The runtime owns only the
   context manager it successfully registers and never disables another SDK's globals on shutdown.
 - Session identity is exported on request/tool metrics, provider-reported cost is emitted as the custom
-  `gen_ai.client.cost.usd` counter, and `service.instance.id` is kept off metric resources.
+  `gen_ai.client.cost.usd` counter, and the generated `service.instance.id` is kept off metric resources.
 - Exporter callbacks record per-signal attempts, accepted deliveries, failures, timestamps, and the last error for
   `/otel status` and the `pi-otel:status` event.
 - Upstream's docs-site, Biome, and release tooling were not adopted; only the extension source and its tests are
