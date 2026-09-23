@@ -23,12 +23,15 @@ describe("endpoint price survey", () => {
       );
     }
 
-    const sol = survey.models.find((model) => model.logicalModelId === "gpt-5.6-sol");
-    assert.ok(sol, "the policy survey must include gpt-5.6-sol");
+    // Pi 0.84.1 listed Cloudflare as the one Sol route without a cache-write rate. Pi 0.85.1 prices a
+    // write on every surveyed Sol route, so the observed exception set is empty. This is not a claim that
+    // every gateway bills cache writes.
+    const sol = survey.models.find((model) => model.logicalModelId === "gpt-6-sol");
+    assert.ok(sol, "the policy survey must include gpt-6-sol");
     const exceptions = sol.endpoints
       .filter((endpoint) => endpoint.cacheWriteClassification === "no_write_line_item")
       .map((endpoint) => endpoint.provider)
       .sort();
-    assert.deepEqual(exceptions, ["cloudflare-ai-gateway"]);
+    assert.deepEqual(exceptions, []);
   });
 });

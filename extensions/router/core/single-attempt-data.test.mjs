@@ -168,7 +168,7 @@ describe("abilityFromSingleAttempt", () => {
     // The effort is irrelevant to the result, because the source has no per-effort curve to read.
     assert.equal(evidenceAbility("minimax-m2.5", "high"), 2);
     // Precedence check: a model with a rollout row keeps the band that row implies.
-    assert.equal(evidenceAbility("claude-opus-5", "high"), 4);
+    assert.equal(evidenceAbility("claude-opus-5-5", "high"), 4);
     assert.equal(evidenceAbility("claude-haiku-4-5", "low"), 1);
     const row = findSingleAttemptPrior("minimax-m2.5");
     assert.ok(row);
@@ -217,12 +217,12 @@ describe("existing candidates keep their bands unchanged", () => {
   it("does not route any existing candidate through the single-attempt class", () => {
     // Regression guard for the whole point of the separate class: adding it must not have moved any
     // band that the multi-trial and consensus sources already decide.
-    assert.equal(evidenceAbility("claude-opus-5", "high"), 4);
-    assert.equal(evidenceAbility("claude-opus-5", "medium"), 3);
-    assert.equal(evidenceAbility("claude-opus-5", "low"), 2);
-    assert.equal(evidenceAbility("gpt-5.6-sol", "max"), 4);
-    assert.equal(evidenceAbility("gpt-5.6-sol", "high"), 3);
-    assert.equal(evidenceAbility("gpt-5.6-sol", "medium"), 2);
+    assert.equal(evidenceAbility("claude-opus-5-5", "high"), 4);
+    assert.equal(evidenceAbility("claude-opus-5-5", "medium"), 3);
+    assert.equal(evidenceAbility("claude-opus-5-5", "low"), 2);
+    assert.equal(evidenceAbility("gpt-6-sol", "max"), 4);
+    assert.equal(evidenceAbility("gpt-6-sol", "high"), 3);
+    assert.equal(evidenceAbility("gpt-6-sol", "medium"), 2);
     assert.equal(evidenceAbility("claude-fable-5", "xhigh"), 4);
     assert.equal(evidenceAbility("claude-sonnet-5", "high"), 1);
     assert.equal(evidenceAbility("gemini-3.6-flash", "high"), 1);

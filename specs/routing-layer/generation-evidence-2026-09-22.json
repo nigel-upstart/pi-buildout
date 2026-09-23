@@ -1,0 +1,186 @@
+{
+  "source": {
+    "repository": "teamupstart/ai-acceleration",
+    "pullRequest": 650,
+    "revision": "a99c2d0145952f99ad92f6d786ef0aa19fa15c97",
+    "dataThrough": "2026-09-22",
+    "files": {
+      "astraDirect": [
+        "llm_effectiveness/site/public/data/router_capability_slices.csv",
+        "llm_effectiveness/site/public/data/router_capability_slices_by_language_bucket.csv",
+        "llm_effectiveness/site/app/data/report-data.json (consensus performance_best)"
+      ],
+      "listRates": "llm_effectiveness/artificialanalysis.ai/pricing-source-data.csv",
+      "sourceTokenMix": "llm_effectiveness/datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv (uncachedInput = total_input_tokens - total_cache_tokens)"
+    }
+  },
+  "astraHigh": {
+    "modelId": "gpt-6-astra",
+    "effort": "high",
+    "passRate": 0.7323008849557522,
+    "hardTaskPassRate": 0.30357142857142855,
+    "repeatAllPassRate": 0.6017699115044248,
+    "repeatFlakyRate": 0.22123893805309736,
+    "contextOverflowRate": 0.0,
+    "medianWallTimeSeconds": 893.5,
+    "p90WallTimeSeconds": 1464.2,
+    "medianSteps": 25.0,
+    "costPerPassUsd": 5.35807599244713,
+    "consensusBest": 95.28,
+    "byLanguage": {
+      "go": {
+        "passRate": 0.7647058823529411,
+        "hardTaskPassRate": 0.34375
+      },
+      "python": {
+        "passRate": 0.7794117647058824,
+        "hardTaskPassRate": 0.34375
+      },
+      "typescript": {
+        "passRate": 0.6357142857142857,
+        "hardTaskPassRate": 0.175
+      }
+    },
+    "proxiedFromSourceModel": "gpt-5.6-sol",
+    "proxiedFields": [
+      "regressionBreakRate",
+      "partialCreditOnFailure",
+      "p90PeakContextTokens",
+      "byLanguage.*.regressionBreakRate"
+    ]
+  },
+  "generationProxies": {
+    "gpt-6-luna": {
+      "sourceModelId": "gpt-5.6-luna",
+      "rates": {
+        "input": 0.1,
+        "cacheRead": 0.01,
+        "output": 0.5,
+        "source": "https://developers.openai.com/api/docs/pricing",
+        "retrieved": "2026-09-22"
+      },
+      "sourceRates": {
+        "input": 0.2,
+        "cacheRead": 0.02,
+        "output": 1.2,
+        "source": "https://artificialanalysis.ai/models/gpt-5-6-luna",
+        "retrieved": "2026-09-09"
+      },
+      "sourceTokenMix": {
+        "low": {
+          "uncachedInput": 19404139,
+          "cacheRead": 48410112,
+          "output": 1413745
+        },
+        "medium": {
+          "uncachedInput": 52959141,
+          "cacheRead": 226298880,
+          "output": 3697166
+        },
+        "high": {
+          "uncachedInput": 143223576,
+          "cacheRead": 1381136384,
+          "output": 11651780
+        },
+        "xhigh": {
+          "uncachedInput": 232520182,
+          "cacheRead": 3207460864,
+          "output": 20194411
+        },
+        "max": {
+          "uncachedInput": 348017428,
+          "cacheRead": 6570768384,
+          "output": 32883069
+        }
+      }
+    },
+    "gpt-6-sol": {
+      "sourceModelId": "gpt-5.6-sol",
+      "rates": {
+        "input": 2.0,
+        "cacheRead": 0.2,
+        "output": 10.0,
+        "source": "https://developers.openai.com/api/docs/pricing",
+        "retrieved": "2026-09-22"
+      },
+      "sourceRates": {
+        "input": 4.0,
+        "cacheRead": 0.4,
+        "output": 20.0,
+        "source": "https://artificialanalysis.ai/models/gpt-5-6-sol",
+        "retrieved": "2026-09-09"
+      },
+      "sourceTokenMix": {
+        "low": {
+          "uncachedInput": 41098029,
+          "cacheRead": 271158784,
+          "output": 4781772
+        },
+        "medium": {
+          "uncachedInput": 55519604,
+          "cacheRead": 625099264,
+          "output": 8328198
+        },
+        "high": {
+          "uncachedInput": 125717478,
+          "cacheRead": 1099147776,
+          "output": 12862722
+        },
+        "xhigh": {
+          "uncachedInput": 132042077,
+          "cacheRead": 1795639296,
+          "output": 18428674
+        },
+        "max": {
+          "uncachedInput": 220238625,
+          "cacheRead": 3344424960,
+          "output": 27133255
+        }
+      }
+    },
+    "claude-opus-5-5": {
+      "sourceModelId": "claude-opus-5",
+      "rates": {
+        "input": 4.0,
+        "cacheRead": 0.2,
+        "output": 20.0,
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "retrieved": "2026-09-22"
+      },
+      "sourceRates": {
+        "input": 5.0,
+        "cacheRead": 0.5,
+        "output": 25.0,
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "retrieved": "2026-07-25"
+      },
+      "sourceTokenMix": {
+        "low": {
+          "uncachedInput": 30307251,
+          "cacheRead": 682547596,
+          "output": 9041876
+        },
+        "medium": {
+          "uncachedInput": 45520287,
+          "cacheRead": 1584082107,
+          "output": 16781796
+        },
+        "high": {
+          "uncachedInput": 67453248,
+          "cacheRead": 3213092094,
+          "output": 29059277
+        },
+        "xhigh": {
+          "uncachedInput": 89332467,
+          "cacheRead": 5018057356,
+          "output": 41440745
+        },
+        "max": {
+          "uncachedInput": 108482475,
+          "cacheRead": 6636981041,
+          "output": 52868399
+        }
+      }
+    }
+  }
+}

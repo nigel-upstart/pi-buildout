@@ -171,12 +171,23 @@ extensions/router/
 
 ## Decision: router-owned classifier deadline and conservative fast paths
 
-The router owns one **15-second** wall-clock deadline for each fresh-task or continuity classification. It wraps the
-whole request rather than resetting a timer for each retry, endpoint, or secondary stage, because those are all one
-user-visible routing decision. One `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and pi-ai
-`complete()` call. The deadline races the whole operation, aborts the signal, and returns the fail-safe result promptly;
-the operation promise has rejection handlers attached so a transport settling after the race cannot create an unhandled
-rejection.
+The router owns independent wall-clock deadlines per classification stage for each fresh-task or continuity request.
+Rather than forcing primary classification and secondary escalation to share a single combined countdown, each stage of
+a synchronous classifier invocation receives its own timeout budget configured in code
+([`CLASSIFICATION_STAGE_TIMEOUT_MS`](../../extensions/router/index.ts)): fresh-task primary classification, and
+continuity classification, which still escalates primary to secondary within one invocation.
+
+The architecture therefore has two timeout owners by design. Background fresh-task secondary reconciliation is
+asynchronous — a separate invocation started after the primary result is accepted — and is bounded by the configurable
+`secondaryGracePolicy.secondaryDeadlineMs` ([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts))
+rather than by the stage constant, with `maxGraceMs` bounding only how long the router delays the first provider
+request. Splitting the budgets keeps the blocking path's deadline the one reported to the user while letting operators
+tune background reconciliation independently. An `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and
+pi-ai `complete()` call for that stage. The stage deadline races the active stage operation, aborts the signal, and
+returns the fail-safe result promptly; the operation promise has rejection handlers attached so a transport settling
+after the race cannot create an unhandled rejection. Exact timeout constants and telemetry handling can be inspected in
+[`extensions/router/index.ts`](../../extensions/router/index.ts) and
+[`extensions/router/telemetry.ts`](../../extensions/router/telemetry.ts).
 
 `AbortError` and `TimeoutError` are terminal control outcomes, not availability errors. The schema layer does not retry,
 the endpoint iterator does not advance, and primary cancellation never escalates to the provider-diverse secondary (nor
@@ -638,3 +649,59 @@ grouping and all v7 consequence gates remain in force. The scoped-candidate comp
    `$4.86` per pass. But Astra has only that one benchmark source and reports zero peak-context telemetry, while the
    pinned package registry does not yet declare it even though some runtime registries do. It remains a challenger for a
    future acceptance-gated admission rather than silently replacing a two-source default.
+
+## Registry refresh to pi 0.85.1, 2026-09-22
+
+Evidence: [`registry-refresh-2026-09-22.md`](registry-refresh-2026-09-22.md).
+
+1. **The Bedrock long-context pricing guard covers every GPT-5.6 model.** Pi 0.85.1 widens the Bedrock context windows
+   for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` to 1,050,000 tokens without registering a long-context rate.
+   All three are now ineligible on Bedrock above 272,000 estimated finished tokens. This extends the Sol rule in
+   decision 4 of the `router-policy-v6` section. Leases are revalidated through the same check, so the policy version is
+   unchanged.
+
+2. **The rate premise of cutting Sol at medium no longer holds, and the cut stands.** Decision 5 of the 2026-08-13
+   section cut `gpt-5.6-sol` at medium partly because Opus 5 medium was cheaper. Under 0.85.1 and the current Bedrock
+   weight, Sol is `6.532` against `7.423` for Opus 5 at the same mix, so only the ability band still favors Opus 5. The
+   cut is not reversed here; whether to reinstate Sol at medium is an open policy question, tracked in
+   [#67](https://github.com/nigel-upstart/pi-buildout/issues/67).
+
+3. **GPT-6 Astra remains unrouted.** 0.85.1 declares `gpt-6-astra`, which resolves one of the three reasons in decision
+   6 of the 2026-09-10 section. The single benchmark source and missing peak-context telemetry still apply.
+
+## Generation-forward routing, 2026-09-22 (`router-policy-v9`)
+
+Evidence: `teamupstart/ai-acceleration` PR #650 at `a99c2d0145952f99ad92f6d786ef0aa19fa15c97` (DataCurve capture and
+vendor pricing through 2026-09-22), transcribed in
+[`generation-evidence-2026-09-22.json`](generation-evidence-2026-09-22.json), plus the `@earendil-works/pi-ai` 0.87.1
+registry.
+
+1. **Current model names may use explicit prior-generation proxies.** GPT-6 Luna and Sol inherit the GPT-5.6 Luna and
+   Sol rows, and Claude Opus 5.5 inherits the Opus 5 rows. This is an intentional risk decision, not a claim that the
+   report measured those releases: the newer generation is assumed no worse on quality, reliability, and latency. The
+   source rows stay unchanged, while runtime lookup returns the current model identity so telemetry never mixes them.
+
+2. **Proxies are repriced, not assumed to cost the same.** The report's verified list rates cut every price: GPT-6 Sol
+   is exactly half of GPT-5.6 Sol ($2/$0.20/$10 against $4/$0.40/$20 input/cache-read/output), GPT-6 Luna is
+   $0.10/$0.01/$0.50 against $0.20/$0.02/$1.20, and Opus 5.5 is $4/$0.20/$20 against $5/$0.50/$25. Each inherited
+   `costPerPassUsd` is scaled by the new-to-source list cost of that source row's own measured DeepSWE token mix
+   (uncached input, cache read, output), giving 0.50 for Sol, 0.478-0.486 for Luna, and 0.544-0.610 for Opus 5.5
+   (cache-heavy efforts gain most from the 60% cache-read cut). Pass, repeatability, latency, and context stay
+   inherited, because a rate cut changes what an attempt costs rather than how often it passes. Two knife-edge rankings
+   move as a result: bounded tool workflows now lead with Sol high over Sol medium (1.3% apart), and under unit-test
+   verification Sol high leads Ruby repository work by 8.1%, just outside Ruby's 8% near-tie band, so the Anthropic
+   tendency no longer promotes Opus 5.5 medium there. Endpoint ordering is unaffected: it prices each live registry
+   entry directly.
+
+3. **Astra high is the measured high-intelligence OpenAI rung.** Its direct DeepSWE observations supply 73.2% pass,
+   30.4% hard-task pass, 60.2% all-repeat pass, 22.1% flakiness, 893.5s median wall time, 1,464.2s p90 wall time, 25
+   median steps, zero observed overflow, and
+   $5.36 per pass after DataCurve's 2026-09-22 cost correction (previously
+   $7.82; outcomes unchanged); the refreshed
+   consensus places it in band 4. Because the report omits regression breakage, failed-trial partial credit, and p90
+   peak context, those three fields retain Sol high's values. Astra is admitted only to implementation/program planning,
+   highest-risk advisory, and independent OpenAI review ladders; it does not replace routine coding defaults.
+
+4. **The scoped registry remains authoritative.** The policy names current releases, but endpoint resolution still skips
+   any model absent from the operator's enabled live registry. This is especially important for provider surfaces that
+   expose Astra but not Luna/Sol, or use `claude-opus-5.5` rather than `claude-opus-5-5` spelling.

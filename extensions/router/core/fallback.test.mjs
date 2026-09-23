@@ -36,9 +36,9 @@ describe("ordinary fallback", () => {
   it("tries every authorized provider endpoint before restoring the previous selection", () => {
     const lease = taskLease(
       "median_repository_implementation",
-      choice("openai-codex", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
+      choice("openai-codex", "gpt-5.6-terra", "openai-gpt-6-agent-v1"),
       [
-        choice("openai", "gpt-5.6-terra", "openai-gpt-5.6-agent-v1"),
+        choice("openai", "gpt-5.6-terra", "openai-gpt-6-agent-v1"),
         choice("anthropic", "claude-sonnet-5", "anthropic-claude-fast-agent-v1"),
         choice("bifrost", "bedrock/anthropic.claude-sonnet-5", "anthropic-claude-fast-agent-v1"),
       ],
@@ -182,8 +182,8 @@ describe("review fallback", () => {
 
     const parent = taskLease(
       "median_repository_implementation",
-      choice("openai", "gpt-5.6-sol", "openai-gpt-5.6-agent-v1"),
-      [choice("anthropic", "claude-opus-5", "anthropic-claude-planning-v1")],
+      choice("openai", "gpt-6-sol", "openai-gpt-6-agent-v1"),
+      [choice("anthropic", "claude-opus-5-5", "anthropic-claude-planning-v1")],
     );
     const tracked = createTaskLease({
       taskId: "tracked-review",
@@ -200,7 +200,7 @@ describe("review fallback", () => {
       updatedAt: "2026-07-17T00:00:00.000Z",
       archetype: "code_review",
       features: conservativeFeatures(),
-      selected: choice("anthropic", "claude-opus-5", "anthropic-claude-planning-v1"),
+      selected: choice("anthropic", "claude-opus-5-5", "anthropic-claude-planning-v1"),
       fallbacks: [choice("google", "gemini-3.6-flash", "google-gemini-3.6-iterative-v1")],
       modelSnapshotId: "snapshot",
       policyVersion: "policy",
@@ -243,8 +243,8 @@ describe("review fallback", () => {
       taskId: "tracked-review-builder-vendor",
       fallbacks: [
         choice("google", "gemini-3.6-flash", "google-gemini-3.6-iterative-v1"),
-        // The parent builder is openai/gpt-5.6-sol, so this attempt is not independent.
-        choice("openai", "gpt-5.6-sol", "openai-gpt-5.6-agent-v1"),
+        // The parent builder is openai/gpt-6-sol, so this attempt is not independent.
+        choice("openai", "gpt-6-sol", "openai-gpt-6-agent-v1"),
       ],
     });
     assert.ok(

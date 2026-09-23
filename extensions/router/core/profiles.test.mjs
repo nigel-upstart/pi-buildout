@@ -109,9 +109,8 @@ describe("prompt profile eligibility is declared in canonical logical model IDs"
       );
       if (!resolvable) unroutable.push(`${endpoint.provider}/${endpoint.modelId}`);
     }
-    // 55: the prior 50 endpoints plus three observed Gemini 3.8 surfaces and the two already-surveyed
-    // Kimi endpoints that became policy-named. Older MiniMax spellings remain correctly skipped.
-    assert.equal(named.length, 55, "the registry fixture no longer describes the surveyed policy endpoint set");
+    // The fixture grows with every observed provider spelling; every policy-named row must resolve.
+    assert.equal(named.length, 62, "the registry fixture no longer describes the surveyed policy endpoint set");
     assert.deepEqual(unroutable, [], "policy-named endpoints resolve no profile and would be excluded");
   });
 
@@ -177,8 +176,8 @@ describe("canonical eligibility does not over-admit", () => {
     assert.equal(new Set(logical).size, logical.length, "two policy-named models collapse to one logical ID");
     // The spellings that previously needed hand-listing must not merge separate generations.
     const pairs = [
-      ["anthropic.claude-opus-5", "anthropic.claude-sonnet-5"],
-      ["openai.gpt-5.6-luna", "openai.gpt-5.6-terra"],
+      ["anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5"],
+      ["openai.gpt-6-luna", "openai.gpt-5.6-terra"],
       ["claude-haiku-4.5", "claude-sonnet-5"],
     ];
     for (const [left, right] of pairs) {
@@ -192,7 +191,7 @@ describe("canonical eligibility does not over-admit", () => {
     assert.notEqual(
       findPromptProfile("anthropic", "us.anthropic.claude-opus-4-6-v1", "median_repository_implementation", "medium")
         ?.id,
-      findPromptProfile("anthropic", "anthropic.claude-opus-5", "median_repository_implementation", "medium")?.id,
+      findPromptProfile("anthropic", "anthropic.claude-opus-5-5", "median_repository_implementation", "medium")?.id,
     );
   });
 });

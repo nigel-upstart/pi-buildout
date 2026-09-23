@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { classifyTaskWithPi, selectClassifierModels, transportFromCandidates } from "./pi-classifier.ts";
+import { conservativeFeatures } from "./core/features.ts";
+import {
+  classifyTaskSecondaryWithPi,
+  classifyTaskWithPi,
+  selectClassifierModels,
+  transportFromCandidates,
+} from "./pi-classifier.ts";
 
 function model(provider, id) {
   return { provider, id };
@@ -56,10 +62,10 @@ function rateLimitError(provider) {
 describe("selectClassifierModels", () => {
   it("selects exact configured IDs from different model vendors", () => {
     const selected = selectClassifierModels([
-      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
       snapshot("anthropic", "claude-sonnet-5"),
     ]);
-    assert.equal(selected.primary[0].model.id, "gpt-5.6-luna");
+    assert.equal(selected.primary[0].model.id, "gpt-6-luna");
     assert.equal(selected.primary[0].vendor, "openai");
     assert.equal(selected.secondary[0].model.id, "claude-sonnet-5");
     assert.equal(selected.secondary[0].vendor, "anthropic");
@@ -67,10 +73,10 @@ describe("selectClassifierModels", () => {
 
   it("does not downgrade the independent secondary from validated Sonnet to Haiku", () => {
     const selected = selectClassifierModels([
-      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
       snapshot("anthropic", "claude-haiku-4-5"),
     ]);
-    assert.equal(selected.primary[0].model.id, "gpt-5.6-luna");
+    assert.equal(selected.primary[0].model.id, "gpt-6-luna");
     assert.equal(selected.secondary.length, 0);
   });
 
@@ -85,7 +91,7 @@ describe("selectClassifierModels", () => {
     // entry falls back to the shared tier list. Independence must still hold, which is enforced at
     // selection time rather than assumed from the table.
     const selected = selectClassifierModels([
-      snapshot("openai-codex", "gpt-5.6-luna", { vendor: "moonshot" }),
+      snapshot("openai-codex", "gpt-6-luna", { vendor: "moonshot" }),
       snapshot("anthropic", "claude-sonnet-5"),
       snapshot("openai-codex", "gpt-5.6-terra"),
     ]);
@@ -114,9 +120,9 @@ describe("selectClassifierModels", () => {
 
   it("collects every configured Luna endpoint, including direct Amazon Bedrock, ahead of Haiku", () => {
     const selected = selectClassifierModels([
-      snapshot("openai-codex", "gpt-5.6-luna"),
-      snapshot("openai", "gpt-5.6-luna"),
-      snapshot("amazon-bedrock", "openai.gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
+      snapshot("openai", "gpt-6-luna"),
+      snapshot("amazon-bedrock", "openai.gpt-6-luna"),
       snapshot("anthropic", "claude-haiku-4-5"),
       snapshot("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"),
       snapshot("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
@@ -124,9 +130,9 @@ describe("selectClassifierModels", () => {
     assert.deepEqual(
       selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
       [
-        "openai-codex/gpt-5.6-luna",
-        "amazon-bedrock/openai.gpt-5.6-luna",
-        "openai/gpt-5.6-luna",
+        "openai-codex/gpt-6-luna",
+        "amazon-bedrock/openai.gpt-6-luna",
+        "openai/gpt-6-luna",
         "anthropic/claude-haiku-4-5",
         "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
         "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -139,7 +145,7 @@ describe("selectClassifierModels", () => {
 
   it("offers Amazon Bedrock as a secondary endpoint alternative for Sonnet and Terra", () => {
     const openaiPrimary = selectClassifierModels([
-      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
       snapshot("amazon-bedrock", "anthropic.claude-sonnet-5"),
     ]);
     assert.equal(openaiPrimary.secondary[0]?.model.id, "anthropic.claude-sonnet-5");
@@ -155,7 +161,7 @@ describe("selectClassifierModels", () => {
 
   it("chooses both secondary logical tiers from the primary model vendor, not its endpoint provider", () => {
     const openaiSelected = selectClassifierModels([
-      snapshot("amazon-bedrock", "openai.gpt-5.6-luna"),
+      snapshot("amazon-bedrock", "openai.gpt-6-luna"),
       snapshot("amazon-bedrock", "anthropic.claude-sonnet-5"),
       snapshot("amazon-bedrock", "openai.gpt-5.6-terra"),
     ]);
@@ -179,8 +185,8 @@ describe("selectClassifierModels", () => {
 
   it("orders flat-rate endpoints after token-billed alternatives", () => {
     const selected = selectClassifierModels([
-      snapshot("github-copilot", "gpt-5.6-luna"),
-      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("github-copilot", "gpt-6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => entry.model.provider),
@@ -193,21 +199,21 @@ describe("selectClassifierModels", () => {
     // Classification is enforced through a forced tool call, so a non-tool-capable endpoint could
     // never satisfy this tier even when it is scoped in, healthy, and the cheapest candidate.
     const selected = selectClassifierModels([
-      snapshot("amazon-bedrock", "openai.gpt-5.6-luna", {
+      snapshot("amazon-bedrock", "openai.gpt-6-luna", {
         toolCapable: false,
         costPerMillion: { input: 0.01, output: 0.01, cacheRead: 0.001, cacheWrite: 0.01 },
       }),
-      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
-      ["openai-codex/gpt-5.6-luna"],
+      ["openai-codex/gpt-6-luna"],
     );
   });
 
   it("declines classification when every scoped endpoint lacks tool support", () => {
     const selected = selectClassifierModels([
-      snapshot("openai-codex", "gpt-5.6-luna", { toolCapable: false }),
+      snapshot("openai-codex", "gpt-6-luna", { toolCapable: false }),
       snapshot("anthropic", "claude-haiku-4-5", { toolCapable: false }),
     ]);
     assert.deepEqual(selected.primary, []);
@@ -216,24 +222,24 @@ describe("selectClassifierModels", () => {
 
   it("excludes unavailable and recurring-failure endpoints but retains transient failures", () => {
     const selected = selectClassifierModels([
-      snapshot("github-copilot", "gpt-5.6-luna", { available: false }),
-      snapshot("openai", "gpt-5.6-luna", {
-        health: { provider: "openai", modelId: "gpt-5.6-luna", status: "client_error" },
+      snapshot("github-copilot", "gpt-6-luna", { available: false }),
+      snapshot("openai", "gpt-6-luna", {
+        health: { provider: "openai", modelId: "gpt-6-luna", status: "client_error" },
       }),
-      snapshot("bifrost", "gpt-5.6-luna", {
-        health: { provider: "bifrost", modelId: "gpt-5.6-luna", status: "failed" },
+      snapshot("bifrost", "gpt-6-luna", {
+        health: { provider: "bifrost", modelId: "gpt-6-luna", status: "failed" },
       }),
-      snapshot("amazon-bedrock", "openai.gpt-5.6-luna", {
-        health: { provider: "amazon-bedrock", modelId: "openai.gpt-5.6-luna", status: "server_error" },
+      snapshot("amazon-bedrock", "openai.gpt-6-luna", {
+        health: { provider: "amazon-bedrock", modelId: "openai.gpt-6-luna", status: "server_error" },
       }),
-      snapshot("google-vertex", "gpt-5.6-luna", {
-        health: { provider: "google-vertex", modelId: "gpt-5.6-luna", status: "timeout" },
+      snapshot("google-vertex", "gpt-6-luna", {
+        health: { provider: "google-vertex", modelId: "gpt-6-luna", status: "timeout" },
       }),
-      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => `${entry.model.provider}/${entry.model.id}`),
-      ["google-vertex/gpt-5.6-luna", "openai-codex/gpt-5.6-luna", "amazon-bedrock/openai.gpt-5.6-luna"],
+      ["google-vertex/gpt-6-luna", "openai-codex/gpt-6-luna", "amazon-bedrock/openai.gpt-6-luna"],
     );
   });
 
@@ -261,10 +267,10 @@ describe("selectClassifierModels", () => {
     });
     assert.equal(result.failedClosed, true);
     assert.equal(registryLookups, 0);
-    assert.equal(result.attempts.length, 4);
+    assert.equal(result.attempts.length, 2);
     assert.ok(result.attempts.every((attempt) => attempt.valid === false));
-    assert.equal(observations.filter((observation) => observation.state === "started").length, 4);
-    assert.equal(observations.filter((observation) => observation.outcome === "error").length, 4);
+    assert.equal(observations.filter((observation) => observation.state === "started").length, 2);
+    assert.equal(observations.filter((observation) => observation.outcome === "error").length, 2);
   });
 
   it("does not call an alternate endpoint when the provider returns an aborted response", async () => {
@@ -287,16 +293,52 @@ describe("selectClassifierModels", () => {
               getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
             },
           },
-          registry: [snapshot("a-primary", "gpt-5.6-luna"), snapshot("z-alternate", "gpt-5.6-luna")],
+          registry: [snapshot("a-primary", "gpt-6-luna"), snapshot("z-alternate", "gpt-6-luna")],
           prompt: "Implement the change",
           synopsis: {},
         }),
         (error) => error instanceof Error && error.name === "AbortError",
       );
-      assert.deepEqual(registryLookups, ["a-primary/gpt-5.6-luna"]);
+      assert.deepEqual(registryLookups, ["a-primary/gpt-6-luna"]);
     } finally {
       faux.unregister();
     }
+  });
+});
+
+describe("classifyTaskSecondaryWithPi", () => {
+  it("chooses the independent tier from the vendor that answered the primary, not the first candidate", async () => {
+    const registryLookups = [];
+    const features = conservativeFeatures("fixture");
+    await classifyTaskSecondaryWithPi({
+      ctx: {
+        modelRegistry: {
+          find: (provider, modelId) => {
+            registryLookups.push(`${provider}/${modelId}`);
+            return undefined;
+          },
+        },
+      },
+      registry: [
+        snapshot("openai", "gpt-6-luna"),
+        snapshot("anthropic", "claude-haiku-4-5"),
+        snapshot("anthropic", "claude-sonnet-5"),
+        snapshot("openai", "gpt-5.6-terra"),
+      ],
+      prompt: "Implement the change",
+      synopsis: {},
+      // Luna is the first primary candidate, but Haiku answered after Luna failed over.
+      primary: {
+        features,
+        primaryFeatures: features,
+        escalated: true,
+        failedClosed: false,
+        attempts: [],
+        primaryVendor: "anthropic",
+      },
+    });
+    assert.ok(registryLookups.length > 0, "the secondary stage must consult at least one endpoint");
+    assert.deepEqual([...new Set(registryLookups)], ["openai/gpt-5.6-terra"]);
   });
 });
 
@@ -304,7 +346,7 @@ describe("transportFromCandidates", () => {
   it("falls back to the next configured endpoint when the first is rate limited", async () => {
     const attempted = [];
     const transport = transportFromCandidates(
-      [candidate("openai-codex", "gpt-5.6-luna", "openai"), candidate("openai", "gpt-5.6-luna", "openai")],
+      [candidate("openai-codex", "gpt-6-luna", "openai"), candidate("openai", "gpt-6-luna", "openai")],
       async (candidateEntry) => {
         attempted.push(candidateEntry.model.provider);
         if (candidateEntry.model.provider === "openai-codex") throw rateLimitError("openai-codex");
@@ -326,9 +368,9 @@ describe("transportFromCandidates", () => {
   it("tries every Luna endpoint before falling through to the Haiku tier", async () => {
     const attempted = [];
     const candidates = [
-      candidate("openai-codex", "gpt-5.6-luna", "openai"),
-      candidate("openai", "gpt-5.6-luna", "openai"),
-      candidate("amazon-bedrock", "openai.gpt-5.6-luna", "openai"),
+      candidate("openai-codex", "gpt-6-luna", "openai"),
+      candidate("openai", "gpt-6-luna", "openai"),
+      candidate("amazon-bedrock", "openai.gpt-6-luna", "openai"),
       candidate("anthropic", "claude-haiku-4-5", "anthropic"),
       candidate("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic"),
     ];
@@ -351,17 +393,14 @@ describe("transportFromCandidates", () => {
   });
 
   it("throws an aggregated error naming every failed endpoint when the whole tier list is exhausted", async () => {
-    const candidates = [
-      candidate("openai-codex", "gpt-5.6-luna", "openai"),
-      candidate("openai", "gpt-5.6-luna", "openai"),
-    ];
+    const candidates = [candidate("openai-codex", "gpt-6-luna", "openai"), candidate("openai", "gpt-6-luna", "openai")];
     const transport = transportFromCandidates(candidates, async (candidateEntry) => {
       throw rateLimitError(candidateEntry.model.provider);
     });
 
     await assert.rejects(transport(request()), (error) => {
-      assert.match(error.message, /openai-codex\/gpt-5\.6-luna/);
-      assert.match(error.message, /openai\/gpt-5\.6-luna/);
+      assert.match(error.message, /openai-codex\/gpt-6-luna/);
+      assert.match(error.message, /openai\/gpt-6-luna/);
       assert.match(error.message, /rate limit/);
       return true;
     });
@@ -369,10 +408,7 @@ describe("transportFromCandidates", () => {
 
   it("does not retry another endpoint after the caller aborts the request", async () => {
     const attempted = [];
-    const candidates = [
-      candidate("openai-codex", "gpt-5.6-luna", "openai"),
-      candidate("openai", "gpt-5.6-luna", "openai"),
-    ];
+    const candidates = [candidate("openai-codex", "gpt-6-luna", "openai"), candidate("openai", "gpt-6-luna", "openai")];
     const transport = transportFromCandidates(candidates, async (candidateEntry) => {
       attempted.push(candidateEntry.model.provider);
       const error = new Error("The operation was aborted");
@@ -386,10 +422,7 @@ describe("transportFromCandidates", () => {
 
   it("does not retry another endpoint after a transport timeout", async () => {
     const attempted = [];
-    const candidates = [
-      candidate("openai-codex", "gpt-5.6-luna", "openai"),
-      candidate("openai", "gpt-5.6-luna", "openai"),
-    ];
+    const candidates = [candidate("openai-codex", "gpt-6-luna", "openai"), candidate("openai", "gpt-6-luna", "openai")];
     const timeout = new Error("Classifier transport timed out");
     timeout.name = "TimeoutError";
     const transport = transportFromCandidates(candidates, async (candidateEntry) => {

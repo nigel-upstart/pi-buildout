@@ -152,20 +152,30 @@ from a local research corpus and the public benchmark captures it aggregates.
 - Initial revision reviewed: capture dated 2026-07-25, spend data through 2026-07-19
 - Latest revision reviewed:
   [`teamupstart/ai-acceleration` PR #650](https://github.com/teamupstart/ai-acceleration/pull/650) at
-  `8053ead0ccc38c9bcd84131984d515fdc22bfddd`, report data through 2026-09-10; latest remote `main` reviewed at
+  `a99c2d0145952f99ad92f6d786ef0aa19fa15c97`, report data through 2026-09-22; latest remote `main` reviewed at
   [`392b967c5ec3ea8d63078ddbc31a8b16a1f22836`](https://github.com/teamupstart/ai-acceleration/commit/392b967c5ec3ea8d63078ddbc31a8b16a1f22836)
 - License: internal working data; not redistributed by this repository
 
 Use: numeric priors (deterministic pass rate, hard-task pass rate, regression-breakage rate, partial credit on failure,
 repeat reliability, wall time, agent steps, p90 peak context, cost per pass) were derived from the initial corpus's
 `analysis/router_capability_slices.py` output and its `ROUTING_LEARNINGS.md` interpretation, then transcribed as typed
-data with per-row provenance. The refreshed report contributes Gemini 3.8 Flash's effort-specific consensus band,
-CursorBench score, and DeepSWE pass/cost/context observations, plus current Artificial Analysis intelligence and speed
-context for the scoped-model gate; pinned pi-ai registry prices bound the Kimi fallbacks. Its Opus low/medium default
-and Sol-high challenger recommendation informs the median coding topology. No corpus or `ai_usage` code, prose, or raw
-benchmark records were copied. GPT-6/unsupported models, the report's Sonnet experiment proposal, frontend task
-heuristics, and automatic cross-model percentile ranking were intentionally not adopted; the router preserves its
-existing consequence gates and requires local acceptance telemetry before automatic promotion.
+data with per-row provenance. The refreshed report contributes GPT-6 Astra's direct DeepSWE pass, hard-task,
+repeatability, latency, steps, cost (as corrected by DataCurve's 2026-09-22 recapture), and language-slice observations
+plus its two-source max-tier corroboration; Gemini 3.8 Flash's effort-specific consensus band, CursorBench score, and
+DeepSWE observations; and current Artificial Analysis intelligence and speed context. GPT-6 Luna/Sol deliberately
+inherit the corresponding GPT-5.6 Luna/Sol priors, and Claude Opus 5.5 inherits Opus 5, as operator-requested generation
+proxies. Their cost per pass is repriced from the report's verified vendor list rates
+(`artificialanalysis.ai/pricing-source-data.csv`) applied to each source row's measured DeepSWE token totals
+(`datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv`); only those numbers and Astra's direct row were
+transcribed, into
+[`specs/routing-layer/generation-evidence-2026-09-22.json`](specs/routing-layer/generation-evidence-2026-09-22.json).
+The single-source CursorBench 4.0 and Artificial Analysis observations for GPT-6 Sol/Luna and Opus 5.5 were
+intentionally not adopted as priors, because they supply no regression, repeatability, or latency-tail fields. Astra
+high retains Sol-high regression, failed-trial partial-credit, and p90-peak-context fields only where the Astra source
+has no observation, and is confined to high-intelligence planning/advisory/review ladders. No corpus or `ai_usage` code,
+prose, or raw benchmark records were copied. The report's Sonnet experiment proposal, frontend task heuristics, and
+automatic cross-model percentile ranking were intentionally not adopted; the router preserves its existing consequence
+gates and requires local acceptance telemetry before automatic promotion.
 
 Upstream sources that corpus aggregates, all consumed as published measurements rather than code:
 
@@ -245,14 +255,14 @@ scale, because the cost-bearing Verified population tops out at a prior-generati
 router's cost-to-done model requires and single-attempt submissions cannot measure were not estimated or defaulted, and
 the data is structurally barred from that model rather than down-weighted within it. No model became routable.
 
-## Pi 0.85.1 `/skills` runtime patch
+## Pi 0.84.2 `/skills` runtime patch
 
-- Source: `@earendil-works/pi-coding-agent@0.85.1`
+- Source: `@earendil-works/pi-coding-agent@0.84.2`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Upstream revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`)
+- Upstream revision reviewed: `914cf1472e715297caa30db4b9535d534a9eb718`
 - License declared by the package: MIT
 
-[`patches/pi-0.85.1/skills.patch`](patches/pi-0.85.1/skills.patch) is a modified-code patch against Pi's published,
+[`patches/pi-0.84.2/skills.patch`](patches/pi-0.84.2/skills.patch) is a modified-code patch against Pi's published,
 generated runtime and documentation. It modifies upstream `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
 `dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
 lines derive from the MIT-licensed Pi package. The added `dist/core/skill-management.js` is an original implementation
@@ -264,12 +274,119 @@ checksum-guarded installation. It intentionally does not adopt automatic loading
 concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
 unrelated extension, prompt, theme, package, trust, and provider behavior.
 
+## Pi 0.84.4 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@0.84.4`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `b79e4cc834970cca69daebffab7df1da7d1e52c4`
+- License declared by the package: MIT
+
+[`patches/pi-0.84.4/skills.patch`](patches/pi-0.84.4/skills.patch) is a modified-code patch against Pi's published,
+generated runtime and documentation. It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`,
+`dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
+`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
+from the MIT-licensed Pi package. The bundled entrypoints become thin wrappers so the patched unbundled runtime handles
+CLI and RPC execution. The added `dist/core/skill-management.js` is an original implementation for this repository,
+informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
+
+The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
+normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
+checksum-guarded installation. It intentionally does not adopt automatic loading of every discovered skill,
+concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
+unrelated extension, prompt, theme, package, trust, and provider behavior.
+
+## Pi 0.85.1 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@0.85.1`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`)
+- License declared by the package: MIT
+
+[`patches/pi-0.85.1/skills.patch`](patches/pi-0.85.1/skills.patch) is a modified-code patch against Pi's published,
+generated runtime and documentation. It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`,
+`dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
+`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
+from the MIT-licensed Pi package. The bundled entrypoints become thin wrappers so the patched unbundled runtime handles
+CLI and RPC execution. The added `dist/core/skill-management.js` is an original implementation for this repository,
+informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
+
+The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
+normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
+checksum-guarded installation. Its catalog reuses Pi's package manager to include enabled package and settings skill
+sources while preserving Pi's precedence and project-trust behavior. It intentionally does not adopt automatic loading
+of every discovered skill, concurrent-update locking, configured-path confinement, new public resource-loader mutator
+APIs, or changes to Pi's unrelated extension, prompt, theme, package, trust, and provider behavior.
+
+## Pi 0.87.1 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@0.87.1`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`)
+- License declared by the package: MIT
+
+[`patches/pi-0.87.1/skills.patch`](patches/pi-0.87.1/skills.patch) is a modified-code patch against Pi's published,
+generated runtime and documentation, generated from the TypeScript overlay below. It modifies upstream
+`dist/bundle/cli-runtime.js`, `dist/bundle/rpc-entry.js`, `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
+`dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
+lines derive from the MIT-licensed Pi package. The bundled runtime and RPC entrypoints become thin wrappers so the
+patched unbundled runtime handles CLI and RPC execution; upstream's `dist/bundle/cli.js` compile-cache loader is left
+unchanged and is only pinned by checksum in both manifests. The added `dist/core/skill-management.js` and
+`dist/core/skill-management-core.js` are compiled from this repository's original overlay code and are byte-identical to
+the 0.85.1 patch's copies.
+
+The patch adopts the same behavior as the 0.85.1 patch: explicit global, repository, and session skill activation; a
+discoverable-but-inactive catalog built on Pi's package manager; normalized repository identity with non-default ports
+preserved; shared CLI and interactive command semantics; strict configuration validation; and checksum-guarded
+installation. It intentionally does not adopt Pi 0.87.1's automatic loading of every discovered skill, and does not
+change Pi's unrelated extension, prompt, theme, package, trust, provider, compile-cache, or bundled-chunk behavior. The
+`docs/skills.md` changes were rewritten against 0.87.1's restructured skills page rather than carried over from 0.85.1.
+
+`scripts/skills-patch-entrypoint.test.mjs` writes a five-line stand-in for upstream 0.87.1's `dist/bundle/cli.js`
+(`enableCompileCache()` followed by `createRequire(import.meta.url)("./cli-runtime.js")`). That shape is adapted from
+the MIT-licensed Pi package so the test can exercise the same `require()` dispatch the published loader performs.
+
+## Pi `/skills` TypeScript overlay
+
+- Source: `@earendil-works/pi-coding-agent@0.85.1` and `@earendil-works/pi-coding-agent@0.87.1`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`) and
+  `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), each taken from the npm registry's `gitHead` for that release
+- Source acquired from the release assets `pi-0.85.1-source.tar.gz` and `pi-0.87.1-source.tar.gz`, each verified against
+  upstream's published `SHA256SUMS` for that release
+- License declared by the package: MIT
+
+[`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under `patches/pi-0.85.1/`
+and `patches/pi-0.87.1/` are generated from it.
+
+`pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
+are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
+informed by Pi's resource-loading and command conventions rather than copied from an upstream file. They additionally
+absorb logic that earlier versions of the patch inlined into upstream files, so those files now receive only imports and
+call sites.
+
+`pi-overlay/versions/0.85.1/integration.patch` and `pi-overlay/versions/0.87.1/integration.patch` are modified-code
+patches against Pi's MIT-licensed TypeScript sources for those releases: `src/core/resource-loader.ts`,
+`src/core/slash-commands.ts`, `src/main.ts`, `src/modes/interactive/interactive-mode.ts`, and `docs/skills.md`. Their
+unchanged context and modified lines derive from the MIT-licensed Pi package. The 0.87.1 seam was rebased by re-reading
+the 0.87.1 sources: the code call sites are unchanged, its interactive-mode import extends the existing `utils/paths.ts`
+import, and its documentation hunk targets the rewritten skills page.
+
+`pi-overlay/versions/0.85.1/replacements/dist/bundle/cli.js` and `rpc-entry.js`, and
+`pi-overlay/versions/0.87.1/replacements/dist/bundle/cli-runtime.js` and `rpc-entry.js`, are original hand-written
+wrappers, not derived from upstream's generated bundle output. They replace Pi's esbuild-produced bundled entrypoints so
+the patched unbundled runtime handles CLI and RPC execution. The 0.87.1 wrappers have the same content as the 0.85.1
+ones, because 0.87.1's `src/cli.ts`, `src/cli/setup.ts`, and `src/rpc-entry.ts` are unchanged from 0.85.1.
+
+This repository vendors no upstream source and maintains no fork. Upstream source is fetched per generation run against
+pinned, checksum-verified inputs, and is not committed here.
+
 ## Pi documentation and examples
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, `0.84.1`, and `0.84.2`
-- Latest documentation and example revision reviewed: `914cf1472e715297caa30db4b9535d534a9eb718`
+- Releases reviewed: `0.80.6`, `0.80.7`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, `0.84.1`, `0.84.2`, `0.84.4`, and
+  `0.85.1`
+- Latest documentation and example revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477`
 - License declared by the package: MIT
 
 Ideas and API patterns used:
@@ -277,6 +394,10 @@ Ideas and API patterns used:
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
 - Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
   during the lease phases that can accept them.
+- The Pi 0.84.2 and later versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
+  metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
+  The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
+  adopted.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
@@ -387,3 +508,31 @@ replacing the pre-1.44 spellings rather than dual-writing them, and corrections 
 the configured endpoint's own host (rejecting non-HTTP schemes and unbracketing IPv6 literals) and start announces only
 a dashboard that actually came up. It also resets the session-start bookkeeping across session transitions and marks a
 failed LLM request's span, both of which upstream omits.
+
+## `zew1me/pi-buildout` (upstream of this fork)
+
+- Source: `zew1me/pi-buildout`
+- Canonical repository: <https://github.com/zew1me/pi-buildout>
+- Revision last synced: `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22)
+- License declared by the source: MIT (© 2026 Nigel Stuke)
+
+This repository is a fork of `zew1me/pi-buildout`. Upstream changes are ported by cherry-picking commits rather than by
+merging, so each ported commit records its upstream SHA in a `(cherry picked from commit …)` trailer, and
+[`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md) records the last synced revision and the status of each upstream commit.
+
+What was adopted, as copied code: the pi 0.84.4 and 0.85.1 `/skills` patch sets under `patches/`, including the
+recognized-state upgrade manifests for installs patched by this repository's earlier 0.85.1 patch; the package and
+settings skill catalog for the pi 0.84.2 patch; the manifest-driven patch file set, recognized-state upgrade path,
+Homebrew package lookup, and legacy top-level entrypoint cleanup in `scripts/install-extensions.sh`; and the tests that
+cover them (`scripts/skills-catalog.test.mjs`, `scripts/skills-patch-entrypoint.test.mjs`,
+`scripts/install-extensions.test.mjs`). The sync at `502c13a0` adds, as copied code, the `pi-overlay/` TypeScript source
+for the 0.85.1 `/skills` patch, the `scripts/build-pi-patch.mjs` generation pipeline and its tests, and the
+`patch-drift` CI workflow.
+
+What was intentionally not adopted: upstream's removal of the router and vendored OpenTelemetry extensions from the
+installer and documentation; upstream's dependency overrides and scripts where this fork carries its own; and upstream's
+subagent fallback effort handling, where this fork keeps its own explicit model and effort resolution.
+
+The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from the sync at `bc127ebf` because the
+router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
+evidence review; only the version numbers are shared with upstream.

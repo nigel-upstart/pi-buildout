@@ -86,8 +86,8 @@ const PREMIUM_ARCHETYPES = new Set(["large_program_planning", "highest_risk_advi
 function isPremiumChoice(choice) {
   const logical = choice.logicalModelId ?? choice.modelId;
   return (
-    (logical === "gpt-5.6-sol" && choice.effort === "max") ||
-    (logical === "claude-opus-5" && (choice.effort === "xhigh" || choice.effort === "max")) ||
+    (logical === "gpt-6-sol" && choice.effort === "max") ||
+    (logical === "claude-opus-5-5" && (choice.effort === "xhigh" || choice.effort === "max")) ||
     logical === "claude-fable-5"
   );
 }

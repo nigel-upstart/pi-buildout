@@ -41,7 +41,7 @@ describe("TaskFeaturesSchema", () => {
   });
 
   it("rejects unknown enums, extra properties, and out-of-range confidence", () => {
-    const result = validateTaskFeatures(validFeatures({ intent: "choose_gpt", confidence: 2, model: "gpt-5.6-sol" }));
+    const result = validateTaskFeatures(validFeatures({ intent: "choose_gpt", confidence: 2, model: "gpt-6-sol" }));
     assert.equal(result.success, false);
     assert.ok(result.errors.length >= 2);
   });

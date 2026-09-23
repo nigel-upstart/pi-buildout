@@ -7,14 +7,14 @@ describe("canonical model identity", () => {
   it("reduces every observed spelling of a model to one logical ID", () => {
     // Bedrock region profiles, vendor paths, version suffixes and date stamps, all from the real
     // registry on a configured machine.
-    assert.equal(canonicalModelId("claude-opus-5"), "claude-opus-5");
-    assert.equal(canonicalModelId("anthropic.claude-opus-5"), "claude-opus-5");
-    assert.equal(canonicalModelId("global.anthropic.claude-opus-5"), "claude-opus-5");
+    assert.equal(canonicalModelId("claude-opus-5-5"), "claude-opus-5-5");
+    assert.equal(canonicalModelId("anthropic.claude-opus-5-5"), "claude-opus-5-5");
+    assert.equal(canonicalModelId("global.anthropic.claude-opus-5-5"), "claude-opus-5-5");
     assert.equal(canonicalModelId("us.anthropic.claude-opus-4-6-v1"), "claude-opus-4-6");
     assert.equal(canonicalModelId("us.anthropic.claude-haiku-4-5-20251001-v1:0"), "claude-haiku-4-5");
     assert.equal(canonicalModelId("us.anthropic.claude-opus-4-5-20251101-v1:0"), "claude-opus-4-5");
     assert.equal(canonicalModelId("openai.gpt-oss-120b-1:0"), "gpt-oss-120b");
-    assert.equal(canonicalModelId("openai.gpt-5.6-sol"), "gpt-5.6-sol");
+    assert.equal(canonicalModelId("openai.gpt-6-sol"), "gpt-6-sol");
     assert.equal(canonicalModelId("amazon.nova-lite-v1:0"), "nova-lite");
     // A gateway carries the real ID in its last path segment.
     assert.equal(canonicalModelId("bedrock/anthropic.claude-sonnet-5"), "claude-sonnet-5");
@@ -36,11 +36,11 @@ describe("canonical model identity", () => {
 
   it("collapses the spellings of one model to a single group", () => {
     const opus5 = [
-      "claude-opus-5",
-      "anthropic.claude-opus-5",
-      "us.anthropic.claude-opus-5",
-      "global.anthropic.claude-opus-5",
-      "eu.anthropic.claude-opus-5",
+      "claude-opus-5-5",
+      "anthropic.claude-opus-5-5",
+      "us.anthropic.claude-opus-5-5",
+      "global.anthropic.claude-opus-5-5",
+      "eu.anthropic.claude-opus-5-5",
     ].map(canonicalModelId);
     assert.equal(new Set(opus5).size, 1);
   });
@@ -125,9 +125,9 @@ describe("canonical model identity", () => {
   // invariants live in scope-identity-registry.test.mjs.
   it("locks canonical identity for every logical model the policy names", () => {
     const golden = {
-      "claude-opus-5": "claude-opus-5",
-      "anthropic.claude-opus-5": "claude-opus-5",
-      "global.anthropic.claude-opus-5": "claude-opus-5",
+      "claude-opus-5-5": "claude-opus-5-5",
+      "anthropic.claude-opus-5-5": "claude-opus-5-5",
+      "global.anthropic.claude-opus-5-5": "claude-opus-5-5",
       "us.anthropic.claude-opus-4-6-v1": "claude-opus-4-6",
       "claude-haiku-4-5": "claude-haiku-4-5",
       "claude-haiku-4-5-20251001": "claude-haiku-4-5",
@@ -143,12 +143,12 @@ describe("canonical model identity", () => {
       "claude-opus-4.7": "claude-opus-4-7",
       "claude-sonnet-4.6": "claude-sonnet-4-6",
       "claude-haiku-4.5": "claude-haiku-4-5",
-      "gpt-5.6-sol": "gpt-5.6-sol",
-      "gpt-5.6-luna": "gpt-5.6-luna",
+      "gpt-6-sol": "gpt-6-sol",
+      "gpt-6-luna": "gpt-6-luna",
       "gpt-5.6-terra": "gpt-5.6-terra",
       "gpt-5.4-mini": "gpt-5.4-mini",
-      "openai.gpt-5.6-sol": "gpt-5.6-sol",
-      "openai.gpt-5.6-luna": "gpt-5.6-luna",
+      "openai.gpt-6-sol": "gpt-6-sol",
+      "openai.gpt-6-luna": "gpt-6-luna",
       "openai.gpt-5.6-terra": "gpt-5.6-terra",
       "openai.gpt-oss-120b": "gpt-oss-120b",
       "openai.gpt-oss-120b-1:0": "gpt-oss-120b",
@@ -201,9 +201,9 @@ describe("endpoint metadata and tie-breaks", () => {
   });
 
   it("prefers the plainest spelling of an ID within a provider", () => {
-    const plain = endpointSpecificity("anthropic.claude-opus-5");
-    const global = endpointSpecificity("global.anthropic.claude-opus-5");
-    const regional = endpointSpecificity("us.anthropic.claude-opus-5");
+    const plain = endpointSpecificity("anthropic.claude-opus-5-5");
+    const global = endpointSpecificity("global.anthropic.claude-opus-5-5");
+    const regional = endpointSpecificity("us.anthropic.claude-opus-5-5");
     assert.ok(plain < global, "a bare ID is preferred over a global profile");
     assert.ok(global < regional, "a global profile is preferred over a single region");
     const versioned = endpointSpecificity("us.anthropic.claude-opus-4-6-v1");
@@ -217,23 +217,23 @@ describe("endpoint metadata and tie-breaks", () => {
 describe("model scope", () => {
   // The real scope from a configured machine, abbreviated.
   const patterns = [
-    "anthropic/claude-opus-5",
+    "anthropic/claude-opus-5-5",
     "anthropic/claude-fable-5",
     "amazon-bedrock/openai.gpt-oss-120b-1:0",
     "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
     "github-copilot/gpt-5.5",
-    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-6-sol",
   ];
 
   it("admits exactly the scoped endpoints", () => {
-    assert.equal(matchesScope("anthropic", "claude-opus-5", patterns), true);
+    assert.equal(matchesScope("anthropic", "claude-opus-5-5", patterns), true);
     assert.equal(matchesScope("amazon-bedrock", "openai.gpt-oss-120b-1:0", patterns), true);
     assert.equal(matchesScope("github-copilot", "gpt-5.5", patterns), true);
   });
 
   it("excludes an endpoint the operator did not scope in, even for a scoped model", () => {
-    // claude-opus-5 is scoped on the Anthropic route only; its Bedrock profiles are not.
-    assert.equal(matchesScope("amazon-bedrock", "global.anthropic.claude-opus-5", patterns), false);
+    // claude-opus-5-5 is scoped on the Anthropic route only; its Bedrock profiles are not.
+    assert.equal(matchesScope("amazon-bedrock", "global.anthropic.claude-opus-5-5", patterns), false);
     // gpt-5.5 is scoped on Copilot only here, not on the OpenAI route.
     assert.equal(matchesScope("openai-codex", "gpt-5.5", patterns), false);
     assert.equal(matchesScope("google-vertex", "gemini-3.6-flash", patterns), false);
@@ -244,14 +244,14 @@ describe("model scope", () => {
   });
 
   it("supports globs and bare model IDs", () => {
-    assert.equal(matchesScope("anthropic", "claude-opus-5", ["anthropic/*"]), true);
-    assert.equal(matchesScope("anthropic", "claude-opus-5", ["*opus*"]), true);
-    assert.equal(matchesScope("anthropic", "claude-opus-5", ["claude-opus-5"]), true);
+    assert.equal(matchesScope("anthropic", "claude-opus-5-5", ["anthropic/*"]), true);
+    assert.equal(matchesScope("anthropic", "claude-opus-5-5", ["*opus*"]), true);
+    assert.equal(matchesScope("anthropic", "claude-opus-5-5", ["claude-opus-5-5"]), true);
     assert.equal(matchesScope("anthropic", "claude-sonnet-5", ["*opus*"]), false);
   });
 
   it("ignores a thinking-level suffix without mangling Bedrock IDs that end in a version", () => {
-    assert.equal(matchesScope("openai-codex", "gpt-5.6-sol", ["openai-codex/gpt-5.6-sol:high"]), true);
+    assert.equal(matchesScope("openai-codex", "gpt-6-sol", ["openai-codex/gpt-6-sol:high"]), true);
     // `:0` is part of the identity, not a thinking level.
     assert.equal(
       matchesScope("amazon-bedrock", "openai.gpt-oss-120b-1:0", ["amazon-bedrock/openai.gpt-oss-120b-1:0"]),
@@ -290,7 +290,7 @@ describe("endpoint health", () => {
       isEndpointHealthRecord({
         schemaVersion: 1,
         probedAt: "2026-07-25T00:00:00.000Z",
-        endpoints: [{ provider: "anthropic", modelId: "claude-opus-5", status: "ok" }],
+        endpoints: [{ provider: "anthropic", modelId: "claude-opus-5-5", status: "ok" }],
       }),
       true,
     );
