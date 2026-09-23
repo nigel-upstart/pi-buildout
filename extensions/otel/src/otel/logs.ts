@@ -12,10 +12,10 @@
 
 import type { DiagLogger } from "@opentelemetry/api";
 import {
+  createNoopLogger,
   type LogAttributes,
   type Logger,
   type LoggerProvider,
-  logs,
   SeverityNumber,
 } from "@opentelemetry/api-logs";
 
@@ -103,23 +103,23 @@ export function configureLoggerProvider(provider: LoggerProvider | null): void {
   bridgeLogger = null;
 }
 
-function activeLoggerProvider(): LoggerProvider {
-  return loggerProvider ?? logs.getLoggerProvider();
-}
-
+// Without a Pi-owned provider (logs disabled or SDK not initialized) records
+// are dropped rather than routed to a foreign global provider, so a disabled
+// signal can never leak into another SDK's pipeline.
 export function getLogger(): Logger {
   if (!logger) {
-    logger = activeLoggerProvider().getLogger(LOGGER_NAME, LOGGER_VERSION);
+    logger =
+      loggerProvider?.getLogger(LOGGER_NAME, LOGGER_VERSION) ??
+      createNoopLogger();
   }
   return logger;
 }
 
 function getBridgeLogger(): Logger {
   if (!bridgeLogger) {
-    bridgeLogger = activeLoggerProvider().getLogger(
-      BRIDGE_LOGGER_NAME,
-      LOGGER_VERSION,
-    );
+    bridgeLogger =
+      loggerProvider?.getLogger(BRIDGE_LOGGER_NAME, LOGGER_VERSION) ??
+      createNoopLogger();
   }
   return bridgeLogger;
 }

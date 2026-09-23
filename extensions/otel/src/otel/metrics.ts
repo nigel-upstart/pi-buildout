@@ -3,16 +3,16 @@
  * and include a custom provider-reported USD cost counter.
  *
  * GenAI client histograms — sigil-aligned per OTel semconv. Lazy so this
- * module is safe to import when metrics are disabled (global MeterProvider
- * is then no-op).
+ * module is safe to import when metrics are disabled (a no-op meter is used
+ * until a Pi-owned MeterProvider is configured).
  */
 
 import {
   type Counter,
+  createNoopMeter,
   type Histogram,
   type MeterProvider,
   type MetricOptions,
-  metrics,
 } from "@opentelemetry/api";
 
 const METER_NAME = "pi-otel";
@@ -26,11 +26,11 @@ export function configureMeterProvider(provider: MeterProvider | null): void {
   cache.clear();
 }
 
+// Without a Pi-owned provider (metrics disabled or SDK not initialized) use a
+// no-op meter rather than the global provider, so a disabled signal can never
+// emit through a foreign SDK.
 function getMeter() {
-  return (meterProvider ?? metrics.getMeterProvider()).getMeter(
-    METER_NAME,
-    METER_VERSION,
-  );
+  return meterProvider?.getMeter(METER_NAME, METER_VERSION) ?? createNoopMeter();
 }
 
 function getHistogram(name: string, opts: MetricOptions): Histogram {

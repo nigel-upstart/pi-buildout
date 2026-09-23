@@ -7,6 +7,8 @@ import {
   initSdk,
   shutdownSdk,
 } from "../dist/otel/sdk.js";
+import { getLogger } from "../dist/otel/logs.js";
+import { getDurationHistogram } from "../dist/otel/metrics.js";
 
 const cfg = {
   enabled: true,
@@ -102,6 +104,33 @@ test("own scoped init, shutdown, and re-init never registers global providers", 
     0,
     JSON.stringify(notes),
   );
+  await shutdownSdk();
+  clearGlobals();
+});
+
+test("disabled Pi metrics and logs never fall through to foreign global providers", async () => {
+  clearGlobals();
+  const foreignCalls = [];
+  metrics.setGlobalMeterProvider({
+    getMeter: (name) => {
+      foreignCalls.push(["meter", name]);
+      return fakeMeter;
+    },
+  });
+  logs.setGlobalLoggerProvider({
+    getLogger: (name) => {
+      foreignCalls.push(["logger", name]);
+      return fakeLogger;
+    },
+  });
+
+  // Traces-only config: Pi owns no MeterProvider or LoggerProvider.
+  const runtime = initSdk(cfg, () => {}, { silentSuccess: true });
+  assert.ok(runtime);
+  getDurationHistogram().record(1, {});
+  getLogger().emit({ body: "x" });
+  assert.deepEqual(foreignCalls, []);
+
   await shutdownSdk();
   clearGlobals();
 });
