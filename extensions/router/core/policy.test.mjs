@@ -48,8 +48,8 @@ describe("policy ability table invariants", () => {
       // two scoped endpoints on the machine in hand. Requiring two logical candidates keeps
       // safety-relevant routability independent of how an operator scoped their registry.
       //
-      // This assertion was originally written as `> 0` and missed exactly that: cutting gpt-5.6-sol at
-      // medium from fast_classification left claude-opus-5 at medium as the only survivor, and the
+      // This assertion was originally written as `> 0` and missed exactly that: cutting gpt-6-sol at
+      // medium from fast_classification left claude-opus-5-5 at medium as the only survivor, and the
       // route became unroutable for critical-risk work while this test still passed.
       assert.ok(
         authorized.length >= 2,

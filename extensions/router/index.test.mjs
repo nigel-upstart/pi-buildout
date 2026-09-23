@@ -74,7 +74,7 @@ function classificationResult(attempts = 1, overrides = {}) {
       try: 1,
       valid: true,
       provider: index === 0 ? "openai-codex" : "anthropic",
-      modelId: index === 0 ? "gpt-5.6-luna" : "claude-sonnet-5",
+      modelId: index === 0 ? "gpt-6-luna" : "claude-sonnet-5",
       vendor: index === 0 ? "openai" : "anthropic",
       latencyMs: 1,
       errors: [],
@@ -99,7 +99,7 @@ function primaryClassificationResult(overrides = {}) {
         try: 1,
         valid: true,
         provider: "openai-codex",
-        modelId: "gpt-5.6-luna",
+        modelId: "gpt-6-luna",
         vendor: "openai",
         latencyMs: 1,
         errors: [],
@@ -121,7 +121,7 @@ function successfulClassifier(attempts = 1, overrides = {}) {
         state: "completed",
         outcome: "valid",
         provider: index === 0 ? "openai-codex" : "anthropic",
-        modelId: index === 0 ? "gpt-5.6-luna" : "claude-sonnet-5",
+        modelId: index === 0 ? "gpt-6-luna" : "claude-sonnet-5",
         latencyMs: 1,
       });
     }
@@ -168,7 +168,7 @@ describe("classifier deadline", () => {
       latencyMs: 1,
     });
     const primary = transportFromCandidates(
-      [candidate("primary-a", "gpt-5.6-luna", "openai")],
+      [candidate("primary-a", "gpt-6-luna", "openai")],
       async (entry, request) => {
         endpointCalls.push(`${request.stage}:${entry.model.provider}`);
         signals.add(request.signal);
@@ -220,7 +220,7 @@ describe("classifier deadline", () => {
     });
     let primaryBCalls = 0;
     const primary = transportFromCandidates(
-      [candidate("primary-a", "gpt-5.6-luna", "openai"), candidate("primary-b", "gpt-5.6-luna", "openai")],
+      [candidate("primary-a", "gpt-6-luna", "openai"), candidate("primary-b", "gpt-6-luna", "openai")],
       async (entry, request) => {
         endpointCalls.push(`${request.stage}:${entry.model.provider}`);
         signals.add(request.signal);
@@ -290,7 +290,7 @@ describe("classifier deadline", () => {
       throw new Error("unreachable: the blocked endpoint must only end by abort");
     };
     const primary = transportFromCandidates(
-      [candidate("primary-a", "gpt-5.6-luna", "openai"), candidate("primary-b", "gpt-5.6-luna", "openai")],
+      [candidate("primary-a", "gpt-6-luna", "openai"), candidate("primary-b", "gpt-6-luna", "openai")],
       blockUntilAborted,
     );
     const secondary = transportFromCandidates(
@@ -385,12 +385,12 @@ function adapterLease() {
   const features = implementationFeatures();
   const selected = {
     provider: "openai-codex",
-    modelId: "gpt-5.6-sol",
-    logicalModelId: "gpt-5.6-sol",
+    modelId: "gpt-6-sol",
+    logicalModelId: "gpt-6-sol",
     vendor: "openai",
     effort: "high",
     ability: 3,
-    profileId: "openai-gpt-5.6-agent-v1",
+    profileId: "openai-gpt-6-agent-v1",
     contextWindow: 1_000_000,
     endpointTier: "manufacturer",
     rankReason: "bootstrap",
@@ -447,8 +447,8 @@ function routingModel(provider, id, cost = { input: 2, output: 8, cacheRead: 0.2
 
 function standardRoutingModels() {
   return [
-    routingModel("anthropic", "claude-opus-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
-    routingModel("openai-codex", "gpt-5.6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+    routingModel("anthropic", "claude-opus-5-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
+    routingModel("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
     routingModel("openai-codex", "gpt-5.6-terra", { input: 4, output: 24, cacheRead: 0.4, cacheWrite: 5 }),
   ];
 }
@@ -696,22 +696,22 @@ describe("manual route selection at a new task boundary", () => {
   it("preserves the explicit model and effort while replacing the stale task lease", () => {
     const current = {
       provider: "openai",
-      modelId: "gpt-5.6-luna",
-      logicalModelId: "gpt-5.6-luna",
+      modelId: "gpt-6-luna",
+      logicalModelId: "gpt-6-luna",
       vendor: "openai",
       effort: "low",
       ability: 1,
-      profileId: "openai-gpt-5.6-agent-v1",
+      profileId: "openai-gpt-6-agent-v1",
       contextWindow: 272_000,
       endpointTier: "manufacturer",
       rankReason: "bootstrap",
     };
-    const routed = { ...current, modelId: "gpt-5.6-sol", logicalModelId: "gpt-5.6-sol", effort: "high", ability: 3 };
+    const routed = { ...current, modelId: "gpt-6-sol", logicalModelId: "gpt-6-sol", effort: "high", ability: 3 };
     const fallback = {
       ...routed,
       provider: "anthropic",
-      modelId: "claude-opus-5",
-      logicalModelId: "claude-opus-5",
+      modelId: "claude-opus-5-5",
+      logicalModelId: "claude-opus-5-5",
       vendor: "anthropic",
     };
     const preserved = routeChoicesForNewLease(routed, [fallback], current, true);
@@ -727,12 +727,12 @@ describe("manual route selection at a new task boundary", () => {
   it("does not duplicate the explicit selection in fallback order", () => {
     const selected = {
       provider: "openai",
-      modelId: "gpt-5.6-sol",
-      logicalModelId: "gpt-5.6-sol",
+      modelId: "gpt-6-sol",
+      logicalModelId: "gpt-6-sol",
       vendor: "openai",
       effort: "high",
       ability: 3,
-      profileId: "openai-gpt-5.6-agent-v1",
+      profileId: "openai-gpt-6-agent-v1",
       contextWindow: 272_000,
       endpointTier: "manufacturer",
       rankReason: "bootstrap",
@@ -1073,7 +1073,7 @@ describe("routerExtension", () => {
       undefined,
       "off mode must not enforce the persisted preflight lifecycle",
     );
-    await hooks.get("model_select")({ source: "user", model: { provider: "anthropic", id: "claude-opus-5" } }, ctx);
+    await hooks.get("model_select")({ source: "user", model: { provider: "anthropic", id: "claude-opus-5-5" } }, ctx);
     await hooks.get("thinking_level_select")({ level: "low" }, ctx);
     assert.deepEqual(activeTools, ["read", "bash"], "off mode must immediately remove router lifecycle tools");
     assert.equal(
@@ -2464,7 +2464,7 @@ describe("routerExtension", () => {
       contextWindow: 1_000_000,
       maxTokens: 128_000,
     });
-    const models = [makeModel("openai-codex", "gpt-5.6-sol"), makeModel("amazon-bedrock", "openai.gpt-5.6-sol")];
+    const models = [makeModel("openai-codex", "gpt-6-sol"), makeModel("amazon-bedrock", "openai.gpt-6-sol")];
     await commands.get("route").handler("scope", {
       modelRegistry: { getAll: () => models, getAvailable: () => models },
       ui: { notify: (message, type) => notifications.push({ message, type }) },
@@ -2480,9 +2480,9 @@ describe("routerExtension", () => {
         "  - source=default pattern=<all registry models>",
         "unmatched patterns (0):",
         "logical models (1):",
-        "  gpt-5.6-sol (2 eligible endpoints):",
-        "    1. endpoint=openai-codex/gpt-5.6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
-        "    2. endpoint=amazon-bedrock/openai.gpt-5.6-sol listCost=23.750000 appliedWeight=1.000010 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750238",
+        "  gpt-6-sol (2 eligible endpoints):",
+        "    1. endpoint=openai-codex/gpt-6-sol listCost=23.750000 appliedWeight=1.000000 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750000",
+        "    2. endpoint=amazon-bedrock/openai.gpt-6-sol listCost=23.750000 appliedWeight=1.000010 weightBasis=preference weightSource=built-in cacheWrite=priced_write effectiveCost=23.750238",
         "excluded endpoints (0):",
         "provider-weight rejections (0):",
       ].join("\n"),
@@ -2497,8 +2497,8 @@ describe("routerExtension", () => {
     process.env.PI_ROUTER_TELEMETRY_PATH = telemetryPath;
     const model = {
       provider: "amazon-bedrock",
-      id: "openai.gpt-5.6-sol",
-      name: "gpt-5.6-sol",
+      id: "openai.gpt-6-sol",
+      name: "gpt-6-sol",
       api: "openai-responses",
       baseUrl: "https://models.invalid",
       reasoning: true,
@@ -2528,7 +2528,7 @@ describe("routerExtension", () => {
       assert.deepEqual(event.data, {
         manualOverride: "model",
         provider: "amazon-bedrock",
-        modelId: "openai.gpt-5.6-sol",
+        modelId: "openai.gpt-6-sol",
       });
       assert.equal(event.endpointEffectiveCost, 23.7502375);
       assert.equal(event.appliedProviderWeight, 1.00001);
@@ -2567,7 +2567,7 @@ describe("routerExtension", () => {
       cwd: telemetryDirectory,
       // Defined so builder-provenance resolution also runs; with an undefined model that branch
       // never reads the registry and could not observe a duplicate snapshot build.
-      model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+      model: { provider: "openai-codex", id: "gpt-6-sol" },
       modelRegistry: {
         getAvailable: () => [],
         getAll: () => {
@@ -2623,12 +2623,12 @@ describe("routerExtension", () => {
     const now = new Date().toISOString();
     const choice = {
       provider: "openai-codex",
-      modelId: "gpt-5.6-sol",
-      logicalModelId: "gpt-5.6-sol",
+      modelId: "gpt-6-sol",
+      logicalModelId: "gpt-6-sol",
       vendor: "openai",
       effort: "high",
       ability: 3,
-      profileId: "openai-gpt-5.6-agent-v1",
+      profileId: "openai-gpt-6-agent-v1",
       contextWindow: 1_000_000,
       endpointTier: "manufacturer",
       rankReason: "bootstrap",
@@ -2736,12 +2736,12 @@ describe("routerExtension", () => {
         const now = new Date().toISOString();
         const choice = {
           provider: "openai-codex",
-          modelId: "gpt-5.6-sol",
-          logicalModelId: "gpt-5.6-sol",
+          modelId: "gpt-6-sol",
+          logicalModelId: "gpt-6-sol",
           vendor: "openai",
           effort: "high",
           ability: 3,
-          profileId: "openai-gpt-5.6-agent-v1",
+          profileId: "openai-gpt-6-agent-v1",
           contextWindow: 1_000_000,
           endpointTier: "manufacturer",
           rankReason: "bootstrap",
@@ -2780,8 +2780,8 @@ describe("routerExtension", () => {
         ];
         const classifierModel = {
           provider: "openai-codex",
-          id: "gpt-5.6-luna",
-          name: "gpt-5.6-luna",
+          id: "gpt-6-luna",
+          name: "gpt-6-luna",
           api: "openai-responses",
           baseUrl: "https://models.invalid",
           reasoning: true,
@@ -3164,7 +3164,7 @@ describe("routerExtension", () => {
       vendor: "openai",
       effort: "high",
       ability: 2,
-      profileId: "openai-gpt-5.6-agent-v1",
+      profileId: "openai-gpt-6-agent-v1",
       contextWindow: 1_000_000,
       endpointTier: "manufacturer",
       rankReason: "bootstrap",
@@ -3265,8 +3265,8 @@ describe("routerExtension", () => {
     const now = new Date().toISOString();
     const primaryChoice = {
       provider: "anthropic",
-      modelId: "claude-opus-5",
-      logicalModelId: "claude-opus-5",
+      modelId: "claude-opus-5-5",
+      logicalModelId: "claude-opus-5-5",
       vendor: "anthropic",
       effort: "high",
       ability: 4,
@@ -3277,12 +3277,12 @@ describe("routerExtension", () => {
     };
     const fallbackChoice = {
       provider: "openai-codex",
-      modelId: "gpt-5.6-sol",
-      logicalModelId: "gpt-5.6-sol",
+      modelId: "gpt-6-sol",
+      logicalModelId: "gpt-6-sol",
       vendor: "openai",
       effort: "high",
       ability: 3,
-      profileId: "openai-gpt-5.6-agent-v1",
+      profileId: "openai-gpt-6-agent-v1",
       contextWindow: 1_000_000,
       endpointTier: "manufacturer",
       rankReason: "evidence_prior",
@@ -3419,12 +3419,12 @@ describe("routerExtension", () => {
     const choices = [
       {
         provider: "amazon-bedrock",
-        modelId: "global.openai.gpt-5.6-sol",
-        logicalModelId: "gpt-5.6-sol",
+        modelId: "global.openai.gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
         vendor: "openai",
         effort: "high",
         ability: 3,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "resale",
         rankReason: "bootstrap",
@@ -3546,7 +3546,7 @@ describe("routerExtension", () => {
         vendor: "openai",
         effort: "high",
         ability: 2,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
@@ -3558,7 +3558,7 @@ describe("routerExtension", () => {
         vendor: "openai",
         effort: "high",
         ability: 2,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
@@ -3729,12 +3729,12 @@ describe("routerExtension", () => {
       features,
       selected: {
         provider: "openai-codex",
-        modelId: "gpt-5.6-sol",
-        logicalModelId: "gpt-5.6-sol",
+        modelId: "gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
         vendor: "openai",
         effort: "high",
         ability: 4,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
@@ -3742,8 +3742,8 @@ describe("routerExtension", () => {
       fallbacks: [
         {
           provider: "anthropic",
-          modelId: "claude-opus-5",
-          logicalModelId: "claude-opus-5",
+          modelId: "claude-opus-5-5",
+          logicalModelId: "claude-opus-5-5",
           vendor: "anthropic",
           effort: "high",
           ability: 4,
@@ -3754,7 +3754,7 @@ describe("routerExtension", () => {
         },
       ],
       attemptIndex: 0,
-      promptProfileId: "openai-gpt-5.6-agent-v1",
+      promptProfileId: "openai-gpt-6-agent-v1",
       modelSnapshotId: "snapshot",
       policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
@@ -3780,8 +3780,8 @@ describe("routerExtension", () => {
       maxTokens: 128_000,
     });
     const models = [
-      makeModel("openai-codex", "gpt-5.6-sol", "openai-responses"),
-      makeModel("anthropic", "claude-opus-5", "anthropic-messages"),
+      makeModel("openai-codex", "gpt-6-sol", "openai-responses"),
+      makeModel("anthropic", "claude-opus-5-5", "anthropic-messages"),
       makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
     ];
     const branch = [
@@ -3954,12 +3954,12 @@ describe("routerExtension", () => {
       features,
       selected: {
         provider: "openai-codex",
-        modelId: "gpt-5.6-sol",
-        logicalModelId: "gpt-5.6-sol",
+        modelId: "gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
         vendor: "openai",
         effort: "high",
         ability: 4,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
@@ -3967,8 +3967,8 @@ describe("routerExtension", () => {
       fallbacks: [
         {
           provider: "anthropic",
-          modelId: "claude-opus-5",
-          logicalModelId: "claude-opus-5",
+          modelId: "claude-opus-5-5",
+          logicalModelId: "claude-opus-5-5",
           vendor: "anthropic",
           effort: "high",
           ability: 4,
@@ -3979,7 +3979,7 @@ describe("routerExtension", () => {
         },
       ],
       attemptIndex: 0,
-      promptProfileId: "openai-gpt-5.6-agent-v1",
+      promptProfileId: "openai-gpt-6-agent-v1",
       modelSnapshotId: "snapshot",
       policyVersion: POLICY_VERSION,
       lastPromptFingerprint: "fingerprint",
@@ -4005,8 +4005,8 @@ describe("routerExtension", () => {
       maxTokens: 128_000,
     });
     const models = [
-      makeModel("openai-codex", "gpt-5.6-sol", "openai-responses"),
-      makeModel("anthropic", "claude-opus-5", "anthropic-messages"),
+      makeModel("openai-codex", "gpt-6-sol", "openai-responses"),
+      makeModel("anthropic", "claude-opus-5-5", "anthropic-messages"),
       makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
     ];
     const branch = [
@@ -4121,9 +4121,9 @@ describe("routerExtension", () => {
       assert.equal(restored.taskId, parent.taskId);
       assert.equal(restored.lifecycle.phase, "completed");
       assert.equal(restored.lifecycle.completionReview.verdict, "pass");
-      assert.equal(restored.selected.modelId, "gpt-5.6-sol");
+      assert.equal(restored.selected.modelId, "gpt-6-sol");
       // The reviewer is the Anthropic rung at or above the builder's evidence band.
-      assert.equal(selectedModels[0].id, "claude-opus-5");
+      assert.equal(selectedModels[0].id, "claude-opus-5-5");
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;

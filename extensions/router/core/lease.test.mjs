@@ -33,7 +33,7 @@ function lease() {
       vendor: "openai",
       effort: "medium",
       ability: 2,
-      profileId: "openai-gpt-5.6-agent-v1",
+      profileId: "openai-gpt-6-agent-v1",
       contextWindow: 372_000,
       rankReason: "bootstrap",
     },

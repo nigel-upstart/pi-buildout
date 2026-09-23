@@ -86,7 +86,7 @@ describe("classifyTask", () => {
           return {
             arguments: { invalid: true },
             provider: "openai-codex",
-            modelId: "gpt-5.6-luna",
+            modelId: "gpt-6-luna",
             vendor: "openai",
             latencyMs: 3,
           };

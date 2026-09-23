@@ -40,7 +40,7 @@ function classifierInvocationSummary() {
     completedAttemptCount: 1,
     validAttemptCount: 1,
     stages: [{ stage: "primary", attemptCount: 1, completedAttemptCount: 1, validAttemptCount: 1 }],
-    attempts: [{ stage: "primary", try: 1, outcome: "valid", provider: "openai", modelId: "gpt-5.6-luna" }],
+    attempts: [{ stage: "primary", try: 1, outcome: "valid", provider: "openai", modelId: "gpt-6-luna" }],
   };
 }
 const temporaryDirectories = [];
@@ -74,7 +74,7 @@ describe("JsonlTelemetryStore", () => {
     // These reach aggregation through the store, so a persisted NaN would poison the token totals.
     const outcome = {
       provider: "openai-codex",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6-sol",
       archetype: "median_repository_implementation",
       accepted: true,
       modelAndToolCost: 0.42,
@@ -227,7 +227,7 @@ describe("classifier invocation telemetry", () => {
           state: "completed",
           outcome: "valid",
           provider: "openai-codex",
-          modelId: "gpt-5.6-luna",
+          modelId: "gpt-6-luna",
           latencyMs: 7,
         });
         return 42;
@@ -253,7 +253,7 @@ describe("classifier invocation telemetry", () => {
         try: 1,
         outcome: "valid",
         provider: "openai-codex",
-        modelId: "gpt-5.6-luna",
+        modelId: "gpt-6-luna",
         latencyMs: 7,
       },
     ]);
@@ -284,7 +284,7 @@ describe("classifier invocation telemetry", () => {
           state: "completed",
           outcome: "valid",
           provider: "openai-codex",
-          modelId: "gpt-5.6-luna",
+          modelId: "gpt-6-luna",
           latencyMs: stageSleepMs,
         });
 
@@ -369,7 +369,7 @@ describe("classifier invocation telemetry", () => {
           state: "completed",
           outcome: "valid",
           provider: "openai-codex",
-          modelId: "gpt-5.6-luna",
+          modelId: "gpt-6-luna",
           latencyMs: 10,
         });
 

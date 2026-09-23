@@ -11,6 +11,7 @@ import {
   EFFORT_POLICIES,
   evidenceAbility,
   findEvidencePrior,
+  generationProxyCostRatio,
   HARD_TASK_ESCALATION,
   resolveEvidenceLanguage,
   scoreEvidencePrior,
@@ -19,6 +20,10 @@ import { EVIDENCE_CAPTURE, EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
 
 const specPath = fileURLToPath(new URL("../../../specs/routing-layer/model-evidence-2026-07-25.json", import.meta.url));
 const spec = JSON.parse(readFileSync(specPath, "utf8"));
+const generationSpecPath = fileURLToPath(
+  new URL("../../../specs/routing-layer/generation-evidence-2026-09-22.json", import.meta.url),
+);
+const generationSpec = JSON.parse(readFileSync(generationSpecPath, "utf8"));
 
 describe("generated-data provenance headers", () => {
   // A generated module names the test that guards it against its JSON source. That pointer had rotted:
@@ -107,6 +112,82 @@ describe("evidence data agrees with the checked-in spec artifact", () => {
     }
   });
 
+  it("maps explicit generation proxies, repricing only cost per pass at the new list rates", () => {
+    // Expected ratios price each source's measured DeepSWE token mix at the upstream list rates.
+    const expected = {
+      "gpt-6-luna": ["gpt-5.6-luna", { low: 0.4784, medium: 0.4811, high: 0.4834, xhigh: 0.485, max: 0.4863 }],
+      "gpt-6-sol": ["gpt-5.6-sol", { low: 0.5, medium: 0.5, high: 0.5, xhigh: 0.5, max: 0.5 }],
+      "claude-opus-5-5": ["claude-opus-5", { low: 0.6101, medium: 0.5799, high: 0.5593, xhigh: 0.5486, max: 0.5439 }],
+    };
+    for (const [current, [source, ratios]] of Object.entries(expected)) {
+      for (const [effort, ratio] of Object.entries(ratios)) {
+        const currentRow = findEvidencePrior(current, effort);
+        const sourceRow = findEvidencePrior(source, effort);
+        assert.ok(currentRow && sourceRow, `${current}@${effort}`);
+        assert.equal(currentRow.modelId, current);
+        assert.deepEqual(
+          { ...currentRow, modelId: source, costPerPassUsd: sourceRow.costPerPassUsd },
+          sourceRow,
+          `${current}@${effort} inherits every non-cost field`,
+        );
+        assert.ok(Math.abs(generationProxyCostRatio(current, effort) - ratio) < 5e-5, `${current}@${effort}`);
+        assert.ok(
+          Math.abs(currentRow.costPerPassUsd - sourceRow.costPerPassUsd * ratio) < 1e-3,
+          `${current}@${effort} cost per pass`,
+        );
+      }
+    }
+    // The captured source rows are not rewritten.
+    assert.equal(findEvidencePrior("gpt-5.6-sol", "high").costPerPassUsd, 5.0072);
+  });
+
+  it("agrees with the checked-in generation evidence artifact", () => {
+    const { astraHigh, generationProxies } = generationSpec;
+    const astra = findEvidencePrior(astraHigh.modelId, astraHigh.effort);
+    const proxy = findEvidencePrior(astraHigh.proxiedFromSourceModel, astraHigh.effort);
+    assert.ok(astra && proxy);
+    for (const [field, value] of Object.entries(astraHigh)) {
+      if (["modelId", "effort", "byLanguage", "proxiedFromSourceModel", "proxiedFields"].includes(field)) continue;
+      assert.equal(astra[field], value, `gpt-6-astra@high ${field}`);
+    }
+    for (const [language, measured] of Object.entries(astraHigh.byLanguage)) {
+      assert.deepEqual(
+        astra.byLanguage[language],
+        { ...measured, regressionBreakRate: proxy.byLanguage[language].regressionBreakRate },
+        `gpt-6-astra@high ${language}`,
+      );
+    }
+    for (const field of ["regressionBreakRate", "partialCreditOnFailure", "p90PeakContextTokens"]) {
+      assert.ok(astraHigh.proxiedFields.includes(field));
+      assert.equal(astra[field], proxy[field], `gpt-6-astra@high proxied ${field}`);
+    }
+
+    const price = (mix, rates) =>
+      mix.uncachedInput * rates.input + mix.cacheRead * rates.cacheRead + mix.output * rates.output;
+    for (const [modelId, entry] of Object.entries(generationProxies)) {
+      for (const [effort, mix] of Object.entries(entry.sourceTokenMix)) {
+        const expected = price(mix, entry.rates) / price(mix, entry.sourceRates);
+        assert.equal(generationProxyCostRatio(modelId, effort), expected, `${modelId}@${effort}`);
+        assert.equal(
+          findEvidencePrior(modelId, effort).costPerPassUsd,
+          findEvidencePrior(entry.sourceModelId, effort).costPerPassUsd * expected,
+        );
+      }
+    }
+  });
+
+  it("uses direct Astra high measurements with only the report's missing fields proxied", () => {
+    const astra = findEvidencePrior("gpt-6-astra", "high");
+    const sol = findEvidencePrior("gpt-5.6-sol", "high");
+    assert.ok(astra && sol);
+    assert.equal(astra.passRate, 0.7323008849557522);
+    assert.equal(astra.consensusBest, 95.28);
+    assert.equal(astra.repeatAllPassRate, 0.6017699115044248);
+    assert.equal(astra.costPerPassUsd, 5.35807599244713);
+    assert.equal(astra.regressionBreakRate, sol.regressionBreakRate);
+    assert.equal(astra.p90PeakContextTokens, sol.p90PeakContextTokens);
+  });
+
   it("keeps every prior within its valid range", () => {
     for (const row of EVIDENCE_PRIOR_ROWS) {
       for (const field of [
@@ -137,12 +218,12 @@ describe("ability bands", () => {
   });
 
   it("derives router-relevant abilities from evidence rather than model name", () => {
-    assert.equal(evidenceAbility("claude-opus-5", "high"), 4);
-    assert.equal(evidenceAbility("claude-opus-5", "medium"), 3);
-    assert.equal(evidenceAbility("claude-opus-5", "low"), 2);
-    assert.equal(evidenceAbility("gpt-5.6-sol", "max"), 4);
-    assert.equal(evidenceAbility("gpt-5.6-sol", "high"), 3);
-    assert.equal(evidenceAbility("gpt-5.6-sol", "medium"), 2);
+    assert.equal(evidenceAbility("claude-opus-5-5", "high"), 4);
+    assert.equal(evidenceAbility("claude-opus-5-5", "medium"), 3);
+    assert.equal(evidenceAbility("claude-opus-5-5", "low"), 2);
+    assert.equal(evidenceAbility("gpt-6-sol", "max"), 4);
+    assert.equal(evidenceAbility("gpt-6-sol", "high"), 3);
+    assert.equal(evidenceAbility("gpt-6-sol", "medium"), 2);
     assert.equal(evidenceAbility("claude-fable-5", "xhigh"), 4);
     // Sonnet 5 at high measures below the Opus 5 rungs and must not claim a mid tier by name.
     assert.equal(evidenceAbility("claude-sonnet-5", "high"), 1);
@@ -208,18 +289,18 @@ describe("effort authorization", () => {
   const base = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
 
   it("caps ordinary archetypes at the measured saturation tier", () => {
-    assert.equal(authorizeEffort("claude-opus-5", "high", base).authorized, true);
-    const capped = authorizeEffort("claude-opus-5", "max", base);
+    assert.equal(authorizeEffort("claude-opus-5-5", "high", base).authorized, true);
+    const capped = authorizeEffort("claude-opus-5-5", "max", base);
     assert.equal(capped.authorized, false);
     assert.match(capped.reason, /saturation tier high/);
   });
 
   it("allows super-saturation tiers only for escalation archetypes", () => {
-    assert.equal(authorizeEffort("claude-opus-5", "max", { ...base, allowSuperSaturation: true }).authorized, true);
+    assert.equal(authorizeEffort("claude-opus-5-5", "max", { ...base, allowSuperSaturation: true }).authorized, true);
   });
 
   it("applies the TypeScript ceiling even for escalation archetypes", () => {
-    const capped = authorizeEffort("claude-opus-5", "xhigh", {
+    const capped = authorizeEffort("claude-opus-5-5", "xhigh", {
       ...base,
       allowSuperSaturation: true,
       language: "typescript",
@@ -227,7 +308,7 @@ describe("effort authorization", () => {
     assert.equal(capped.authorized, false);
     assert.match(capped.reason, /typescript ceiling high/);
     assert.equal(
-      authorizeEffort("claude-opus-5", "xhigh", { ...base, allowSuperSaturation: true, language: "go" }).authorized,
+      authorizeEffort("claude-opus-5-5", "xhigh", { ...base, allowSuperSaturation: true, language: "go" }).authorized,
       true,
     );
   });
@@ -245,8 +326,8 @@ describe("effort authorization", () => {
 
   it("bars low-effort tiers from repository-mutating work but allows read-only use", () => {
     for (const [modelId, effort] of [
-      ["gpt-5.6-luna", "low"],
-      ["gpt-5.6-luna", "medium"],
+      ["gpt-6-luna", "low"],
+      ["gpt-6-luna", "medium"],
       ["gpt-5.6-terra", "low"],
       ["gpt-5.6-terra", "medium"],
     ]) {
@@ -289,36 +370,36 @@ describe("effort authorization", () => {
 
 describe("prior-seeded cost to done", () => {
   it("ranks cheap-and-weak configurations below stronger ones", () => {
-    const strong = score("claude-opus-5", "medium");
+    const strong = score("claude-opus-5-5", "medium");
     for (const [modelId, effort] of [
       ["gpt-5.6-terra", "low"],
       ["gpt-5.6-terra", "medium"],
-      ["gpt-5.6-luna", "low"],
-      ["gpt-5.6-luna", "medium"],
+      ["gpt-6-luna", "low"],
+      ["gpt-6-luna", "medium"],
       ["claude-sonnet-5", "low"],
     ]) {
       assert.ok(
         score(modelId, effort) > strong,
-        `${modelId}@${effort} must not outrank claude-opus-5@medium despite lower token cost`,
+        `${modelId}@${effort} must not outrank claude-opus-5-5@medium despite lower token cost`,
       );
     }
   });
 
   it("prefers the cheaper saturated tier over a super-saturation tier of the same model", () => {
-    assert.ok(score("claude-opus-5", "high") < score("claude-opus-5", "max"));
+    assert.ok(score("claude-opus-5-5", "high") < score("claude-opus-5-5", "max"));
     assert.ok(score("claude-fable-5", "xhigh") < score("claude-fable-5", "max"));
   });
 
   it("reproduces the measured language split on routine work", () => {
     const typescript = { ...ORDINARY, language: "typescript" };
     assert.ok(
-      score("gpt-5.6-sol", "high", typescript) < score("claude-opus-5", "high", typescript),
-      "routine TypeScript favors gpt-5.6-sol at high effort",
+      score("gpt-6-sol", "high", typescript) < score("claude-opus-5-5", "high", typescript),
+      "routine TypeScript favors gpt-6-sol at high effort",
     );
   });
 
   it("does not substitute an unauthorized language pass rate", () => {
-    const row = findEvidencePrior("claude-opus-5", "high");
+    const row = findEvidencePrior("claude-opus-5-5", "high");
     const corpus = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
     const typescript = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language: "typescript" });
     const go = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language: "go" });
@@ -331,7 +412,7 @@ describe("prior-seeded cost to done", () => {
   });
 
   it("still applies a measured regression rate for a language whose pass rate is not substituted", () => {
-    const row = findEvidencePrior("gpt-5.6-sol", "high");
+    const row = findEvidencePrior("gpt-6-sol", "high");
     const corpus = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, consequence: "reversible" });
     const typescript = scoreEvidencePrior(row, WEIGHTS, {
       ...ORDINARY,
@@ -343,7 +424,7 @@ describe("prior-seeded cost to done", () => {
   });
 
   it("leaves Ruby and Kotlin scoring on the corpus-wide priors", () => {
-    const row = findEvidencePrior("claude-opus-5", "medium");
+    const row = findEvidencePrior("claude-opus-5-5", "medium");
     const corpus = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
     for (const language of ["ruby", "kotlin"]) {
       const scoped = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language });
@@ -355,26 +436,26 @@ describe("prior-seeded cost to done", () => {
   it("reproduces the measured Anthropic advantage on the hard tail", () => {
     const goHard = { ...ORDINARY, language: "go", hardTask: true };
     assert.ok(
-      score("claude-opus-5", "high", goHard) < score("gpt-5.6-sol", "high", goHard),
-      "hard Go tasks favor claude-opus-5 at high effort",
+      score("claude-opus-5-5", "high", goHard) < score("gpt-6-sol", "high", goHard),
+      "hard Go tasks favor claude-opus-5-5 at high effort",
     );
     assert.ok(
-      score("claude-opus-5", "high", goHard) < score("gpt-5.6-sol", "max", goHard),
-      "hard Go tasks favor claude-opus-5 at high effort over gpt-5.6-sol at max",
+      score("claude-opus-5-5", "high", goHard) < score("gpt-6-sol", "max", goHard),
+      "hard Go tasks favor claude-opus-5-5 at high effort over gpt-6-sol at max",
     );
     // On TypeScript, Opus 5's hard-tail advantage (30.6% vs 22.2%) is real but smaller than its
     // cost and latency penalty, so at default weights Sol still wins the first attempt and the
     // Anthropic escalation is expressed through the retry path rather than through primary scoring.
     const typescript = { ...ORDINARY, language: "typescript" };
     const typescriptHard = { ...typescript, hardTask: true };
-    const routineGap = score("claude-opus-5", "high", typescript) - score("gpt-5.6-sol", "high", typescript);
-    const hardGap = score("claude-opus-5", "high", typescriptHard) - score("gpt-5.6-sol", "high", typescriptHard);
-    assert.ok(hardGap > 0, "routine TypeScript ordering still favors gpt-5.6-sol on hard tasks");
-    assert.ok(hardGap < routineGap, "the hard-task prior narrows the TypeScript gap toward claude-opus-5");
+    const routineGap = score("claude-opus-5-5", "high", typescript) - score("gpt-6-sol", "high", typescript);
+    const hardGap = score("claude-opus-5-5", "high", typescriptHard) - score("gpt-6-sol", "high", typescriptHard);
+    assert.ok(hardGap > 0, "routine TypeScript ordering still favors gpt-6-sol on hard tasks");
+    assert.ok(hardGap < routineGap, "the hard-task prior narrows the TypeScript gap toward claude-opus-5-5");
   });
 
   it("uses attempt cost that is independent of the hard-task prior", () => {
-    const row = findEvidencePrior("claude-opus-5", "high");
+    const row = findEvidencePrior("claude-opus-5-5", "high");
     const routine = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
     const hard = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, hardTask: true });
     assert.equal(routine.components.attemptCost, hard.components.attemptCost);
@@ -391,7 +472,7 @@ describe("prior-seeded cost to done", () => {
   });
 
   it("prices nondeterminism only for unattended work", () => {
-    const row = findEvidencePrior("gpt-5.6-luna", "max");
+    const row = findEvidencePrior("gpt-6-luna", "max");
     const attended = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
     const unattended = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, unattended: true });
     assert.equal(attended.components.nondeterminismCost, 0);
@@ -399,14 +480,14 @@ describe("prior-seeded cost to done", () => {
   });
 
   it("upweights wall time for foreground developer loops", () => {
-    const row = findEvidencePrior("claude-opus-5", "high");
+    const row = findEvidencePrior("claude-opus-5-5", "high");
     const background = scoreEvidencePrior(row, WEIGHTS, ORDINARY);
     const foreground = scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, waitMultiplier: 8 });
     assert.equal(foreground.components.developerWaitCost, background.components.developerWaitCost * 8);
   });
 
   it("records which language prior was applied", () => {
-    const row = findEvidencePrior("claude-opus-5", "high");
+    const row = findEvidencePrior("claude-opus-5-5", "high");
     assert.equal(scoreEvidencePrior(row, WEIGHTS, { ...ORDINARY, language: "go" }).languageUsed, "go");
     assert.equal(scoreEvidencePrior(row, WEIGHTS, ORDINARY).languageUsed, undefined);
   });
@@ -427,21 +508,21 @@ describe("hard-task escalation prior", () => {
 });
 
 describe("effort authorization corrections", () => {
-  it("permits gpt-5.6-luna at high effort on mutating work after the cliff correction", () => {
+  it("permits gpt-6-luna at high effort on mutating work after the cliff correction", () => {
     const mutating = { allowSuperSaturation: false, consequence: "reversible", language: undefined };
-    assert.equal(authorizeEffort("gpt-5.6-luna", "high", mutating).authorized, true);
-    assert.equal(authorizeEffort("gpt-5.6-luna", "medium", mutating).authorized, false);
-    assert.equal(authorizeEffort("gpt-5.6-luna", "low", mutating).authorized, false);
+    assert.equal(authorizeEffort("gpt-6-luna", "high", mutating).authorized, true);
+    assert.equal(authorizeEffort("gpt-6-luna", "medium", mutating).authorized, false);
+    assert.equal(authorizeEffort("gpt-6-luna", "low", mutating).authorized, false);
   });
 
   it("bands the scoped and cost-floor models from consensus rather than by name", () => {
-    // Two bands below claude-opus-5 at high effort, which is why it is scoped rather than general.
+    // Two bands below claude-opus-5-5 at high effort, which is why it is scoped rather than general.
     assert.equal(evidenceAbility("claude-opus-4-6", "high"), 2);
     assert.equal(evidenceAbility("gpt-oss-120b", "high"), 1);
   });
 
   it("refuses a non-finite score instead of ranking arbitrarily", () => {
-    const row = findEvidencePrior("claude-opus-5", "medium");
+    const row = findEvidencePrior("claude-opus-5-5", "medium");
     const incomplete = { ...WEIGHTS };
     delete incomplete.regressionBreakCost;
     assert.throws(

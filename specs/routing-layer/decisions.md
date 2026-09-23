@@ -668,3 +668,40 @@ Evidence: [`registry-refresh-2026-09-22.md`](registry-refresh-2026-09-22.md).
 
 3. **GPT-6 Astra remains unrouted.** 0.85.1 declares `gpt-6-astra`, which resolves one of the three reasons in decision
    6 of the 2026-09-10 section. The single benchmark source and missing peak-context telemetry still apply.
+
+## Generation-forward routing, 2026-09-22 (`router-policy-v9`)
+
+Evidence: `teamupstart/ai-acceleration` PR #650 at `a99c2d0145952f99ad92f6d786ef0aa19fa15c97` (DataCurve capture and
+vendor pricing through 2026-09-22), transcribed in
+[`generation-evidence-2026-09-22.json`](generation-evidence-2026-09-22.json), plus the `@earendil-works/pi-ai` 0.87.1
+registry.
+
+1. **Current model names may use explicit prior-generation proxies.** GPT-6 Luna and Sol inherit the GPT-5.6 Luna and
+   Sol rows, and Claude Opus 5.5 inherits the Opus 5 rows. This is an intentional risk decision, not a claim that the
+   report measured those releases: the newer generation is assumed no worse on quality, reliability, and latency. The
+   source rows stay unchanged, while runtime lookup returns the current model identity so telemetry never mixes them.
+
+2. **Proxies are repriced, not assumed to cost the same.** The report's verified list rates cut every price: GPT-6 Sol
+   is exactly half of GPT-5.6 Sol ($2/$0.20/$10 against $4/$0.40/$20 input/cache-read/output), GPT-6 Luna is
+   $0.10/$0.01/$0.50 against $0.20/$0.02/$1.20, and Opus 5.5 is $4/$0.20/$20 against $5/$0.50/$25. Each inherited
+   `costPerPassUsd` is scaled by the new-to-source list cost of that source row's own measured DeepSWE token mix
+   (uncached input, cache read, output), giving 0.50 for Sol, 0.478-0.486 for Luna, and 0.544-0.610 for Opus 5.5
+   (cache-heavy efforts gain most from the 60% cache-read cut). Pass, repeatability, latency, and context stay
+   inherited, because a rate cut changes what an attempt costs rather than how often it passes. Two knife-edge rankings
+   move as a result: bounded tool workflows now lead with Sol high over Sol medium (1.3% apart), and under unit-test
+   verification Sol high leads Ruby repository work by 8.1%, just outside Ruby's 8% near-tie band, so the Anthropic
+   tendency no longer promotes Opus 5.5 medium there. Endpoint ordering is unaffected: it prices each live registry
+   entry directly.
+
+3. **Astra high is the measured high-intelligence OpenAI rung.** Its direct DeepSWE observations supply 73.2% pass,
+   30.4% hard-task pass, 60.2% all-repeat pass, 22.1% flakiness, 893.5s median wall time, 1,464.2s p90 wall time, 25
+   median steps, zero observed overflow, and
+   $5.36 per pass after DataCurve's 2026-09-22 cost correction (previously
+   $7.82; outcomes unchanged); the refreshed
+   consensus places it in band 4. Because the report omits regression breakage, failed-trial partial credit, and p90
+   peak context, those three fields retain Sol high's values. Astra is admitted only to implementation/program planning,
+   highest-risk advisory, and independent OpenAI review ladders; it does not replace routine coding defaults.
+
+4. **The scoped registry remains authoritative.** The policy names current releases, but endpoint resolution still skips
+   any model absent from the operator's enabled live registry. This is especially important for provider surfaces that
+   expose Astra but not Luna/Sol, or use `claude-opus-5.5` rather than `claude-opus-5-5` spelling.
