@@ -3715,12 +3715,12 @@ describe("routerExtension", () => {
     const choices = [
       {
         provider: "openai-codex",
-        modelId: "gpt-5.6-sol",
-        logicalModelId: "gpt-5.6-sol",
+        modelId: "gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
         vendor: "openai",
         effort: "high",
         ability: 3,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
@@ -3732,31 +3732,31 @@ describe("routerExtension", () => {
         vendor: "openai",
         effort: "high",
         ability: 2,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
       {
         provider: "openai-codex",
-        modelId: "gpt-5.6-sol",
-        logicalModelId: "gpt-5.6-sol",
+        modelId: "gpt-6-sol",
+        logicalModelId: "gpt-6-sol",
         vendor: "openai",
         effort: "medium",
         ability: 2,
-        profileId: "openai-gpt-5.6-agent-v1",
+        profileId: "openai-gpt-6-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "bootstrap",
       },
       {
         provider: "anthropic",
-        modelId: "claude-opus-5",
-        logicalModelId: "claude-opus-5",
+        modelId: "claude-opus-5-5",
+        logicalModelId: "claude-opus-5-5",
         vendor: "anthropic",
         effort: "medium",
         ability: 3,
-        profileId: "anthropic-claude-opus-5-agent-v1",
+        profileId: "anthropic-claude-opus-5-5-agent-v1",
         contextWindow: 1_000_000,
         endpointTier: "manufacturer",
         rankReason: "evidence_prior",
@@ -3855,7 +3855,7 @@ describe("routerExtension", () => {
         ctx,
       );
       assert.equal(latestLease().selected.provider, "anthropic");
-      assert.equal(latestLease().selected.modelId, "claude-opus-5");
+      assert.equal(latestLease().selected.modelId, "claude-opus-5-5");
       assert.equal(latestLease().attemptIndex, 1);
       assert.deepEqual(
         latestLease().fallbacks.map((c) => c.provider),
