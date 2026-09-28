@@ -7,22 +7,43 @@ recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this
 
 ## Current state
 
-| Field               | Value                                                        |
-| ------------------- | ------------------------------------------------------------ |
-| Upstream remote     | `zew1me` → <https://github.com/zew1me/pi-buildout.git>       |
-| Upstream branch     | `main`                                                       |
-| Last synced SHA     | `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22)      |
-| Last sync date      | 2026-09-22                                                   |
-| Previous sync point | `bc127ebf439d0827bfc4f660fdc205595caaa544` (2026-09-19, #61) |
-| Sync branch         | `chore/sync-upstream-zew1me`                                 |
-| Outbound fixes owed | pi 0.87.1 `/skills` patch (see [Outbound](#outbound))        |
+| Field               | Value                                                   |
+| ------------------- | ------------------------------------------------------- |
+| Upstream remote     | `zew1me` → <https://github.com/zew1me/pi-buildout.git>  |
+| Upstream branch     | `main`                                                  |
+| Last synced SHA     | `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28) |
+| Last sync date      | 2026-09-29                                              |
+| Previous sync point | `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22) |
+| Sync branch         | `chore/sync-upstream-zew1me`                            |
+| Outbound fixes owed | pi 0.87.1 `/skills` patch (see [Outbound](#outbound))   |
 
 To find the next batch of upstream work:
 
 ```bash
 git fetch zew1me
-git log --oneline 502c13a0402362d8cda667a1115fc176e0ffa120..zew1me/main
+git log --oneline 867d931ee84de52e46e1b456d95338c236a804d5..zew1me/main
 ```
+
+## 2026-09-29 sync (`867d931e`)
+
+| Upstream   | Upstream change                                       | Status | Local change |
+| ---------- | ----------------------------------------------------- | ------ | ------------ |
+| `867d931e` | fix(patches): serialize persisted skill updates (#59) | Ported | This sync    |
+
+Notes:
+
+- `pi-overlay/` takes upstream's serialized skill updates, bare-name and relative-path normalization, and tests, on top
+  of the fork's `commandNeedsProjectTrust` change from `4508faac`. Because the overlay therefore differs from upstream,
+  the generated 0.85.1 artifacts (`skills.patch`, `patched.sha256`, and every `*-upgrade.patch`) are regenerated here
+  and are not byte-identical to upstream. `pre-lock-patched.sha256` does match upstream: that state is also the 0.85.1
+  patch this fork shipped from `8734f344` until `4508faac`.
+- New 0.85.1 upgrade state `trust-scope-` records the fork's `4508faac` patch. New fork-only 0.87.1 upgrade state
+  `trust-scope-` does the same for 0.87.1. Every migration was rebuilt from a real old tree and round-trips under
+  `node scripts/build-pi-patch.mjs --all --check`.
+- The 0.84.2 and 0.84.4 patch sets are removed, as upstream does.
+- `scripts/skills-catalog.test.mjs` keeps the fork's per-version loop and real-`HOME` installer environment. It adds
+  upstream's Git-environment isolation, path-normalization, and concurrent-update assertions, and upgrades every
+  recorded state rather than only `pre-validation-` and `pre-lock-`.
 
 ## 2026-09-22 sync (`502c13a0`)
 

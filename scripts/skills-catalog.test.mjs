@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, copyFile, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -44,16 +56,31 @@ async function applyPatch(target, source, reverse = false) {
   }
 }
 
-async function runPatchedCli(target, args, { agentDir, cwd }) {
+function testEnvironment(overrides = {}) {
+  const env = { ...process.env, ...overrides };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+async function runPatchedCli(target, args, { agentDir, cwd, home = process.env.HOME }) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [join(target, "dist", "bundle", "cli.js"), ...args], {
       cwd,
-      env: {
-        ...process.env,
+      env: testEnvironment({
+        ...(home === undefined ? {} : { HOME: home }),
         PI_CODING_AGENT_DIR: agentDir,
         PI_OFFLINE: "1",
         PI_SKIP_VERSION_CHECK: "1",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -93,7 +120,7 @@ async function copyPackage(packageRoot, target, patchDirectory, { patched = true
 async function runInstaller(packageDirectory, agentDirectory) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("bash", [join(repositoryRoot, "scripts", "install-extensions.sh")], {
-      env: { ...process.env, HOME: installerHome, PI_AGENT_DIR: agentDirectory, PI_PACKAGE_DIR: packageDirectory },
+      env: testEnvironment({ HOME: installerHome, PI_AGENT_DIR: agentDirectory, PI_PACKAGE_DIR: packageDirectory }),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -120,6 +147,40 @@ async function writeSkill(skillDirectory, name, description) {
 async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function runGit(cwd, args) {
+  await new Promise((resolvePromise, reject) => {
+    const child = spawn("git", args, { cwd, env: testEnvironment(), stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`git exited with code ${String(code)}: ${stderr.trim()}`));
+    });
+  });
+}
+
+async function addSkillsConcurrently(patchedPackage, sources, scope, options) {
+  const results = await Promise.all(
+    sources.map((source) => runPatchedCli(patchedPackage, ["skills", "add", source, `--${scope}`], options)),
+  );
+  for (const result of results) {
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+  }
+}
+
+/** Every recorded already-patched state for a version, by the label its `<label>-upgrade.patch` carries. */
+async function upgradeStates(patchDirectory) {
+  const names = await readdir(patchDirectory);
+  return names
+    .filter((name) => name.endsWith("-upgrade.patch"))
+    .map((name) => name.slice(0, -"-upgrade.patch".length))
+    .sort();
 }
 
 for (const version of patchVersions()) {
@@ -163,16 +224,16 @@ for (const version of patchVersions()) {
       );
       await verifyManifest(patchDirectory, cleanPackage, "patched.sha256");
 
-      // Where this version has a recorded pre-validation state, the installer upgrades it in place.
-      if (await exists(join(patchDirectory, "pre-validation-upgrade.patch"))) {
-        const preValidationPackage = join(temporaryRoot, "pre-validation-package");
-        await copyPackage(packageRoot, preValidationPackage, patchDirectory);
-        await applyPatch(preValidationPackage, join(patchDirectory, "pre-validation-upgrade.patch"), true);
-        await verifyManifest(patchDirectory, preValidationPackage, "pre-validation-patched.sha256");
-        const installerResult = await runInstaller(preValidationPackage, join(temporaryRoot, "installer-agent"));
-        assert.equal(installerResult.code, 0, installerResult.stderr);
-        assert.match(installerResult.stdout, /Upgrading a previously applied \/skills patch/u);
-        await verifyManifest(patchDirectory, preValidationPackage, "patched.sha256");
+      // Every recorded already-patched state is reconstructed from the current tree and upgraded in place.
+      for (const state of await upgradeStates(patchDirectory)) {
+        const statePackage = join(temporaryRoot, `${state}-package`);
+        await copyPackage(packageRoot, statePackage, patchDirectory);
+        await applyPatch(statePackage, join(patchDirectory, `${state}-upgrade.patch`), true);
+        await verifyManifest(patchDirectory, statePackage, `${state}-patched.sha256`);
+        const stateResult = await runInstaller(statePackage, join(temporaryRoot, `${state}-agent`));
+        assert.equal(stateResult.code, 0, `${state}: ${stateResult.stderr}`);
+        assert.match(stateResult.stdout, /Upgrading a previously applied \/skills patch/u, state);
+        await verifyManifest(patchDirectory, statePackage, "patched.sha256");
       }
 
       await Promise.all([
@@ -235,6 +296,46 @@ for (const version of patchVersions()) {
       ]);
       const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 
+      const normalizedPathAgentDir = join(fixtureRoot, "normalized-path-agent");
+      const temporaryHome = join(fixtureRoot, "home");
+      const homeSkill = join(temporaryHome, "skills", "home-skill");
+      const relativeSkill = join(cwd, "relative-skill");
+      const bareRelativeSkill = join(cwd, "bare-relative-skill");
+      await Promise.all([
+        writeSkill(homeSkill, "home-skill", "tilde path fixture"),
+        writeSkill(relativeSkill, "relative-skill", "relative path fixture"),
+        writeSkill(bareRelativeSkill, "bare-relative-skill", "bare relative path fixture"),
+      ]);
+      for (const source of ["~/skills/home-skill", "./relative-skill", "bare-relative-skill"]) {
+        const result = await runPatchedCli(patchedPackage, ["skills", "add", source, "--global"], {
+          cwd,
+          agentDir: normalizedPathAgentDir,
+          home: temporaryHome,
+        });
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(result.stderr, "");
+      }
+      const normalizedConfig = JSON.parse(await readFile(join(normalizedPathAgentDir, "skills.json"), "utf8"));
+      const canonicalCwd = await realpath(cwd);
+      assert.deepEqual(normalizedConfig.enabled, [
+        homeSkill,
+        join(canonicalCwd, "relative-skill"),
+        join(canonicalCwd, "bare-relative-skill"),
+      ]);
+
+      // A bare name persisted as a path must stay removable by that name once the path is gone.
+      await rm(bareRelativeSkill, { recursive: true, force: true });
+      const removedBare = await runPatchedCli(patchedPackage, ["skills", "remove", "bare-relative-skill", "--global"], {
+        cwd,
+        agentDir: normalizedPathAgentDir,
+        home: temporaryHome,
+      });
+      assert.equal(removedBare.code, 0, removedBare.stderr);
+      assert.deepEqual(JSON.parse(await readFile(join(normalizedPathAgentDir, "skills.json"), "utf8")).enabled, [
+        homeSkill,
+        join(canonicalCwd, "relative-skill"),
+      ]);
+
       assert.equal(normalizeGitRemoteUrl("https://git.example.com:8443/org/repo.git"), "git.example.com:8443:org/repo");
       assert.equal(normalizeGitRemoteUrl("https://git.example.com:9443/org/repo.git"), "git.example.com:9443:org/repo");
       assert.equal(normalizeGitRemoteUrl("git@github.com:org/repo.git"), "github.com:org/repo");
@@ -289,6 +390,44 @@ for (const version of patchVersions()) {
       assert.equal(cliList.code, 0);
       assert.equal(cliList.stderr, "");
       assert.deepEqual(cliList.stdout.trim().split("\n"), listResult.lines);
+
+      const concurrentRoot = join(fixtureRoot, "concurrent-updates");
+      const concurrentSources = Array.from({ length: 12 }, (_, index) =>
+        join(concurrentRoot, "skills", `skill-${String(index)}`),
+      );
+      await Promise.all(
+        concurrentSources.map((source, index) => writeSkill(source, `concurrent-${String(index)}`, "lock fixture")),
+      );
+      const seededEntries = Array.from({ length: 3_000 }, (_, index) => `existing-${String(index)}`);
+
+      const concurrentGlobalAgentDir = join(concurrentRoot, "global-agent");
+      const globalConfigPath = join(concurrentGlobalAgentDir, "skills.json");
+      await writeJson(globalConfigPath, { enabled: seededEntries });
+      await addSkillsConcurrently(patchedPackage, concurrentSources, "global", {
+        agentDir: concurrentGlobalAgentDir,
+        cwd,
+      });
+      const globalConfig = JSON.parse(await readFile(globalConfigPath, "utf8"));
+      assert.equal(globalConfig.enabled.length, seededEntries.length + concurrentSources.length);
+      assert.deepEqual(new Set(globalConfig.enabled), new Set([...seededEntries, ...concurrentSources]));
+      assert.equal(await exists(`${globalConfigPath}.lock`), false);
+
+      const concurrentRepoAgentDir = join(concurrentRoot, "repo-agent");
+      const concurrentRepo = join(concurrentRoot, "repo");
+      await mkdir(concurrentRepo, { recursive: true });
+      await runGit(concurrentRepo, ["init", "--quiet"]);
+      await runGit(concurrentRepo, ["remote", "add", "origin", "https://example.com/org/repo.git"]);
+      const repoConfigPath = join(concurrentRepoAgentDir, "repo-skills.json");
+      const repoKey = "example.com:org/repo";
+      await writeJson(repoConfigPath, { [repoKey]: { enabled: seededEntries } });
+      await addSkillsConcurrently(patchedPackage, concurrentSources, "repo", {
+        agentDir: concurrentRepoAgentDir,
+        cwd: concurrentRepo,
+      });
+      const repoConfig = JSON.parse(await readFile(repoConfigPath, "utf8"));
+      assert.equal(repoConfig[repoKey].enabled.length, seededEntries.length + concurrentSources.length);
+      assert.deepEqual(new Set(repoConfig[repoKey].enabled), new Set([...seededEntries, ...concurrentSources]));
+      assert.equal(await exists(`${repoConfigPath}.lock`), false);
 
       // Entry resolution lives in the skill-management module, so DefaultResourceLoader keeps no skill API.
       const entryContext = { cwd, agentDir, settingsManager, resolveResourcePath: (path) => path };
