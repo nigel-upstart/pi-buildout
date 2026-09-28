@@ -35,8 +35,27 @@ declared budget.
 - `patched.sha256` — checksums expected after applying `skills.patch`; the loader's entry equals its
   baseline.
 
-There are no upgrade states: this repository never shipped an earlier 0.87.1 patch, so the installer
-recognizes only the clean package and this patch's own result.
+One recognized already-patched state has a migration onto the current patch:
+
+| State | Manifests | What it is |
+| --- | --- | --- |
+| `trust-scope-` | `trust-scope-patched.sha256`, `trust-scope-upgrade.patch` | the patch at commit `4508faac`, which limited one-shot `pi skills` trust resolution to `list`, `search`, and `add … --repo` but predates serialized configuration updates and bare relative path normalization |
+
+It contains every tracked file, so it has no `-absent` list. Rebuild its migration with
+`scripts/build-pi-upgrade.mjs` whenever `skills.patch` changes, as described for pi 0.85.1; the pipeline
+reverse-applies it against each regenerated tree and fails if it no longer reconstructs that state.
+
+User-provided tilde and relative skill sources, including a bare name that resolves to a path holding at least one
+skill and matches no catalog skill, are resolved to absolute paths before session activation or persistence. A bare
+name persisted that way stays removable by that name after its path is deleted. Any other bare name, even one naming
+an existing folder without skills, stays a catalog name. Persisted global and repository skill updates lock the
+applicable JSON file across the complete read-modify-write transaction, so concurrent CLI processes cannot discard one
+another's changes.
+
+One-shot `pi skills add … --global` does not resolve project trust, so the catalog it consults holds only global
+skills. There, a bare name that matches only a project catalog skill, and also names a local folder that holds
+skills, is stored as that folder's path. Use `--repo` or the interactive `/skills add` to resolve a bare name
+against project skills.
 
 ## Bundled entrypoints
 

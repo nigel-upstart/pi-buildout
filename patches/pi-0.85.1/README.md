@@ -28,13 +28,15 @@ upstream code exceed the declared budget.
 - `baseline.absent` — paths that must not exist in the clean package.
 - `patched.sha256` — checksums expected after applying `skills.patch`.
 
-Three recognized already-patched states, each with a migration onto the current patch:
+Five recognized already-patched states, each with a migration onto the current patch:
 
 | State | Manifests | What it is |
 | --- | --- | --- |
 | `legacy-` | `legacy-patched.sha256`, `legacy-absent`, `legacy-upgrade.patch` | patched before bundled entrypoints and the expanded catalog sources were included |
 | `pre-validation-` | `pre-validation-patched.sha256`, `pre-validation-absent`, `pre-validation-upgrade.patch` | the state recorded by repository commit `c8bbfc6`, before strict configuration validation and remote-port preservation |
 | `handwritten-` | `handwritten-patched.sha256`, `handwritten-absent`, `handwritten-upgrade.patch` | the last hand-authored patch, before the runtime was generated from the TypeScript overlay |
+| `pre-lock-` | `pre-lock-patched.sha256`, `pre-lock-upgrade.patch` | the first patch generated from the overlay, before serialized configuration updates and bare relative path normalization |
+| `trust-scope-` | `trust-scope-patched.sha256`, `trust-scope-upgrade.patch` | this fork's regeneration at commit `4508faac`, which limited one-shot `pi skills` trust resolution to `list`, `search`, and `add … --repo` but predates serialized updates |
 
 ### Regenerating the upgrade states
 
@@ -56,8 +58,8 @@ freshly generated tree and fails unless it reconstructs exactly the state it cla
 
 A `<state>-absent` file lists paths that must **not** exist in that state. It is the upgrade-state counterpart
 of `baseline.absent`, and it is what lets a patch that adds a new runtime file still describe the states that
-predate that file. `dist/core/skill-management-core.js` is new in the generated patch, so all three states
-list it.
+predate that file. `dist/core/skill-management-core.js` is new in the generated patch, so every state that
+predates the overlay lists it; `pre-lock-` and `trust-scope-` contain every patched file and have no absent list.
 
 ## How the installer uses these
 
@@ -67,6 +69,18 @@ patched checksums, then replaces each installed file atomically, with rollback o
 are limited to exact full-file states previously produced by this repository; a matching package version alone
 never authorizes an upgrade. A package already matching `patched.sha256` is left unchanged. Any unknown or
 mixed state is rejected and must be restored to the clean package rather than overwritten.
+
+User-provided tilde and relative skill sources, including a bare name that resolves to a path holding at least one
+skill and matches no catalog skill, are resolved to absolute paths before session activation or persistence. A bare name persisted that way stays
+removable by that name after its path is deleted. Any other bare name, even one naming an existing folder without
+skills, stays a catalog name. Persisted global and repository skill updates lock the applicable JSON file
+across the complete read-modify-write transaction, so concurrent CLI processes cannot discard one another's
+changes.
+
+One-shot `pi skills add … --global` does not resolve project trust, so the catalog it consults holds only global
+skills. There, a bare name that matches only a project catalog skill, and also names a local folder that holds
+skills, is stored as that folder's path. Use `--repo` or the interactive `/skills add` to resolve a bare name
+against project skills.
 
 Because pi 0.85.1 dispatches through bundled entrypoints, the patch also replaces `dist/bundle/cli.js` and
 `dist/bundle/rpc-entry.js` with thin wrappers around the patched unbundled runtime. This keeps `pi skills` and

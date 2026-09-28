@@ -255,46 +255,6 @@ scale, because the cost-bearing Verified population tops out at a prior-generati
 router's cost-to-done model requires and single-attempt submissions cannot measure were not estimated or defaulted, and
 the data is structurally barred from that model rather than down-weighted within it. No model became routable.
 
-## Pi 0.84.2 `/skills` runtime patch
-
-- Source: `@earendil-works/pi-coding-agent@0.84.2`
-- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Upstream revision reviewed: `914cf1472e715297caa30db4b9535d534a9eb718`
-- License declared by the package: MIT
-
-[`patches/pi-0.84.2/skills.patch`](patches/pi-0.84.2/skills.patch) is a modified-code patch against Pi's published,
-generated runtime and documentation. It modifies upstream `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
-`dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
-lines derive from the MIT-licensed Pi package. The added `dist/core/skill-management.js` is an original implementation
-for this repository, informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
-
-The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
-normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
-checksum-guarded installation. It intentionally does not adopt automatic loading of every discovered skill,
-concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
-unrelated extension, prompt, theme, package, trust, and provider behavior.
-
-## Pi 0.84.4 `/skills` runtime patch
-
-- Source: `@earendil-works/pi-coding-agent@0.84.4`
-- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Upstream revision reviewed: `b79e4cc834970cca69daebffab7df1da7d1e52c4`
-- License declared by the package: MIT
-
-[`patches/pi-0.84.4/skills.patch`](patches/pi-0.84.4/skills.patch) is a modified-code patch against Pi's published,
-generated runtime and documentation. It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`,
-`dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
-`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
-from the MIT-licensed Pi package. The bundled entrypoints become thin wrappers so the patched unbundled runtime handles
-CLI and RPC execution. The added `dist/core/skill-management.js` is an original implementation for this repository,
-informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
-
-The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
-normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
-checksum-guarded installation. It intentionally does not adopt automatic loading of every discovered skill,
-concurrent-update locking, configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's
-unrelated extension, prompt, theme, package, trust, and provider behavior.
-
 ## Pi 0.85.1 `/skills` runtime patch
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`
@@ -307,15 +267,18 @@ generated runtime and documentation. It modifies upstream `dist/bundle/cli.js`, 
 `dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
 `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
 from the MIT-licensed Pi package. The bundled entrypoints become thin wrappers so the patched unbundled runtime handles
-CLI and RPC execution. The added `dist/core/skill-management.js` is an original implementation for this repository,
-informed by Pi's resource-loading and command conventions rather than copied from an upstream file.
+CLI and RPC execution. The added `dist/core/skill-management.js` is primarily an original implementation for this
+repository, informed by Pi's resource-loading and command conventions.
 
-The patch adopts explicit global, repository, and session skill activation; a discoverable-but-inactive catalog;
-normalized repository identity; shared CLI and interactive command semantics; diagnostics for invalid configuration; and
-checksum-guarded installation. Its catalog reuses Pi's package manager to include enabled package and settings skill
-sources while preserving Pi's precedence and project-trust behavior. It intentionally does not adopt automatic loading
-of every discovered skill, concurrent-update locking, configured-path confinement, new public resource-loader mutator
-APIs, or changes to Pi's unrelated extension, prompt, theme, package, trust, and provider behavior.
+The persisted-skill locking helpers are modified adaptations of the synchronous `proper-lockfile` retry and guaranteed
+release pattern in Pi's MIT-licensed `dist/core/trust-manager.js`; the integration around the complete skill
+read-modify-write transaction is original to this repository. The patch adopts explicit global, repository, and session
+skill activation; a discoverable-but-inactive catalog; normalized repository identity; shared CLI and interactive
+command semantics; diagnostics for invalid configuration; concurrent-update locking; and checksum-guarded installation.
+Its catalog reuses Pi's package manager to include enabled package and settings skill sources while preserving Pi's
+precedence and project-trust behavior. It intentionally does not adopt automatic loading of every discovered skill,
+configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's unrelated extension, prompt,
+theme, package, trust, and provider behavior.
 
 ## Pi 0.87.1 `/skills` runtime patch
 
@@ -336,10 +299,12 @@ the 0.85.1 patch's copies.
 
 The patch adopts the same behavior as the 0.85.1 patch: explicit global, repository, and session skill activation; a
 discoverable-but-inactive catalog built on Pi's package manager; normalized repository identity with non-default ports
-preserved; shared CLI and interactive command semantics; strict configuration validation; and checksum-guarded
-installation. It intentionally does not adopt Pi 0.87.1's automatic loading of every discovered skill, and does not
-change Pi's unrelated extension, prompt, theme, package, trust, provider, compile-cache, or bundled-chunk behavior. The
-`docs/skills.md` changes were rewritten against 0.87.1's restructured skills page rather than carried over from 0.85.1.
+preserved; shared CLI and interactive command semantics; strict configuration validation; concurrent-update locking of
+persisted skill configuration; and checksum-guarded installation. The locking helpers adapt the same `proper-lockfile`
+pattern from Pi 0.87.1's MIT-licensed `dist/core/trust-manager.js`, which is unchanged in shape from 0.85.1. It
+intentionally does not adopt Pi 0.87.1's automatic loading of every discovered skill, and does not change Pi's unrelated
+extension, prompt, theme, package, trust, provider, compile-cache, or bundled-chunk behavior. The `docs/skills.md`
+changes were rewritten against 0.87.1's restructured skills page rather than carried over from 0.85.1.
 
 `scripts/skills-patch-entrypoint.test.mjs` writes a five-line stand-in for upstream 0.87.1's `dist/bundle/cli.js`
 (`enableCompileCache()` followed by `createRequire(import.meta.url)("./cli-runtime.js")`). That shape is adapted from
@@ -363,6 +328,13 @@ are a TypeScript reimplementation of the `dist/core/skill-management.js` previou
 informed by Pi's resource-loading and command conventions rather than copied from an upstream file. They additionally
 absorb logic that earlier versions of the patch inlined into upstream files, so those files now receive only imports and
 call sites.
+
+The persisted-skill lock in `pi-overlay/skill-management-core.ts` (`acquireSkillConfigLock` and `withSkillConfigLock`)
+is a modified adaptation of the `acquireTrustLockSync` and `withTrustFileLock` pattern in Pi's MIT-licensed
+`src/core/trust-manager.ts`: a synchronous `proper-lockfile` lock on a sibling `.lock` path, retried only on `ELOCKED`,
+and released in `finally`. It differs by waiting with `Atomics.wait` instead of busy-spinning, allowing more attempts,
+and reporting rather than throwing a failed release so the update's own result or error is preserved. The shell binds
+Pi's existing `proper-lockfile` dependency, which both 0.85.1 and 0.87.1 ship; no new upstream dependency is introduced.
 
 `pi-overlay/versions/0.85.1/integration.patch` and `pi-overlay/versions/0.87.1/integration.patch` are modified-code
 patches against Pi's MIT-licensed TypeScript sources for those releases: `src/core/resource-loader.ts`,
@@ -394,10 +366,12 @@ Ideas and API patterns used:
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
 - Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
   during the lease phases that can accept them.
-- The Pi 0.84.2 and later versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
+- The Pi 0.85.1 and 0.87.1 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
   metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
   The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
   adopted.
+- The Pi 0.85.1 and 0.87.1 patches adapt the synchronous `proper-lockfile` acquisition/retry and `finally` release
+  pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
@@ -530,25 +504,32 @@ records exporter delivery health.
 
 - Source: `zew1me/pi-buildout`
 - Canonical repository: <https://github.com/zew1me/pi-buildout>
-- Revision last synced: `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22)
+- Revision last synced: `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28)
 - License declared by the source: MIT (© 2026 Nigel Stuke)
 
 This repository is a fork of `zew1me/pi-buildout`. Upstream changes are ported by cherry-picking commits rather than by
 merging, so each ported commit records its upstream SHA in a `(cherry picked from commit …)` trailer, and
 [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md) records the last synced revision and the status of each upstream commit.
 
-What was adopted, as copied code: the pi 0.84.4 and 0.85.1 `/skills` patch sets under `patches/`, including the
-recognized-state upgrade manifests for installs patched by this repository's earlier 0.85.1 patch; the package and
-settings skill catalog for the pi 0.84.2 patch; the manifest-driven patch file set, recognized-state upgrade path,
-Homebrew package lookup, and legacy top-level entrypoint cleanup in `scripts/install-extensions.sh`; and the tests that
-cover them (`scripts/skills-catalog.test.mjs`, `scripts/skills-patch-entrypoint.test.mjs`,
-`scripts/install-extensions.test.mjs`). The sync at `502c13a0` adds, as copied code, the `pi-overlay/` TypeScript source
-for the 0.85.1 `/skills` patch, the `scripts/build-pi-patch.mjs` generation pipeline and its tests, and the
-`patch-drift` CI workflow.
+What was adopted, as copied code: the pi 0.84.4 and 0.85.1 `/skills` patch sets under `patches/` (the 0.84.4 set, like
+0.84.2's, was later removed at `867d931e`), including the recognized-state upgrade manifests for installs patched by
+this repository's earlier 0.85.1 patch; the package and settings skill catalog for the pi 0.84.2 patch; the
+manifest-driven patch file set, recognized-state upgrade path, Homebrew package lookup, and legacy top-level entrypoint
+cleanup in `scripts/install-extensions.sh`; and the tests that cover them (`scripts/skills-catalog.test.mjs`,
+`scripts/skills-patch-entrypoint.test.mjs`, `scripts/install-extensions.test.mjs`). The sync at `502c13a0` adds, as
+copied code, the `pi-overlay/` TypeScript source for the 0.85.1 `/skills` patch, the `scripts/build-pi-patch.mjs`
+generation pipeline and its tests, and the `patch-drift` CI workflow. The sync at `867d931e` adds, as copied code, the
+serialized persisted-skill updates, bare-name and relative-path normalization, the `pre-lock` 0.85.1 upgrade manifest,
+and their tests; it also removes the pi 0.84.2 and 0.84.4 patch sets, as upstream does. This fork regenerates the 0.85.1
+artifacts from its own overlay, which keeps the fork's `commandNeedsProjectTrust` change, and applies the same overlay
+change to its fork-only 0.87.1 patch.
 
 What was intentionally not adopted: upstream's removal of the router and vendored OpenTelemetry extensions from the
 installer and documentation; upstream's dependency overrides and scripts where this fork carries its own; and upstream's
-subagent fallback effort handling, where this fork keeps its own explicit model and effort resolution.
+subagent fallback effort handling, where this fork keeps its own explicit model and effort resolution. From `867d931e`,
+the fork did not adopt upstream's regenerated 0.85.1 artifact bytes, which its overlay does not reproduce, or its
+single-version catalog-test layout with hard-coded `pre-validation-` and `pre-lock-` blocks; the fork's test keeps its
+per-version loop and upgrades every recorded state.
 
 The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from the sync at `bc127ebf` because the
 router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
