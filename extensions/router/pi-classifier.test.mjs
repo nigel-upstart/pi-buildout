@@ -297,6 +297,30 @@ describe("selectClassifierModels", () => {
     );
   });
 
+  it("falls back to Gemini 3.5 Flash Lite as a last-resort primary with a non-Google secondary", () => {
+    const selected = selectClassifierModels([
+      snapshot("google-vertex", "gemini-3.5-flash-lite"),
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("amazon-bedrock", "us.openai.gpt-5.6-terra"),
+      snapshot("amazon-bedrock", "us.anthropic.claude-sonnet-5"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.id),
+      ["claude-haiku-4-5", "gemini-3.5-flash-lite"],
+    );
+
+    const geminiOnly = selectClassifierModels([
+      snapshot("google-vertex", "gemini-3.5-flash-lite"),
+      snapshot("amazon-bedrock", "us.openai.gpt-5.6-terra"),
+      snapshot("amazon-bedrock", "us.anthropic.claude-sonnet-5"),
+    ]);
+    assert.equal(geminiOnly.primary[0]?.vendor, "google");
+    assert.deepEqual(
+      geminiOnly.secondary.map((entry) => entry.model.id),
+      ["us.openai.gpt-5.6-terra", "us.anthropic.claude-sonnet-5"],
+    );
+  });
+
   it("prefers GPT-6 Luna over GPT-5.6 Luna for the primary tier", () => {
     const selected = selectClassifierModels([
       snapshot("openai-codex", "gpt-5.6-luna"),

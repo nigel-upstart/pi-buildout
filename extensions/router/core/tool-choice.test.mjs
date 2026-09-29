@@ -32,6 +32,33 @@ describe("requireToolCall", () => {
     assert.deepEqual(payload.toolConfig.toolChoice, { auto: {} });
   });
 
+  it("drops budget-style Claude thinking on Bedrock but keeps adaptive thinking", () => {
+    const toolConfig = { tools: [{ toolSpec: { name: "report" } }] };
+    const budget = {
+      toolConfig,
+      additionalModelRequestFields: {
+        thinking: { type: "enabled", budget_tokens: 2048 },
+        anthropic_beta: ["interleaved-thinking-2025-05-14"],
+      },
+    };
+    assert.equal(requireToolCall(budget, "bedrock-converse-stream", "report").additionalModelRequestFields, undefined);
+    assert.equal(budget.additionalModelRequestFields.thinking.type, "enabled");
+
+    const withOther = { toolConfig, additionalModelRequestFields: { thinking: { type: "enabled" }, top_k: 5 } };
+    assert.deepEqual(requireToolCall(withOther, "bedrock-converse-stream", "report").additionalModelRequestFields, {
+      top_k: 5,
+    });
+
+    const adaptive = {
+      toolConfig,
+      additionalModelRequestFields: { thinking: { type: "adaptive" }, output_config: { effort: "low" } },
+    };
+    assert.deepEqual(
+      requireToolCall(adaptive, "bedrock-converse-stream", "report").additionalModelRequestFields,
+      adaptive.additionalModelRequestFields,
+    );
+  });
+
   it("fails closed for a Bedrock payload that carries no tool specs", () => {
     assert.throws(() => requireToolCall({ modelId: "model" }, "bedrock-converse-stream", "report"), /toolConfig/);
   });

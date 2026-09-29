@@ -43,7 +43,8 @@ type ClassifierModel = {
 // endpoint must canonicalize to one of these validated logical model IDs. GPT-5.6 Luna stays listed
 // after GPT-6 Luna because many scoped registries (including every Amazon Bedrock region today) still
 // serve only the 5.6 generation; dropping it silently pushed every primary onto Haiku.
-const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "gpt-5.6-luna", "claude-haiku-4-5"] as const;
+// Gemini 3.5 Flash Lite is the last-resort primary, giving the fast tier a third vendor.
+const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "gpt-5.6-luna", "claude-haiku-4-5", "gemini-3.5-flash-lite"] as const;
 
 // OpenAI tiers that may reconcile a non-OpenAI primary, in preference order. More than one tier is
 // listed so a single rate-limited or unscoped OpenAI model cannot leave the safety latch unresolved.
@@ -59,6 +60,7 @@ const GOOGLE_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
   "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-2.5-pro",
+  "gemini-3.5-flash-lite",
 ];
 
 // The key is the primary tier's canonical vendor; each logical secondary tier deliberately belongs

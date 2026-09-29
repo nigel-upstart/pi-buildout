@@ -35,6 +35,19 @@ export function requireToolCall(payload: unknown, api: string, toolName: string)
         throw new Error("Cannot require a tool call on a Bedrock payload without toolConfig");
       }
       next.toolConfig = { ...(toolConfig as Payload), toolChoice: { tool: { name: toolName } } };
+      // Claude rejects budget-style extended thinking (`type: "enabled"`) alongside a forced tool
+      // choice, which failed every Bedrock Haiku classifier call. Adaptive thinking is accepted, so
+      // only the budget form and its interleaved-thinking beta are removed.
+      const fields = next.additionalModelRequestFields;
+      if (fields && typeof fields === "object" && !Array.isArray(fields)) {
+        const thinking = (fields as Payload).thinking;
+        if (thinking && typeof thinking === "object" && (thinking as Payload).type === "enabled") {
+          const rest: Payload = { ...(fields as Payload) };
+          delete rest.thinking;
+          delete rest.anthropic_beta;
+          next.additionalModelRequestFields = Object.keys(rest).length > 0 ? rest : undefined;
+        }
+      }
       break;
     }
     default:
