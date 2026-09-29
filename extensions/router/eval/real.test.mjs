@@ -63,7 +63,9 @@ function model(id, provider) {
   return {
     id: bifrostId,
     name: id,
-    api: "openai-completions",
+    // GPT-6 rejects function tools combined with reasoning_effort on /v1/chat/completions, so
+    // OpenAI models use Bifrost's /v1/responses; other vendors stay on chat completions.
+    api: vendor === "openai" ? "openai-responses" : "openai-completions",
     provider,
     baseUrl: bifrostBase?.replace(/\/$/, "").endsWith("/v1")
       ? bifrostBase.replace(/\/$/, "")
@@ -412,9 +414,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
             maxRetries: 0,
             timeoutMs: planning ? 180_000 : 90_000,
             reasoning: treatment.effort,
-            ...(planning
-              ? { onPayload: (payload) => requireToolCall(payload, "openai-completions", planTool.name) }
-              : {}),
+            ...(planning ? { onPayload: (payload) => requireToolCall(payload, workerModel.api, planTool.name) } : {}),
           },
         ),
       );
@@ -509,7 +509,7 @@ describe("real Bifrost routing evaluation", { skip: !enabled }, () => {
             maxTokens: 1_024,
             maxRetries: 0,
             timeoutMs: 60_000,
-            onPayload: (payload) => requireToolCall(payload, "openai-completions", judgeTool.name),
+            onPayload: (payload) => requireToolCall(payload, judgeModel.api, judgeTool.name),
           }),
         );
         judgeResponses.push(...transportResponses);
