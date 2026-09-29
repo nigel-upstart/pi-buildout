@@ -44,7 +44,10 @@ function rejectedStructure(entry: Exclude<ParseEntry, string>): string {
   return `shell operator ${entry.op} is not allowed in a read-only command`;
 }
 
-export function tokenizeShellCommand(command: string): ShellTokenization {
+type ShellLex = { ok: true; entries: ParseEntry[] } | { ok: false; reason: string };
+
+/** Raw-string rejections shared by single-command and compound-command classification. */
+function lexShellCommand(command: string): ShellLex {
   const normalized = command.trim();
   if (normalized.length === 0) return { ok: false, reason: "empty command" };
   if (hasControlCharacter(normalized)) {
@@ -58,12 +61,17 @@ export function tokenizeShellCommand(command: string): ShellTokenization {
   } catch {
     return { ok: false, reason: "malformed quoting" };
   }
-  let entries: ParseEntry[];
   try {
-    entries = parse(normalized);
+    return { ok: true, entries: parse(normalized) };
   } catch {
     return { ok: false, reason: "unparsable command" };
   }
+}
+
+export function tokenizeShellCommand(command: string): ShellTokenization {
+  const lexed = lexShellCommand(command);
+  if (!lexed.ok) return lexed;
+  const entries = lexed.entries;
   const argv: string[] = [];
   for (const entry of entries) {
     if (typeof entry === "string") {
@@ -81,6 +89,70 @@ export function tokenizeShellCommand(command: string): ShellTokenization {
   return { ok: true, argv };
 }
 
+type ShellSegmentation = { ok: true; segments: readonly (readonly string[])[] } | { ok: false; reason: string };
+
+/**
+ * Operators that only sequence or connect commands. Each side is still classified on its own, so
+ * `a && b` is exactly as safe as running `a` and then `b`, and `a | b` feeds `b` data it cannot
+ * execute unless `b` itself is an executing binary, which the per-command allowlist refuses.
+ */
+const SEQUENCING_OPERATORS = new Set(["&&", "||", ";", "|"]);
+const SILENCED_DESCRIPTOR = /^[12]$/;
+
+/**
+ * Split a compound command into simple commands at sequencing operators.
+ *
+ * Everything `tokenizeShellCommand` rejects on the raw string is still rejected. The only
+ * redirections accepted are the ones that cannot create or change a file: output discarded to
+ * `/dev/null`, and one standard descriptor duplicated onto the other (`2>&1`). Background `&`,
+ * `|&`, subshells, process substitution, input redirection, and every other file redirection stay
+ * refused.
+ */
+function segmentShellCommand(command: string): ShellSegmentation {
+  const lexed = lexShellCommand(command);
+  if (!lexed.ok) return lexed;
+  const entries = lexed.entries;
+  const segments: string[][] = [];
+  let current: string[] = [];
+  // A harmless redirection consumes its target word, which is then skipped.
+  let skipThrough = 0;
+  for (const [index, entry] of entries.entries()) {
+    if (index < skipThrough) continue;
+    if (typeof entry === "string") {
+      current.push(entry);
+      continue;
+    }
+    if ("op" in entry && entry.op === "glob") {
+      current.push(entry.pattern);
+      continue;
+    }
+    if ("op" in entry && SEQUENCING_OPERATORS.has(entry.op)) {
+      if (current.length === 0) return { ok: false, reason: `shell operator ${entry.op} has no command before it` };
+      segments.push(current);
+      current = [];
+      continue;
+    }
+    if ("op" in entry && (entry.op === ">" || entry.op === ">>" || entry.op === ">&")) {
+      const target = entries[index + 1];
+      const harmless =
+        typeof target === "string" && (entry.op === ">&" ? SILENCED_DESCRIPTOR.test(target) : target === "/dev/null");
+      if (!harmless) return { ok: false, reason: rejectedStructure(entry) };
+      // `2>/dev/null` lexes as the word `2` followed by the redirection, but so does
+      // `git branch 2 > /dev/null`, where `2` is a branch name: the lexer drops the whitespace that
+      // tells them apart. The digit therefore stays an argument, so a descriptor can only make a
+      // command look less read-only, never more.
+      skipThrough = index + 2;
+      continue;
+    }
+    return { ok: false, reason: rejectedStructure(entry) };
+  }
+  if (current.length === 0) {
+    return { ok: false, reason: segments.length === 0 ? "no command word" : "command ends with a shell operator" };
+  }
+  segments.push(current);
+  return { ok: true, segments };
+}
+
 /**
  * What a single read-only binary is allowed to be told to do.
  *
@@ -94,6 +166,13 @@ type BinaryPolicy = {
   readonly subcommands?: readonly string[];
   /** The only options permitted before a subcommand, because they reduce rather than add side effects. */
   readonly preSubcommandFlags?: readonly string[];
+  /** Pre-subcommand options whose value is the following argument. */
+  readonly preSubcommandValueFlags?: readonly string[];
+  /**
+   * Subcommands that are read-only only in some forms. The rule receives every argument after the
+   * subcommand and replaces the shared option check for that subcommand.
+   */
+  readonly subcommandRules?: Readonly<Record<string, (args: readonly string[]) => string | undefined>>;
   /** Permitted `--long` options, without any `=value` suffix. */
   readonly longFlags: readonly string[];
   /** Permitted single-dash words, such as `find`'s predicates. */
@@ -108,14 +187,93 @@ type BinaryPolicy = {
   readonly numericShorthand?: boolean;
 };
 
-// Deliberately excluded from `git`: every top-level option (`-c`, `-C`, `--exec-path`, `--paginate`),
-// `--output`/`-o` (writes a file), and `--ext-diff`/`--textconv` (run external programs).
+// `git branch` lists, creates, renames, and deletes through the same entry point. Only listing
+// options are permitted, and a branch-name operand only where git treats it as a list pattern or a
+// commit filter; `git branch name` with no such option creates a branch and is refused.
+const GIT_BRANCH_LIST_LONG_FLAGS = [
+  "--all",
+  "--color",
+  "--column",
+  "--contains",
+  "--format",
+  "--ignore-case",
+  "--list",
+  "--merged",
+  "--no-color",
+  "--no-column",
+  "--no-contains",
+  "--no-merged",
+  "--points-at",
+  "--remotes",
+  "--show-current",
+  "--sort",
+  "--verbose",
+];
+const GIT_BRANCH_OPERAND_FLAGS = ["--list", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"];
+
+function gitBranchRejection(args: readonly string[]): string | undefined {
+  let operandsAllowed = false;
+  let operandSeen = false;
+  for (const token of args) {
+    if (token === "--") return "git branch -- is not a read-only listing form";
+    if (token.startsWith("--")) {
+      const flag = optionName(token).flag;
+      if (!GIT_BRANCH_LIST_LONG_FLAGS.includes(flag)) return `git branch ${flag} is not a read-only listing option`;
+      if (GIT_BRANCH_OPERAND_FLAGS.includes(flag)) operandsAllowed = true;
+      continue;
+    }
+    if (token.startsWith("-") && token !== "-") {
+      for (const letter of token.slice(1)) {
+        if (!"arvli".includes(letter)) return `git branch -${letter} is not a read-only listing option`;
+        if (letter === "l") operandsAllowed = true;
+      }
+      continue;
+    }
+    operandSeen = true;
+  }
+  return operandSeen && !operandsAllowed
+    ? "git branch with a branch name creates a branch; use --list or -l to filter"
+    : undefined;
+}
+
+function gitStashRejection(args: readonly string[]): string | undefined {
+  const [action, ...rest] = args;
+  if (action !== "list" && action !== "show") return `git stash ${action ?? ""} is not a read-only stash form`.trim();
+  return optionRejection(rest, GIT_POLICY);
+}
+
+function gitRemoteRejection(args: readonly string[]): string | undefined {
+  if (args.length === 0) return undefined;
+  if (args.every((token) => token === "-v" || token === "--verbose")) return undefined;
+  if (args[0] === "get-url" && args.slice(1).every((token) => !token.startsWith("-") || token === "--all")) {
+    return undefined;
+  }
+  return "git remote is read-only only as a listing or get-url";
+}
+
+// Deliberately excluded from `git`: every other top-level option (`-c`, `--exec-path`,
+// `--paginate`), `--output`/`-o` (writes a file), and `--ext-diff`/`--textconv` (run external
+// programs). `-C <dir>` is permitted because it is exactly `cd <dir> && git ...`.
 const GIT_POLICY: BinaryPolicy = {
-  subcommands: ["diff", "status", "show", "log", "rev-parse", "ls-files"],
+  subcommands: [
+    "diff",
+    "status",
+    "show",
+    "log",
+    "rev-parse",
+    "ls-files",
+    "merge-base",
+    "rev-list",
+    "branch",
+    "stash",
+    "remote",
+  ],
   // `git status` and `git diff` may refresh the index and start a pager or fsmonitor. Neither changes
   // tracked content, so they stay permitted, but the two options that suppress those effects are
   // allowed in the one position git accepts them.
   preSubcommandFlags: ["--no-optional-locks", "--no-pager"],
+  preSubcommandValueFlags: ["-C"],
+  subcommandRules: { branch: gitBranchRejection, stash: gitStashRejection, remote: gitRemoteRejection },
   longFlags: [
     "--abbrev",
     "--abbrev-commit",
@@ -128,6 +286,7 @@ const GIT_POLICY: BinaryPolicy = {
     "--cached",
     "--check",
     "--color",
+    "--count",
     "--date",
     "--decorate",
     "--deleted",
@@ -456,23 +615,50 @@ function consumesFollowingValue(token: string, policy: BinaryPolicy): boolean {
  * cannot write through them.
  */
 export function readOnlyShellCommandRejection(command: string): string | undefined {
-  const tokenized = tokenizeShellCommand(command);
-  if (!tokenized.ok) return tokenized.reason;
-  const [binary, ...rest] = tokenized.argv;
+  const segmented = segmentShellCommand(command);
+  if (!segmented.ok) return segmented.reason;
+  for (const argv of segmented.segments) {
+    const rejection = simpleCommandRejection(argv);
+    if (rejection) return rejection;
+  }
+  return undefined;
+}
+
+/** `cd` only changes where later segments of the same command run, which they are classified for. */
+function cdRejection(args: readonly string[]): string | undefined {
+  const option = args.find((token) => token.startsWith("-") && token !== "-");
+  if (option) return `cd option ${option} is not permitted`;
+  if (args.length > 1) return "cd accepts a single directory";
+  return undefined;
+}
+
+function simpleCommandRejection(argv: readonly string[]): string | undefined {
+  const [binary, ...rest] = argv;
   if (binary === undefined) return "no command word";
+  if (binary === "cd") return cdRejection(rest);
   // `FOO=bar cmd` would run cmd with a modified environment, so the assignment is never a binary.
   const policy = READ_ONLY_BINARIES[binary];
   if (!policy) return `${binary} is not a read-only command`;
   let args: readonly string[] = rest;
   if (policy.subcommands) {
-    while (policy.preSubcommandFlags?.includes(args[0] ?? "")) args = args.slice(1);
+    for (;;) {
+      if (policy.preSubcommandFlags?.includes(args[0] ?? "")) args = args.slice(1);
+      else if (policy.preSubcommandValueFlags?.includes(args[0] ?? "") && args.length > 1) args = args.slice(2);
+      else break;
+    }
     const subcommand = args[0];
     if (subcommand === undefined) return `${binary} requires a read-only subcommand`;
     if (!policy.subcommands.includes(subcommand)) {
       return `${binary} ${subcommand} is not a read-only subcommand`;
     }
     args = args.slice(1);
+    const rule = policy.subcommandRules?.[subcommand];
+    if (rule) return rule(args);
   }
+  return optionRejection(args, policy);
+}
+
+function optionRejection(args: readonly string[], policy: BinaryPolicy): string | undefined {
   let expectValue = false;
   let endOfOptions = false;
   for (const token of args) {

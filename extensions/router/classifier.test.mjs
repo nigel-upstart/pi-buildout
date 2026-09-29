@@ -59,7 +59,16 @@ describe("classifier request", () => {
     assert.equal(request.toolName, "report_task_features");
     assert.match(request.systemPrompt, /Never return or recommend a model/);
     assert.match(request.systemPrompt, /pull-request stack is coding_implementation/);
-    assert.match(request.systemPrompt, /unattended or indefinite loop.*broad external-impact/);
+    assert.match(request.systemPrompt, /unattended or indefinite loop that repeatedly executes external_side_effect/);
+    assert.match(
+      request.systemPrompt,
+      /actions the agent itself is asked to execute, not by what a later human review, merge/,
+    );
+    assert.match(request.systemPrompt, /opening a pull request is never external_side_effect/);
+    assert.match(
+      request.systemPrompt,
+      /hard resets or checkouts that discard uncommitted or unpushed work are destructive/,
+    );
     assert.match(request.userPrompt, /<untrusted_session_synopsis>/);
     assert.match(request.userPrompt, /<immediate_user_request>\nImplement it/);
     const injected = buildClassifierRequest(

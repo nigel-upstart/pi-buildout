@@ -167,9 +167,12 @@ describe("isReadOnlyShellCommand", () => {
     assert.match(readOnlyShellCommandRejection("git commit -m x"), /git commit is not a read-only subcommand/);
     assert.match(readOnlyShellCommandRejection("git checkout main"), /git checkout is not a read-only subcommand/);
     assert.match(readOnlyShellCommandRejection("git"), /git requires a read-only subcommand/);
-    // Top-level git options run before the subcommand is known, so none of them are permitted.
+    // Top-level git options run before the subcommand is known, so only -C (which is exactly `cd`) is
+    // permitted among them.
     assert.match(readOnlyShellCommandRejection("git -c core.pager=/tmp/x log"), /not a read-only subcommand/);
-    assert.match(readOnlyShellCommandRejection("git -C /tmp diff"), /not a read-only subcommand/);
+    assert.equal(readOnlyShellCommandRejection("git -C /tmp diff"), undefined);
+    assert.match(readOnlyShellCommandRejection("git -C /tmp commit -m x"), /git commit is not a read-only subcommand/);
+    assert.match(readOnlyShellCommandRejection("git -C"), /-C is not a read-only subcommand/);
   });
 
   it("treats an option value as data rather than as another option", () => {
@@ -187,6 +190,107 @@ describe("isReadOnlyShellCommand", () => {
   it("inherits every tokenizer rejection", () => {
     for (const command of ["", "git diff && rm -rf /", "git diff | tee out", "ls\nrm -rf /", "git diff $(evil)"]) {
       assert.equal(isReadOnlyShellCommand(command), false, command);
+    }
+  });
+});
+
+describe("compound read-only commands", () => {
+  it("permits sequencing and pipes when every segment is read-only", () => {
+    for (const command of [
+      // Refused verbatim in session 01a0ebc8, which is what made the model conclude bash was unavailable.
+      "cd ~/repos/teamupstart/Github_Org_Settings_TF && git status && git branch -vv | head -20 && git log --oneline -5 && git diff --name-only --diff-filter=U; git stash list | head",
+      "git status || git log -1",
+      "rg -n pattern src | wc -l",
+      "git log --oneline | grep fix | head -5",
+      "cd extensions/router; ls -la",
+      "cd",
+      "cd -",
+      "ls missing 2>/dev/null || ls",
+      "git log 2>&1 | head",
+      "find . -name '*.tf' > /dev/null",
+      "git -C ~/repos/x log -1 && git -C ~/repos/y status --porcelain",
+    ]) {
+      assert.equal(readOnlyShellCommandRejection(command), undefined, command);
+    }
+  });
+
+  it("refuses a compound command when any segment is not read-only", () => {
+    const cases = [
+      ["ls && rm -rf x", /rm is not a read-only command/],
+      ["git status; git checkout main", /git checkout is not a read-only subcommand/],
+      ["git log | sh", /sh is not a read-only command/],
+      ["find . -print0 | xargs rm", /xargs is not a read-only command/],
+      ["cd x && git branch feature", /creates a branch/],
+      ["cd -P x && ls", /cd option -P/],
+      ["cd a b", /single directory/],
+      ["git status &&", /ends with a shell operator/],
+      ["&& ls", /no command before it/],
+      ["ls & rm x", /shell operator &/],
+      ["ls |& cat", /shell operator \|&/],
+      ["(ls)", /shell operator \(/],
+      ["ls <(rm x)", /shell operator <\(/],
+      ["wc -l < file", /shell operator </],
+    ];
+    for (const [command, pattern] of cases) {
+      assert.match(readOnlyShellCommandRejection(command) ?? "", pattern, command);
+    }
+  });
+
+  it("accepts only redirections that cannot create or change a file", () => {
+    for (const command of ["ls > out", "ls >> out", "git log 2> err.txt", "ls >& out", "ls 2>&3", "ls >"]) {
+      assert.notEqual(readOnlyShellCommandRejection(command), undefined, command);
+    }
+  });
+
+  it("keeps a descriptor-looking digit as an argument, because the lexer cannot tell `2>` from `2 >`", () => {
+    // `git branch 1 > /dev/null` creates a branch named 1; dropping the digit as a descriptor would
+    // have classified it as the listing form.
+    assert.match(readOnlyShellCommandRejection("git branch 1 > /dev/null"), /creates a branch/);
+    assert.match(readOnlyShellCommandRejection("git branch 2 2>&1"), /creates a branch/);
+    // The same ambiguity makes an attached descriptor on `git branch` a refusal rather than a pass.
+    assert.match(readOnlyShellCommandRejection("git branch -vv 2>/dev/null"), /creates a branch/);
+    assert.equal(readOnlyShellCommandRejection("git branch --list 2>/dev/null"), undefined);
+  });
+
+  it("permits git branch, stash, and remote only in their listing forms", () => {
+    for (const command of [
+      "git branch",
+      "git branch -vv",
+      "git branch -a --no-color",
+      "git branch --show-current",
+      "git branch --list 'feat/*'",
+      "git branch -l 'feat/*'",
+      "git branch --contains HEAD~3",
+      "git branch --format='%(refname:short)' --sort=-committerdate",
+      "git stash list",
+      "git stash show -p",
+      "git remote",
+      "git remote -v",
+      "git remote get-url origin",
+      "git merge-base HEAD origin/main",
+      "git rev-list --count HEAD",
+    ]) {
+      assert.equal(readOnlyShellCommandRejection(command), undefined, command);
+    }
+    for (const command of [
+      "git branch feature",
+      "git branch -d feature",
+      "git branch -D feature",
+      "git branch -m old new",
+      "git branch -f main HEAD~1",
+      "git branch --set-upstream-to=origin/main",
+      "git branch --unset-upstream",
+      "git branch --edit-description",
+      "git branch -- feature",
+      "git stash",
+      "git stash pop",
+      "git stash drop",
+      "git stash push -m x",
+      "git remote add evil https://example.invalid",
+      "git remote set-url origin https://example.invalid",
+      "git remote remove origin",
+    ]) {
+      assert.notEqual(readOnlyShellCommandRejection(command), undefined, command);
     }
   });
 });

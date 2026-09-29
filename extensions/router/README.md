@@ -60,8 +60,14 @@ Safety is an explicit persisted lease lifecycle, not an inference from archetype
   model/effort override cannot authorize execution.
 - Other high-risk reversible non-code work consults a read-only advisor before acting and receives a completion review
   afterward. Advice is explicitly not authorization; cautionary advice is carried back to the tracked worker.
-- Unattended or indefinite loops that repeatedly create external effects across repositories or services are treated as
-  broad-impact authorization work even when each individual effect is reversible or the classifier reports medium risk.
+- Unattended or indefinite loops that repeatedly execute external or destructive actions (deploys, applies, publishes,
+  outbound messages) across repositories or services are treated as high-risk authorization work.
+- The classifier rates `actionMode` and `risk` by what the agent itself is asked to execute, not by what a later human
+  review, merge, `terraform apply`, or deploy does with the output. Local edits, commits, non-force pushes to a
+  non-default branch, and opening, updating, or marking pull requests ready are `reversible_mutation` at any scale, so
+  editing infrastructure-as-code or organization-settings code through a pull request is ordinary coding work. Running
+  `terraform apply`, deploys, publishes, auto-deploying merges, or live `kubectl`/cloud mutations is external or
+  destructive, as are force-pushes or rewrites of shared branches and hard resets that discard unpushed work.
 - Ordinary and non-destructive work is unchanged.
 
 Manual model/effort selection preserves that explicit selection, not the semantic identity of the previous task. A
@@ -234,6 +240,17 @@ Run `npm run test:eval:real`. The harness prefers already-exported `BIFROST_BASE
 fills missing values from the repository-local, gitignored `.env`. Start from `.env.example`; ordinary `npm test`
 explicitly skips real-provider calls so local credentials do not make quality checks costly or non-deterministic.
 
+## Safety-gate calibration evaluation
+
+Run `npm run eval:safety` to classify every prompt in `eval/corpus/safety.json` with the live classifier path
+(`classifyTaskWithPi` through Pi's scoped model registry and stored credentials, then `deriveSafetyPolicy`). Each case
+asserts whether the irreversible-action preflight fires and which `actionMode`, `risk`, and `workflowType` values are
+acceptable. Every case runs `SAFETY_EVAL_RUNS` times (default 3); `SAFETY_EVAL_CASES` selects case IDs, and
+`SAFETY_EVAL_OUT` writes per-run results as JSON. The run exits nonzero when any run has the wrong gate, fails closed,
+or errors; `actionMode`, `risk`, and `workflowType` mismatches are reported but do not fail the run. Classifier tiers
+fall through on endpoint failure exactly as live routing does, so check the reported `classifiers:` line: an expired
+credential silently moves the evaluation to a different primary model.
+
 ## Model scope and endpoint health
 
 The router chooses only from models the operator has scoped in through `enabledModels`, the same set pi's model selector
@@ -342,10 +359,14 @@ logical model and effort still precedes every different-model fallback.
   preflight into authorization; on a safety-managed lease they invalidate authorization and keep mutation blocked until
   active routing is safely restored.
 - Preflight, advisory-pending, and generated-review phases use a deterministic read-only tool allowlist. Unknown tools
-  and shell composition are blocked. A `bash` command is lexed into argv (`core/shell.ts`) and then checked against
-  per-binary allowlists of subcommands and options, so a permitted binary cannot be handed a writing option, a second
-  command, substitution, or a malformed quote. Authorized execution additionally rejects mutating tool names absent from
-  the reviewed plan.
+  are blocked. A `bash` command is lexed (`core/shell.ts`), split at `&&`, `||`, `;`, and `|`, and every resulting
+  command is checked against per-binary allowlists of subcommands and options, so a permitted binary cannot be handed a
+  writing option, an unlisted second command, substitution, or a malformed quote. `cd <dir>` and `git -C <dir>` are
+  permitted; `git branch`, `git stash`, and `git remote` only in their listing forms. The only accepted redirections
+  discard output to `/dev/null` or join `2>&1`; background `&`, subshells, process substitution, and file redirection
+  stay refused. A refusal names the rejected part of the command, and turning the router off tells the model that the
+  lifted phase no longer restricts tools. Authorized execution additionally rejects mutating tool names absent from the
+  reviewed plan.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
 - Executing work across a dependent pull-request stack is distinct from planning one. The stack route is restricted to
   exact current-generation IDs (`gpt-6-sol/high` and `claude-opus-5-5/high`, plus their same-model availability
