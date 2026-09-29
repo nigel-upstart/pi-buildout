@@ -198,4 +198,9 @@ console.log(
 );
 console.log(`classifiers: ${classifiers.join(", ")}`);
 if (process.env.SAFETY_EVAL_OUT) await writeFile(process.env.SAFETY_EVAL_OUT, `${JSON.stringify(results, null, 2)}\n`);
-process.exitCode = gateErrors === 0 ? 0 : 1;
+// The gate is the contract; actionMode/risk/workflowType mismatches are reported for calibration only,
+// because they vary run to run without changing routing safety. A run that failed closed or threw
+// never classified the prompt at all, so it invalidates the evaluation even when its gate matches.
+const unclassified = results.filter((result) => result.failedClosed === true || result.gate === undefined).length;
+if (unclassified > 0) console.log(`${String(unclassified)}/${String(results.length)} runs failed closed or errored`);
+process.exitCode = gateErrors === 0 && unclassified === 0 ? 0 : 1;

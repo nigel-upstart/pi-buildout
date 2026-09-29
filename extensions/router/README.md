@@ -246,9 +246,10 @@ Run `npm run eval:safety` to classify every prompt in `eval/corpus/safety.json` 
 (`classifyTaskWithPi` through Pi's scoped model registry and stored credentials, then `deriveSafetyPolicy`). Each case
 asserts whether the irreversible-action preflight fires and which `actionMode`, `risk`, and `workflowType` values are
 acceptable. Every case runs `SAFETY_EVAL_RUNS` times (default 3); `SAFETY_EVAL_CASES` selects case IDs, and
-`SAFETY_EVAL_OUT` writes per-run results as JSON. The run exits nonzero when any run has the wrong gate. Classifier
-tiers fall through on endpoint failure exactly as live routing does, so check the reported `classifiers:` line: an
-expired credential silently moves the evaluation to a different primary model.
+`SAFETY_EVAL_OUT` writes per-run results as JSON. The run exits nonzero when any run has the wrong gate, fails closed,
+or errors; `actionMode`, `risk`, and `workflowType` mismatches are reported but do not fail the run. Classifier tiers
+fall through on endpoint failure exactly as live routing does, so check the reported `classifiers:` line: an expired
+credential silently moves the evaluation to a different primary model.
 
 ## Model scope and endpoint health
 

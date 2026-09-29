@@ -212,6 +212,10 @@ export function restrictedPhaseLiftedByOff(lifecycle: LeaseLifecycle | undefined
   return phase === "preflight" || phase === "review" || phase === "advisory_pending" ? phase : undefined;
 }
 
+export function routerReenabledNotice(phase: RestrictedPhase): string {
+  return `The operator turned the model router back on. The ${phase} safety lifecycle restricts tools again, superseding the earlier router-off notice; read-only inspection still works.`;
+}
+
 export function routerOffNotice(phase: RestrictedPhase): string {
   return `The operator turned the model router off. The ${phase} safety lifecycle no longer restricts tools, and submit_action_plan and submit_safety_review are unavailable. Tool calls refused earlier by that lifecycle can be retried; the user's own instructions and approvals still apply.`;
 }
@@ -514,6 +518,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   // Off also hides the always-registered planning validator. Remembering that the router hid it lets
   // re-enabling restore the tool without overriding an operator who removed it deliberately.
   let planningValidatorHiddenWhileOff = false;
+  // The restricted phase the model was last told `/route off` lifted, until re-enabling corrects it.
+  let offNoticePhase: RestrictedPhase | undefined;
   let agentRunPhase: AgentRunPhase = "before_start";
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
@@ -3243,6 +3249,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         }
         const liftedPhase =
           command === "off" && state.mode !== "off" ? restrictedPhaseLiftedByOff(state.active?.lifecycle) : undefined;
+        // Re-enabling restores tool gating for the persisted lifecycle, so an earlier off notice is
+        // now wrong whether or not the model has seen it yet. Queue the correction behind it.
+        const restoredPhase =
+          command !== "off" && state.mode === "off" && offNoticePhase
+            ? restrictedPhaseLiftedByOff(state.active?.lifecycle)
+            : undefined;
+        if (command !== "off" && state.mode === "off") offNoticePhase = undefined;
+        if (restoredPhase) {
+          pi.sendMessage(
+            {
+              customType: CONTEXT_MESSAGE,
+              content: routerReenabledNotice(restoredPhase),
+              display: false,
+              details: { reconciliation: "router_reenabled", restoredPhase },
+            },
+            { deliverAs: agentRunPhase === "active" ? "steer" : "nextTurn" },
+          );
+        }
         state = {
           ...state,
           mode: command,
@@ -3280,6 +3304,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
               },
               { deliverAs: agentRunPhase === "active" ? "steer" : "nextTurn" },
             );
+            offNoticePhase = liftedPhase;
           }
         }
         // Off hides every router-only tool; re-enabling restores the planning validator it hid. Phase

@@ -27,6 +27,7 @@ import routerExtension, {
   resumeCompletedLifecycle,
   routeChoicesForNewLease,
   routerOffNotice,
+  routerReenabledNotice,
   safetyToolBlockReason,
   stageDeadlineDescription,
 } from "./index.ts";
@@ -679,6 +680,7 @@ describe("router-off safety notice", () => {
       assert.equal(restrictedPhaseLiftedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), undefined);
     }
     assert.equal(restrictedPhaseLiftedByOff(undefined), undefined);
+    assert.match(routerReenabledNotice("preflight"), /preflight safety lifecycle restricts tools again/);
   });
 });
 
@@ -1114,6 +1116,9 @@ describe("routerExtension", () => {
     assert.deepEqual(selectedModels, []);
 
     await commands.get("route").handler("active", ctx);
+    assert.equal(sentMessages.length, 2, "re-enabling must correct the earlier off notice");
+    assert.equal(sentMessages[1].message.details.restoredPhase, "preflight");
+    assert.match(sentMessages[1].message.content, /preflight safety lifecycle restricts tools again/);
     await hooks.get("input")({ text: "Queue a route, then disable it", source: "interactive" }, ctx);
     await commands.get("route").handler("off", ctx);
     const entriesAfterPendingOff = appended.length;
@@ -1233,7 +1238,14 @@ describe("routerExtension", () => {
           sentMessages.map(({ message, options }) => [message.details.liftedPhase, options.deliverAs]),
           [["preflight", "nextTurn"]],
         );
-        if (reenable) await commands.get("route").handler(reenable, ctx);
+        if (reenable) {
+          await commands.get("route").handler(reenable, ctx);
+          assert.deepEqual(
+            sentMessages.map(({ message }) => message.details.reconciliation),
+            ["router_off", "router_reenabled"],
+            `${reenable} must supersede the off notice`,
+          );
+        }
         const entriesAfterOff = appended.length;
         const telemetryAfterOff = telemetryEvents.length;
         classifierResult.resolve(classificationResult(1, { taskContinuity: "clear_continuation" }));
