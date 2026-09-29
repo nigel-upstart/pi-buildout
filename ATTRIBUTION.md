@@ -121,6 +121,21 @@ prioritizes first-party endpoints when list rates match, remains separate from a
 documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and commitment pricing
 were intentionally not adopted.
 
+### Amazon Bedrock Converse tool choice and extended thinking
+
+- Sources:
+  [Bedrock Converse `ToolChoice`](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html)
+  and
+  [Claude extended thinking](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html)
+- Revision reviewed: live documentation on 2026-08-11, plus live Converse probes against Bedrock models
+- License: no documentation license was identified; no source code or documentation text was copied
+
+Use: `extensions/router/core/tool-choice.ts` forces the classifier's named tool via `toolConfig.toolChoice` and, because
+Claude rejects budget-style extended thinking alongside a forced tool choice, drops the `thinking` budget form and the
+interleaved-thinking beta from `additionalModelRequestFields`. Adaptive thinking and other request fields and betas are
+preserved. Providers other than Bedrock Converse, and models that ignore a named tool choice, were intentionally not
+adopted.
+
 ### Anthropic prompt caching
 
 - Source: [Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)

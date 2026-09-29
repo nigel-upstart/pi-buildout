@@ -49,6 +49,17 @@ describe("requireToolCall", () => {
       top_k: 5,
     });
 
+    const otherBeta = {
+      toolConfig,
+      additionalModelRequestFields: {
+        thinking: { type: "enabled" },
+        anthropic_beta: ["interleaved-thinking-2025-05-14", "context-1m-2025-08-07"],
+      },
+    };
+    assert.deepEqual(requireToolCall(otherBeta, "bedrock-converse-stream", "report").additionalModelRequestFields, {
+      anthropic_beta: ["context-1m-2025-08-07"],
+    });
+
     const adaptive = {
       toolConfig,
       additionalModelRequestFields: { thinking: { type: "adaptive" }, output_config: { effort: "low" } },

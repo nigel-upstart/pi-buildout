@@ -426,6 +426,39 @@ describe("classifier request authentication", () => {
     }
   });
 
+  it("sends the request to the base URL override resolved by the registry", async () => {
+    const faux = registerFauxProvider({
+      api: "router-classifier-baseurl-test",
+      provider: "router-classifier-baseurl-test",
+      models: [{ id: "baseurl-fixture" }],
+    });
+    const features = { ...conservativeFeatures("fixture"), confidence: 0.95, risk: "low" };
+    let seenBaseUrl;
+    faux.setResponses([
+      (_context, _options, _state, model) => {
+        seenBaseUrl = model.baseUrl;
+        return fauxAssistantMessage([fauxToolCall("report_task_features", features)]);
+      },
+    ]);
+    try {
+      const result = await classifyTaskWithPi({
+        ctx: {
+          modelRegistry: {
+            find: () => faux.getModel(),
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture", baseUrl: "https://gateway.example/v1" }),
+          },
+        },
+        registry: [snapshot("amazon-bedrock", "global.openai.gpt-5.6-luna")],
+        prompt: "Implement the change",
+        synopsis: {},
+      });
+      assert.equal(result.attempts[0]?.valid, true);
+      assert.equal(seenBaseUrl, "https://gateway.example/v1");
+    } finally {
+      faux.unregister();
+    }
+  });
+
   it("still skips an endpoint whose registry auth reports a failure", async () => {
     const result = await classifyTaskWithPi({
       ctx: {
