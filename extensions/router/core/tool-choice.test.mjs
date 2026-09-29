@@ -61,6 +61,9 @@ describe("requireToolCall", () => {
 
   it("fails closed for a Bedrock payload that carries no tool specs", () => {
     assert.throws(() => requireToolCall({ modelId: "model" }, "bedrock-converse-stream", "report"), /toolConfig/);
+    for (const toolConfig of [{}, { tools: [] }, { tools: "report" }]) {
+      assert.throws(() => requireToolCall({ toolConfig }, "bedrock-converse-stream", "report"), /toolConfig/);
+    }
   });
 
   it("fails closed for an unsupported API", () => {

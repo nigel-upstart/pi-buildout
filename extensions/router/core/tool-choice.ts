@@ -31,7 +31,13 @@ export function requireToolCall(payload: unknown, api: string, toolName: string)
       // Converse nests the forced choice beside the tool specs in `toolConfig`. Without tool specs
       // there is nothing to force, and Bedrock rejects a bare toolChoice, so fail closed instead.
       const toolConfig = next.toolConfig;
-      if (!toolConfig || typeof toolConfig !== "object" || Array.isArray(toolConfig)) {
+      if (
+        !toolConfig ||
+        typeof toolConfig !== "object" ||
+        Array.isArray(toolConfig) ||
+        !Array.isArray((toolConfig as Payload).tools) ||
+        ((toolConfig as Payload).tools as unknown[]).length === 0
+      ) {
         throw new Error("Cannot require a tool call on a Bedrock payload without toolConfig");
       }
       next.toolConfig = { ...(toolConfig as Payload), toolChoice: { tool: { name: toolName } } };
