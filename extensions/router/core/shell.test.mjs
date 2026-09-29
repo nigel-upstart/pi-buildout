@@ -242,6 +242,16 @@ describe("compound read-only commands", () => {
     }
   });
 
+  it("keeps a descriptor-looking digit as an argument, because the lexer cannot tell `2>` from `2 >`", () => {
+    // `git branch 1 > /dev/null` creates a branch named 1; dropping the digit as a descriptor would
+    // have classified it as the listing form.
+    assert.match(readOnlyShellCommandRejection("git branch 1 > /dev/null"), /creates a branch/);
+    assert.match(readOnlyShellCommandRejection("git branch 2 2>&1"), /creates a branch/);
+    // The same ambiguity makes an attached descriptor on `git branch` a refusal rather than a pass.
+    assert.match(readOnlyShellCommandRejection("git branch -vv 2>/dev/null"), /creates a branch/);
+    assert.equal(readOnlyShellCommandRejection("git branch --list 2>/dev/null"), undefined);
+  });
+
   it("permits git branch, stash, and remote only in their listing forms", () => {
     for (const command of [
       "git branch",

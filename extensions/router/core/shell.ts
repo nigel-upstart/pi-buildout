@@ -137,8 +137,10 @@ function segmentShellCommand(command: string): ShellSegmentation {
       const harmless =
         typeof target === "string" && (entry.op === ">&" ? SILENCED_DESCRIPTOR.test(target) : target === "/dev/null");
       if (!harmless) return { ok: false, reason: rejectedStructure(entry) };
-      // `2>/dev/null` lexes as the word `2` followed by the redirection; the digit is the descriptor.
-      if (SILENCED_DESCRIPTOR.test(current.at(-1) ?? "")) current.pop();
+      // `2>/dev/null` lexes as the word `2` followed by the redirection, but so does
+      // `git branch 2 > /dev/null`, where `2` is a branch name: the lexer drops the whitespace that
+      // tells them apart. The digit therefore stays an argument, so a descriptor can only make a
+      // command look less read-only, never more.
       skipThrough = index + 2;
       continue;
     }
