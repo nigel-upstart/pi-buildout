@@ -288,6 +288,7 @@ describe("profile-less vendors", () => {
   it("still leaves an unrelated regional ID vendorless", () => {
     assert.equal(canonicalVendor("amazon-bedrock", "us.meta.llama4-scout-17b-instruct-v1:0"), undefined);
     assert.equal(canonicalVendor("amazon-bedrock", "google.gemma-3-27b-it"), undefined);
+    assert.equal(canonicalVendor("some-gateway", "qwenish-widget"), undefined);
   });
 });
 

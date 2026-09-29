@@ -377,7 +377,7 @@ export function canonicalVendor(provider: string, modelId: string): ModelVendor 
   // the bare model token. Both spellings must resolve for the same reason as MiniMax above.
   if (bareId.startsWith("grok-") || bareId.startsWith("xai.grok-")) return "xai";
   if (bareId.startsWith("glm-") || bareId.startsWith("zai.glm-")) return "zai";
-  if (bareId.startsWith("qwen") || bareId.startsWith("qwen.qwen")) return "qwen";
+  if (/^qwen[\d-]/.test(bareId) || bareId.startsWith("qwen.qwen")) return "qwen";
   if (bareId.startsWith("nemotron-") || bareId.startsWith("nvidia.nemotron-")) return "nvidia";
   // Microsoft AI's MAI models, reached through GitHub Copilot as `mai-code-1.1-flash`.
   if (bareId.startsWith("mai-")) return "microsoft";
