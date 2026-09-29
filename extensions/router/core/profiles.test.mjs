@@ -238,6 +238,57 @@ describe("the scoped Kimi rungs", () => {
   });
 });
 
+describe("profile-less vendors", () => {
+  it("resolves a vendor for every reachable Grok, GLM, Qwen, and Nemotron spelling", () => {
+    // buildRegistrySnapshot drops any endpoint whose vendor is unknown, so these would otherwise be
+    // invisible to classifier tiers and diagnostics even when scoped in and reachable.
+    const cases = [
+      ["github-copilot", "grok-4.7", "xai", "grok-4.7"],
+      ["amazon-bedrock", "xai.grok-4.6", "xai", "grok-4.6"],
+      ["amazon-bedrock", "us.xai.grok-4.7", "xai", "grok-4.7"],
+      ["amazon-bedrock", "global.xai.grok-4.7", "xai", "grok-4.7"],
+      ["amazon-bedrock", "zai.glm-5", "zai", "glm-5"],
+      ["amazon-bedrock", "zai.glm-4.7-flash", "zai", "glm-4.7-flash"],
+      ["amazon-bedrock", "qwen.qwen3-vl-235b-a22b", "qwen", "qwen3-vl-235b-a22b"],
+      ["amazon-bedrock", "qwen.qwen3-coder-480b-a35b-v1:0", "qwen", "qwen3-coder-480b-a35b"],
+      ["amazon-bedrock", "nvidia.nemotron-super-3-120b", "nvidia", "nemotron-super-3-120b"],
+      ["amazon-bedrock", "nvidia.nemotron-nano-3-30b", "nvidia", "nemotron-nano-3-30b"],
+      ["amazon-bedrock", "us.moonshotai.kimi-k3", "moonshot", "kimi-k3"],
+    ];
+    for (const [provider, modelId, vendor, logical] of cases) {
+      assert.equal(canonicalVendor(provider, modelId), vendor, modelId);
+      assert.equal(canonicalModelId(modelId), logical, modelId);
+    }
+  });
+
+  it("grants no prompt profile or route to a vendor it merely recognizes", () => {
+    const models = [
+      ["xai", "grok-4.7"],
+      ["zai", "glm-5"],
+      ["qwen", "qwen3-vl-235b-a22b"],
+      ["nvidia", "nemotron-super-3-120b"],
+    ];
+    for (const [vendor, modelId] of models) {
+      assert.ok(MODEL_VENDORS.includes(vendor), vendor);
+      for (const archetype of ARCHETYPES) {
+        for (const effort of EFFORT_LEVELS) {
+          assert.equal(findPromptProfile(vendor, modelId, archetype, effort), undefined, `${vendor}/${modelId}`);
+        }
+      }
+    }
+    for (const policy of Object.values(BOOTSTRAP_ROUTE_POLICIES)) {
+      for (const ref of [...policy.primary, ...policy.fallback]) {
+        assert.ok(!["xai", "zai", "qwen", "nvidia"].includes(ref.vendor), ref.logicalModelId);
+      }
+    }
+  });
+
+  it("still leaves an unrelated regional ID vendorless", () => {
+    assert.equal(canonicalVendor("amazon-bedrock", "us.meta.llama4-scout-17b-instruct-v1:0"), undefined);
+    assert.equal(canonicalVendor("amazon-bedrock", "google.gemma-3-27b-it"), undefined);
+  });
+});
+
 describe("the scoped MiniMax rung", () => {
   it("resolves a vendor for every reachable MiniMax spelling", () => {
     // buildRegistrySnapshot drops any endpoint whose vendor is unknown, and a dropped endpoint is

@@ -16,9 +16,22 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
  * Adding a vendor here is therefore safe on its own, and grants nothing: a vendor with no prompt
  * profile and no policy candidate remains unroutable, which is the intended default. `minimax` is the
  * first entry admitted on that basis — it carries a bounded prompt profile but no reviewer ladder, no
- * secondary-classifier tier and, until policy names one of its models, no route.
+ * secondary-classifier tier and, until policy names one of its models, no route. `xai`, `zai`, `qwen`
+ * and `nvidia` are admitted on the same basis with no profile at all: recognizing them only lets their
+ * scoped endpoints enter the registry snapshot instead of being silently dropped from it, so that
+ * classifier tiers, diagnostics, and any future profile can see them. They still receive no route.
  */
-export const MODEL_VENDORS = ["openai", "anthropic", "google", "minimax", "moonshot"] as const;
+export const MODEL_VENDORS = [
+  "openai",
+  "anthropic",
+  "google",
+  "minimax",
+  "moonshot",
+  "xai",
+  "zai",
+  "qwen",
+  "nvidia",
+] as const;
 export type ModelVendor = (typeof MODEL_VENDORS)[number];
 
 export type PromptProfile = {
