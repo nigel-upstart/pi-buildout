@@ -23,8 +23,10 @@ import routerExtension, {
   activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
   deterministicCheckCommand,
+  restrictedPhaseLiftedByOff,
   resumeCompletedLifecycle,
   routeChoicesForNewLease,
+  routerOffNotice,
   safetyToolBlockReason,
   stageDeadlineDescription,
 } from "./index.ts";
@@ -667,6 +669,19 @@ describe("resumeCompletedLifecycle", () => {
   });
 });
 
+describe("router-off safety notice", () => {
+  it("names only the tool-restricting phases that off lifts", () => {
+    for (const phase of ["preflight", "review", "advisory_pending"]) {
+      assert.equal(restrictedPhaseLiftedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), phase);
+      assert.ok(routerOffNotice(phase).includes(`${phase} safety lifecycle no longer restricts tools`), phase);
+    }
+    for (const phase of ["ordinary", "building", "ready_after_advisory", "authorized_execution", "completed"]) {
+      assert.equal(restrictedPhaseLiftedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), undefined);
+    }
+    assert.equal(restrictedPhaseLiftedByOff(undefined), undefined);
+  });
+});
+
 describe("lease-scoped tool exposure", () => {
   it("exposes each safety validator only in the lifecycle phase that can accept it", () => {
     const ordinaryTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
@@ -1009,6 +1024,7 @@ describe("routerExtension", () => {
     const notifications = [];
     let classifications = 0;
     let activeTools = ["read", "bash", "submit_implementation_plan", "submit_action_plan"];
+    const sentMessages = [];
     const active = {
       ...adapterLease(),
       lifecycle: {
@@ -1034,6 +1050,7 @@ describe("routerExtension", () => {
       setActiveTools: (tools) => {
         activeTools = tools;
       },
+      sendMessage: (message, options) => sentMessages.push({ message, options }),
       getThinkingLevel: () => "high",
       setThinkingLevel: (effort) => selectedEfforts.push(effort),
       setModel: async (model) => {
@@ -1065,6 +1082,12 @@ describe("routerExtension", () => {
 
     await hooks.get("session_start")({ reason: "reload" }, ctx);
     await commands.get("route").handler("off", ctx);
+    assert.equal(sentMessages.length, 1, "off must tell the model the preflight restriction is lifted");
+    assert.equal(sentMessages[0].options.deliverAs, "nextTurn");
+    assert.equal(sentMessages[0].message.display, false);
+    assert.match(sentMessages[0].message.content, /preflight safety lifecycle no longer restricts tools/);
+    await commands.get("route").handler("off", ctx);
+    assert.equal(sentMessages.length, 1, "a repeated off must not repeat the notice");
     const entriesAfterOff = appended.length;
     const telemetryAfterOff = telemetryEvents.length;
 
@@ -1136,6 +1159,7 @@ describe("routerExtension", () => {
         const classifierStarted = deferred();
         const classifierResult = deferred();
         let activeTools = ["read", "bash", "submit_implementation_plan"];
+        const sentMessages = [];
         const active = {
           ...adapterLease(),
           lifecycle: {
@@ -1162,6 +1186,7 @@ describe("routerExtension", () => {
           setActiveTools: (tools) => {
             activeTools = tools;
           },
+          sendMessage: (message, options) => sentMessages.push({ message, options }),
           getThinkingLevel: () => "low",
           setThinkingLevel: (effort) => selectedEfforts.push(effort),
           setModel: async (model) => {
@@ -1203,6 +1228,11 @@ describe("routerExtension", () => {
         const start = hooks.get("before_agent_start")({ prompt, systemPrompt: "base", images: [] }, ctx);
         await classifierStarted.promise;
         await commands.get("route").handler("off", ctx);
+        // The in-flight hook has not started the agent run, so the notice waits for the next turn.
+        assert.deepEqual(
+          sentMessages.map(({ message, options }) => [message.details.liftedPhase, options.deliverAs]),
+          [["preflight", "nextTurn"]],
+        );
         if (reenable) await commands.get("route").handler(reenable, ctx);
         const entriesAfterOff = appended.length;
         const telemetryAfterOff = telemetryEvents.length;

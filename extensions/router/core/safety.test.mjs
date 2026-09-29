@@ -136,6 +136,13 @@ describe("deterministic safety tool gate", () => {
     assert.equal(lifecycleToolBlockReason(preflight, "bash", { command: "find . -name '*.ts'" }), undefined);
     assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "rg --pre mutate pattern" }), /preflight/);
     assert.equal(lifecycleToolBlockReason(preflight, "submit_action_plan", {}), undefined);
+    // The chained inspection refused in session 01a0ebc8 is read-only in every segment.
+    assert.equal(
+      lifecycleToolBlockReason(preflight, "bash", {
+        command: "cd ~/repo && git status && git branch -vv | head -20; git stash list | head",
+      }),
+      undefined,
+    );
 
     const validated = validateActionPlan(actionPlan());
     assert.equal(validated.success, true);
@@ -172,6 +179,23 @@ describe("deterministic safety tool gate", () => {
 
     const advisory = initialLifecycle("advisory_then_completion_review", "task");
     assert.match(lifecycleToolBlockReason(advisory, "custom_mutator", {}), /advisory/);
+  });
+
+  it("explains a refused command so the model does not conclude bash is unavailable", () => {
+    const preflight = initialLifecycle("authorization_then_completion_review", "task");
+    const refused = lifecycleToolBlockReason(preflight, "bash", { command: "git status && git checkout main" });
+    assert.match(refused, /git checkout is not a read-only subcommand/);
+    assert.match(refused, /Read-only bash still runs/);
+    assert.match(refused, /call submit_action_plan/);
+    const edit = lifecycleToolBlockReason(preflight, "edit", { path: "README.md" });
+    assert.doesNotMatch(edit, /Read-only bash/, "non-bash refusals carry no shell detail");
+    assert.match(edit, /call submit_action_plan/);
+    const advisoryLifecycle = initialLifecycle("advisory_then_completion_review", "task");
+    assert.match(
+      lifecycleToolBlockReason(advisoryLifecycle, "bash", { command: "npm test" }),
+      /npm is not a read-only command/,
+    );
+    assert.match(safetyContextForLifecycle(preflight), /read-only bash/);
   });
 
   it("keeps the read-only classifier and the mutation classifier inverses of each other", () => {

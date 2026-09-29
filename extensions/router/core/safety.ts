@@ -4,7 +4,7 @@ import type { Static, TUnsafe } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { isCodeBuilder, isStandaloneReviewWork } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
-import { isReadOnlyShellCommand } from "./shell.ts";
+import { isReadOnlyShellCommand, readOnlyShellCommandRejection } from "./shell.ts";
 
 function stringEnum<const TValues extends readonly string[]>(values: TValues): TUnsafe<TValues[number]> {
   return Type.Unsafe<TValues[number]>({ type: "string", enum: [...values] });
@@ -286,7 +286,7 @@ export function initialLifecycle(policy: SafetyPolicy, taskFingerprint: string):
 export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | undefined {
   switch (lifecycle.phase) {
     case "preflight":
-      return "Safety lifecycle: remain non-mutating. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. Execution requires a separate independent approval of the exact task and plan fingerprints.";
+      return "Safety lifecycle: remain non-mutating. read and read-only bash (git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, including && and | chains of them) stay available for inspection. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. Execution requires a separate independent approval of the exact task and plan fingerprints.";
     case "advisory_pending":
       return "Safety lifecycle: remain non-mutating while gathering bounded context for a pre-action advisor.";
     case "authorized_execution":
@@ -326,15 +326,23 @@ export function lifecycleToolBlockReason(
     lifecycle.phase === "review" || lifecycle.phase === "preflight" || lifecycle.phase === "advisory_pending";
   if (!restricted) return undefined;
   if (toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls") return undefined;
-  if (toolName === "bash" && isReadOnlyShellCommand(typeof input.command === "string" ? input.command : "")) {
-    return undefined;
-  }
+  const shellRejection =
+    toolName === "bash"
+      ? readOnlyShellCommandRejection(typeof input.command === "string" ? input.command : "")
+      : undefined;
+  if (toolName === "bash" && shellRejection === undefined) return undefined;
   if (lifecycle.phase === "review" && toolName === "submit_safety_review") return undefined;
   if (lifecycle.phase === "preflight" && toolName === "submit_action_plan") return undefined;
-  if (lifecycle.phase === "review") return "Independent safety review lease is read-only";
-  if (lifecycle.phase === "preflight")
-    return "Irreversible-action preflight is non-mutating until its plan is approved";
-  return "High-risk advisory must complete before mutating tools are used";
+  // A bare refusal reads as "bash is unavailable", and the model stops inspecting. Say which part
+  // of the command was refused, that read-only bash still works, and how to leave the phase.
+  const detail = shellRejection
+    ? ` (${shellRejection}). Read-only bash still runs: git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, joined with && ; || or |`
+    : "";
+  if (lifecycle.phase === "review") return `Independent safety review lease is read-only${detail}`;
+  if (lifecycle.phase === "preflight") {
+    return `Irreversible-action preflight is non-mutating until its plan is approved${detail}. To perform mutating steps, call submit_action_plan`;
+  }
+  return `High-risk advisory must complete before mutating tools are used${detail}`;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {

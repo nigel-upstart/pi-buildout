@@ -203,6 +203,18 @@ export function deterministicCheckCommand(command: string): string | undefined {
 }
 
 const SAFETY_LIFECYCLE_TOOL_NAMES = new Set(["submit_action_plan", "submit_safety_review"]);
+
+type RestrictedPhase = "preflight" | "review" | "advisory_pending";
+
+/** The tool-restricting phase `/route off` is about to lift, if the active lease is in one. */
+export function restrictedPhaseLiftedByOff(lifecycle: LeaseLifecycle | undefined): RestrictedPhase | undefined {
+  const phase = lifecycle?.phase;
+  return phase === "preflight" || phase === "review" || phase === "advisory_pending" ? phase : undefined;
+}
+
+export function routerOffNotice(phase: RestrictedPhase): string {
+  return `The operator turned the model router off. The ${phase} safety lifecycle no longer restricts tools, and submit_action_plan and submit_safety_review are unavailable. Tool calls refused earlier by that lifecycle can be retried; the user's own instructions and approvals still apply.`;
+}
 const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
 /** Keep lifecycle validators out of the model's tool surface unless the active phase can accept them. */
@@ -3229,6 +3241,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           );
           return;
         }
+        const liftedPhase =
+          command === "off" && state.mode !== "off" ? restrictedPhaseLiftedByOff(state.active?.lifecycle) : undefined;
         state = {
           ...state,
           mode: command,
@@ -3254,6 +3268,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           deterministicCheckCalls.clear();
           deterministicCheckResults.clear();
           potentiallyMutatingCalls.clear();
+          if (liftedPhase) {
+            // Nothing else tells the model its earlier refusals no longer apply, and in practice it
+            // keeps working around a gate that is gone. Mid-run this lands at the next turn boundary.
+            pi.sendMessage(
+              {
+                customType: CONTEXT_MESSAGE,
+                content: routerOffNotice(liftedPhase),
+                display: false,
+                details: { reconciliation: "router_off", liftedPhase },
+              },
+              { deliverAs: agentRunPhase === "active" ? "steer" : "nextTurn" },
+            );
+          }
         }
         // Off hides every router-only tool; re-enabling restores the planning validator it hid. Phase
         // validators return at the next before_agent_start, which exposes exactly what the lease accepts.
