@@ -40,8 +40,28 @@ type ClassifierModel = {
 // Logical classifier tiers are resolved only against the operator's scoped registry snapshot.
 // Luna remains preferred over Haiku regardless of endpoint cost; the shared endpoint comparator
 // orders alternatives serving the same logical model. We do not guess an older Sonnet ID: an exact
-// endpoint must canonicalize to one of these validated logical model IDs.
-const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "claude-haiku-4-5"] as const;
+// endpoint must canonicalize to one of these validated logical model IDs. GPT-5.6 Luna stays listed
+// after GPT-6 Luna because many scoped registries (including every Amazon Bedrock region today) still
+// serve only the 5.6 generation; dropping it silently pushed every primary onto Haiku.
+// Gemini 3.5 Flash Lite is the last-resort primary, giving the fast tier a third vendor.
+const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "gpt-5.6-luna", "claude-haiku-4-5", "gemini-3.5-flash-lite"] as const;
+
+// OpenAI tiers that may reconcile a non-OpenAI primary, in preference order. More than one tier is
+// listed so a single rate-limited or unscoped OpenAI model cannot leave the safety latch unresolved.
+const OPENAI_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["gpt-5.6-terra", "gpt-6-luna", "gpt-5.6-luna"];
+
+// First-party Google Gemini tiers, newest Flash first. They give every primary a third independent
+// vendor, so one vendor being rate limited cannot by itself leave the safety latch unresolved.
+// Open-weight Gemma endpoints are deliberately absent: they are not Gemini, and the registry does not
+// attribute them to the `google` vendor.
+const GOOGLE_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-2.5-pro",
+  "gemini-3.5-flash-lite",
+];
 
 // The key is the primary tier's canonical vendor; each logical secondary tier deliberately belongs
 // to a different vendor for independent reconciliation. Endpoint providers do not determine this:
@@ -52,15 +72,19 @@ const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "claude-haiku-4-5"] as const;
 // back to DEFAULT_SECONDARY_CLASSIFIER_TIERS, which preserves the provider-diversity rule because
 // resolveSecondary rejects any candidate sharing the primary's vendor.
 const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Partial<Record<ModelVendor, readonly string[]>> = {
-  openai: ["claude-sonnet-5"],
-  anthropic: ["gpt-5.6-terra"],
-  google: ["gpt-5.6-terra"],
+  openai: ["claude-sonnet-5", ...GOOGLE_SECONDARY_CLASSIFIER_TIERS],
+  anthropic: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, ...GOOGLE_SECONDARY_CLASSIFIER_TIERS],
+  google: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, "claude-sonnet-5"],
 };
 
 // Used when the primary's vendor declares no secondary tier of its own. Both entries are validated
 // logical model IDs drawn from the tiers above; vendor diversity is still enforced at selection time
 // rather than assumed here, so whichever entry shares the primary's vendor is skipped.
-const DEFAULT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["claude-sonnet-5", "gpt-5.6-terra"];
+const DEFAULT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
+  "claude-sonnet-5",
+  ...OPENAI_SECONDARY_CLASSIFIER_TIERS,
+  ...GOOGLE_SECONDARY_CLASSIFIER_TIERS,
+];
 
 function secondaryClassifierTiers(primaryVendor: ModelVendor): readonly string[] {
   return SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR[primaryVendor] ?? DEFAULT_SECONDARY_CLASSIFIER_TIERS;
@@ -178,10 +202,14 @@ async function callClassifierModel(
   if (!model) throw new Error(`Classifier endpoint disappeared from registry: ${candidateLabel(candidate)}`);
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
-  if (!auth.apiKey) throw new Error(`No request credential resolved for ${candidateLabel(candidate)}`);
+  // `ok: true` is the registry's statement that the request can be authenticated. Providers such as
+  // Amazon Bedrock authenticate through an ambient credential chain and legitimately resolve no API
+  // key, so requiring one here rejected every Bedrock endpoint before any request was made. This
+  // mirrors the agent session's own request path, which also applies a resolved base URL override.
+  const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
   const started = performance.now();
   const response = await complete(
-    model,
+    requestModel,
     {
       systemPrompt: request.systemPrompt,
       messages: [
@@ -194,7 +222,7 @@ async function callClassifierModel(
       tools: [CLASSIFIER_TOOL],
     },
     {
-      apiKey: auth.apiKey,
+      ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
       ...(auth.headers ? { headers: auth.headers } : {}),
       ...(auth.env ? { env: auth.env } : {}),
       ...(request.signal ? { signal: request.signal } : {}),

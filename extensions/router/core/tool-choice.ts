@@ -27,6 +27,44 @@ export function requireToolCall(payload: unknown, api: string, toolName: string)
         functionCallingConfig: { mode: "ANY", allowedFunctionNames: [toolName] },
       };
       break;
+    case "bedrock-converse-stream": {
+      // Converse nests the forced choice beside the tool specs in `toolConfig`. Without tool specs
+      // there is nothing to force, and Bedrock rejects a bare toolChoice, so fail closed instead.
+      const toolConfig = next.toolConfig;
+      if (
+        !toolConfig ||
+        typeof toolConfig !== "object" ||
+        Array.isArray(toolConfig) ||
+        !Array.isArray((toolConfig as Payload).tools) ||
+        ((toolConfig as Payload).tools as unknown[]).length === 0
+      ) {
+        throw new Error("Cannot require a tool call on a Bedrock payload without toolConfig");
+      }
+      next.toolConfig = { ...(toolConfig as Payload), toolChoice: { tool: { name: toolName } } };
+      // Claude rejects budget-style extended thinking (`type: "enabled"`) alongside a forced tool
+      // choice, which failed every Bedrock Haiku classifier call. Adaptive thinking is accepted, so
+      // only the budget form and its interleaved-thinking beta are removed (other betas are kept).
+      const fields = next.additionalModelRequestFields;
+      if (fields && typeof fields === "object" && !Array.isArray(fields)) {
+        const thinking = (fields as Payload).thinking;
+        if (thinking && typeof thinking === "object" && (thinking as Payload).type === "enabled") {
+          const rest: Payload = { ...(fields as Payload) };
+          delete rest.thinking;
+          // Drop only the interleaved-thinking opt-in; other Bedrock Anthropic betas are unrelated.
+          if (Array.isArray(rest.anthropic_beta)) {
+            const betas = rest.anthropic_beta.filter(
+              (beta) => typeof beta !== "string" || !beta.startsWith("interleaved-thinking-"),
+            );
+            if (betas.length > 0) rest.anthropic_beta = betas;
+            else delete rest.anthropic_beta;
+          } else {
+            delete rest.anthropic_beta;
+          }
+          next.additionalModelRequestFields = Object.keys(rest).length > 0 ? rest : undefined;
+        }
+      }
+      break;
+    }
     default:
       throw new Error(`Required tool calls are not configured for API ${api}`);
   }
