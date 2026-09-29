@@ -254,6 +254,7 @@ describe("profile-less vendors", () => {
       ["amazon-bedrock", "nvidia.nemotron-super-3-120b", "nvidia", "nemotron-super-3-120b"],
       ["amazon-bedrock", "nvidia.nemotron-nano-3-30b", "nvidia", "nemotron-nano-3-30b"],
       ["amazon-bedrock", "us.moonshotai.kimi-k3", "moonshot", "kimi-k3"],
+      ["github-copilot", "mai-code-1.1-flash", "microsoft", "mai-code-1.1-flash"],
     ];
     for (const [provider, modelId, vendor, logical] of cases) {
       assert.equal(canonicalVendor(provider, modelId), vendor, modelId);
@@ -267,6 +268,7 @@ describe("profile-less vendors", () => {
       ["zai", "glm-5"],
       ["qwen", "qwen3-vl-235b-a22b"],
       ["nvidia", "nemotron-super-3-120b"],
+      ["microsoft", "mai-code-1.1-flash"],
     ];
     for (const [vendor, modelId] of models) {
       assert.ok(MODEL_VENDORS.includes(vendor), vendor);
@@ -278,7 +280,7 @@ describe("profile-less vendors", () => {
     }
     for (const policy of Object.values(BOOTSTRAP_ROUTE_POLICIES)) {
       for (const ref of [...policy.primary, ...policy.fallback]) {
-        assert.ok(!["xai", "zai", "qwen", "nvidia"].includes(ref.vendor), ref.logicalModelId);
+        assert.ok(!["xai", "zai", "qwen", "nvidia", "microsoft"].includes(ref.vendor), ref.logicalModelId);
       }
     }
   });

@@ -379,6 +379,8 @@ export function canonicalVendor(provider: string, modelId: string): ModelVendor 
   if (bareId.startsWith("glm-") || bareId.startsWith("zai.glm-")) return "zai";
   if (bareId.startsWith("qwen") || bareId.startsWith("qwen.qwen")) return "qwen";
   if (bareId.startsWith("nemotron-") || bareId.startsWith("nvidia.nemotron-")) return "nvidia";
+  // Microsoft AI's MAI models, reached through GitHub Copilot as `mai-code-1.1-flash`.
+  if (bareId.startsWith("mai-")) return "microsoft";
   if (provider === "openai" || provider === "openai-codex") return "openai";
   if (provider === "anthropic") return "anthropic";
   if (provider === "google" || provider === "google-vertex") return "google";
