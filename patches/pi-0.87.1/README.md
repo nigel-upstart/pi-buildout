@@ -35,15 +35,16 @@ declared budget.
 - `patched.sha256` — checksums expected after applying `skills.patch`; the loader's entry equals its
   baseline.
 
-One recognized already-patched state has a migration onto the current patch:
+Two recognized already-patched states, each with a migration onto the current patch:
 
 | State | Manifests | What it is |
 | --- | --- | --- |
+| `pre-trust-scope-` | `pre-trust-scope-patched.sha256`, `pre-trust-scope-upgrade.patch` | the original 0.87.1 patch from commit `7ac2cd40`, before `commandNeedsProjectTrust` limited one-shot `pi skills` trust resolution to `list`, `search`, and `add … --repo` |
 | `trust-scope-` | `trust-scope-patched.sha256`, `trust-scope-upgrade.patch` | the patch at commit `4508faac`, which limited one-shot `pi skills` trust resolution to `list`, `search`, and `add … --repo` but predates serialized configuration updates and bare relative path normalization |
 
-It contains every tracked file, so it has no `-absent` list. Rebuild its migration with
+Both contain every tracked file, so neither has an `-absent` list. Rebuild each migration with
 `scripts/build-pi-upgrade.mjs` whenever `skills.patch` changes, as described for pi 0.85.1; the pipeline
-reverse-applies it against each regenerated tree and fails if it no longer reconstructs that state.
+reverse-applies each against the regenerated tree and fails unless it reconstructs its state.
 
 User-provided tilde and relative skill sources, including a bare name that resolves to a path holding at least one
 skill and matches no catalog skill, are resolved to absolute paths before session activation or persistence. A bare
