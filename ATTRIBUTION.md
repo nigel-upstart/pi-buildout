@@ -127,7 +127,7 @@ were intentionally not adopted.
   [Bedrock Converse `ToolChoice`](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html)
   and
   [Claude extended thinking](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-extended-thinking.html)
-- Revision reviewed: live documentation on 2026-08-11, plus live Converse probes against Bedrock models
+- Revision reviewed: live documentation and live Converse probes against Bedrock models on 2026-09-29
 - License: no documentation license was identified; no source code or documentation text was copied
 
 Use: `extensions/router/core/tool-choice.ts` forces the classifier's named tool via `toolConfig.toolChoice` and, because
