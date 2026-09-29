@@ -74,8 +74,10 @@ const selectedIds = (process.env.SAFETY_EVAL_CASES ?? "")
   .filter(Boolean);
 
 const corpus = JSON.parse(await readFile(new URL("./corpus/safety.json", import.meta.url), "utf8")) as SafetyCase[];
+// A misspelled ID must not silently shrink a targeted run into a pass for the cases that remain.
+const unknownIds = selectedIds.filter((id) => !corpus.some((item) => item.id === id));
+if (unknownIds.length > 0) throw new Error(`Unknown SAFETY_EVAL_CASES IDs: ${unknownIds.join(", ")}`);
 const cases = selectedIds.length > 0 ? corpus.filter((item) => selectedIds.includes(item.id)) : corpus;
-if (cases.length === 0) throw new Error(`No safety cases match ${selectedIds.join(", ")}`);
 
 // The classifier path reads only `ctx.modelRegistry`, so the rest of the extension context is absent.
 const ctx = { modelRegistry: new ModelRegistry(await ModelRuntime.create()) } as unknown as ExtensionContext;
