@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { conservativeFeatures } from "./core/features.ts";
 import {
   classifyTaskSecondaryWithPi,
@@ -243,6 +243,38 @@ describe("selectClassifierModels", () => {
     );
   });
 
+  it("keeps an OpenAI primary when the scope serves only GPT-5.6 Luna", () => {
+    // Amazon Bedrock and many registries still serve only the 5.6 generation. Requiring GPT-6 Luna
+    // silently moved every primary onto Haiku, which in turn needed a scarce OpenAI secondary.
+    const selected = selectClassifierModels([
+      snapshot("amazon-bedrock", "global.openai.gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("anthropic", "claude-sonnet-5"),
+    ]);
+    assert.equal(selected.primary[0]?.vendor, "openai");
+    assert.equal(selected.primary.at(-1)?.model.id, "claude-haiku-4-5");
+    assert.deepEqual(
+      selected.primary
+        .filter((entry) => entry.vendor === "openai")
+        .map((entry) => entry.model.id)
+        .sort(),
+      ["global.openai.gpt-5.6-luna", "gpt-5.6-luna"],
+    );
+    assert.equal(selected.secondary[0]?.model.id, "claude-sonnet-5");
+  });
+
+  it("prefers GPT-6 Luna over GPT-5.6 Luna for the primary tier", () => {
+    const selected = selectClassifierModels([
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.id),
+      ["gpt-6-luna", "gpt-5.6-luna"],
+    );
+  });
+
   it("returns no candidates when the scoped snapshot contains no classifier model", () => {
     const selected = selectClassifierModels([]);
     assert.deepEqual(selected, { primary: [], secondary: [] });
@@ -306,7 +338,92 @@ describe("selectClassifierModels", () => {
   });
 });
 
+describe("classifier request authentication", () => {
+  it("calls an endpoint whose registry auth resolves without an API key, such as Amazon Bedrock", async () => {
+    // Bedrock authenticates through the ambient AWS credential chain, so the registry reports
+    // `ok: true` with no `apiKey`. That must be sufficient to issue the classifier request.
+    const faux = registerFauxProvider({
+      api: "router-classifier-keyless-test",
+      provider: "router-classifier-keyless-test",
+      models: [{ id: "keyless-fixture" }],
+    });
+    const features = { ...conservativeFeatures("fixture"), confidence: 0.95, risk: "low" };
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("report_task_features", features)])]);
+    try {
+      const result = await classifyTaskWithPi({
+        ctx: {
+          modelRegistry: {
+            find: () => faux.getModel(),
+            getApiKeyAndHeaders: async () => ({ ok: true }),
+          },
+        },
+        registry: [snapshot("amazon-bedrock", "global.openai.gpt-5.6-luna")],
+        prompt: "Implement the change",
+        synopsis: {},
+      });
+      assert.equal(result.failedClosed, false);
+      assert.equal(result.attempts[0]?.valid, true);
+      assert.equal(result.attempts[0]?.provider, "amazon-bedrock");
+    } finally {
+      faux.unregister();
+    }
+  });
+
+  it("still skips an endpoint whose registry auth reports a failure", async () => {
+    const result = await classifyTaskWithPi({
+      ctx: {
+        modelRegistry: {
+          find: (provider, id) => ({ provider, id }),
+          getApiKeyAndHeaders: async () => ({ ok: false, error: 'No API key found for "openai-codex"' }),
+        },
+      },
+      registry: [snapshot("openai-codex", "gpt-5.6-luna")],
+      prompt: "Implement the change",
+      synopsis: {},
+    });
+    assert.equal(result.failedClosed, true);
+    assert.ok(result.attempts.every((attempt) => attempt.valid === false));
+  });
+});
+
 describe("classifyTaskSecondaryWithPi", () => {
+  it("gives a Haiku-answered primary every scoped OpenAI secondary tier, Terra first", async () => {
+    // With only one OpenAI tier, a rate-limited or unscoped Terra left the low-confidence safety
+    // latch unresolved. Any OpenAI Luna in scope is still a vendor-independent second opinion.
+    const registryLookups = [];
+    const features = conservativeFeatures("fixture");
+    await classifyTaskSecondaryWithPi({
+      ctx: {
+        modelRegistry: {
+          find: (provider, modelId) => {
+            registryLookups.push(`${provider}/${modelId}`);
+            return undefined;
+          },
+        },
+      },
+      registry: [
+        snapshot("anthropic", "claude-haiku-4-5"),
+        snapshot("amazon-bedrock", "us.openai.gpt-5.6-luna"),
+        snapshot("amazon-bedrock", "global.openai.gpt-5.6-terra"),
+        snapshot("anthropic", "claude-sonnet-5"),
+      ],
+      prompt: "Implement the change",
+      synopsis: {},
+      primary: {
+        features,
+        primaryFeatures: features,
+        escalated: true,
+        failedClosed: false,
+        attempts: [],
+        primaryVendor: "anthropic",
+      },
+    });
+    assert.deepEqual(
+      [...new Set(registryLookups)],
+      ["amazon-bedrock/global.openai.gpt-5.6-terra", "amazon-bedrock/us.openai.gpt-5.6-luna"],
+    );
+  });
+
   it("chooses the independent tier from the vendor that answered the primary, not the first candidate", async () => {
     const registryLookups = [];
     const features = conservativeFeatures("fixture");
@@ -338,7 +455,9 @@ describe("classifyTaskSecondaryWithPi", () => {
       },
     });
     assert.ok(registryLookups.length > 0, "the secondary stage must consult at least one endpoint");
-    assert.deepEqual([...new Set(registryLookups)], ["openai/gpt-5.6-terra"]);
+    // Terra is tried first; when it fails the stage falls through to the other OpenAI tiers, but it
+    // must never consult an Anthropic endpoint for an Anthropic-answered primary.
+    assert.deepEqual([...new Set(registryLookups)], ["openai/gpt-5.6-terra", "openai/gpt-6-luna"]);
   });
 });
 
