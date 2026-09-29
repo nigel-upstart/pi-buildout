@@ -43,8 +43,20 @@ type ClassifierModel = {
 // endpoint must canonicalize to one of these validated logical model IDs. GPT-5.6 Luna stays listed
 // after GPT-6 Luna because many scoped registries (including every Amazon Bedrock region today) still
 // serve only the 5.6 generation; dropping it silently pushed every primary onto Haiku.
-// Gemini 3.5 Flash Lite is the last-resort primary, giving the fast tier a third vendor.
-const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "gpt-5.6-luna", "claude-haiku-4-5", "gemini-3.5-flash-lite"] as const;
+// Microsoft's MAI-Code Flash is a Luna-class fast model reached through GitHub Copilot, so it is the
+// next primary once every Luna endpoint has failed, ahead of Haiku. Gemini 3.5 Flash Lite is the
+// last-resort primary. Every classifier call runs at low reasoning effort regardless of tier.
+const PRIMARY_CLASSIFIER_TIERS = [
+  "gpt-6-luna",
+  "gpt-5.6-luna",
+  "mai-code-1.1-flash",
+  "claude-haiku-4-5",
+  "gemini-3.5-flash-lite",
+] as const;
+
+// Microsoft tiers that may reconcile a non-Microsoft primary. Listed after the stronger established
+// vendors' tiers, so they are consulted only when those are unreachable.
+const MICROSOFT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["mai-code-1.1-flash"];
 
 // OpenAI tiers that may reconcile a non-OpenAI primary, in preference order. More than one tier is
 // listed so a single rate-limited or unscoped OpenAI model cannot leave the safety latch unresolved.
@@ -72,9 +84,14 @@ const GOOGLE_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
 // back to DEFAULT_SECONDARY_CLASSIFIER_TIERS, which preserves the provider-diversity rule because
 // resolveSecondary rejects any candidate sharing the primary's vendor.
 const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Partial<Record<ModelVendor, readonly string[]>> = {
-  openai: ["claude-sonnet-5", ...GOOGLE_SECONDARY_CLASSIFIER_TIERS],
-  anthropic: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, ...GOOGLE_SECONDARY_CLASSIFIER_TIERS],
-  google: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, "claude-sonnet-5"],
+  openai: ["claude-sonnet-5", ...GOOGLE_SECONDARY_CLASSIFIER_TIERS, ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS],
+  anthropic: [
+    ...OPENAI_SECONDARY_CLASSIFIER_TIERS,
+    ...GOOGLE_SECONDARY_CLASSIFIER_TIERS,
+    ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS,
+  ],
+  google: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, "claude-sonnet-5", ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS],
+  // A Microsoft primary uses DEFAULT_SECONDARY_CLASSIFIER_TIERS, which already filters out MAI.
 };
 
 // Used when the primary's vendor declares no secondary tier of its own. Both entries are validated
@@ -84,6 +101,7 @@ const DEFAULT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
   "claude-sonnet-5",
   ...OPENAI_SECONDARY_CLASSIFIER_TIERS,
   ...GOOGLE_SECONDARY_CLASSIFIER_TIERS,
+  ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS,
 ];
 
 function secondaryClassifierTiers(primaryVendor: ModelVendor): readonly string[] {

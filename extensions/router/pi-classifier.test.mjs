@@ -321,6 +321,118 @@ describe("selectClassifierModels", () => {
     );
   });
 
+  it("uses MAI-Code Flash as the primary after every Luna endpoint and before Haiku", () => {
+    const mai = snapshot("github-copilot", "mai-code-1.1-flash", { vendor: "microsoft" });
+    const selected = selectClassifierModels([
+      snapshot("anthropic", "claude-haiku-4-5"),
+      mai,
+      snapshot("amazon-bedrock", "us.openai.gpt-5.6-luna"),
+      snapshot("anthropic", "claude-sonnet-5"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.id),
+      ["us.openai.gpt-5.6-luna", "mai-code-1.1-flash", "claude-haiku-4-5"],
+    );
+
+    // With no Luna in scope MAI leads, and its secondary must come from another vendor.
+    const maiFirst = selectClassifierModels([
+      mai,
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("anthropic", "claude-sonnet-5"),
+      snapshot("amazon-bedrock", "us.openai.gpt-5.6-terra"),
+    ]);
+    assert.equal(maiFirst.primary[0]?.vendor, "microsoft");
+    assert.deepEqual(
+      maiFirst.secondary.map((entry) => entry.model.id),
+      ["claude-sonnet-5", "us.openai.gpt-5.6-terra"],
+    );
+  });
+
+  it("places MAI-Code Flash last in the OpenAI and Google primaries' secondary tiers", () => {
+    const mai = snapshot("github-copilot", "mai-code-1.1-flash", { vendor: "microsoft" });
+    const openaiPrimary = selectClassifierModels([
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      mai,
+      snapshot("github-copilot", "gemini-3.8-flash"),
+      snapshot("anthropic", "claude-sonnet-5"),
+    ]);
+    assert.equal(openaiPrimary.primary[0]?.vendor, "openai");
+    assert.deepEqual(
+      openaiPrimary.secondary.map((entry) => entry.model.id),
+      ["claude-sonnet-5", "gemini-3.8-flash", "mai-code-1.1-flash"],
+    );
+  });
+
+  it("places MAI-Code Flash after Terra and Sonnet for a Gemini-answered primary", async () => {
+    const registryLookups = [];
+    const features = conservativeFeatures("fixture");
+    await classifyTaskSecondaryWithPi({
+      ctx: {
+        modelRegistry: {
+          find: (provider, modelId) => {
+            registryLookups.push(`${provider}/${modelId}`);
+            return undefined;
+          },
+        },
+      },
+      registry: [
+        snapshot("google-vertex", "gemini-3.5-flash-lite"),
+        snapshot("github-copilot", "mai-code-1.1-flash", { vendor: "microsoft" }),
+        snapshot("anthropic", "claude-sonnet-5"),
+        snapshot("amazon-bedrock", "us.openai.gpt-5.6-terra"),
+      ],
+      prompt: "Implement the change",
+      synopsis: {},
+      primary: {
+        features,
+        primaryFeatures: features,
+        escalated: true,
+        failedClosed: false,
+        attempts: [],
+        primaryVendor: "google",
+      },
+    });
+    assert.deepEqual(
+      [...new Set(registryLookups)],
+      ["amazon-bedrock/us.openai.gpt-5.6-terra", "anthropic/claude-sonnet-5", "github-copilot/mai-code-1.1-flash"],
+    );
+  });
+
+  it("offers MAI-Code Flash as a last-resort secondary after Gemini for a Haiku-answered primary", async () => {
+    const registryLookups = [];
+    const features = conservativeFeatures("fixture");
+    await classifyTaskSecondaryWithPi({
+      ctx: {
+        modelRegistry: {
+          find: (provider, modelId) => {
+            registryLookups.push(`${provider}/${modelId}`);
+            return undefined;
+          },
+        },
+      },
+      registry: [
+        snapshot("anthropic", "claude-haiku-4-5"),
+        snapshot("github-copilot", "mai-code-1.1-flash", { vendor: "microsoft" }),
+        snapshot("github-copilot", "gemini-3.8-flash"),
+        snapshot("anthropic", "claude-sonnet-5"),
+      ],
+      prompt: "Implement the change",
+      synopsis: {},
+      primary: {
+        features,
+        primaryFeatures: features,
+        escalated: true,
+        failedClosed: false,
+        attempts: [],
+        primaryVendor: "anthropic",
+      },
+    });
+    assert.deepEqual(
+      [...new Set(registryLookups)],
+      ["github-copilot/gemini-3.8-flash", "github-copilot/mai-code-1.1-flash"],
+    );
+  });
+
   it("prefers GPT-6 Luna over GPT-5.6 Luna for the primary tier", () => {
     const selected = selectClassifierModels([
       snapshot("openai-codex", "gpt-5.6-luna"),

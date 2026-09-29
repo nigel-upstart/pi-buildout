@@ -349,7 +349,8 @@ function evidenceScoreContext(archetype: Archetype, context: RoutingContext): Ev
 // Amazon Bedrock cross-region inference profiles prefix the underlying vendor path with a
 // region code ("us.", "eu.", "au.", "jp.", "global."). Strip it only when it is immediately
 // followed by a known vendor path segment so unrelated IDs are not misparsed.
-const BEDROCK_REGION_PREFIX = /^(?:us|eu|au|jp|apac|global)\.(?=anthropic\.|openai\.|amazon\.)/;
+const BEDROCK_REGION_PREFIX =
+  /^(?:us|eu|au|jp|apac|global)\.(?=anthropic\.|openai\.|amazon\.|moonshot\.|moonshotai\.|minimax\.|xai\.|zai\.|qwen\.|nvidia\.)/;
 
 export function canonicalVendor(provider: string, modelId: string): ModelVendor | undefined {
   const normalizedId = modelId.toLowerCase();
@@ -372,6 +373,14 @@ export function canonicalVendor(provider: string, modelId: string): ModelVendor 
   // resolve, because buildRegistrySnapshot drops any endpoint whose vendor is unknown, and a dropped
   // endpoint is invisible rather than excluded with a reason.
   if (bareId.startsWith("minimax-") || bareId.startsWith("minimax.minimax-")) return "minimax";
+  // Bedrock prefixes each of these with its vendor path segment; gateways such as GitHub Copilot use
+  // the bare model token. Both spellings must resolve for the same reason as MiniMax above.
+  if (bareId.startsWith("grok-") || bareId.startsWith("xai.grok-")) return "xai";
+  if (bareId.startsWith("glm-") || bareId.startsWith("zai.glm-")) return "zai";
+  if (/^qwen[\d-]/.test(bareId) || bareId.startsWith("qwen.qwen")) return "qwen";
+  if (bareId.startsWith("nemotron-") || bareId.startsWith("nvidia.nemotron-")) return "nvidia";
+  // Microsoft AI's MAI models, reached through GitHub Copilot as `mai-code-1.1-flash`.
+  if (bareId.startsWith("mai-")) return "microsoft";
   if (provider === "openai" || provider === "openai-codex") return "openai";
   if (provider === "anthropic") return "anthropic";
   if (provider === "google" || provider === "google-vertex") return "google";

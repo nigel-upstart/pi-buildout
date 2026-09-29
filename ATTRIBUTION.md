@@ -136,6 +136,25 @@ interleaved-thinking beta from `additionalModelRequestFields`. Adaptive thinking
 preserved. Providers other than Bedrock Converse, and models that ignore a named tool choice, were intentionally not
 adopted.
 
+### Provider model catalogs (Amazon Bedrock and GitHub Copilot)
+
+- Sources: the Amazon Bedrock
+  [`ListFoundationModels`](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_ListFoundationModels.html) and
+  [`ListInferenceProfiles`](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_ListInferenceProfiles.html) APIs
+  (us-east-1, us-east-2, us-west-2) and the GitHub Copilot `/models` endpoint, whose catalog is documented in
+  [Supported AI models in GitHub Copilot](https://docs.github.com/en/copilot/reference/ai-models/supported-models), plus
+  live classifier-shaped probes (forced tool call at low reasoning effort) against the listed endpoints
+- Revision reviewed: live catalog responses and probes on 2026-09-29
+- License: catalog data only; no source code or documentation text was copied
+
+Use: `canonicalVendor` in `extensions/router/core/routing.ts` recognizes the model-ID spellings those catalogs publish
+for xAI (`grok-`, `xai.grok-`), Z.ai (`glm-`, `zai.glm-`), Qwen (`qwen`, `qwen.qwen`), NVIDIA (`nemotron-`,
+`nvidia.nemotron-`), and Microsoft (`mai-`), and strips Bedrock region prefixes before those vendor segments. The
+classifier tiers in `extensions/router/pi-classifier.ts` add `mai-code-1.1-flash`, the only Microsoft model the Copilot
+catalog served that returned the forced tool call. Models that failed the probe (Meta Llama tool use, Gemma named-tool
+choice, `mai-code-1-flash-picker`, DeepSeek R1) were intentionally not adopted, and no prompt profile or route was
+derived from the probes.
+
 ### Anthropic prompt caching
 
 - Source: [Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
