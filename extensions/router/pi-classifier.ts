@@ -49,6 +49,18 @@ const PRIMARY_CLASSIFIER_TIERS = ["gpt-6-luna", "gpt-5.6-luna", "claude-haiku-4-
 // listed so a single rate-limited or unscoped OpenAI model cannot leave the safety latch unresolved.
 const OPENAI_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["gpt-5.6-terra", "gpt-6-luna", "gpt-5.6-luna"];
 
+// First-party Google Gemini tiers, newest Flash first. They give every primary a third independent
+// vendor, so one vendor being rate limited cannot by itself leave the safety latch unresolved.
+// Open-weight Gemma endpoints are deliberately absent: they are not Gemini, and the registry does not
+// attribute them to the `google` vendor.
+const GOOGLE_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-2.5-pro",
+];
+
 // The key is the primary tier's canonical vendor; each logical secondary tier deliberately belongs
 // to a different vendor for independent reconciliation. Endpoint providers do not determine this:
 // an Amazon Bedrock endpoint serving Sonnet is still an Anthropic secondary, for example.
@@ -58,15 +70,19 @@ const OPENAI_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["gpt-5.6-terra", "
 // back to DEFAULT_SECONDARY_CLASSIFIER_TIERS, which preserves the provider-diversity rule because
 // resolveSecondary rejects any candidate sharing the primary's vendor.
 const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Partial<Record<ModelVendor, readonly string[]>> = {
-  openai: ["claude-sonnet-5"],
-  anthropic: OPENAI_SECONDARY_CLASSIFIER_TIERS,
-  google: OPENAI_SECONDARY_CLASSIFIER_TIERS,
+  openai: ["claude-sonnet-5", ...GOOGLE_SECONDARY_CLASSIFIER_TIERS],
+  anthropic: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, ...GOOGLE_SECONDARY_CLASSIFIER_TIERS],
+  google: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, "claude-sonnet-5"],
 };
 
 // Used when the primary's vendor declares no secondary tier of its own. Both entries are validated
 // logical model IDs drawn from the tiers above; vendor diversity is still enforced at selection time
 // rather than assumed here, so whichever entry shares the primary's vendor is skipped.
-const DEFAULT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["claude-sonnet-5", ...OPENAI_SECONDARY_CLASSIFIER_TIERS];
+const DEFAULT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
+  "claude-sonnet-5",
+  ...OPENAI_SECONDARY_CLASSIFIER_TIERS,
+  ...GOOGLE_SECONDARY_CLASSIFIER_TIERS,
+];
 
 function secondaryClassifierTiers(primaryVendor: ModelVendor): readonly string[] {
   return SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR[primaryVendor] ?? DEFAULT_SECONDARY_CLASSIFIER_TIERS;

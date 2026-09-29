@@ -264,6 +264,39 @@ describe("selectClassifierModels", () => {
     assert.equal(selected.secondary[0]?.model.id, "claude-sonnet-5");
   });
 
+  it("offers first-party Gemini as a third-vendor secondary after the other vendor's tiers", () => {
+    const registry = [
+      snapshot("github-copilot", "gemini-3.5-flash"),
+      snapshot("github-copilot", "gemini-3.8-flash"),
+      snapshot("google-vertex", "gemini-2.5-pro"),
+      snapshot("amazon-bedrock", "us.openai.gpt-5.6-terra"),
+      snapshot("anthropic", "claude-sonnet-5"),
+    ];
+    const anthropicPrimary = selectClassifierModels([snapshot("anthropic", "claude-haiku-4-5"), ...registry]);
+    assert.deepEqual(
+      anthropicPrimary.secondary.map((entry) => entry.model.id),
+      ["us.openai.gpt-5.6-terra", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-pro"],
+    );
+    assert.ok(anthropicPrimary.secondary.every((entry) => entry.vendor !== "anthropic"));
+
+    const openaiPrimary = selectClassifierModels([snapshot("openai-codex", "gpt-5.6-luna"), ...registry]);
+    assert.deepEqual(
+      openaiPrimary.secondary.map((entry) => entry.model.id),
+      ["claude-sonnet-5", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-pro"],
+    );
+  });
+
+  it("still reconciles a Haiku primary when Gemini is the only other vendor in scope", () => {
+    const selected = selectClassifierModels([
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("github-copilot", "gemini-3.6-flash"),
+    ]);
+    assert.deepEqual(
+      selected.secondary.map((entry) => `${entry.vendor}/${entry.model.id}`),
+      ["google/gemini-3.6-flash"],
+    );
+  });
+
   it("prefers GPT-6 Luna over GPT-5.6 Luna for the primary tier", () => {
     const selected = selectClassifierModels([
       snapshot("openai-codex", "gpt-5.6-luna"),

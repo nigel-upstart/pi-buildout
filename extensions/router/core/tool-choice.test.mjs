@@ -22,6 +22,20 @@ describe("requireToolCall", () => {
     assert.deepEqual(payload, { model: "model" });
   });
 
+  it("forces the named tool inside a Bedrock Converse toolConfig without mutating the payload", () => {
+    const tools = [{ toolSpec: { name: "report" } }];
+    const payload = { modelId: "model", toolConfig: { tools, toolChoice: { auto: {} } } };
+    assert.deepEqual(requireToolCall(payload, "bedrock-converse-stream", "report").toolConfig, {
+      tools,
+      toolChoice: { tool: { name: "report" } },
+    });
+    assert.deepEqual(payload.toolConfig.toolChoice, { auto: {} });
+  });
+
+  it("fails closed for a Bedrock payload that carries no tool specs", () => {
+    assert.throws(() => requireToolCall({ modelId: "model" }, "bedrock-converse-stream", "report"), /toolConfig/);
+  });
+
   it("fails closed for an unsupported API", () => {
     assert.throws(() => requireToolCall({}, "unknown-api", "report"), /not configured/);
   });

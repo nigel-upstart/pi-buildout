@@ -113,6 +113,26 @@ failure the current lease, model, effort, and profile remain selected. On a fres
 create a route from synthetic evidence and keeps the current model/effort (and an existing lease, if present). Concrete
 timeout thresholds can be inspected directly in [`index.ts`](index.ts) and [`telemetry.ts`](telemetry.ts).
 
+### Classifier model selection
+
+The concrete tier lists live in [`pi-classifier.ts`](pi-classifier.ts) (`PRIMARY_CLASSIFIER_TIERS` and
+`SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR`); this section states only the expectations they must meet.
+
+- Classifiers are chosen only from the operator's scoped registry, by logical model ID. Every scoped endpoint serving a
+  tier is a candidate: an available, tool-capable endpoint without a recurring health failure, ordered by endpoint cost
+  within its tier. The classifier forces a tool call, so an endpoint whose API cannot require one is never usable.
+- The primary is a fast, inexpensive tier. Candidates are tried in order, and any failure other than cancellation or a
+  timeout (for example a rate limit or missing credentials) falls through to the next endpoint and then the next tier.
+- A primary that reports low confidence or high/critical risk escalates to a secondary. The secondary must come from a
+  different model **vendor** from the one that actually answered the primary; a different endpoint is not enough, so a
+  Bedrock-served Claude is still an Anthropic secondary. Each primary vendor lists secondary tiers from every other
+  supported vendor, so one rate-limited vendor cannot by itself leave the escalation unanswered.
+- A low-confidence primary blocks potentially mutating tools until a schema-valid, vendor-diverse secondary answer is
+  reconciled. If none arrives, the block stays until an override, a new task, or shutdown, and tools report _Secondary
+  safety classification is pending after a low-confidence primary_. Keep at least one endpoint for a primary tier and
+  one for a secondary tier of a different vendor in scope; a `classifier_invocation` whose secondary attempts all end in
+  `error` means no such endpoint could be reached.
+
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
 builder, and at least two eligible non-builder-vendor attempts; they never fall back to the builder for a verdict.
 Standalone user-requested reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta,
