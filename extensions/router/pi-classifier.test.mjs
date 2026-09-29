@@ -80,6 +80,32 @@ describe("selectClassifierModels", () => {
     assert.equal(selected.secondary.length, 0);
   });
 
+  it("falls back to gpt-5.6-luna before Haiku when gpt-6-luna is out of scope", () => {
+    const selected = selectClassifierModels([
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("anthropic", "claude-sonnet-5"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.id),
+      ["gpt-5.6-luna", "claude-haiku-4-5"],
+    );
+    assert.equal(selected.primary[0].vendor, "openai");
+    assert.equal(selected.secondary[0].model.id, "claude-sonnet-5");
+    assert.equal(selected.secondary[0].vendor, "anthropic");
+  });
+
+  it("prefers gpt-6-luna over the gpt-5.6-luna fallback", () => {
+    const selected = selectClassifierModels([
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.id),
+      ["gpt-6-luna", "gpt-5.6-luna"],
+    );
+  });
+
   it("does not invent an unconfigured classifier model", () => {
     const selected = selectClassifierModels([snapshot("openai", "gpt-4o")]);
     assert.equal(selected.primary.length, 0);
