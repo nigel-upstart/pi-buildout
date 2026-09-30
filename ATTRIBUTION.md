@@ -344,6 +344,29 @@ changes were rewritten against 0.87.1's restructured skills page rather than car
 (`enableCompileCache()` followed by `createRequire(import.meta.url)("./cli-runtime.js")`). That shape is adapted from
 the MIT-licensed Pi package so the test can exercise the same `require()` dispatch the published loader performs.
 
+## Pi 0.99.2 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@0.99.2`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `005af57d88ee23b33778f343a9595b32e67ff788` (`v0.99.2`), from npm `gitHead`
+- License declared by the package: MIT
+
+[`pi-overlay/versions/0.99.2/integration.patch`](pi-overlay/versions/0.99.2/integration.patch) adapts the prior 0.87.1
+integration seam to the MIT-licensed 0.99.2 TypeScript source and documentation. Its unchanged context and modified call
+sites derive from Pi's `resource-loader.ts`, `slash-commands.ts`, `main.ts`, `interactive-mode.ts`, and
+`docs/skills.md`. The generated [`skills.patch`](patches/pi-0.99.2/skills.patch) modifies their published JavaScript
+counterparts and documentation; it adds the original `skill-management*.js` overlay modules. The patch reuses Pi's
+package/resource discovery, project-trust and `proper-lockfile` APIs, adapting the trust-manager lock pattern described
+above. It makes catalog skills opt-in with global, repository, and session activation, preserving explicit CLI skill
+paths and avoiding Pi's automatic loading of all discovered skills. It does not adopt or change Pi's unrelated
+extension, prompt, theme, package, provider, trust, or bundled-chunk behavior.
+
+The hand-written `cli-runtime.js` and `rpc-entry.js` replacements in the 0.99.2 overlay are original wrappers reused
+from the 0.87.1 patch; they delegate to the patched unbundled runtime. Pi's published `dist/bundle/cli.js` loader is
+unchanged and pinned by checksum. The entrypoint test uses a byte-identical five-line stand-in based on that
+MIT-licensed loader. Inputs are fetched from the 0.99.2 release archive (verified against its published `SHA256SUMS`)
+and npm tarball; no complete Pi source checkout is committed.
+
 ## Pi `/skills` TypeScript overlay
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1` and `@earendil-works/pi-coding-agent@0.87.1`
