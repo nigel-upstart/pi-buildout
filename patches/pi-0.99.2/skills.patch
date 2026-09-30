@@ -62,10 +62,10 @@ index 0345dcb..bce12de 100644
                  const resolved = this.resolveResourcePath(p);
 diff --git a/dist/core/skill-management-core.js b/dist/core/skill-management-core.js
 new file mode 100644
-index 0000000..3c55f44
+index 0000000..7140cfb
 --- /dev/null
 +++ b/dist/core/skill-management-core.js
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,569 @@
 +/**
 + * Opt-in skill management for the patched Pi runtime.
 + *
@@ -411,19 +411,6 @@ index 0000000..3c55f44
 +        ...(allowSession ? [`  ${command} reload`] : []),
 +    ];
 +}
-+export function commandNeedsProjectTrust(args) {
-+    const [command, ...rest] = args;
-+    if (command === "list" || command === "search")
-+        return true;
-+    if (command !== "add")
-+        return false;
-+    try {
-+        return scopeFromArgs(rest) === "repo";
-+    }
-+    catch {
-+        return false;
-+    }
-+}
 +function runActiveCommand(env, rest, surface, options) {
 +    if (rest.length !== 0)
 +        throw new Error(`Usage: ${surface} active`);
@@ -651,10 +638,10 @@ index 0000000..3c55f44
 \ No newline at end of file
 diff --git a/dist/core/skill-management.js b/dist/core/skill-management.js
 new file mode 100644
-index 0000000..a28574c
+index 0000000..3d18e7d
 --- /dev/null
 +++ b/dist/core/skill-management.js
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,131 @@
 +/**
 + * Pi-facing entry point for opt-in skill management.
 + *
@@ -709,7 +696,6 @@ index 0000000..a28574c
 +};
 +/** Re-exported unchanged: a pure string predicate with no environment dependency. */
 +export const looksLikePath = core.looksLikePath;
-+export const commandNeedsProjectTrust = core.commandNeedsProjectTrust;
 +/** Re-exported unchanged: reads a configured entry's source with no environment dependency. */
 +export const sourceOf = core.sourceOf;
 +export function getActiveSkillEntries(options) {
@@ -740,7 +726,7 @@ index 0000000..a28574c
 +export async function handleSkillsCli(options) {
 +    const { args, cwd, agentDir, settingsManager } = options;
 +    const hasUI = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-+    if (core.commandNeedsProjectTrust(args)) {
++    if (args[0] !== undefined && ["list", "search", "add"].includes(args[0])) {
 +        settingsManager.setProjectTrusted(await resolveProjectTrusted({
 +            cwd,
 +            trustStore: new ProjectTrustStore(agentDir),

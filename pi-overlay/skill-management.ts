@@ -80,7 +80,6 @@ const env: SkillEnvironment = {
 
 /** Re-exported unchanged: a pure string predicate with no environment dependency. */
 export const looksLikePath = core.looksLikePath;
-export const commandNeedsProjectTrust = core.commandNeedsProjectTrust;
 
 /** Re-exported unchanged: reads a configured entry's source with no environment dependency. */
 export const sourceOf = core.sourceOf;
@@ -129,7 +128,7 @@ export async function handleSkillsCli(options: {
   const { args, cwd, agentDir, settingsManager } = options;
   const hasUI = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
-  if (core.commandNeedsProjectTrust(args)) {
+  if (args[0] !== undefined && ["list", "search", "add"].includes(args[0])) {
     settingsManager.setProjectTrusted(
       await resolveProjectTrusted({
         cwd,
