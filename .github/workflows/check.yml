@@ -27,6 +27,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Install pinned dependencies
         run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+      - name: Install clean Pi 1.0.0 for skills patch integration tests
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pi-skills-1.0.0" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ @earendil-works/pi-coding-agent@1.0.0
+          echo "PI_SKILLS_TEST_PACKAGES=$RUNNER_TEMP/pi-skills-1.0.0/node_modules/@earendil-works/pi-coding-agent" >> "$GITHUB_ENV"
       - name: Check formatting, lint, types, and tests
         run: npm run check
       - name: Audit dependencies
