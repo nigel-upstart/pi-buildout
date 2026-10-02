@@ -39,13 +39,13 @@ New logic goes in `skill-management*.ts`. Upstream files get imports and a call 
 
 Measured against each clean package, edits to pre-existing upstream files:
 
-| Pre-existing upstream file                   | 0.85.1, previously hand-written | 0.85.1, generated | 0.87.1, generated |
-| -------------------------------------------- | ------------------------------- | ----------------- | ----------------- |
-| `dist/core/resource-loader.js`               | 55                              | 16                | 16                |
-| `dist/core/slash-commands.js`                | 1                               | 1                 | 1                 |
-| `dist/main.js`                               | 32                              | 5                 | 5                 |
-| `dist/modes/interactive/interactive-mode.js` | 82                              | 25                | 26                |
-| **Total**                                    | **170**                         | **47**            | **48**            |
+| Pre-existing upstream file                   | 0.85.1, previously hand-written | 0.85.1, generated | 0.87.1, generated | 1.0.0, generated |
+| -------------------------------------------- | ------------------------------- | ----------------- | ----------------- | ---------------- |
+| `dist/core/resource-loader.js`               | 55                              | 16                | 16                | 16               |
+| `dist/core/slash-commands.js`                | 1                               | 1                 | 1                 | 1                |
+| `dist/main.js`                               | 32                              | 5                 | 5                 | 5                |
+| `dist/modes/interactive/interactive-mode.js` | 82                              | 25                | 26                | 26               |
+| **Total**                                    | **170**                         | **47**            | **48**            | **48**           |
 
 The 0.87.1 seam makes the same calls as the 0.85.1 one. Its one extra line is in `interactive-mode.ts`, which now
 already imports `getCwdRelativePath` from `utils/paths.ts`; the seam extends that import with `resolvePath` instead of
@@ -54,6 +54,10 @@ adding a second import from the same module.
 The shared `skill-management-core.ts` and `skill-management.ts` needed no change for 0.87.1: every Pi API the shell
 binds is unchanged between the two releases, and both versions compile them to byte-identical
 `dist/core/skill-management*.js`.
+
+Pi 1.0.0 uses the same shared overlay without changes, with its integration seam rebased onto the released source. Its
+48-line runtime budget and bundled loader layout match 0.87.1. The release switches to TypeScript 7.0.2 and adds
+`packages/codemode` and `packages/mcp` before `packages/ai` in the workspace build order; its manifest records both.
 
 The budget counts only files where upstream code is edited in place. Files the patch _adds_ are ours; `docs/skills.md`
 and the two bundled entrypoints are replaced wholesale rather than surgically edited, so none of them belong in a number
@@ -90,7 +94,7 @@ Per version, `versions/<version>/upstream.json` pins the inputs. Two properties 
 
 - **The exact upstream commit is published.** The npm registry records `gitHead` for every release, and it matches the
   revisions in `ATTRIBUTION.md` exactly (`0.85.1` → `d981de1229ef899957bbe968bc8dcda02a21f477`, `0.87.1` →
-  `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`).
+  `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`, `1.0.0` → `a13d35a742c6ef8462812a28fbe1d8c8b7431c32`).
 - **Upstream ships a deterministic source archive.** Each GitHub release carries `pi-<version>-source.tar.gz` (built by
   upstream's `scripts/create-source-archive.sh`) alongside a `SHA256SUMS`. GitHub's _auto-generated_ tag tarballs are
   not byte-stable and are deliberately not used.
@@ -129,4 +133,5 @@ checked, not only the one the development dependencies pin. Use `node scripts/bu
 for a single version.
 
 Upstream pins `@typescript/native-preview` to the dated dev build `7.0.0-dev.20260120.1`, in both 0.85.1 and 0.87.1. If
-that version is withdrawn or its emit changes, reproducibility breaks; the scheduled drift job is the detector.
+that version is withdrawn or its emit changes, reproducibility breaks; the scheduled drift job is the detector. Pi 1.0.0
+instead pins the released `typescript` package at 7.0.2 and builds with `tsc`.

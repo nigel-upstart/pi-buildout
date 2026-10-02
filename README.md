@@ -11,7 +11,7 @@ Local pi customizations and supporting notes used to make pi the desired coding-
 | `extensions/subagents`                 | Natural-language creation and control of isolated, recursively nestable Pi subagents        | [`extensions/subagents/README.md`](extensions/subagents/README.md)                   |
 | `extensions/otel`                      | Vendored OpenTelemetry fork: GenAI spans, metrics, and logs over OTLP (opt-in)              | [`extensions/otel/README.md`](extensions/otel/README.md)                             |
 | `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior                                  | [skill README](.agents/skills/installed-pi-patching/README.md)                       |
-| `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-0.87.1/README.md`](patches/pi-0.87.1/README.md)                         |
+| `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-1.0.0/README.md`](patches/pi-1.0.0/README.md)                           |
 | `pi-overlay`                           | Authored TypeScript the generated `/skills` patches (0.85.1 and later) come from            | [`pi-overlay/README.md`](pi-overlay/README.md)                                       |
 
 ## Installation
@@ -55,12 +55,12 @@ coexist with another OTel SDK, but loading two Pi lifecycle extensions would dup
 ### Where the `/skills` patch comes from
 
 From pi 0.85.1 the patch is **generated, not hand-authored**. Reviewed TypeScript in [`pi-overlay`](pi-overlay) is the
-source of truth, and `patches/pi-0.85.1/*` and `patches/pi-0.87.1/*` are produced from it:
+source of truth, and the patches for Pi **0.85.1**, **0.87.1**, and **1.0.0** are produced from it:
 
 ```bash
-npm run patches:build                                    # regenerate every version's patch and checksum manifests
-npm run patches:check                                    # fail if any version's committed artifacts are stale
-node scripts/build-pi-patch.mjs --version 0.87.1 --check # one version only
+npm run patches:build                                   # regenerate every version's patch and checksum manifests
+npm run patches:check                                   # fail if any version's committed artifacts are stale
+node scripts/build-pi-patch.mjs --version 1.0.0 --check # one version only
 ```
 
 The pipeline fetches the pinned upstream release source archive and npm tarball, verifies both against checksums
@@ -71,12 +71,12 @@ workspace packages, so it runs in its own scheduled CI job rather than on every 
 
 ## Development and quality checks
 
-Use Node.js 22.19 or newer. The authored extensions and test suite pin the Pi `0.85.1` development packages, and the
+Use Node.js 22.19 or newer. The authored extensions and test suite pin the Pi `0.87.1` development packages, and the
 router's cost tests pin that model registry; compatibility with older Pi versions is not guaranteed. The `/skills` patch
 tests run for every supported pi version; for a version other than the pinned one, the tests that apply the patch to a
 real package skip unless `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
-[`patches/pi-0.87.1/README.md`](patches/pi-0.87.1/README.md#tests)). Install [ShellCheck](https://www.shellcheck.net/)
-and the pinned npm dependencies, which also installs the repository's Git hooks:
+[`patches/pi-1.0.0/README.md`](patches/pi-1.0.0/README.md#tests)). Install [ShellCheck](https://www.shellcheck.net/) and
+the pinned npm dependencies, which also installs the repository's Git hooks:
 
 ```bash
 brew install shellcheck # macOS; use the equivalent package on other platforms

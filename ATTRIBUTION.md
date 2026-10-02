@@ -344,6 +344,32 @@ changes were rewritten against 0.87.1's restructured skills page rather than car
 (`enableCompileCache()` followed by `createRequire(import.meta.url)("./cli-runtime.js")`). That shape is adapted from
 the MIT-licensed Pi package so the test can exercise the same `require()` dispatch the published loader performs.
 
+## Pi 1.0.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.0.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `a13d35a742c6ef8462812a28fbe1d8c8b7431c32` (`v1.0.0`), published npm `gitHead`
+- License declared by the package: MIT
+- Source archive: `pi-1.0.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+
+[`patches/pi-1.0.0/skills.patch`](patches/pi-1.0.0/skills.patch) modifies the released generated runtime and
+`docs/skills.md`, using the unchanged authored skill-management overlay. Its modified upstream files match the 0.87.1
+patch's file set: resource loading, slash-command metadata, CLI and interactive dispatch, skills documentation, and the
+two bundled runtime entrypoints. Unchanged context and modified lines derive from MIT-licensed Pi code and docs.
+[`pi-overlay/versions/1.0.0/integration.patch`](pi-overlay/versions/1.0.0/integration.patch) is a modified-code patch
+rebased by reading the released TypeScript sources. The manifest adds upstream's codemode and MCP workspace builds and
+records the release's TypeScript 7.0.2 compiler. Existing license notices are retained in the published package.
+
+The added skill-management modules are compiled from this repository's authored code, informed by Pi's loading and
+command conventions. The replacement CLI/RPC wrappers are the existing original wrappers; upstream's unchanged
+compile-cache loader is checksum-pinned. The entrypoint test's loader stand-in is adapted from the MIT-licensed
+published loader and verified against its exact checksum for both 0.87.1 and 1.0.0.
+
+The patch preserves the fork's opt-in catalog, global/repository/session activation, shared commands, project-trust
+boundaries, path normalization, strict configuration reads, and serialized updates. It intentionally does not adopt
+upstream's automatic activation of discovered skills. It does not port unrelated MCP, codemode, provider, package,
+extension, theme, prompt, or trust behavior changes into the shared overlay, or modify upstream's bundled chunks.
+
 ## Pi `/skills` TypeScript overlay
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1` and `@earendil-works/pi-coding-agent@0.87.1`
