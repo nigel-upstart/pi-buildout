@@ -749,10 +749,9 @@ async function applySessionSkillChange(
     return undefined;
   }
 
-  const pathContext = { cwd, agentDir, settingsManager, resolveResourcePath };
-  const { normalized, resolved } = await resolveSkillEntryPath(env, pathContext, session.source);
-
   if (session.action === "add") {
+    const pathContext = { cwd, agentDir, settingsManager, resolveResourcePath };
+    const { resolved } = await resolveSkillEntryPath(env, pathContext, session.source);
     if (!resolved) {
       context.showError(`Skill not found in the catalog: ${session.source}`);
       return undefined;
@@ -761,8 +760,16 @@ async function applySessionSkillChange(
     return `Enabled ${resolved} for this session.`;
   }
 
-  const direct = (path: string): boolean =>
-    path === session.source || path === normalized || (resolved !== undefined && path === resolved);
+  // Removal must not resolve packages. Recover bare names from the already-enabled paths, and compare explicit
+  // paths after applying the same resolution used by the resource loader.
+  const normalized = looksLikePath(session.source) ? resolveResourcePath(session.source) : session.source;
+  const skillPaths = looksLikePath(session.source)
+    ? []
+    : env
+        .loadSkills({ cwd, agentDir, skillPaths: additionalSkillPaths, includeDefaults: false })
+        .skills.filter((skill) => skill.name === session.source)
+        .map((skill) => skill.filePath);
+  const direct = (path: string): boolean => path === session.source || path === normalized || skillPaths.includes(path);
   // A bare name added as a local path stays removable by that name after the path is deleted, but only when
   // nothing matches it directly.
   const localPath = looksLikePath(session.source) ? undefined : env.resolvePath(session.source, cwd, { trim: true });

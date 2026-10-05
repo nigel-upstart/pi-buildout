@@ -860,13 +860,33 @@ test("/skills add --session activates for the session and reloads", async () => 
   assert.equal(calls.reloads, 1);
 });
 
-test("/skills remove --session deactivates a session skill", async () => {
+test("/skills remove --session deactivates without resolving packages", async () => {
   const { env } = withCatalog([{ name: "alpha", description: "First", filePath: "/pkg/alpha/SKILL.md" }]);
   const paths = ["/pkg/alpha/SKILL.md"];
   const { context, calls } = createInteractiveContext(env, { additionalSkillPaths: paths });
+  let packageResolutions = 0;
+  env.resolvePackageResources = () => {
+    packageResolutions += 1;
+    return Promise.reject(new Error("package resolution must not run during session removal"));
+  };
+
   await handleSkillsInteractive(env, "/skills remove alpha --session", context);
   assert.deepEqual(paths, [], "the loader's list is mutated in place");
   assert.deepEqual(calls.output, ["Disabled alpha for this session."]);
+  assert.equal(packageResolutions, 0);
+});
+
+test("/skills remove --session matches resolved path inputs without resolving packages", async () => {
+  const { env } = createEnvironment();
+  const paths = ["/work/alpha"];
+  const { context, calls } = createInteractiveContext(env, { additionalSkillPaths: paths });
+  env.resolvePackageResources = () =>
+    Promise.reject(new Error("package resolution must not run during session removal"));
+
+  await handleSkillsInteractive(env, "/skills remove ./alpha --session", context);
+  assert.deepEqual(paths, []);
+  assert.deepEqual(calls.errors, []);
+  assert.deepEqual(calls.output, ["Disabled /work/alpha for this session."]);
 });
 
 test("/skills remove --session removes a deleted local skill by its bare name", async () => {
