@@ -1,7 +1,7 @@
 // Run npm's dependency audit while narrowly accepting reviewed findings that this repository cannot
 // currently remediate. Every accepted direct finding is bound to an exact advisory and complete set
-// of installed paths. New advisories, path changes, malformed reports, and audit transport failures
-// all fail closed.
+// of installed paths. New high/critical advisories, path changes, malformed reports, and audit
+// transport failures all fail closed.
 //
 // Review and prune this allowlist whenever ESLint or @earendil-works/pi-coding-agent is upgraded.
 import { execFileSync } from "node:child_process";
@@ -13,36 +13,12 @@ const BLOCKING_SEVERITIES = new Set(["high", "critical"]);
 
 const ALLOWLIST = [
   {
-    package: "brace-expansion",
-    advisoryUrl: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
-    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
-    recordedAt: "2026-08-06",
+    package: "braces",
+    advisoryUrl: "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+    nodePaths: ["node_modules/braces"],
+    recordedAt: "2026-10-05",
     reason:
-      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
-  },
-  {
-    package: "brace-expansion",
-    advisoryUrl: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
-    recordedAt: "2026-08-06",
-    reason:
-      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
-  },
-  {
-    package: "brace-expansion",
-    advisoryUrl: "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
-    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
-    recordedAt: "2026-08-06",
-    reason:
-      "Pi's published shrinkwrap pins brace-expansion 5.0.6; npm audit fix cannot update dependencies locked inside the published package.",
-  },
-  {
-    package: "undici",
-    advisoryUrl: "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
-    nodePaths: ["node_modules/@earendil-works/pi-coding-agent/node_modules/undici"],
-    recordedAt: "2026-08-06",
-    reason:
-      "Pi's published shrinkwrap pins undici 8.5.0; npm audit fix only proposes downgrading Pi and cannot update the nested dependency.",
+      "No patched braces release is published. The remaining high findings in micromatch, fast-glob, globby, and markdownlint-cli2 are derived from this exact development-tool dependency path.",
   },
 ];
 
@@ -128,6 +104,7 @@ export function evaluateAudit(report, allowlist = ALLOWLIST) {
 
   const vulnerabilities = entries.map(([, entry]) => entry);
   const blocking = vulnerabilities.filter((entry) => BLOCKING_SEVERITIES.has(entry.severity));
+  const blockingNames = new Set(blocking.map((entry) => entry.name));
   const acceptedNames = new Set();
   const acceptedAdvisories = new Map();
 
@@ -152,7 +129,8 @@ export function evaluateAudit(report, allowlist = ALLOWLIST) {
         ),
       );
       const directAccepted = direct.length === 0 || matches.every(Boolean);
-      const sourcesAccepted = sources.length === 0 || sources.every((source) => acceptedNames.has(source));
+      const sourcesAccepted =
+        sources.length === 0 || sources.every((source) => !blockingNames.has(source) || acceptedNames.has(source));
       if (!directAccepted || !sourcesAccepted) continue;
 
       acceptedNames.add(entry.name);

@@ -2,88 +2,116 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { evaluateAudit } from "./check-audit.mjs";
 
-const braceNodes = ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"];
+const bracesAdvisoryUrl = "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm";
+const bracesNodes = ["node_modules/braces"];
 
 function auditReport() {
   return {
-    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 4, critical: 0, total: 4 } },
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 1, high: 5, critical: 0, total: 6 } },
     vulnerabilities: {
-      "brace-expansion": {
-        name: "brace-expansion",
+      braces: {
+        name: "braces",
         severity: "high",
-        nodes: braceNodes,
-        via: [
-          {
-            severity: "high",
-            url: "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
-          },
-          {
-            severity: "high",
-            url: "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-          },
-          {
-            severity: "high",
-            url: "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
-          },
-        ],
+        nodes: [...bracesNodes],
+        via: [{ severity: "high", url: bracesAdvisoryUrl }],
       },
-      undici: {
-        name: "undici",
+      micromatch: {
+        name: "micromatch",
         severity: "high",
-        nodes: ["node_modules/@earendil-works/pi-coding-agent/node_modules/undici"],
-        via: [
-          {
-            severity: "high",
-            url: "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
-          },
-        ],
+        nodes: ["node_modules/micromatch"],
+        via: ["braces"],
       },
-      minimatch: {
-        name: "minimatch",
+      "fast-glob": {
+        name: "fast-glob",
         severity: "high",
-        nodes: ["node_modules/minimatch"],
-        via: ["brace-expansion"],
+        nodes: ["node_modules/fast-glob"],
+        via: ["micromatch"],
       },
-      eslint: {
-        name: "eslint",
+      globby: {
+        name: "globby",
         severity: "high",
-        nodes: ["node_modules/eslint"],
-        via: ["minimatch"],
+        nodes: ["node_modules/globby"],
+        via: ["fast-glob"],
+      },
+      "markdownlint-cli2": {
+        name: "markdownlint-cli2",
+        severity: "high",
+        nodes: ["node_modules/markdownlint-cli2"],
+        via: ["globby", "markdown-it", "micromatch"],
+      },
+      "markdown-it": {
+        name: "markdown-it",
+        severity: "moderate",
+        nodes: ["node_modules/markdown-it"],
+        via: [{ severity: "moderate", url: "https://github.com/advisories/GHSA-253c-mchw-3w2r" }],
       },
     },
   };
 }
 
 describe("evaluateAudit", () => {
-  it("accepts reviewed direct advisories and findings derived only from them", () => {
+  it("accepts reviewed findings derived from the allowlisted high advisory despite moderate sources", () => {
     const result = evaluateAudit(auditReport());
 
     assert.equal(result.unexplained.length, 0);
-    assert.deepEqual(result.acceptedAdvisories.map(({ advisoryUrl }) => advisoryUrl).sort(), [
-      "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
-      "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
-      "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
-      "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
+    assert.deepEqual(
+      result.acceptedAdvisories.map(({ advisoryUrl }) => advisoryUrl),
+      [bracesAdvisoryUrl],
+    );
+    assert.deepEqual(result.accepted.map(({ name }) => name).sort(), [
+      "braces",
+      "fast-glob",
+      "globby",
+      "markdownlint-cli2",
+      "micromatch",
     ]);
   });
 
-  it("fails closed when npm groups a new advisory with reviewed advisories", () => {
+  it("fails closed when a derived finding also depends on an unreviewed high vulnerability", () => {
     const report = auditReport();
-    report.vulnerabilities["brace-expansion"].via.push({
+    report.metadata.vulnerabilities.high += 1;
+    report.metadata.vulnerabilities.total += 1;
+    report.vulnerabilities["markdownlint-cli2"].via.push("unreviewed");
+    report.vulnerabilities.unreviewed = {
+      name: "unreviewed",
+      severity: "high",
+      nodes: ["node_modules/unreviewed"],
+      via: [{ severity: "high", url: "https://github.com/advisories/GHSA-unreviewed" }],
+    };
+
+    assert.deepEqual(
+      evaluateAudit(report)
+        .unexplained.map(({ name }) => name)
+        .sort(),
+      ["markdownlint-cli2", "unreviewed"],
+    );
+  });
+
+  it("fails closed when npm groups a new advisory with the reviewed advisory", () => {
+    const report = auditReport();
+    report.vulnerabilities.braces.via.push({
       severity: "critical",
       url: "https://github.com/advisories/GHSA-unreviewed",
     });
 
-    const result = evaluateAudit(report);
-
-    assert.deepEqual(result.unexplained.map(({ name }) => name).sort(), ["brace-expansion", "eslint", "minimatch"]);
+    assert.deepEqual(
+      evaluateAudit(report)
+        .unexplained.map(({ name }) => name)
+        .sort(),
+      ["braces", "fast-glob", "globby", "markdownlint-cli2", "micromatch"],
+    );
   });
 
   it("fails closed when a reviewed advisory appears at a different path", () => {
     const report = auditReport();
-    report.vulnerabilities["brace-expansion"].nodes.push("node_modules/new-consumer/node_modules/brace-expansion");
+    report.vulnerabilities.braces.nodes.push("node_modules/new-consumer/node_modules/braces");
 
-    assert.equal(evaluateAudit(report).unexplained.length, 3);
+    assert.deepEqual(
+      evaluateAudit(report)
+        .unexplained.map(({ name }) => name)
+        .sort(),
+      ["braces", "fast-glob", "globby", "markdownlint-cli2", "micromatch"],
+    );
   });
 
   it("rejects unsuccessful or malformed npm audit reports", () => {
