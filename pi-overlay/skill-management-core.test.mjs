@@ -7,6 +7,7 @@ import {
   enabledEntries,
   getActiveSkillEntries,
   getSkillCatalogDirs,
+  resolveActiveSkillPaths,
   looksLikePath,
   normalizeGitRemoteUrl,
   resolveRepoKey,
@@ -483,6 +484,26 @@ test("runSkillsCommand reports active skills and an empty state", async () => {
   assert.deepEqual(none.lines, ["Skills: none"]);
 });
 
+test("resolveActiveSkillPaths reuses package resources resolved by the resource loader", async () => {
+  const { env, store } = withCatalog([{ name: "alpha", description: "First", filePath: "/pkg/alpha/SKILL.md" }]);
+  store.set("/agent/skills.json", JSON.stringify({ enabled: ["alpha"] }));
+  let packageResolutions = 0;
+  env.resolvePackageResources = async () => {
+    packageResolutions += 1;
+    throw new Error("should reuse the resource loader's package resolution");
+  };
+
+  const result = await resolveActiveSkillPaths(env, {
+    cwd: "/work",
+    agentDir: "/agent",
+    resolvedSkillResources: [{ enabled: true, path: "/pkg/alpha", metadata: { origin: "package", source: "local" } }],
+    resolveResourcePath: (path) => path,
+  });
+
+  assert.deepEqual(result, { paths: ["/pkg/alpha/SKILL.md"], diagnostics: [] });
+  assert.equal(packageResolutions, 0);
+});
+
 test("runSkillsCommand lists and searches the catalog", async () => {
   const { env } = withCatalog([
     { name: "alpha", description: "First skill", filePath: "/pkg/alpha/SKILL.md" },
@@ -651,6 +672,12 @@ test("a local folder without skills does not shadow a catalog skill of the same 
 test("a bare name prefers a catalog skill over a local skill folder of the same name", async () => {
   const catalogAlpha = { name: "alpha", description: "catalog skill", filePath: "/pkg/alpha/SKILL.md" };
   const { env, store } = withCatalog([catalogAlpha]);
+  let packageResolutions = 0;
+  const resolvePackageResources = env.resolvePackageResources;
+  env.resolvePackageResources = (options) => {
+    packageResolutions += 1;
+    return resolvePackageResources(options);
+  };
   withLocalSkills(env, { "/work/alpha": [{ ...catalogAlpha, filePath: "/work/alpha/SKILL.md" }] });
   env.fs.existsSync = (path) => path === "/work/alpha" || store.has(path);
   const options = { cwd: "/work", agentDir: "/agent" };
@@ -658,6 +685,7 @@ test("a bare name prefers a catalog skill over a local skill folder of the same 
   const added = await runSkillsCommand(env, ["add", "alpha", "--global"], options);
   assert.equal(added.exitCode, 0, added.lines.join("\n"));
   assert.deepEqual(readStored(store, "/agent/skills.json").enabled, ["alpha"], "the catalog name is persisted");
+  assert.equal(packageResolutions, 1, "the add command builds its catalog only once");
 
   const explicit = await runSkillsCommand(env, ["add", "./alpha", "--global"], options);
   assert.equal(explicit.exitCode, 0, "the local folder stays reachable through an explicit path");
