@@ -126,14 +126,14 @@ index fa877d8..4beda85 100644
 -		const skillPaths = this.noSkills
 -			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
 -			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
-+		// Skills are opt-in: discovered, package and settings skills form a catalog but are not active
-+		// unless explicitly enabled globally, for this repository, or for this session/CLI.
++		// Discovered skills are catalog entries, not active until explicitly enabled.
 +		const activeSkills = this.noSkills
 +			? { paths: [], diagnostics: [] }
 +			: await resolveActiveSkillPaths({
 +					cwd: this.cwd,
 +					agentDir: this.agentDir,
 +					settingsManager: this.settingsManager,
++					resolvedSkillResources: resolvedPaths.skills,
 +					resolveResourcePath: (p) => this.resolveResourcePath(p),
 +				});
 +		const skillPaths = this.mergePaths(
