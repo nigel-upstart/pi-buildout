@@ -89,10 +89,11 @@ of first resort.
 - License declared by the package: MIT
 
 Use: the reported fact that idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start` informs the
-router's original workaround: keep both safety validator tools declared throughout active mode, while checking the
-actual mode, lease phase, and review fingerprint when the tools execute. Shadow and off modes hide both tools. No Pi
-code or issue prose was copied or modified. We did not adopt the upstream proposed shared turn-preflight patch, fake
-user messages, prose-only safety verdicts, or permanent tool exposure when routing is disabled.
+router's workaround: keep the safety validator tools (`submit_action_plan`, `submit_discovery_request`, and
+`submit_safety_review`) declared throughout active mode, while checking the actual mode, lease phase, and review
+fingerprint when the tools execute. Shadow and off modes hide all three. No Pi code or issue prose was copied or
+modified. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages, prose-only safety
+verdicts, or permanent tool exposure when routing is disabled.
 
 ### `maximhq/bifrost`
 
