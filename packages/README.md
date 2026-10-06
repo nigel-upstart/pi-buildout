@@ -115,8 +115,7 @@ for name in pi-router-otel pi-clear pi-effort pi-markdown-backlinks pi-subagents
 done
 
 # WRITE OPERATION — use once per explicitly approved package, substituting its directory.
-(cd packages/pi-router-otel && PI_CODEARTIFACT_PUBLISH=1 \
-  node /opt/homebrew/lib/node_modules/npm/bin/npm-cli.js publish --registry "$REGISTRY" --tag alpha)
+(cd packages/pi-router-otel && PI_CODEARTIFACT_PUBLISH=1 npm publish --registry "$REGISTRY" --tag alpha)
 ```
 
 The `prepublishOnly` gate refuses publishing unless the effective registry is that exact CodeArtifact endpoint, the
