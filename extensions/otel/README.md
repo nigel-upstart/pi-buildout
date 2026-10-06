@@ -5,10 +5,11 @@ A vendored, `pi-buildout`-owned fork of [`pi-otel`](https://github.com/Nikiforov
 
 ## Status
 
-The fork is implemented, tested, CI-gated, and installed by the managed `upstart-dotfiles` path. It remains an explicit
-`--with-otel` installer choice so deployments do not acquire telemetry unexpectedly. Remove the published
-`npm:pi-otel` package before installing this fork: provider scoping means another OTel SDK no longer disables this one,
-but loading two Pi lifecycle instrumentations would still duplicate Pi telemetry.
+The fork is implemented, tested, CI-gated, and installed by default in the extension bundle and checkout installer.
+It is opt-out: `PI_OTEL_DISABLED=1` or `otel.enabled=false` disables export; `--without-otel` omits it from the checkout
+installer. **Its default profile exports full prompt/tool content to the staging collector**, so review it before
+installation. Remove the separately published `npm:pi-otel` package first: provider scoping lets another OTel SDK
+coexist, but two Pi lifecycle instrumentations would duplicate Pi telemetry.
 
 The ownership decision and rollback are in
 [`specs/otel-ownership-decision.md`](../../specs/otel-ownership-decision.md). Convention mappings, supported launch
@@ -82,7 +83,11 @@ test instead of drifting silently.
 
 ## Configuration
 
-Upstream settings are unchanged. This fork adds one:
+The bundle uses the current owner profile as defaults: enabled, `https://corp-otel-staging-1.upstart.com`,
+`http/protobuf`, service `pi-coding-agent`, GenAI span naming, `captureContent=full`, sample ratio 1, and all three
+signals on. Environment variables and Pi `otel` settings still override these defaults. Full capture can include
+sensitive prompts and tool output; disable export or reduce capture before using the package where that is not
+appropriate. This fork also adds one setting:
 
 | Setting | Env var | Default | Range |
 | --- | --- | --- | --- |

@@ -56,5 +56,6 @@ npm-debug.log*
 .pi/
 .serena/
 
-# Vendored OTel extension build output
+# Vendored OTel build output and staged npm release payloads
 extensions/otel/dist/
+packages/pi-*/dist/

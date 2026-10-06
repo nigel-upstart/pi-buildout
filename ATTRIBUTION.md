@@ -574,6 +574,21 @@ reload mechanics were not adopted. This repository retains its existing Pi GenAI
 providers/exporters, explicitly preserves shell trace context, separates metric resources for cardinality control, and
 records exporter delivery health.
 
+## Internal npm release packaging
+
+- Source: `teamupstart/umt`, <https://github.com/teamupstart/umt>, `internal/artifacts/roles.go` and
+  `internal/artifacts/dotfile/npm.go` at revision `139ea84b36fd550fb29ba91649975d39e3734817`; license not established
+  from the reviewed files.
+- Source: Upstart CodeArtifact guide, <https://upstartnetwork.atlassian.net/wiki/spaces/DEL/pages/6780387430>.
+- Source: Pi package documentation,
+  <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md>, MIT.
+
+Conceptual use only: the manual release instructions use UMT's production CodeArtifact domain/repository, publish SSO
+role, and full-path npm token scoping. The Pi manifest and peer-dependency design follow Pi's package documentation. No
+UMT or Pi code was copied into the release scripts; UMT's automatic dotfile/profile changes and CI publishing action
+were intentionally not adopted. The router/OTel runtime companions share a package, while independent extensions and the
+standalone patch are separate packages. The OTel source is redistributed with its Apache-2.0 license intact.
+
 ## `zew1me/pi-buildout` (upstream of this fork)
 
 - Source: `zew1me/pi-buildout`

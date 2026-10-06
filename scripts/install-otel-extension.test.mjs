@@ -36,15 +36,24 @@ async function install(args) {
 }
 
 describe("vendored OTel extension installation", () => {
-  it("stays out of the default install because telemetry activation is explicit", async () => {
+  it("installs telemetry by default and supports explicit opt-out", async () => {
     const agentDirectory = await install([]);
-    assert.equal(await exists(join(agentDirectory, "extensions", "otel")), false);
-    // The default set must still install, so the opt-in gate cannot silently skip everything.
+    assert.equal(await exists(join(agentDirectory, "extensions", "otel", "src", "index.ts")), true);
     assert.equal(await exists(join(agentDirectory, "extensions", "router", "index.ts")), true);
+
+    const optedOut = await install(["--without-otel"]);
+    assert.equal(await exists(join(optedOut, "extensions", "otel")), false);
+    assert.equal(await exists(join(optedOut, "extensions", "router", "index.ts")), true);
+
+    await execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch", "--without-otel"], {
+      cwd: root,
+      env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+    });
+    assert.equal(await exists(join(agentDirectory, "extensions", "otel")), false);
   });
 
   it("installs the manifest-declared entrypoint and prunes tests and build output", async () => {
-    const agentDirectory = await install(["--with-otel"]);
+    const agentDirectory = await install([]);
     const otel = join(agentDirectory, "extensions", "otel");
 
     const manifest = JSON.parse(await readFile(join(otel, "package.json"), "utf8"));
@@ -64,7 +73,7 @@ describe("vendored OTel extension installation", () => {
   });
 
   it("resolves every declared dependency from inside the installed tree", async () => {
-    const agentDirectory = await install(["--with-otel"]);
+    const agentDirectory = await install([]);
     const otel = join(agentDirectory, "extensions", "otel");
     const manifest = JSON.parse(await readFile(join(otel, "package.json"), "utf8"));
     const dependencies = Object.keys(manifest.dependencies);

@@ -9,7 +9,7 @@ Local pi customizations and supporting notes used to make pi the desired coding-
 | `extensions/effort`                    | `/effort`: select and persist thinking effort                                               | [`extensions/effort/README.md`](extensions/effort/README.md)                         |
 | `extensions/router`                    | Shadow-first, task-leased model and prompt-profile routing                                  | [`extensions/router/README.md`](extensions/router/README.md)                         |
 | `extensions/subagents`                 | Natural-language creation and control of isolated, recursively nestable Pi subagents        | [`extensions/subagents/README.md`](extensions/subagents/README.md)                   |
-| `extensions/otel`                      | Vendored OpenTelemetry fork: GenAI spans, metrics, and logs over OTLP (opt-in)              | [`extensions/otel/README.md`](extensions/otel/README.md)                             |
+| `extensions/otel`                      | Vendored OpenTelemetry fork: GenAI spans, metrics, and logs over OTLP (opt-out)             | [`extensions/otel/README.md`](extensions/otel/README.md)                             |
 | `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior                                  | [skill README](.agents/skills/installed-pi-patching/README.md)                       |
 | `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-1.0.3/README.md`](patches/pi-1.0.3/README.md)                           |
 | `pi-overlay`                           | Authored TypeScript the generated `/skills` patches (0.85.1 and later) come from            | [`pi-overlay/README.md`](pi-overlay/README.md)                                       |
@@ -41,16 +41,20 @@ bundled pi releases, the versioned patch delegates the published entrypoints to 
 installer can also migrate recognized earlier patch states and rejects unknown or mixed states. It does not modify pi
 settings. Use `--skip-skill-loading-patch` to install only the extensions.
 
-The vendored OpenTelemetry extension is opt-in so deployments do not acquire telemetry unexpectedly:
-
-```bash
-./scripts/install-extensions.sh --with-otel
-```
-
-Remove any published `npm:pi-otel` entry from Pi settings first. The owned fork now uses scoped providers and can
-coexist with another OTel SDK, but loading two Pi lifecycle extensions would duplicate the same interactions. See
-[`specs/otel-ownership-decision.md`](specs/otel-ownership-decision.md) and
+The vendored OpenTelemetry extension now installs by default. It exports traces, metrics, and logs to the staging
+collector and captures full content unless overridden in Pi settings or the environment. **Review the data-capture
+policy before installing.** To omit it from the local installer, use `--without-otel`; for an installed extension set
+`PI_OTEL_DISABLED=1` or `otel.enabled=false`. Remove any published `npm:pi-otel` entry from Pi settings first to avoid
+duplicate Pi telemetry. See [`specs/otel-ownership-decision.md`](specs/otel-ownership-decision.md) and
 [`specs/otel-production-readiness.md`](specs/otel-production-readiness.md).
+
+### Internal npm prereleases
+
+Six independently versioned alpha packages live in [`packages/`](packages/README.md): router and OTel ship together with
+their dependencies; clear, effort, backlinks, and subagents are à-la-carte; and the standalone `/skills` package applies
+only the version-checked runtime patch. **Installing an extension package does not patch Pi.** The OTel Apache-2.0
+license travels with its package. See the [manual release instructions](packages/README.md) for credentials, review
+checkpoints, and the exact publish commands. Nothing is published by the repository's quality workflow.
 
 ### Where the `/skills` patch comes from
 

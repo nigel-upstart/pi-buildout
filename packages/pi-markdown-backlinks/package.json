@@ -1,0 +1,28 @@
+{
+  "name": "@upstart/pi-markdown-backlinks",
+  "version": "0.1.0-alpha.0",
+  "type": "module",
+  "description": "Pi Markdown backlinks extension",
+  "license": "SEE LICENSE IN dist/LICENSE",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/extensions/markdown-backlinks/index.ts"
+    ]
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/stage-release-package.mjs markdown-backlinks",
+    "prepublishOnly": "node ../../scripts/check-release-registry.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

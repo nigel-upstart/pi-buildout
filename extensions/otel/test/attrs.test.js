@@ -42,12 +42,16 @@ function recordingTracer() {
 }
 
 /** Settings dir isolation: resolveConfig also reads $HOME/.pi/agent/settings.json. */
-function withSettings(otel, fn) {
+function withSettings(otel, fn, globalOtel) {
   const home = mkdtempSync(join(tmpdir(), "pi-otel-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-otel-cwd-"));
   if (otel !== undefined) {
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ otel }));
+  }
+  if (globalOtel !== undefined) {
+    mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+    writeFileSync(join(home, ".pi", "agent", "settings.json"), JSON.stringify({ otel: globalOtel }));
   }
   const priorHome = process.env.HOME;
   const priorUserProfile = process.env.USERPROFILE;
@@ -72,6 +76,17 @@ function withEnv(key, value, fn) {
   } finally {
     if (prior === undefined) delete process.env[key];
     else process.env[key] = prior;
+  }
+}
+
+function withCleanOtelEnv(fn) {
+  const keys = Object.keys(process.env).filter((key) => key.startsWith("OTEL_") || key.startsWith("PI_OTEL_"));
+  const saved = new Map(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of saved) process.env[key] = value;
   }
 }
 
@@ -133,6 +148,40 @@ test("values JSON.stringify cannot represent still clamp to a string", () => {
 });
 
 // --- resolveConfig --------------------------------------------------------
+
+test("the bundled profile exports all signals and content by default, and remains opt-out", () => {
+  withCleanOtelEnv(() => withSettings(undefined, (cwd) => {
+    const config = resolveConfig(cwd);
+    assert.equal(config.enabled, true);
+    assert.equal(config.endpoint, "https://corp-otel-staging-1.upstart.com");
+    assert.equal(config.protocol, "http/protobuf");
+    assert.equal(config.serviceName, "pi-coding-agent");
+    assert.equal(config.captureContent, "full");
+    assert.equal(config.spanNaming, "genai");
+    assert.deepEqual(config.signals, { traces: true, metrics: true, logs: true });
+    withEnv("PI_OTEL_DISABLED", "1", () => assert.equal(resolveConfig(cwd).enabled, false));
+  }));
+  withCleanOtelEnv(() => withSettings({ captureContent: "metadata_only", signals: { logs: false, metrics: false } }, (cwd) => {
+    const config = resolveConfig(cwd);
+    assert.equal(config.captureContent, "metadata_only");
+    assert.equal(config.signals.logs, false);
+    assert.equal(config.signals.metrics, false);
+  }));
+});
+
+test("explicit signal environment opt-outs override the enabled-by-default profile", () => {
+  withCleanOtelEnv(() => withSettings(undefined, (cwd) => {
+    withEnv("PI_OTEL_METRICS", "false", () => withEnv("PI_OTEL_LOGS", "0", () => {
+      assert.deepEqual(resolveConfig(cwd).signals, { traces: true, metrics: false, logs: false });
+    }));
+  }));
+});
+
+test("partial project signal settings preserve global opt-outs", () => {
+  withCleanOtelEnv(() => withSettings({ signals: { traces: true, metrics: true } }, (cwd) => {
+    assert.deepEqual(resolveConfig(cwd).signals, { traces: true, metrics: true, logs: false });
+  }, { signals: { traces: false, metrics: false, logs: false } }));
+});
 
 test("maxAttributeBytes defaults to 60 KiB when unset", () => {
   withSettings(undefined, (cwd) => {

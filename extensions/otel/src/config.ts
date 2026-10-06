@@ -1,5 +1,6 @@
 /**
- * Modified from upstream pi-otel 0.3.0: resolves `otel.maxAttributeBytes`.
+ * Modified from upstream pi-otel 0.3.0: resolves `otel.maxAttributeBytes` and supplies
+ * pi-buildout's default telemetry profile. Settings and environment variables still override it.
  *
  * Resolve pi-otel configuration from `.pi/settings.json` + env vars.
  *
@@ -168,6 +169,10 @@ export function resolveConfig(cwd: string): OtelConfig {
   const merged: SettingsShape["otel"] = {
     ...(globalSettings?.otel ?? {}),
     ...(projectSettings?.otel ?? {}),
+    signals: {
+      ...(globalSettings?.otel?.signals ?? {}),
+      ...(projectSettings?.otel?.signals ?? {}),
+    },
   };
 
   const envDisabled =
@@ -179,10 +184,10 @@ export function resolveConfig(cwd: string): OtelConfig {
   const endpoint =
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
     merged?.endpoint ??
-    "http://127.0.0.1:4317";
+    "https://corp-otel-staging-1.upstart.com";
 
   const protocol = normalizeProtocol(
-    process.env.OTEL_EXPORTER_OTLP_PROTOCOL ?? merged?.protocol,
+    process.env.OTEL_EXPORTER_OTLP_PROTOCOL ?? merged?.protocol ?? "http/protobuf",
   );
 
   const headers = {
@@ -191,10 +196,10 @@ export function resolveConfig(cwd: string): OtelConfig {
   };
 
   const serviceName =
-    process.env.OTEL_SERVICE_NAME ?? merged?.serviceName ?? "pi";
+    process.env.OTEL_SERVICE_NAME ?? merged?.serviceName ?? "pi-coding-agent";
 
   const captureContent = normalizeCapture(
-    process.env.PI_OTEL_CAPTURE_CONTENT ?? merged?.captureContent,
+    process.env.PI_OTEL_CAPTURE_CONTENT ?? merged?.captureContent ?? "full",
   );
 
   const maxAttributeBytes = normalizeMaxAttributeBytes(
@@ -202,13 +207,18 @@ export function resolveConfig(cwd: string): OtelConfig {
   );
 
   const spanNaming = normalizeSpanNaming(
-    process.env.PI_OTEL_SPAN_NAMING ?? merged?.spanNaming,
+    process.env.PI_OTEL_SPAN_NAMING ?? merged?.spanNaming ?? "genai",
   );
 
   const sampleRatio =
     typeof merged?.sampleRatio === "number" ? merged.sampleRatio : 1.0;
 
   const envTrue = (v: string | undefined): boolean => v === "1" || v === "true";
+  const envSignal = (v: string | undefined): boolean | undefined => {
+    if (v === "1" || v === "true") return true;
+    if (v === "0" || v === "false") return false;
+    return undefined;
+  };
 
   return {
     enabled,
@@ -225,10 +235,8 @@ export function resolveConfig(cwd: string): OtelConfig {
       merged?.propagateToShell === true,
     signals: {
       traces: merged?.signals?.traces !== false,
-      metrics:
-        envTrue(process.env.PI_OTEL_METRICS) ||
-        merged?.signals?.metrics === true,
-      logs: envTrue(process.env.PI_OTEL_LOGS) || merged?.signals?.logs === true,
+      metrics: envSignal(process.env.PI_OTEL_METRICS) ?? (merged?.signals?.metrics !== false),
+      logs: envSignal(process.env.PI_OTEL_LOGS) ?? (merged?.signals?.logs !== false),
     },
     resourceAttributes: parseKvList(process.env.OTEL_RESOURCE_ATTRIBUTES, true),
     logLevel:
