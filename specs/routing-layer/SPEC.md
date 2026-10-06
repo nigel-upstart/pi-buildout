@@ -329,9 +329,12 @@ The policy derived once at task creation is one of:
 
 Only the fourth policy is an approval gate. It begins in `preflight`, where deterministic tool enforcement allows
 bounded inspection, `submit_action_plan`, and `submit_discovery_request` but blocks editing, arbitrary shell
-composition, subagents, and unknown tools. Pi's active tool set exposes `submit_action_plan` and
-`submit_discovery_request` only in `preflight` and `submit_safety_review` only in a generated `review` phase;
-registration alone must not advertise any validator during ordinary work.
+composition, subagents, and unknown tools. While routing is active, Pi's active tool set declares `submit_action_plan`,
+`submit_discovery_request`, and `submit_safety_review` on every turn. Extension-generated review turns skip
+`before_agent_start`, so per-phase exposure cannot be relied on. Each validator instead checks the active mode and
+lifecycle phase when it executes. `submit_action_plan` and `submit_discovery_request` accept only in `preflight`, and
+`submit_safety_review` only in a generated `review` phase. Exposure alone never authorizes anything, and none of the
+validators are declared in shadow or off mode.
 
 When read-only inspection cannot establish the facts the plan needs, preflight may request **bounded discovery**: one
 exact tool call, named by tool and strict JSON input, with its objective, target, expected effects, preconditions,
