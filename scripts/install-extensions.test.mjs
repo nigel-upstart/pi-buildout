@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -50,8 +50,11 @@ test("installer retires legacy top-level extensions after installing directory r
 
   await Promise.all([
     ...managedExtensions.flatMap((extension) => [
-      writeFile(join(extensionDirectory, `${extension}.ts`), "legacy entrypoint\n"),
-      writeFile(join(extensionDirectory, `${extension}.test.mjs`), "legacy test\n"),
+      copyFile(join(repositoryRoot, "extensions", extension, "index.ts"), join(extensionDirectory, `${extension}.ts`)),
+      copyFile(
+        join(repositoryRoot, "extensions", extension, "index.test.mjs"),
+        join(extensionDirectory, `${extension}.test.mjs`),
+      ),
     ]),
     writeFile(join(extensionDirectory, "unrelated.ts"), "unrelated extension\n"),
   ]);
@@ -71,4 +74,21 @@ test("installer retires legacy top-level extensions after installing directory r
     );
   }
   assert.equal(await readFile(join(extensionDirectory, "unrelated.ts"), "utf8"), "unrelated extension\n");
+});
+
+test("installer refuses to delete unrecognized same-name top-level extensions or tests", async (context) => {
+  for (const name of ["clear.ts", "effort.test.mjs"]) {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "pi-extension-conflict-"));
+    context.after(() => rm(temporaryRoot, { force: true, recursive: true }));
+    const agentDirectory = join(temporaryRoot, "agent");
+    const extensionDirectory = join(agentDirectory, "extensions");
+    await mkdir(extensionDirectory, { recursive: true });
+    await writeFile(join(extensionDirectory, name), "unrelated extension\n");
+
+    const result = await runInstaller(agentDirectory);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /not a recognized managed legacy extension file/u);
+    assert.equal(await readFile(join(extensionDirectory, name), "utf8"), "unrelated extension\n");
+    assert.equal(await exists(join(extensionDirectory, "clear", "index.ts")), false);
+  }
 });

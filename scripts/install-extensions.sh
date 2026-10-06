@@ -192,6 +192,24 @@ if ((INSTALL_EXTENSIONS)) && [[ -e "$EXTENSION_DIR/otel" || -L "$EXTENSION_DIR/o
 fi
 
 if ((INSTALL_EXTENSIONS)); then
+  # Pi also loads extensions/name.ts. Only retire top-level files that match this checkout's
+  # previous layout; an unrelated same-name extension must not be deleted on migration.
+  for extension in "${EXTENSIONS[@]}"; do
+    for suffix in .ts .test.mjs; do
+      legacy_file="$EXTENSION_DIR/$extension$suffix"
+      [[ -e "$legacy_file" || -L "$legacy_file" ]] || continue
+      if [[ "$suffix" == .ts ]]; then
+        legacy_source="$ROOT_DIR/extensions/$extension/index.ts"
+      else
+        legacy_source="$ROOT_DIR/extensions/$extension/index.test.mjs"
+      fi
+      if [[ -L "$legacy_file" || ! -f "$legacy_file" || ! -f "$legacy_source" ]] \
+        || ! cmp -s "$legacy_file" "$legacy_source"; then
+        printf 'Cannot retire %s: it is not a recognized managed legacy extension file.\n' "$legacy_file" >&2
+        exit 1
+      fi
+    done
+  done
   for extension in "${EXTENSIONS[@]}"; do
     entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
     if [[ ! -f "$ROOT_DIR/extensions/$extension/$entrypoint" ]]; then
@@ -459,11 +477,24 @@ if ((INSTALL_EXTENSIONS)); then
     EXTENSION_COMMIT_IN_PROGRESS=0
   done
 
-  # Pi discovers both extensions/name.ts and extensions/name/index.ts. After every
-  # managed directory replacement succeeds, remove any same-name top-level entrypoint
-  # left by the legacy layout so each extension loads exactly once.
+  # Legacy files were checked against this checkout before installation; recheck before
+  # deletion in case another process changed one while dependencies were being installed.
   for extension in "${EXTENSIONS[@]}"; do
-    rm -f "$EXTENSION_DIR/$extension.ts" "$EXTENSION_DIR/$extension.test.mjs"
+    for suffix in .ts .test.mjs; do
+      legacy_file="$EXTENSION_DIR/$extension$suffix"
+      [[ -e "$legacy_file" || -L "$legacy_file" ]] || continue
+      if [[ "$suffix" == .ts ]]; then
+        legacy_source="$ROOT_DIR/extensions/$extension/index.ts"
+      else
+        legacy_source="$ROOT_DIR/extensions/$extension/index.test.mjs"
+      fi
+      if [[ -L "$legacy_file" || ! -f "$legacy_file" || ! -f "$legacy_source" ]] \
+        || ! cmp -s "$legacy_file" "$legacy_source"; then
+        printf 'Cannot retire %s: it changed during installation.\n' "$legacy_file" >&2
+        exit 1
+      fi
+      rm -f "$legacy_file"
+    done
   done
 fi
 
