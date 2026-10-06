@@ -80,6 +80,20 @@ prompting/benchmark references consulted for background, is recorded in
 referenced by the implementation are recorded here as well, per this file's role as the repository's attribution record
 of first resort.
 
+### Pi generated-turn tool exposure
+
+- Source: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581) and the published
+  `@earendil-works/pi-coding-agent@1.0.3` extension and agent-session runtime
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Revision reviewed: published version `1.0.3`; no Git commit was pinned for the issue thread
+- License declared by the package: MIT
+
+Use: the reported fact that idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start` informs the
+router's original workaround: keep both safety validator tools declared throughout active mode, while checking the
+actual mode, lease phase, and review fingerprint when the tools execute. Shadow and off modes hide both tools. No Pi
+code or issue prose was copied or modified. We did not adopt the upstream proposed shared turn-preflight patch, fake
+user messages, prose-only safety verdicts, or permanent tool exposure when routing is disabled.
+
 ### `maximhq/bifrost`
 
 - Repository: <https://github.com/maximhq/bifrost>

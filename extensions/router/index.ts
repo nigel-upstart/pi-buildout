@@ -221,14 +221,10 @@ export function routerOffNotice(phase: RestrictedPhase): string {
 }
 const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
-/** Keep lifecycle validators out of the model's tool surface unless the active phase can accept them. */
-export function activeToolsForSafetyLifecycle(
-  activeTools: readonly string[],
-  lifecycle: LeaseLifecycle | undefined,
-): string[] {
+/** Keep both validators declared across generated turns, but only while routing is active. */
+export function activeToolsForSafetyLifecycle(activeTools: readonly string[], mode: RouterMode): string[] {
   const next = activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name));
-  if (lifecycle?.phase === "preflight") next.push("submit_action_plan");
-  if (lifecycle?.phase === "review") next.push("submit_safety_review");
+  if (mode === "active") next.push("submit_action_plan", "submit_safety_review");
   return next;
 }
 
@@ -524,9 +520,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
 
-  function syncRouterTools(lifecycle: LeaseLifecycle | undefined): void {
+  function syncRouterTools(): void {
     const current = pi.getActiveTools();
-    let next = activeToolsForSafetyLifecycle(current, state.mode === "off" ? undefined : lifecycle);
+    let next = activeToolsForSafetyLifecycle(current, state.mode);
     if (state.mode === "off") {
       if (next.includes(PLANNING_VALIDATOR_TOOL_NAME)) {
         next = next.filter((name) => name !== PLANNING_VALIDATOR_TOOL_NAME);
@@ -602,6 +598,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     telemetryHealthy = false;
     if (state.mode === "active") {
       state = { ...state, mode: "shadow" };
+      syncRouterTools();
       persistState();
       updateStatus(ctx);
       void rememberMode(state.mode);
@@ -2244,8 +2241,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     parameters: ActionPlanSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = state.active;
-      if (active?.lifecycle.phase !== "preflight") {
-        throw new Error("submit_action_plan is only valid inside an irreversible-action preflight lease");
+      if (state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
+        throw new Error("submit_action_plan is only valid inside an active irreversible-action preflight lease");
       }
       const validation = validateActionPlan(params);
       await record(
@@ -2297,8 +2294,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     parameters: SafetyReviewSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = state.active;
-      if (active?.lifecycle.phase !== "review") {
-        throw new Error("submit_safety_review is only valid inside a generated independent review lease");
+      if (state.mode !== "active" || active?.lifecycle.phase !== "review") {
+        throw new Error("submit_safety_review is only valid inside an active generated independent review lease");
       }
       if (active.lifecycle.submission) {
         throw new Error("submit_safety_review may be called only once for a generated review attempt");
@@ -2431,6 +2428,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
     const repository = await readRepositoryMetadata(pi, ctx.cwd);
     lastUpstream = repository.upstream;
+    syncRouterTools();
     updateStatus(ctx);
   });
 
@@ -2459,9 +2457,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("input", (event, ctx) => {
-    // The next task boundary is not known yet. Remove phase-scoped validators before Pi builds
-    // the turn prompt; before_agent_start restores exactly the validator accepted by the lease.
-    syncRouterTools(undefined);
+    // Generated turns bypass this hook, so retain both validators throughout active routing.
+    // In shadow and off modes, neither validator is declared.
+    syncRouterTools();
     if (state.mode === "off") return { action: "continue" as const };
     if (
       state.active &&
@@ -2510,9 +2508,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("before_agent_start", async (event, ctx) => {
     agentRunPhase = "before_start";
-    let exposedSafetyLifecycle: LeaseLifecycle | undefined;
     if (state.mode === "off") {
-      syncRouterTools(undefined);
+      syncRouterTools();
       return;
     }
     // `/route off` does not cancel this hook. Each slow step below is followed by a generation check,
@@ -2771,7 +2768,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (!active) return;
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
-      exposedSafetyLifecycle = active.lifecycle;
       const safetyContext = safetyContextForLifecycle(active.lifecycle);
       const compiled = compilePrompt({
         baseSystemPrompt: safetyContext ? `${event.systemPrompt}\n\n${safetyContext}` : event.systemPrompt,
@@ -2790,7 +2786,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         },
       };
     } finally {
-      syncRouterTools(superseded() ? undefined : exposedSafetyLifecycle);
+      syncRouterTools();
       ctx.ui.setWorkingMessage();
     }
   });
@@ -3307,9 +3303,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             offNoticePhase = liftedPhase;
           }
         }
-        // Off hides every router-only tool; re-enabling restores the planning validator it hid. Phase
-        // validators return at the next before_agent_start, which exposes exactly what the lease accepts.
-        if (command === "off" || planningValidatorHiddenWhileOff) syncRouterTools(undefined);
+        // Off hides every router-only tool; shadow hides both safety validators. Re-enabling active
+        // routing restores them immediately, including before an extension-generated turn.
+        syncRouterTools();
         if (command === "active" && state.active) {
           accumulatedTaskCosts.set(state.active.taskId, 0);
           taskStartedAt.set(state.active.taskId, Date.now());
