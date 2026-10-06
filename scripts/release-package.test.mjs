@@ -74,7 +74,17 @@ test("patch package stages only versioned patch data and a patch-only CLI", () =
   assert.equal(statSync(join(dist, "scripts", "install-extensions.sh")).isFile(), true);
   assert.equal(manifest.bin["pi-skills-patch"], "dist/scripts/install-extensions.sh");
   assert.match(readFileSync(join(dist, "scripts", "install-extensions.sh"), "utf8"), /--skip-extensions/);
-  assert.ok(readdirSync(join(dist, "patches")).includes("pi-1.0.3"));
+  const patchVersions = readdirSync(join(root, "patches")).filter((name) => /^pi-\d/.test(name));
+  assert.deepEqual(readdirSync(join(dist, "patches")).sort(), patchVersions.toSorted());
+  for (const version of patchVersions) {
+    const expected = readdirSync(join(root, "patches", version))
+      .filter((name) => /(?:\.(?:patch|sha256|absent)|-absent)$/.test(name))
+      .sort();
+    assert.deepEqual(readdirSync(join(dist, "patches", version)).sort(), expected, version);
+  }
+  for (const state of ["handwritten", "legacy", "pre-validation"]) {
+    assert.equal(statSync(join(dist, "patches", "pi-0.85.1", `${state}-absent`)).isFile(), true);
+  }
   assert.equal(readdirSync(dist).includes("extensions"), false);
 
   const binDir = mkdtempSync(join(tmpdir(), "pi-skills-package-"));

@@ -52,7 +52,7 @@ if (kind !== "skills-patch") {
   for (const entry of await readdir(join(root, "patches"), { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith("pi-")) continue;
     for (const file of await readdir(join(root, "patches", entry.name), { withFileTypes: true })) {
-      if (file.isFile() && /^(?:.*\.(?:patch|sha256|absent))$/.test(file.name)) {
+      if (file.isFile() && /(?:\.(?:patch|sha256|absent)|-absent)$/.test(file.name)) {
         await copy(join(root, "patches", entry.name, file.name), join(destination, "patches", entry.name, file.name));
       }
     }
