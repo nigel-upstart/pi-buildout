@@ -96,17 +96,66 @@ precedence and project-trust behavior. It intentionally does not adopt automatic
 configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's unrelated extension, prompt,
 theme, package, trust, and provider behavior.
 
-## Pi `/skills` TypeScript overlay
+## Pi 0.99.2 `/skills` runtime patch
 
-- Source: `@earendil-works/pi-coding-agent@0.85.1`
+- Source: `@earendil-works/pi-coding-agent@0.99.2`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Upstream revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`), taken from the npm registry's
-  `gitHead` for that release
-- Source acquired from the release asset `pi-0.85.1-source.tar.gz`, verified against upstream's published `SHA256SUMS`
+- Upstream revision reviewed: `005af57d88ee23b33778f343a9595b32e67ff788` (`v0.99.2`), from npm `gitHead`
 - License declared by the package: MIT
 
-[`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under `patches/pi-0.85.1/`
-are generated from it.
+[`pi-overlay/versions/0.99.2/integration.patch`](pi-overlay/versions/0.99.2/integration.patch) adapts the prior 0.85.1
+integration seam to the MIT-licensed 0.99.2 TypeScript source and documentation. Its unchanged context and modified call
+sites derive from Pi's `resource-loader.ts`, `slash-commands.ts`, `main.ts`, `interactive-mode.ts`, and
+`docs/skills.md`. The generated [`skills.patch`](patches/pi-0.99.2/skills.patch) modifies their published JavaScript
+counterparts and documentation; it adds the original `skill-management*.js` overlay modules. The patch reuses Pi's
+package/resource discovery, project-trust and `proper-lockfile` APIs, adapting the trust-manager lock pattern described
+below. It makes catalog skills opt-in with global, repository, and session activation, preserving explicit CLI skill
+paths and avoiding Pi's automatic loading of all discovered skills. It does not adopt or change Pi's unrelated
+extension, prompt, theme, package, provider, trust, or bundled-chunk behavior.
+
+The hand-written `cli-runtime.js` and `rpc-entry.js` replacements in the 0.99.2 overlay are original wrappers reused
+from the earlier patch; they delegate to the patched unbundled runtime. Pi's published `dist/bundle/cli.js` loader is
+unchanged and pinned by checksum. The entrypoint test uses a byte-identical five-line stand-in based on that
+MIT-licensed loader. Inputs are fetched from the 0.99.2 release archive (verified against its published `SHA256SUMS`)
+and npm tarball; no complete Pi source checkout is committed.
+
+## Pi 1.0.3 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.0.3`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`), from npm `gitHead`
+- Source archive: `pi-1.0.3-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.0.3/integration.patch`](pi-overlay/versions/1.0.3/integration.patch) adapts the existing opt-in
+skills seam to the MIT-licensed 1.0.3 TypeScript sources and documentation. The generated
+[`skills.patch`](patches/pi-1.0.3/skills.patch) modifies the published resource loader, slash-command list, CLI and
+interactive entry points, and `docs/skills.md`; it adds this repository's original skill-management modules. The patch
+reuses Pi's package/resource discovery, project-trust, and `proper-lockfile` APIs, including an adapted lock pattern
+previously attributed above. It keeps discovered skills catalog-only, enables explicit global, repository, and session
+activation, preserves explicit `--skill` paths when `--no-skills` is used, and leaves Pi's unrelated extensions,
+prompts, themes, packages, providers, trust behavior, and bundled chunks unchanged. It does not copy Pi's automatic
+skill-loading behavior or its runtime implementation into the overlay.
+
+The `cli-runtime.js` and `rpc-entry.js` replacements are original wrappers reused from the earlier generated patch; Pi's
+published `dist/bundle/cli.js` compile-cache loader remains unchanged and is pinned by checksum. Source inputs are
+fetched from the 1.0.3 release archive and npm tarball with committed checksums; no complete Pi source checkout is
+committed.
+
+## Pi `/skills` TypeScript overlay
+
+- Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.99.2`, and
+  `@earendil-works/pi-coding-agent@1.0.3`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
+  `005af57d88ee23b33778f343a9595b32e67ff788` (`v0.99.2`), and `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`),
+  taken from the npm registry's `gitHead` for each release
+- Source acquired from the 0.85.1, 0.99.2, and 1.0.3 release archives and verified against each release's published
+  `SHA256SUMS`
+- License declared by the package: MIT
+
+[`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
+`patches/pi-0.85.1/`, `patches/pi-0.99.2/`, and `patches/pi-1.0.3/` are generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
@@ -136,8 +185,9 @@ pinned, checksum-verified inputs, and is not committed here.
 
 - Source: `@earendil-works/pi-coding-agent`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Releases reviewed: `0.80.6`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, `0.84.1`, `0.84.2`, `0.84.4`, and `0.85.1`
-- Latest documentation and example revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477`
+- Releases reviewed: `0.80.6`, `0.82.0`, `0.82.1`, `0.83.0`, `0.84.0`, `0.84.1`, `0.84.2`, `0.84.4`, `0.85.1`, `0.99.2`,
+  and `1.0.3`
+- Latest documentation and example revision reviewed: `d78dc83d633229d12f8b79631384c4c2717c399f`
 - License declared by the package: MIT
 
 Ideas and API patterns used:

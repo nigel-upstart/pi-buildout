@@ -1,5 +1,5 @@
 diff --git a/dist/core/skill-management-core.js b/dist/core/skill-management-core.js
-index 915d49d..7140cfb 100644
+index 915d49d..2fd4257 100644
 --- a/dist/core/skill-management-core.js
 +++ b/dist/core/skill-management-core.js
 @@ -28,6 +28,45 @@ function writeJson(env, path, value) {
@@ -48,7 +48,7 @@ index 915d49d..7140cfb 100644
  function git(env, cwd, args) {
      try {
          return env
-@@ -123,32 +162,81 @@ export function configLocation(env, scope, cwd, agentDir) {
+@@ -123,32 +162,68 @@ export function configLocation(env, scope, cwd, agentDir) {
  export function looksLikePath(value) {
      return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
  }
@@ -64,19 +64,6 @@ index 915d49d..7140cfb 100644
 +        includeDefaults: false,
 +    });
 +    return skills.length > 0;
-+}
-+async function normalizeSkillSource(env, source, options) {
-+    if (!source)
-+        return undefined;
-+    const resolved = env.resolvePath(source, options.cwd, { trim: true });
-+    if (looksLikePath(source))
-+        return resolved;
-+    // A bare name is a path only when it names a folder or file holding skills, and no catalog skill has that
-+    // name. A bare name therefore always means what `skills list` shows, and a local folder never shadows it.
-+    if (!containsSkills(env, resolved, options))
-+        return source;
-+    const catalog = await getSkillCatalog(env, options);
-+    return catalog.some((skill) => skill.name === source) ? source : resolved;
 +}
 +/**
 + * Normalizes an entry already persisted in a configuration file.
@@ -149,35 +136,69 @@ index 915d49d..7140cfb 100644
  }
  export function getActiveSkillEntries(env, { cwd, agentDir, strict = false, onWarn }) {
      const entries = [];
-@@ -232,10 +320,10 @@ export async function getSkillCatalog(env, { cwd, agentDir, settingsManager }) {
+@@ -210,7 +285,7 @@ export function getSkillCatalogDirs(env, { cwd, agentDir, projectTrusted = false
+     }
+     return dirs;
+ }
+-export async function getSkillCatalog(env, { cwd, agentDir, settingsManager }) {
++export async function getSkillCatalog(env, { cwd, agentDir, settingsManager, resolvedSkillResources }) {
+     const manager = settingsManager ?? env.createSettingsManager(cwd, agentDir);
+     const found = new Map();
+     const addSkills = (skills) => {
+@@ -222,22 +297,26 @@ export async function getSkillCatalog(env, { cwd, agentDir, settingsManager }) {
+     for (const dir of getSkillCatalogDirs(env, { cwd, agentDir, projectTrusted: manager.isProjectTrusted() })) {
+         addSkills(env.loadSkillsFromDir({ dir, source: "path" }).skills);
+     }
+-    const resolved = await env.resolvePackageResources({ cwd, agentDir, settingsManager: manager });
++    const resolved = resolvedSkillResources ?? (await env.resolvePackageResources({ cwd, agentDir, settingsManager: manager })).skills;
+     const addResolvedSkills = (resources) => {
+         const paths = resources.filter((resource) => resource.enabled).map((resource) => resource.path);
+         addSkills(env.loadSkills({ cwd, agentDir, skillPaths: paths, includeDefaults: false }).skills);
+     };
+-    addResolvedSkills(resolved.skills.filter((resource) => resource.metadata.origin === "package"));
+-    addResolvedSkills(resolved.skills.filter((resource) => resource.metadata.origin === "top-level" && resource.metadata.source === "local"));
++    addResolvedSkills(resolved.filter((resource) => resource.metadata.origin === "package"));
++    addResolvedSkills(resolved.filter((resource) => resource.metadata.origin === "top-level" && resource.metadata.source === "local"));
      return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
  }
  async function resolveSkillSource(env, source, options) {
 -    const normalized = normalizeSkillSource(env, source, options);
-+    const normalized = await normalizeSkillSource(env, source, options);
-     if (!normalized)
-         return undefined;
+-    if (!normalized)
+-        return undefined;
 -    if (looksLikePath(source))
-+    if (looksLikePath(source) || normalized !== source)
-         return env.fs.existsSync(normalized) ? normalized : undefined;
-     return (await getSkillCatalog(env, options)).find((skill) => skill.name === normalized)?.filePath;
+-        return env.fs.existsSync(normalized) ? normalized : undefined;
+-    return (await getSkillCatalog(env, options)).find((skill) => skill.name === normalized)?.filePath;
++    const resolvedPath = env.resolvePath(source, options.cwd, { trim: true });
++    if (looksLikePath(source)) {
++        return { normalized: resolvedPath, resolved: env.fs.existsSync(resolvedPath) ? resolvedPath : undefined };
++    }
++    // Build the catalog once, then use it both to prefer catalog names over same-named local folders and to
++    // resolve the selected skill. A bare local folder is retained as a path only when no catalog entry wins.
++    const catalog = await getSkillCatalog(env, options);
++    const catalogSkill = catalog.find((skill) => skill.name === source);
++    const normalized = containsSkills(env, resolvedPath, options) && !catalogSkill ? resolvedPath : source;
++    return { normalized, resolved: normalized === source ? catalogSkill?.filePath : resolvedPath };
  }
-@@ -290,7 +378,13 @@ async function runMutationCommand(env, command, rest, surface, options) {
+ function commandName(allowSession = false) {
+     return allowSession ? "/skills" : "pi skills";
+@@ -290,17 +369,26 @@ async function runMutationCommand(env, command, rest, surface, options) {
      if (rest.length !== 2 || rest.some((arg) => ![source, `--${scope}`].includes(arg))) {
          throw new Error(`Usage: ${surface} ${command} <skill-or-path> ${scopeList}`);
      }
 -    const target = normalizeSkillSource(env, source, options);
 +    // Removal never consults the catalog, whose package resolution can install missing packages. A stored bare
 +    // value is a catalog name, so removing a bare name tries that literal name first and its resolved path after.
++    const resolution = command === "add" ? await resolveSkillSource(env, source, options) : undefined;
 +    const target = command === "remove"
 +        ? looksLikePath(source)
 +            ? env.resolvePath(source, options.cwd, { trim: true })
 +            : source
-+        : await normalizeSkillSource(env, source, options);
++        : resolution?.normalized;
      if (!target)
          throw new Error(`Skill source is invalid: ${source}`);
-     if (command === "add" && !(await resolveSkillSource(env, source, options))) {
-@@ -298,9 +392,11 @@ async function runMutationCommand(env, command, rest, surface, options) {
+-    if (command === "add" && !(await resolveSkillSource(env, source, options))) {
++    if (command === "add" && !resolution?.resolved) {
+         throw new Error(`Skill not found in the catalog or at an existing path: ${source}`);
      }
      if (scope === "session")
          return { exitCode: 0, lines: [], session: { action: command, source: target } };
@@ -191,12 +212,76 @@ index 915d49d..7140cfb 100644
      return { exitCode: 0, lines: [`${command === "add" ? "Enabled" : "Disabled"} ${source} for ${scope} scope.`] };
  }
  export async function runSkillsCommand(env, args, options) {
-@@ -407,7 +503,11 @@ async function applySessionSkillChange(env, session, context) {
+@@ -329,7 +417,7 @@ export async function runSkillsCommand(env, args, options) {
+  * would only need invalidating without ever being reused.
+  */
+ export async function resolveActiveSkillPaths(env, context) {
+-    const { cwd, agentDir, settingsManager, resolveResourcePath } = context;
++    const { cwd, agentDir, settingsManager, resolvedSkillResources, resolveResourcePath } = context;
+     const paths = [];
+     const diagnostics = [];
+     const entries = getActiveSkillEntries(env, {
+@@ -339,10 +427,12 @@ export async function resolveActiveSkillPaths(env, context) {
+     });
+     let catalogPathsByName;
+     const findCatalogSkillPath = async (name) => {
+-        catalogPathsByName ??= new Map((await getSkillCatalog(env, { cwd, agentDir, ...(settingsManager ? { settingsManager } : {}) })).map((skill) => [
+-            skill.name,
+-            skill.filePath,
+-        ]));
++        catalogPathsByName ??= new Map((await getSkillCatalog(env, {
++            cwd,
++            agentDir,
++            ...(settingsManager ? { settingsManager } : {}),
++            ...(resolvedSkillResources ? { resolvedSkillResources } : {}),
++        })).map((skill) => [skill.name, skill.filePath]));
+         return catalogPathsByName.get(name);
+     };
+     for (const entry of entries) {
+@@ -372,7 +462,7 @@ export async function resolveActiveSkillPaths(env, context) {
+  * session list, and the resolved path to add.
+  */
+ export async function resolveSkillEntryPath(env, context, source) {
+-    const { cwd, agentDir, settingsManager, resolveResourcePath } = context;
++    const { cwd, agentDir, settingsManager, resolvedSkillResources, resolveResourcePath } = context;
+     if (looksLikePath(source)) {
+         const normalized = resolveResourcePath(source);
+         return { normalized, resolved: env.fs.existsSync(normalized) ? normalized : undefined };
+@@ -381,6 +471,7 @@ export async function resolveSkillEntryPath(env, context, source) {
+         cwd,
+         agentDir,
+         ...(settingsManager ? { settingsManager } : {}),
++        ...(resolvedSkillResources ? { resolvedSkillResources } : {}),
+     });
+     return { normalized: source, resolved: catalog.find((skill) => skill.name === source)?.filePath };
+ }
+@@ -396,9 +487,9 @@ async function applySessionSkillChange(env, session, context) {
+         context.showError("Session skill activation is unavailable for this resource loader.");
+         return undefined;
+     }
+-    const pathContext = { cwd, agentDir, settingsManager, resolveResourcePath };
+-    const { normalized, resolved } = await resolveSkillEntryPath(env, pathContext, session.source);
+     if (session.action === "add") {
++        const pathContext = { cwd, agentDir, settingsManager, resolveResourcePath };
++        const { resolved } = await resolveSkillEntryPath(env, pathContext, session.source);
+         if (!resolved) {
+             context.showError(`Skill not found in the catalog: ${session.source}`);
+             return undefined;
+@@ -407,7 +498,20 @@ async function applySessionSkillChange(env, session, context) {
              additionalSkillPaths.push(resolved);
          return `Enabled ${resolved} for this session.`;
      }
 -    const matches = (path) => path === session.source || path === normalized || (resolved !== undefined && path === resolved);
-+    const direct = (path) => path === session.source || path === normalized || (resolved !== undefined && path === resolved);
++    // Removal must not resolve packages. Recover bare names from the already-enabled paths, and compare explicit
++    // paths after applying the same resolution used by the resource loader.
++    const normalized = looksLikePath(session.source) ? resolveResourcePath(session.source) : session.source;
++    const skillPaths = looksLikePath(session.source)
++        ? []
++        : env
++            .loadSkills({ cwd, agentDir, skillPaths: additionalSkillPaths, includeDefaults: false })
++            .skills.filter((skill) => skill.name === session.source)
++            .map((skill) => skill.filePath);
++    const direct = (path) => path === session.source || path === normalized || skillPaths.includes(path);
 +    // A bare name added as a local path stays removable by that name after the path is deleted, but only when
 +    // nothing matches it directly.
 +    const localPath = looksLikePath(session.source) ? undefined : env.resolvePath(session.source, cwd, { trim: true });
