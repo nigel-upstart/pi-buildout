@@ -23,7 +23,11 @@ import type { BoundaryGateResult, LeaseState, RouterMode, TaskLease } from "./co
 import { ProgramPlanSchema, validateProgramPlan } from "./core/planning.ts";
 import {
   ActionPlanSchema,
+  DiscoveryRequestSchema,
   SafetyReviewSchema,
+  consumeDiscoveryGrant,
+  discoveryApprovalFingerprint,
+  discoveryScopeFingerprint,
   deriveSafetyPolicy,
   initialLifecycle,
   isPotentiallyMutatingTool,
@@ -32,6 +36,7 @@ import {
   safetyContextForLifecycle,
   safetyFingerprint,
   validateActionPlan,
+  validateDiscoveryRequest,
   validateSafetyReview,
 } from "./core/safety.ts";
 import type { CompletionEvidence, LeaseLifecycle, ReviewOutcome, SafetyReviewKind } from "./core/safety.ts";
@@ -202,14 +207,16 @@ export function deterministicCheckCommand(command: string): string | undefined {
   return normalized.slice(0, 500);
 }
 
-const SAFETY_LIFECYCLE_TOOL_NAMES = new Set(["submit_action_plan", "submit_safety_review"]);
+const SAFETY_LIFECYCLE_TOOL_NAMES = new Set(["submit_action_plan", "submit_discovery_request", "submit_safety_review"]);
 
-type RestrictedPhase = "preflight" | "review" | "advisory_pending";
+type RestrictedPhase = "preflight" | "discovery_ready" | "review" | "advisory_pending";
 
 /** The tool-restricting phase `/route off` is about to lift, if the active lease is in one. */
 export function restrictedPhaseLiftedByOff(lifecycle: LeaseLifecycle | undefined): RestrictedPhase | undefined {
   const phase = lifecycle?.phase;
-  return phase === "preflight" || phase === "review" || phase === "advisory_pending" ? phase : undefined;
+  return phase === "preflight" || phase === "discovery_ready" || phase === "review" || phase === "advisory_pending"
+    ? phase
+    : undefined;
 }
 
 export function routerReenabledNotice(phase: RestrictedPhase): string {
@@ -217,7 +224,7 @@ export function routerReenabledNotice(phase: RestrictedPhase): string {
 }
 
 export function routerOffNotice(phase: RestrictedPhase): string {
-  return `The operator turned the model router off. The ${phase} safety lifecycle no longer restricts tools, and submit_action_plan and submit_safety_review are unavailable. Tool calls refused earlier by that lifecycle can be retried; the user's own instructions and approvals still apply.`;
+  return `The operator turned the model router off. The ${phase} safety lifecycle no longer restricts tools, and submit_action_plan, submit_discovery_request, and submit_safety_review are unavailable. Tool calls refused earlier by that lifecycle can be retried; the user's own instructions and approvals still apply.`;
 }
 const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
@@ -484,6 +491,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   const deterministicCheckCalls = new Map<string, string>();
   const deterministicCheckResults = new Map<string, boolean>();
   const potentiallyMutatingCalls = new Map<string, { toolName: string; inputFingerprint: string }>();
+  const discoveryCalls = new Map<string, { taskId: string; scopeFingerprint: string }>();
   const validatedPlanAttempts = new Set<string>();
   let lastAttemptMetrics: AttemptMetrics | undefined;
   let reviewParentAttemptMetrics: AttemptMetrics | undefined;
@@ -540,7 +548,38 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   }
 
+  /** Whether the lease holds a pending discovery request, an unspent grant, or a review of one. */
+  function holdsDiscovery(lease: TaskLease): boolean {
+    const lifecycle = lease.lifecycle;
+    if (lifecycle.phase === "discovery_ready") return true;
+    if (lifecycle.phase === "preflight") return lifecycle.discovery !== undefined;
+    return (
+      lifecycle.phase === "review" &&
+      lease.parentLease?.lifecycle.phase === "preflight" &&
+      lease.parentLease.lifecycle.discovery !== undefined
+    );
+  }
+
+  /**
+   * Drop any discovery request, review, or unspent grant back to an empty preflight. Final-plan
+   * authorization is untouched; `invalidateAuthorization` handles that at its own boundaries.
+   */
+  function revokeDiscovery(lease: TaskLease): TaskLease {
+    if (!holdsDiscovery(lease)) return lease;
+    const base = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
+    return {
+      ...base,
+      updatedAt: new Date().toISOString(),
+      lifecycle: {
+        phase: "preflight",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: base.lifecycle.taskFingerprint,
+      },
+    };
+  }
+
   function invalidateAuthorization(lease: TaskLease, reason: string): TaskLease {
+    if (holdsDiscovery(lease)) return revokeDiscovery(lease);
     const authorizationLifecycle =
       lease.lifecycle.phase === "authorized_execution"
         ? lease.lifecycle
@@ -1356,7 +1395,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       await rejectQueuedSecondary(ctx, queued, beforeInstallRejection);
       return;
     }
-    state = installLease(state, correctedLease);
+    state = installLease(state, revokeDiscovery(correctedLease));
     persistState();
     updateStatus(ctx);
     queuedSecondaryReconciliation = undefined;
@@ -1770,39 +1809,86 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     let triggerContinuation = false;
 
     if (child.lifecycle.reviewKind === "authorization") {
-      const plan = original.lifecycle.phase === "preflight" ? original.lifecycle.plan : undefined;
-      const approved =
-        submission?.verdict === "approve" &&
-        plan !== undefined &&
-        child.lifecycle.scopeFingerprint ===
-          safetyFingerprint({
-            taskFingerprint: original.lifecycle.taskFingerprint,
-            planFingerprint: plan.planFingerprint,
-          }) &&
-        child.selected.vendor !== original.selected.vendor;
-      lifecycle = approved
-        ? {
-            phase: "authorized_execution",
-            policy: "authorization_then_completion_review",
-            taskFingerprint: original.lifecycle.taskFingerprint,
-            plan,
-            authorization: {
+      const discovery = original.lifecycle.phase === "preflight" ? original.lifecycle.discovery : undefined;
+      if (discovery) {
+        const approved =
+          submission?.verdict === "approve" &&
+          child.lifecycle.scopeFingerprint === discovery.scopeFingerprint &&
+          discovery.scopeFingerprint ===
+            discoveryScopeFingerprint(
+              discovery.request,
+              original.lifecycle.taskFingerprint,
+              discovery.cwd,
+              discovery.sessionId,
+            ) &&
+          ctx.cwd === discovery.cwd &&
+          ctx.sessionManager.getSessionId() === discovery.sessionId &&
+          child.selected.vendor !== original.selected.vendor;
+        lifecycle = approved
+          ? {
+              phase: "discovery_ready",
+              policy: "authorization_then_completion_review",
+              taskFingerprint: original.lifecycle.taskFingerprint,
+              grant: {
+                request: discovery.request,
+                requestFingerprint: discovery.requestFingerprint,
+                scopeFingerprint: discovery.scopeFingerprint,
+                approvalFingerprint: discoveryApprovalFingerprint(
+                  discovery.scopeFingerprint,
+                  child.taskId,
+                  child.selected.vendor,
+                  now,
+                ),
+                taskFingerprint: original.lifecycle.taskFingerprint,
+                cwd: discovery.cwd,
+                sessionId: discovery.sessionId,
+                reviewTaskId: child.taskId,
+                reviewerVendor: child.selected.vendor,
+                approvedAt: now,
+              },
+            }
+          : {
+              phase: "preflight",
+              policy: "authorization_then_completion_review",
+              taskFingerprint: original.lifecycle.taskFingerprint,
+              lastAuthorizationReview: reviewOutcome,
+            };
+        triggerContinuation = approved;
+      } else {
+        const plan = original.lifecycle.phase === "preflight" ? original.lifecycle.plan : undefined;
+        const approved =
+          submission?.verdict === "approve" &&
+          plan !== undefined &&
+          child.lifecycle.scopeFingerprint ===
+            safetyFingerprint({
               taskFingerprint: original.lifecycle.taskFingerprint,
               planFingerprint: plan.planFingerprint,
-              reviewTaskId: child.taskId,
-              reviewerVendor: child.selected.vendor,
-              sessionId: ctx.sessionManager.getSessionId(),
-              approvedAt: now,
-            },
-          }
-        : {
-            phase: "preflight",
-            policy: "authorization_then_completion_review",
-            taskFingerprint: original.lifecycle.taskFingerprint,
-            ...(plan ? { plan } : {}),
-            lastAuthorizationReview: reviewOutcome,
-          };
-      triggerContinuation = approved;
+            }) &&
+          child.selected.vendor !== original.selected.vendor;
+        lifecycle = approved
+          ? {
+              phase: "authorized_execution",
+              policy: "authorization_then_completion_review",
+              taskFingerprint: original.lifecycle.taskFingerprint,
+              plan,
+              authorization: {
+                taskFingerprint: original.lifecycle.taskFingerprint,
+                planFingerprint: plan.planFingerprint,
+                reviewTaskId: child.taskId,
+                reviewerVendor: child.selected.vendor,
+                sessionId: ctx.sessionManager.getSessionId(),
+                approvedAt: now,
+              },
+            }
+          : {
+              phase: "preflight",
+              policy: "authorization_then_completion_review",
+              taskFingerprint: original.lifecycle.taskFingerprint,
+              ...(plan ? { plan } : {}),
+              lastAuthorizationReview: reviewOutcome,
+            };
+        triggerContinuation = approved;
+      }
     } else if (child.lifecycle.reviewKind === "advisory") {
       lifecycle = {
         phase: "ready_after_advisory",
@@ -1865,7 +1951,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           content:
             lifecycle.phase === "authorized_execution"
               ? "The exact reviewed action plan is authorized for this task and session. Execute only that plan; stop if its preconditions, targets, or steps change."
-              : `The pre-action advisor reported: ${reviewOutcome.summary}\nProceed only within the original task scope and account for the advice.`,
+              : lifecycle.phase === "discovery_ready"
+                ? "One exact discovery call is approved. This is not approval of the final action; submit an action plan for separate review afterward."
+                : `The pre-action advisor reported: ${reviewOutcome.summary}\nProceed only within the original task scope and account for the advice.`,
           display: true,
           details: { parentTaskId: parent.taskId, reviewTaskId: child.taskId, reviewKind: child.lifecycle.reviewKind },
         },
@@ -2290,6 +2378,66 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.registerTool({
+    name: "submit_discovery_request",
+    label: "Request bounded discovery approval",
+    description:
+      "Submit one exact potentially mutating discovery call in preflight when read-only inspection cannot establish the facts needed for an irreversible-action plan. A separate independent authorization review is required; approval never authorizes final execution.",
+    parameters: DiscoveryRequestSchema,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const active = state.active;
+      if (state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
+        throw new Error("submit_discovery_request is only valid inside an active irreversible-action preflight lease");
+      }
+      const validation = validateDiscoveryRequest(params);
+      await record(
+        ctx,
+        "outcome",
+        {
+          discoveryRequestValidated: validation.success,
+          validationErrors: validation.success ? [] : validation.errors,
+        },
+        { taskId: active.taskId, archetype: active.archetype },
+      );
+      if (!validation.success) throw new Error(`Invalid discovery request: ${validation.errors.join("; ")}`);
+      const submittedAt = new Date().toISOString();
+      const scopeFingerprint = discoveryScopeFingerprint(
+        validation.request,
+        active.lifecycle.taskFingerprint,
+        ctx.cwd,
+        ctx.sessionManager.getSessionId(),
+      );
+      state = installLease(state, {
+        ...active,
+        updatedAt: submittedAt,
+        lifecycle: {
+          phase: "preflight",
+          policy: "authorization_then_completion_review",
+          taskFingerprint: active.lifecycle.taskFingerprint,
+          discovery: {
+            request: validation.request,
+            requestFingerprint: validation.fingerprint,
+            scopeFingerprint,
+            submittedAt,
+            cwd: ctx.cwd,
+            sessionId: ctx.sessionManager.getSessionId(),
+          },
+        },
+      });
+      persistState();
+      updateStatus(ctx);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Validated bounded discovery request ${scopeFingerprint}. The call remains blocked pending independent review.`,
+          },
+        ],
+        details: { scopeFingerprint, requestFingerprint: validation.fingerprint },
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "submit_safety_review",
     label: "Submit scoped safety review",
     description:
@@ -2406,6 +2554,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
     const fallbackMode = carriedMode ?? resolvedStartMode ?? state.mode;
     state = restoreLeaseState(branch, fallbackMode);
+    if (state.active && holdsDiscovery(state.active)) {
+      // Discovery requests, their reviews, and unspent grants are bound to one runtime context and
+      // never survive restoration; the parent returns to an empty preflight.
+      state = installLease(state, revokeDiscovery(state.active));
+      persistState();
+    }
     if (
       state.active?.lifecycle.phase === "authorized_execution" &&
       state.active.lifecycle.authorization.sessionId !== ctx.sessionManager.getSessionId()
@@ -2467,6 +2621,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (
       state.active &&
       (state.active.lifecycle.phase === "authorized_execution" ||
+        holdsDiscovery(state.active) ||
         (state.active.lifecycle.phase === "completed" &&
           state.active.lifecycle.policy === "authorization_then_completion_review"))
     ) {
@@ -2901,10 +3056,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     activeToolExecutions++;
   });
 
-  pi.on("tool_execution_end", (event) => {
+  pi.on("tool_execution_end", (event, ctx) => {
     activeToolExecutions = Math.max(0, activeToolExecutions - 1);
     if (state.mode === "off") return;
     attemptToolCalls++;
+    const discovery = discoveryCalls.get(event.toolCallId);
+    discoveryCalls.delete(event.toolCallId);
+    if (discovery) {
+      void record(
+        ctx,
+        "outcome",
+        {
+          discoveryCallId: event.toolCallId,
+          discoveryScopeFingerprint: discovery.scopeFingerprint,
+          discoverySucceeded: !event.isError,
+        },
+        { taskId: discovery.taskId },
+      );
+    }
     const check = deterministicCheckCalls.get(event.toolCallId);
     const mutation = potentiallyMutatingCalls.get(event.toolCallId);
     deterministicCheckCalls.delete(event.toolCallId);
@@ -2936,8 +3105,37 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   });
 
-  pi.on("tool_call", (event) => {
+  pi.on("tool_call", (event, ctx) => {
     if (state.mode === "off") return undefined;
+    if (state.active?.lifecycle.phase === "discovery_ready" && (state.manualOverride || state.active.manualOverride)) {
+      // A manual model/effort override voids the grant; the ordinary preflight gate then applies.
+      state = installLease(state, revokeDiscovery(state.active));
+      persistState();
+    }
+    const active = state.active;
+    if (active?.lifecycle.phase === "discovery_ready") {
+      const grant = active.lifecycle.grant;
+      if (event.toolName === grant.request.toolName) {
+        const consumed = consumeDiscoveryGrant(active.lifecycle, event.toolName, event.input, {
+          taskFingerprint: active.lifecycle.taskFingerprint,
+          cwd: ctx.cwd,
+          sessionId: ctx.sessionManager.getSessionId(),
+        });
+        if (!consumed.allowed) {
+          // The same tool can still be used for ordinary read-only inspection (e.g. git status
+          // through bash); only the exact reviewed input consumes the discovery grant.
+          if (!safetyToolBlockReason(active, event.toolName, event.input)) return undefined;
+          return { block: true, reason: consumed.reason };
+        }
+        // Spend before the secondary gate or the tool dispatcher can observe the call.
+        state = installLease(state, { ...active, updatedAt: new Date().toISOString(), lifecycle: consumed.lifecycle });
+        persistState();
+        const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
+        if (secondaryReason) return { block: true, reason: secondaryReason };
+        discoveryCalls.set(event.toolCallId, { taskId: active.taskId, scopeFingerprint: grant.scopeFingerprint });
+        return undefined;
+      }
+    }
     const reason = safetyToolBlockReason(state.active, event.toolName, event.input);
     if (reason) return { block: true, reason };
     const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
@@ -3126,8 +3324,30 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
 
       if (active.lifecycle.phase === "preflight") {
+        const discovery = active.lifecycle.discovery;
         const plan = active.lifecycle.plan;
-        if (plan) {
+        if (discovery) {
+          if (ctx.cwd !== discovery.cwd || ctx.sessionManager.getSessionId() !== discovery.sessionId) {
+            state = installLease(state, invalidateAuthorization(active, "discovery context changed"));
+            persistState();
+            return;
+          }
+          await startIndependentReview(
+            ctx,
+            active,
+            "authorization",
+            discovery.scopeFingerprint,
+            [
+              `Review the proposed discovery call for task ${active.lifecycle.taskFingerprint}. This is NOT the final action plan or authorization to execute it.`,
+              `Purpose: ${discovery.request.purpose}; objective: ${discovery.request.objective}; target: ${discovery.request.target}.`,
+              `Exact tool: ${discovery.request.toolName}; exact input: ${JSON.stringify(discovery.request.input)}.`,
+              `Expected effects: ${discovery.request.expectedEffects.join("; ")}.`,
+              `Preconditions: ${discovery.request.preconditions.join("; ")}. Verification: ${discovery.request.verification.join("; ")}. Abort conditions: ${discovery.request.abortConditions.join("; ")}.`,
+              `Bound to session ${discovery.sessionId} and working directory ${discovery.cwd}; scope fingerprint ${discovery.scopeFingerprint}.`,
+              "Reject opaque commands, a disguised irreversible final action, or unbounded discovery. Approval permits only one exact call; remain read-only as reviewer.",
+            ].join("\n"),
+          );
+        } else if (plan) {
           const scopeFingerprint = safetyFingerprint({
             taskFingerprint: active.lifecycle.taskFingerprint,
             planFingerprint: plan.planFingerprint,
@@ -3277,6 +3497,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             : {}),
         };
         if (command === "off") {
+          if (state.active) state = { ...state, active: revokeDiscovery(state.active) };
           // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
           // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
           // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
