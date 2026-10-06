@@ -408,7 +408,7 @@ from the verified release archive and npm tarball; no complete Pi source checkou
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
   `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`), and
   `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), each taken from the npm registry's `gitHead` for that release
-- Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`, and
+- Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
   `pi-1.0.3-source.tar.gz`, and `pi-1.0.4-source.tar.gz`, each verified against upstream's published `SHA256SUMS` for
   that release
 - License declared by the package: MIT

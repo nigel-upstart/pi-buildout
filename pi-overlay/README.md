@@ -48,8 +48,8 @@ Measured against each clean package, edits to pre-existing upstream files:
 | **Total**                                    | **170**                         | **47**            | **48**            | **48**           | **48**           |
 
 The 0.87.1, 1.0.3, and 1.0.4 seams make the same calls as the 0.85.1 one. Each has one extra line in
-`interactive-mode.ts`: both versions extend the existing `getCwdRelativePath` import from `utils/paths.ts` with
-`resolvePath`, rather than adding a second import from the same module.
+`interactive-mode.ts`: each extends the existing `getCwdRelativePath` import from `utils/paths.ts` with `resolvePath`,
+rather than adding a second import from the same module.
 
 The shared `skill-management-core.ts` and `skill-management.ts` compile to byte-identical
 `dist/core/skill-management*.js` across 0.85.1, 0.87.1, 1.0.3, and 1.0.4.
