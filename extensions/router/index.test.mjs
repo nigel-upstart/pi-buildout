@@ -4297,6 +4297,7 @@ describe("routerExtension", () => {
     let activeTools = ["read", "bash"];
     let sessionId = "discovery-session";
     let modelGate = Promise.resolve();
+    let setModelCalls = 0;
     let telemetryGate = Promise.resolve();
     const pi = {
       on: (name, handler) => hooks.set(name, handler),
@@ -4305,6 +4306,7 @@ describe("routerExtension", () => {
       appendEntry: (customType, data) => entries.push({ customType, data }),
       sendMessage: (message, options) => messages.push({ message, options }),
       setModel: async () => {
+        setModelCalls++;
         await modelGate;
         return true;
       },
@@ -4656,6 +4658,69 @@ describe("routerExtension", () => {
     telemetryGate = Promise.resolve();
     assert.equal(latest().lifecycle.phase, "preflight");
     assert.equal(latest().lifecycle.discovery, undefined, "a revoked request must not reappear after telemetry");
+
+    // Revocation while the verdict awaits telemetry must not reinstate the review or its request.
+    ctx.model = models[0];
+    await submit();
+    await hooks.get("agent_settled")({}, ctx);
+    const verdictReview = latest();
+    assert.equal(verdictReview.lifecycle.phase, "review");
+    ctx.model = models[1];
+    const verdictTelemetry = deferred();
+    telemetryGate = verdictTelemetry.promise;
+    const submittingVerdict = tools.get("submit_safety_review").execute(
+      "deferred-verdict",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: verdictReview.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "Checked the exact discovery scope",
+        evidence: ["Single bounded lookup"],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const revokingVerdict = hooks.get("input")({ text: "Revoke during verdict telemetry", source: "interactive" }, ctx);
+    verdictTelemetry.resolve();
+    await Promise.all([submittingVerdict, revokingVerdict]);
+    telemetryGate = Promise.resolve();
+    assert.equal(latest().lifecycle.phase, "preflight", "a stale verdict must not reinstate its review");
+    assert.equal(latest().lifecycle.discovery, undefined);
+
+    // Revocation while the review start awaits the reviewer model switch must cancel that review.
+    ctx.model = models[0];
+    await submit();
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: builder.provider,
+            model: builder.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    const reviewPrompts = () =>
+      messages.filter(({ message }) => /independent review for tracked parent task/.test(message.content)).length;
+    const promptsBefore = reviewPrompts();
+    const reviewerModel = deferred();
+    modelGate = reviewerModel.promise;
+    const switchesBefore = setModelCalls;
+    const starting = hooks.get("agent_settled")({}, ctx);
+    await waitUntil(() => setModelCalls > switchesBefore);
+    await hooks.get("input")({ text: "Revoke during review start", source: "interactive" }, ctx);
+    reviewerModel.resolve();
+    await starting;
+    modelGate = Promise.resolve();
+    assert.equal(latest().lifecycle.phase, "preflight", "a revoked parent must not gain a review lease");
+    assert.equal(latest().lifecycle.discovery, undefined);
+    assert.equal(reviewPrompts(), promptsBefore, "a cancelled review must not be prompted");
   });
 
   it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {

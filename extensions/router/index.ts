@@ -2010,6 +2010,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         attemptDisposition = "failed";
         return;
       }
+      // A lease replaced during telemetry or the model switch (for example, a revoked discovery
+      // review) must not be overwritten by a fallback computed from the stale one.
+      if (state.active !== active) return;
       const fallbackLease =
         fallback.lease.lifecycle.phase === "review"
           ? {
@@ -2143,11 +2146,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       ...(parent.contextSizeBucket ? { contextSizeBucket: parent.contextSizeBucket } : {}),
     });
     const applied = await applyWithAvailabilityFallback(ctx, child);
+    if (state.active !== parent) {
+      // The parent was revoked or replaced during the model switch, so its review is moot.
+      lastAttemptMetrics = reviewParentAttemptMetrics;
+      reviewParentAttemptMetrics = undefined;
+      return;
+    }
     if (!applied) {
       await restoreParentAfterReview(ctx, child, "skipped");
       return;
     }
     state = installLease(state, applied);
+    const installed = state.active;
     accumulatedTaskCosts.set(applied.taskId, 0);
     taskStartedAt.set(applied.taskId, Date.now());
     persistState();
@@ -2183,6 +2193,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         modelSnapshotId: applied.modelSnapshotId,
       },
     );
+    if (state.active !== installed) return;
     attemptDisposition = "pending";
     pi.sendMessage(
       {
@@ -2474,24 +2485,32 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         throw new Error("submit_safety_review may be called only once for a generated review attempt");
       }
       const validation = validateSafetyReview(params, active.lifecycle.reviewKind, active.lifecycle.scopeFingerprint);
-      await record(
-        ctx,
-        "outcome",
-        {
-          safetyReviewValidated: validation.success,
-          reviewKind: active.lifecycle.reviewKind,
-          scopeFingerprint: active.lifecycle.scopeFingerprint,
-          validationErrors: validation.success ? [] : validation.errors,
-        },
-        { taskId: active.taskId, archetype: active.archetype },
-      );
-      if (!validation.success) throw new Error(`Invalid safety review: ${validation.errors.join("; ")}`);
+      // The verdict is installed before telemetry is awaited, so a review revoked during the await is
+      // never reinstated by this captured lease.
+      const { reviewKind, scopeFingerprint } = active.lifecycle;
+      const recordValidation = () =>
+        record(
+          ctx,
+          "outcome",
+          {
+            safetyReviewValidated: validation.success,
+            reviewKind,
+            scopeFingerprint,
+            validationErrors: validation.success ? [] : validation.errors,
+          },
+          { taskId: active.taskId, archetype: active.archetype },
+        );
+      if (!validation.success) {
+        await recordValidation();
+        throw new Error(`Invalid safety review: ${validation.errors.join("; ")}`);
+      }
       state = installLease(state, {
         ...active,
         updatedAt: new Date().toISOString(),
         lifecycle: { ...active.lifecycle, submission: validation.submission },
       });
       persistState();
+      await recordValidation();
       return {
         content: [
           {
