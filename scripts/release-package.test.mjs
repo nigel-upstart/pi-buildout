@@ -55,6 +55,7 @@ test("each extension package stages only its own runtime files and host peers", 
 
 test("router and OTel share dependencies and keep the vendored license", () => {
   const { directory, manifest } = manifests.find(({ name }) => name === "router-otel");
+  execFileSync(process.execPath, [join(root, "scripts", "stage-release-package.mjs"), "router-otel"]);
   const staged = join(directory, "dist", "extensions");
   assert.match(readFileSync(join(staged, "otel", "LICENSE"), "utf8"), /Apache License/);
   assert.deepEqual(

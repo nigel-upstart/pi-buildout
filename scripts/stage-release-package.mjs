@@ -38,7 +38,14 @@ if (kind !== "skills-patch") {
       }
     }
     await walk();
-    if (name === "otel") await copy(join(base, "LICENSE"), join(destination, "extensions", name, "LICENSE"));
+    if (name === "otel") {
+      await copy(join(base, "LICENSE"), join(destination, "extensions", name, "LICENSE"));
+      for (const notice of await readdir(base, { withFileTypes: true })) {
+        if (notice.isFile() && /^NOTICE(?:\..+)?$/.test(notice.name)) {
+          await copy(join(base, notice.name), join(destination, "extensions", name, notice.name));
+        }
+      }
+    }
   }
 } else {
   await copy(join(root, "scripts", "install-extensions.sh"), join(destination, "scripts", "install-extensions.sh"));
