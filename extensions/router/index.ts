@@ -223,8 +223,11 @@ const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
 /** Keep both validators declared across generated turns, but only while routing is active. */
 export function activeToolsForSafetyLifecycle(activeTools: readonly string[], mode: RouterMode): string[] {
-  const next = activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name));
-  if (mode === "active") next.push("submit_action_plan", "submit_safety_review");
+  if (mode !== "active") return activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name));
+  const next = [...activeTools];
+  for (const name of SAFETY_LIFECYCLE_TOOL_NAMES) {
+    if (!next.includes(name)) next.push(name);
+  }
   return next;
 }
 

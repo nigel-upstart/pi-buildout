@@ -699,6 +699,11 @@ describe("router-mode tool exposure", () => {
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "shadow"), ["read", "bash"]);
     assert.deepEqual(activeToolsForSafetyLifecycle(["read", "bash"], "active"), ordinaryTools);
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active"), ordinaryTools);
+    assert.deepEqual(
+      activeToolsForSafetyLifecycle(["read", "submit_action_plan", "bash", "submit_safety_review"], "active"),
+      ["read", "submit_action_plan", "bash", "submit_safety_review"],
+      "repeated syncs must not reorder the prompt's tool declarations",
+    );
   });
 });
 
