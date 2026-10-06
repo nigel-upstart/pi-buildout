@@ -90,7 +90,7 @@ prints the exact archive contents without publishing:
 npm run release:packages -- --package clear,effort
 ```
 
-Repeat `--package` to select more packages. After reviewing the dry-run output and completing the checkpoints below, add
+Repeat `--package` to select more packages. After reviewing the dry-run output and completing the checkpoints above, add
 `--publish` to publish the selected packages at their manifest versions with the `alpha` tag. The CLI uses the
 repository's fixed CodeArtifact URL; it does not choose or bump versions. Authenticate npm against that registry using
 the setup below first. Publishing is a write operation and must be explicitly requested with `--publish`.

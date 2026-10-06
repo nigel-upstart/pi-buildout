@@ -55,12 +55,15 @@ try {
     usage();
     process.exit(0);
   }
-  for (const name of options.selected) {
+  const releaseList = options.selected.map((name) => {
     const dir = join(root, "packages", packages.get(name));
     const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
     if (manifest.publishConfig?.registry !== registry || !/^\d+\.\d+\.\d+-alpha\.\d+$/.test(manifest.version)) {
       throw new Error(`${manifest.name} must target the approved CodeArtifact registry and use an alpha.N version`);
     }
+    return { dir, manifest };
+  });
+  for (const { dir, manifest } of releaseList) {
     console.log(`\n${options.publish ? "Publishing" : "Dry run:"} ${manifest.name}@${manifest.version}`);
     if (options.publish) {
       run("npm", ["publish", "--registry", registry, "--tag", "alpha"], {
