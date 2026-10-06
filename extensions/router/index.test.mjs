@@ -505,6 +505,7 @@ async function runAdapterTurn({
 }) {
   const hooks = new Map();
   const commands = new Map();
+  const tools = new Map();
   const events = [];
   const appended = [];
   const selectedModels = [];
@@ -524,7 +525,7 @@ async function runAdapterTurn({
   const pi = {
     on: (event, handler) => hooks.set(event, handler),
     registerCommand: (name, command) => commands.set(name, command),
-    registerTool: () => {},
+    registerTool: (tool) => tools.set(tool.name, tool),
     appendEntry: (customType, data) => appended.push({ customType, data }),
     exec: async () => ({ code: 1, stdout: "", stderr: "" }),
     getActiveTools: () => activeTools,
@@ -585,6 +586,7 @@ async function runAdapterTurn({
   return {
     hooks,
     commands,
+    tools,
     ctx,
     events,
     appended,
@@ -680,7 +682,7 @@ describe("resumeCompletedLifecycle", () => {
 
 describe("router-off safety notice", () => {
   it("names only the tool-restricting phases that off lifts", () => {
-    for (const phase of ["preflight", "review", "advisory_pending"]) {
+    for (const phase of ["preflight", "discovery_ready", "review", "advisory_pending"]) {
       assert.equal(restrictedPhaseLiftedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), phase);
       assert.ok(routerOffNotice(phase).includes(`${phase} safety lifecycle no longer restricts tools`), phase);
     }
@@ -694,14 +696,17 @@ describe("router-off safety notice", () => {
 
 describe("router-mode tool exposure", () => {
   it("keeps both safety validators active across generated turns but hides them in shadow and off", () => {
-    const ordinaryTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
+    const ordinaryTools = ["read", "bash", "submit_action_plan", "submit_discovery_request", "submit_safety_review"];
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "off"), ["read", "bash"]);
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "shadow"), ["read", "bash"]);
     assert.deepEqual(activeToolsForSafetyLifecycle(["read", "bash"], "active"), ordinaryTools);
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active"), ordinaryTools);
     assert.deepEqual(
-      activeToolsForSafetyLifecycle(["read", "submit_action_plan", "bash", "submit_safety_review"], "active"),
-      ["read", "submit_action_plan", "bash", "submit_safety_review"],
+      activeToolsForSafetyLifecycle(
+        ["read", "submit_action_plan", "bash", "submit_discovery_request", "submit_safety_review"],
+        "active",
+      ),
+      ["read", "submit_action_plan", "bash", "submit_discovery_request", "submit_safety_review"],
       "repeated syncs must not reorder the prompt's tool declarations",
     );
   });
@@ -1087,6 +1092,7 @@ describe("routerExtension", () => {
       "bash",
       "submit_implementation_plan",
       "submit_action_plan",
+      "submit_discovery_request",
       "submit_safety_review",
     ]);
     await commands.get("route").handler("off", ctx);
@@ -1151,8 +1157,15 @@ describe("routerExtension", () => {
     await commands.get("route").handler("active", ctx);
     assert.deepEqual(
       activeTools,
-      ["read", "bash", "submit_action_plan", "submit_safety_review", "submit_implementation_plan"],
-      "re-enabling restores both safety validators immediately",
+      [
+        "read",
+        "bash",
+        "submit_action_plan",
+        "submit_discovery_request",
+        "submit_safety_review",
+        "submit_implementation_plan",
+      ],
+      "re-enabling restores all safety tools immediately",
     );
     await commands.get("route").handler("shadow", ctx);
     assert.deepEqual(activeTools, ["read", "bash", "submit_implementation_plan"]);
@@ -4081,7 +4094,13 @@ describe("routerExtension", () => {
         ctx,
       );
       assert.match(reviewStart.systemPrompt, /read-only authorization review/);
-      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
+      assert.deepEqual(activeTools, [
+        "read",
+        "bash",
+        "submit_action_plan",
+        "submit_safety_review",
+        "submit_discovery_request",
+      ]);
       hooks.get("agent_start")();
       await tools.get("submit_safety_review").execute(
         `review-${verdict}`,
@@ -4120,7 +4139,13 @@ describe("routerExtension", () => {
         ctx,
       );
       assert.match(preflightStart.systemPrompt, /Safety lifecycle: remain non-mutating/);
-      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
+      assert.deepEqual(activeTools, [
+        "read",
+        "bash",
+        "submit_action_plan",
+        "submit_safety_review",
+        "submit_discovery_request",
+      ]);
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
         /preflight/,
@@ -4133,7 +4158,13 @@ describe("routerExtension", () => {
       await hooks.get("agent_settled")({}, ctx);
       // Pi does not emit before_agent_start for a generated review turn. Both validators must
       // already be available when the custom-message continuation is queued.
-      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
+      assert.deepEqual(activeTools, [
+        "read",
+        "bash",
+        "submit_action_plan",
+        "submit_safety_review",
+        "submit_discovery_request",
+      ]);
       const rejectedChild = latestLease();
       assert.match(hooks.get("tool_call")({ toolName: "submit_action_plan", input: {} }).reason, /read-only/);
       await assert.rejects(
@@ -4171,7 +4202,13 @@ describe("routerExtension", () => {
       assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
 
       await hooks.get("input")({ text: "Change the target and continue", source: "interactive" }, ctx);
-      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
+      assert.deepEqual(activeTools, [
+        "read",
+        "bash",
+        "submit_action_plan",
+        "submit_safety_review",
+        "submit_discovery_request",
+      ]);
       assert.equal(latestLease().lifecycle.phase, "preflight");
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
@@ -4181,6 +4218,450 @@ describe("routerExtension", () => {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
     }
+  });
+
+  it("reviews a bounded discovery call independently and spends its grant exactly once", async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const commands = new Map();
+    const entries = [];
+    const messages = [];
+    const events = [];
+    const now = new Date().toISOString();
+    const choice = (provider, modelId, vendor, profileId) => ({
+      provider,
+      modelId,
+      logicalModelId: modelId,
+      vendor,
+      effort: "high",
+      ability: 4,
+      profileId,
+      contextWindow: 1_000_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    });
+    const builder = choice("openai-codex", "gpt-6-sol", "openai", "openai-gpt-6-agent-v1");
+    const reviewer = choice("anthropic", "claude-opus-5-5", "anthropic", "anthropic-claude-planning-v1");
+    const models = [
+      builder,
+      reviewer,
+      choice("google-vertex", "gemini-3.6-flash", "google", "google-gemini-fast-v1"),
+    ].map((choice) => ({
+      provider: choice.provider,
+      id: choice.modelId,
+      name: choice.modelId,
+      api: choice.provider === "anthropic" ? "anthropic-messages" : "openai-responses",
+      baseUrl: "https://models.invalid",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    }));
+    const parent = {
+      version: 2,
+      taskId: "discovery-parent",
+      startedAt: now,
+      updatedAt: now,
+      archetype: "highest_risk_advisory",
+      features: {
+        ...conservativeFeatures("bounded discovery"),
+        intent: "operate",
+        workflowType: "incident_or_operations",
+        actionMode: "destructive",
+        risk: "critical",
+        confidence: 0.99,
+      },
+      selected: builder,
+      fallbacks: [reviewer],
+      attemptIndex: 0,
+      promptProfileId: builder.profileId,
+      modelSnapshotId: "snapshot",
+      policyVersion: POLICY_VERSION,
+      lastPromptFingerprint: "fingerprint",
+      lifecycle: {
+        phase: "preflight",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: "discovery-task",
+      },
+      safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+      manualOverride: false,
+    };
+    const branch = [
+      {
+        type: "custom",
+        customType: "model-router-state",
+        data: { mode: "active", manualOverride: false, active: parent },
+      },
+    ];
+    let activeTools = ["read", "bash"];
+    let sessionId = "discovery-session";
+    const pi = {
+      on: (name, handler) => hooks.set(name, handler),
+      registerCommand: (name, command) => commands.set(name, command),
+      registerTool: (tool) => tools.set(tool.name, tool),
+      appendEntry: (customType, data) => entries.push({ customType, data }),
+      sendMessage: (message, options) => messages.push({ message, options }),
+      setModel: async () => true,
+      setThinkingLevel: () => {},
+      getThinkingLevel: () => "high",
+      getActiveTools: () => activeTools,
+      setActiveTools: (names) => {
+        activeTools = names;
+      },
+      exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+    };
+    const ctx = {
+      cwd: "/repo",
+      model: models[0],
+      modelRegistry: {
+        getAll: () => models,
+        getAvailable: () => models,
+        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+      },
+      sessionManager: { getBranch: () => branch, getSessionId: () => sessionId },
+      getContextUsage: () => ({ tokens: 0, contextWindow: 1_000_000, percent: 0 }),
+      ui: {
+        theme: { fg: (_color, text) => text },
+        setStatus: () => {},
+        setWorkingMessage: () => {},
+        setWorkingVisible: () => {},
+        notify: () => {},
+      },
+    };
+    routerExtension(pi, { telemetry: { append: async (event) => events.push(event), read: async () => [] } });
+    const latest = () => entries.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    const request = {
+      purpose: "discovery",
+      objective: "Find the resource owner before planning deletion",
+      target: "resource inventory",
+      expectedEffects: ["List matching owners"],
+      preconditions: ["Use a bounded owner lookup"],
+      verification: ["Compare the returned identifiers"],
+      abortConditions: ["Stop if the command changes resources"],
+      toolName: "bash",
+      input: { command: "glean search owner --limit 5" },
+    };
+    const submit = () => tools.get("submit_discovery_request").execute("request", request, undefined, undefined, ctx);
+    const review = async (verdict) => {
+      await hooks.get("agent_settled")({}, ctx);
+      const child = latest();
+      assert.equal(child.lifecycle.phase, "review");
+      assert.equal(child.lifecycle.reviewKind, "authorization");
+      assert.notEqual(child.selected.vendor, builder.vendor);
+      assert.match(messages.at(-1).message.content, /NOT the final action plan/);
+      assert.match(messages.at(-1).message.content, /glean search owner/);
+      assert.match(
+        hooks.get("tool_call")({ toolCallId: "review-call", toolName: "bash", input: request.input }, ctx).reason,
+        /read-only/,
+      );
+      assert.match(
+        hooks.get("tool_call")(
+          { toolCallId: "review-request", toolName: "submit_discovery_request", input: request },
+          ctx,
+        ).reason,
+        /read-only/,
+      );
+      await assert.rejects(submit(), /active irreversible-action preflight/);
+      ctx.model = models[1];
+      await tools.get("submit_safety_review").execute(
+        "verdict",
+        {
+          reviewKind: "authorization",
+          scopeFingerprint: child.lifecycle.scopeFingerprint,
+          verdict,
+          summary: "Checked the exact discovery scope",
+          evidence: ["Single bounded lookup"],
+          findings: [],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      await hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: reviewer.provider,
+              model: reviewer.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+      await hooks.get("agent_settled")({}, ctx);
+      return child;
+    };
+    await hooks.get("session_start")({ reason: "reload" }, ctx);
+    assert.ok(activeTools.includes("submit_discovery_request"));
+    await assert.rejects(
+      tools
+        .get("submit_discovery_request")
+        .execute("bad", { ...request, input: { command: NaN } }, undefined, undefined, ctx),
+      /Invalid discovery request/,
+    );
+    await submit();
+    assert.equal(latest().lifecycle.discovery.sessionId, sessionId);
+    assert.equal(latest().lifecycle.discovery.cwd, ctx.cwd);
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "premature", toolName: "bash", input: request.input }, ctx).reason,
+      /preflight/,
+    );
+    await review("reject");
+    assert.equal(latest().lifecycle.phase, "preflight");
+    assert.equal(latest().lifecycle.discovery, undefined);
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "rejected", toolName: "bash", input: request.input }, ctx).reason,
+      /preflight/,
+    );
+    ctx.model = models[0];
+    await submit();
+    const child = await review("approve");
+    assert.equal(latest().lifecycle.phase, "discovery_ready");
+    assert.equal(latest().lifecycle.grant.reviewTaskId, child.taskId);
+    assert.equal(latest().lifecycle.grant.sessionId, sessionId);
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "wrong", toolName: "bash", input: { command: "glean search other" } }, ctx)
+        .reason,
+      /does not match/,
+    );
+    assert.equal(latest().lifecycle.phase, "discovery_ready");
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "status", toolName: "bash", input: { command: "git status" } }, ctx),
+      undefined,
+    );
+    assert.equal(latest().lifecycle.phase, "discovery_ready", "read-only inspection does not spend the grant");
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "edit", toolName: "edit", input: {} }, ctx).reason,
+      /Only the exact approved/,
+    );
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "read", toolName: "read", input: { path: "x" } }, ctx),
+      undefined,
+    );
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "approved", toolName: "bash", input: request.input }, ctx),
+      undefined,
+    );
+    assert.equal(latest().lifecycle.phase, "preflight", "grant must be spent synchronously before dispatch");
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "replay", toolName: "bash", input: request.input }, ctx).reason,
+      /preflight/,
+    );
+    hooks.get("tool_execution_end")({ toolCallId: "approved", toolName: "bash", isError: true }, ctx);
+    await waitUntil(() => events.some((event) => event.data.discoveryCallId === "approved"));
+    assert.equal(events.find((event) => event.data.discoveryCallId === "approved").data.discoverySucceeded, false);
+    assert.deepEqual(latest().safetyEvidence.mutations, [], "discovery is not final execution evidence");
+    assert.equal(latest().lifecycle.plan, undefined, "discovery approval does not authorize a final plan");
+    await submit();
+    await review("approve");
+    await hooks.get("input")({ text: "New intent", source: "interactive" }, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight");
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "after-input", toolName: "bash", input: request.input }, ctx).reason,
+      /preflight/,
+    );
+    ctx.model = models[0];
+    await submit();
+    await review("approve");
+    await hooks.get("session_compact")({}, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight", "compaction revokes an unspent grant");
+    ctx.model = models[0];
+    await submit();
+    await review("approve");
+    await commands.get("route").handler("off", ctx);
+    assert.equal(latest().lifecycle.phase, "preflight", "router off revokes an unspent grant");
+    assert.match(
+      messages.findLast(({ message }) => message.details?.reconciliation === "router_off")?.message.content,
+      /discovery_ready safety lifecycle no longer restricts tools/,
+    );
+    await commands.get("route").handler("active", ctx);
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "after-off", toolName: "bash", input: request.input }, ctx).reason,
+      /preflight/,
+    );
+    ctx.model = models[0];
+    await submit();
+    await review("approve");
+    await hooks.get("model_select")({ source: "user", model: models[1] }, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight", "manual override revokes an unspent grant");
+    await commands.get("route").handler("active", ctx);
+    ctx.model = models[0];
+    await submit();
+    await review("approve");
+    branch[0].data = { mode: "active", manualOverride: false, active: latest() };
+    await hooks.get("session_start")({ reason: "reload" }, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight", "even a same-session restoration revokes the grant");
+    ctx.model = models[0];
+    await submit();
+    await review("approve");
+    sessionId = "other-session";
+    assert.match(
+      hooks.get("tool_call")({ toolCallId: "other-session", toolName: "bash", input: request.input }, ctx).reason,
+      /does not match/,
+    );
+    assert.equal(latest().lifecycle.phase, "discovery_ready", "a mismatched context cannot spend the grant");
+    branch[0].data = { mode: "active", manualOverride: false, active: latest() };
+    await hooks.get("session_start")({ reason: "reload" }, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight", "a grant restored into a different session must be revoked");
+    assert.equal(latest().lifecycle.grant, undefined);
+    ctx.model = models[0];
+    await submit();
+    assert.equal(latest().lifecycle.discovery.sessionId, "other-session");
+    sessionId = "third-session";
+    branch[0].data = { mode: "active", manualOverride: false, active: latest() };
+    await hooks.get("session_start")({ reason: "reload" }, ctx);
+    assert.equal(
+      latest().lifecycle.phase,
+      "preflight",
+      "a pending request restored into a different session must be revoked",
+    );
+    assert.equal(latest().lifecycle.discovery, undefined);
+    sessionId = "discovery-session";
+    await hooks.get("input")({ text: "Fresh task", source: "interactive" }, ctx);
+    ctx.model = models[0];
+    await submit();
+    await hooks.get("agent_settled")({}, ctx);
+    assert.equal(latest().lifecycle.phase, "review");
+    await hooks.get("input")({ text: "Changed scope during review", source: "interactive" }, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight", "new input invalidates an in-flight discovery review");
+    assert.equal(latest().lifecycle.discovery, undefined);
+    await tools.get("submit_action_plan").execute("final-plan", irreversibleActionPlan(), undefined, undefined, ctx);
+    ctx.model = models[0];
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: builder.provider,
+            model: builder.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    await hooks.get("agent_settled")({}, ctx);
+    const finalReview = latest();
+    assert.equal(finalReview.lifecycle.phase, "review", "final action requires a separate review");
+    assert.notEqual(finalReview.lifecycle.scopeFingerprint, child.lifecycle.scopeFingerprint);
+    ctx.model = models[1];
+    await tools.get("submit_safety_review").execute(
+      "final-verdict",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: finalReview.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "Exact final plan reviewed",
+        evidence: ["Reviewed irreversible effects"],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: reviewer.provider,
+            model: reviewer.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    await hooks.get("agent_settled")({}, ctx);
+    assert.equal(latest().lifecycle.phase, "authorized_execution");
+  });
+
+  it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {
+    const secondary = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () =>
+        primaryClassificationResult({
+          confidence: 0.6,
+          risk: "critical",
+          actionMode: "destructive",
+          intent: "operate",
+          workflowType: "incident_or_operations",
+        }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: [
+        ...standardRoutingModels(),
+        routingModel("google-vertex", "gemini-3.6-flash"),
+        routingModel("openai-codex", "gpt-6-astra"),
+      ],
+      mode: "active",
+      prompt: "Discover owner before production deletion",
+      sessionId: "secondary-discovery",
+    });
+    const latest = () => result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    assert.equal(latest().lifecycle.phase, "preflight");
+    const request = {
+      purpose: "discovery",
+      objective: "Identify owner",
+      target: "inventory",
+      expectedEffects: ["Return owner"],
+      preconditions: ["Bounded query"],
+      verification: ["Compare identifiers"],
+      abortConditions: ["Stop on unexpected effects"],
+      toolName: "bash",
+      input: { command: "glean search owner --limit 5" },
+    };
+    startAgentRun(result);
+    await result.tools.get("submit_discovery_request").execute("request", request, undefined, undefined, result.ctx);
+    await settleAgentRun(result);
+    const child = latest();
+    assert.equal(
+      child.lifecycle.phase,
+      "review",
+      JSON.stringify(result.events.filter((event) => event.kind === "route_decision")),
+    );
+    assert.match(
+      result.hooks.get("tool_call")(
+        { toolCallId: "review-discovery", toolName: "bash", input: request.input },
+        result.ctx,
+      ).reason,
+      /read-only/,
+    );
+    startAgentRun(result);
+    await result.tools.get("submit_safety_review").execute(
+      "verdict",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: child.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "One bounded call",
+        evidence: ["Reviewed exact input"],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      result.ctx,
+    );
+    await settleAgentRun(result);
+    assert.equal(latest().lifecycle.phase, "discovery_ready");
+    const blocked = result.hooks.get("tool_call")(
+      { toolCallId: "blocked-discovery", toolName: "bash", input: request.input },
+      result.ctx,
+    );
+    assert.match(blocked.reason, /Secondary safety classification is pending/);
+    assert.equal(latest().lifecycle.phase, "preflight", "the secondary gate must not leave a reusable grant");
+    assert.match(
+      result.hooks.get("tool_call")({ toolCallId: "replay", toolName: "bash", input: request.input }, result.ctx)
+        .reason,
+      /preflight/,
+    );
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
   });
 
   it("runs a required completion review as a read-only child lease and restores the builder", async () => {
