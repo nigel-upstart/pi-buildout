@@ -269,6 +269,27 @@ tool API is used as a second, model-facing layer: action-plan and verdict valida
 activated only when the current lifecycle accepts them. No external safety-state-machine implementation or code was
 consulted or adapted for this decision; the Pi API provenance is recorded in the root attribution file.
 
+## Decision: bounded discovery authorization inside preflight
+
+The preflight shell gate is a closed allowlist over binaries and options, so it cannot tell a read-only call from a
+mutating one for an arbitrary CLI. For example, every `glean` invocation is refused, including `glean search`. That left
+a task no way to gather facts its plan depended on.
+
+The chosen fix is a single-use authorization of one exact call, not broader allowlists and not a "continue planning"
+pre-approval. A per-CLI read-only classifier would have to model each tool's side effects and would fail open on gaps.
+An open-ended planning approval would authorize effects nobody reviewed. One exact call keeps the reviewed object
+concrete: tool, canonical JSON input, working directory, and session.
+
+Discovery reuses the existing generated `authorization` review and its `approve`/`reject` verdicts, with `purpose` bound
+into the scope fingerprint rather than adding a review kind. It keeps a schema separate from `ActionPlan`, because a
+plan authorizes tool names for an irreversible step while discovery authorizes one input. The grant is spent before the
+call dispatches, so no failure path can leave it reusable. Discovery state is revoked at every boundary that invalidates
+final-plan authorization, plus `/route off` and secondary correction.
+
+This was a hard transition with no compatibility for persisted session state: restored leases must match the current
+lifecycle shapes exactly. Before this decision, preflight offered no path for a non-read-only call; the earlier behavior
+is in the history before the `feat(router): model exact single-use discovery grants` commit.
+
 ## Decision: discovery grants match plain JSON exactly and are spent at `tool_call`
 
 A discovery grant authorizes one call by fingerprint. `safetyFingerprint` canonicalizes the request, with object keys
