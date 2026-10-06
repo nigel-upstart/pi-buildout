@@ -4296,13 +4296,18 @@ describe("routerExtension", () => {
     ];
     let activeTools = ["read", "bash"];
     let sessionId = "discovery-session";
+    let modelGate = Promise.resolve();
+    let telemetryGate = Promise.resolve();
     const pi = {
       on: (name, handler) => hooks.set(name, handler),
       registerCommand: (name, command) => commands.set(name, command),
       registerTool: (tool) => tools.set(tool.name, tool),
       appendEntry: (customType, data) => entries.push({ customType, data }),
       sendMessage: (message, options) => messages.push({ message, options }),
-      setModel: async () => true,
+      setModel: async () => {
+        await modelGate;
+        return true;
+      },
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
       getActiveTools: () => activeTools,
@@ -4329,7 +4334,15 @@ describe("routerExtension", () => {
         notify: () => {},
       },
     };
-    routerExtension(pi, { telemetry: { append: async (event) => events.push(event), read: async () => [] } });
+    routerExtension(pi, {
+      telemetry: {
+        append: async (event) => {
+          await telemetryGate;
+          events.push(event);
+        },
+        read: async () => [],
+      },
+    });
     const latest = () => entries.findLast((entry) => entry.customType === "model-router-state")?.data.active;
     const request = {
       purpose: "discovery",
@@ -4580,6 +4593,69 @@ describe("routerExtension", () => {
     );
     await hooks.get("agent_settled")({}, ctx);
     assert.equal(latest().lifecycle.phase, "authorized_execution");
+
+    // Revocation while restoration awaits the model switch must win over the stale approval.
+    await hooks.get("input")({ text: "Next step", source: "interactive" }, ctx);
+    ctx.model = models[0];
+    await submit();
+    await hooks.get("agent_settled")({}, ctx);
+    const racedReview = latest();
+    assert.equal(racedReview.lifecycle.phase, "review");
+    ctx.model = models[1];
+    await tools.get("submit_safety_review").execute(
+      "raced-verdict",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: racedReview.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "Checked the exact discovery scope",
+        evidence: ["Single bounded lookup"],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: reviewer.provider,
+            model: reviewer.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    const approvals = () =>
+      messages.filter(({ message }) => /One exact discovery call is approved/.test(message.content)).length;
+    const approvalsBefore = approvals();
+    const model = deferred();
+    modelGate = model.promise;
+    const restoring = hooks.get("agent_settled")({}, ctx);
+    await hooks.get("input")({ text: "Scope changed mid-restore", source: "interactive" }, ctx);
+    model.resolve();
+    await restoring;
+    modelGate = Promise.resolve();
+    assert.equal(latest().lifecycle.phase, "preflight", "a revoked review must not reinstall its grant");
+    assert.equal(latest().lifecycle.grant, undefined);
+    assert.equal(approvals(), approvalsBefore, "a revoked approval must not be announced");
+
+    // Revocation while submission awaits telemetry must not be overwritten by the stale request.
+    ctx.model = models[0];
+    const telemetry = deferred();
+    telemetryGate = telemetry.promise;
+    const submitting = submit();
+    assert.ok(latest().lifecycle.discovery, "the request is installed before telemetry is awaited");
+    const revoking = hooks.get("input")({ text: "Revoke during telemetry", source: "interactive" }, ctx);
+    telemetry.resolve();
+    await Promise.all([submitting, revoking]);
+    telemetryGate = Promise.resolve();
+    assert.equal(latest().lifecycle.phase, "preflight");
+    assert.equal(latest().lifecycle.discovery, undefined, "a revoked request must not reappear after telemetry");
   });
 
   it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {

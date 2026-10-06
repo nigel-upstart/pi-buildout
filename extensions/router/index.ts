@@ -1805,6 +1805,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       completedAt: now,
     };
     const original = child.parentLease;
+    // Restoration awaits a model switch and telemetry. New input, compaction, `/route off`, or any
+    // other lease replacement during those waits wins: a superseded review must not reinstall its
+    // parent or announce an approval that has since been revoked.
+    const owner = state.active;
     let lifecycle: LeaseLifecycle = original.lifecycle;
     let triggerContinuation = false;
 
@@ -1913,7 +1917,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
     const parent = { ...original, updatedAt: now, lifecycle };
     await applyChoice(ctx, parent.selected);
+    if (state.active !== owner) {
+      reviewParentAttemptMetrics = undefined;
+      return;
+    }
     state = installLease(state, parent);
+    const installed = state.active;
     const reviewMetrics = lastAttemptMetrics;
     // Cost, wall time, and retry are task-level totals, so the review's share is added to the
     // parent. Cache-token counts are deliberately NOT summed: they are a per-endpoint observation,
@@ -1944,7 +1953,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       },
       { taskId: parent.taskId, archetype: parent.archetype },
     );
-    if (triggerContinuation) {
+    if (triggerContinuation && state.active === installed) {
       pi.sendMessage(
         {
           customType: CONTEXT_MESSAGE,
@@ -2336,17 +2345,23 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         throw new Error("submit_action_plan is only valid inside an active irreversible-action preflight lease");
       }
       const validation = validateActionPlan(params);
-      await record(
-        ctx,
-        "outcome",
-        {
-          actionPlanValidated: validation.success,
-          validationErrors: validation.success ? [] : validation.errors,
-          ...(validation.success ? { planFingerprint: validation.fingerprint } : {}),
-        },
-        { taskId: active.taskId, archetype: active.archetype },
-      );
-      if (!validation.success) throw new Error(`Invalid irreversible-action plan: ${validation.errors.join("; ")}`);
+      // Telemetry is awaited only after the lease update, so a lease replaced during the await can
+      // never be overwritten with this stale submission.
+      const recordValidation = () =>
+        record(
+          ctx,
+          "outcome",
+          {
+            actionPlanValidated: validation.success,
+            validationErrors: validation.success ? [] : validation.errors,
+            ...(validation.success ? { planFingerprint: validation.fingerprint } : {}),
+          },
+          { taskId: active.taskId, archetype: active.archetype },
+        );
+      if (!validation.success) {
+        await recordValidation();
+        throw new Error(`Invalid irreversible-action plan: ${validation.errors.join("; ")}`);
+      }
       const plan = {
         taskFingerprint: active.lifecycle.taskFingerprint,
         planFingerprint: validation.fingerprint,
@@ -2365,6 +2380,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       });
       persistState();
       updateStatus(ctx);
+      await recordValidation();
       return {
         content: [
           {
@@ -2389,16 +2405,21 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         throw new Error("submit_discovery_request is only valid inside an active irreversible-action preflight lease");
       }
       const validation = validateDiscoveryRequest(params);
-      await record(
-        ctx,
-        "outcome",
-        {
-          discoveryRequestValidated: validation.success,
-          validationErrors: validation.success ? [] : validation.errors,
-        },
-        { taskId: active.taskId, archetype: active.archetype },
-      );
-      if (!validation.success) throw new Error(`Invalid discovery request: ${validation.errors.join("; ")}`);
+      // As for action plans, the request is installed before telemetry is awaited.
+      const recordValidation = () =>
+        record(
+          ctx,
+          "outcome",
+          {
+            discoveryRequestValidated: validation.success,
+            validationErrors: validation.success ? [] : validation.errors,
+          },
+          { taskId: active.taskId, archetype: active.archetype },
+        );
+      if (!validation.success) {
+        await recordValidation();
+        throw new Error(`Invalid discovery request: ${validation.errors.join("; ")}`);
+      }
       const submittedAt = new Date().toISOString();
       const scopeFingerprint = discoveryScopeFingerprint(
         validation.request,
@@ -2425,6 +2446,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       });
       persistState();
       updateStatus(ctx);
+      await recordValidation();
       return {
         content: [
           {
