@@ -18,7 +18,7 @@ import { conservativeFeatures } from "./core/features.ts";
 import { validateActionPlan } from "./core/safety.ts";
 import { transportFromCandidates } from "./pi-classifier.ts";
 import { JsonlTelemetryStore, runClassifierInvocation } from "./telemetry.ts";
-import routerExtension, {
+import routerExtensionImpl, {
   CLASSIFICATION_STAGE_TIMEOUT_MS,
   activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
@@ -31,6 +31,14 @@ import routerExtension, {
   safetyToolBlockReason,
   stageDeadlineDescription,
 } from "./index.ts";
+
+// Lightweight Pi stubs in unrelated tests do not model the tool loadout. Supply that part of the
+// ExtensionAPI only when a test has not provided a stateful implementation of its own.
+function routerExtension(pi, options) {
+  pi.getActiveTools ??= () => [];
+  pi.setActiveTools ??= () => {};
+  return routerExtensionImpl(pi, options);
+}
 
 function deferred() {
   let resolve;
@@ -684,27 +692,17 @@ describe("router-off safety notice", () => {
   });
 });
 
-describe("lease-scoped tool exposure", () => {
-  it("exposes each safety validator only in the lifecycle phase that can accept it", () => {
+describe("router-mode tool exposure", () => {
+  it("keeps both safety validators active across generated turns but hides them in shadow and off", () => {
     const ordinaryTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
-    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, undefined), ["read", "bash"]);
+    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "off"), ["read", "bash"]);
+    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "shadow"), ["read", "bash"]);
+    assert.deepEqual(activeToolsForSafetyLifecycle(["read", "bash"], "active"), ordinaryTools);
+    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active"), ordinaryTools);
     assert.deepEqual(
-      activeToolsForSafetyLifecycle(ordinaryTools, {
-        phase: "preflight",
-        policy: "authorization_then_completion_review",
-        taskFingerprint: "task",
-      }),
-      ["read", "bash", "submit_action_plan"],
-    );
-    assert.deepEqual(
-      activeToolsForSafetyLifecycle(ordinaryTools, {
-        phase: "review",
-        policy: "ordinary",
-        taskFingerprint: "task",
-        reviewKind: "completion",
-        scopeFingerprint: "a".repeat(64),
-      }),
-      ["read", "bash", "submit_safety_review"],
+      activeToolsForSafetyLifecycle(["read", "submit_action_plan", "bash", "submit_safety_review"], "active"),
+      ["read", "submit_action_plan", "bash", "submit_safety_review"],
+      "repeated syncs must not reorder the prompt's tool declarations",
     );
   });
 });
@@ -1018,6 +1016,7 @@ describe("routerExtension", () => {
   it("makes /route off an immediate bypass for routing, selection tracking, and safety blocking", async () => {
     const hooks = new Map();
     const commands = new Map();
+    const tools = new Map();
     const appended = [];
     const telemetryEvents = [];
     const selectedModels = [];
@@ -1045,7 +1044,7 @@ describe("routerExtension", () => {
     const pi = {
       on: (event, handler) => hooks.set(event, handler),
       registerCommand: (name, command) => commands.set(name, command),
-      registerTool: () => {},
+      registerTool: (tool) => tools.set(tool.name, tool),
       appendEntry: (customType, data) => appended.push({ customType, data }),
       exec: async () => ({ code: 1, stdout: "", stderr: "" }),
       getActiveTools: () => activeTools,
@@ -1083,6 +1082,13 @@ describe("routerExtension", () => {
     });
 
     await hooks.get("session_start")({ reason: "reload" }, ctx);
+    assert.deepEqual(activeTools, [
+      "read",
+      "bash",
+      "submit_implementation_plan",
+      "submit_action_plan",
+      "submit_safety_review",
+    ]);
     await commands.get("route").handler("off", ctx);
     assert.equal(sentMessages.length, 1, "off must tell the model the preflight restriction is lifted");
     assert.equal(sentMessages[0].options.deliverAs, "nextTurn");
@@ -1143,7 +1149,24 @@ describe("routerExtension", () => {
     assert.equal(telemetryEvents.length, telemetryAfterPendingOff, "off-mode hooks must not emit routing telemetry");
 
     await commands.get("route").handler("active", ctx);
-    assert.deepEqual(activeTools, ["read", "bash", "submit_implementation_plan"], "re-enabling restores the validator");
+    assert.deepEqual(
+      activeTools,
+      ["read", "bash", "submit_action_plan", "submit_safety_review", "submit_implementation_plan"],
+      "re-enabling restores both safety validators immediately",
+    );
+    await commands.get("route").handler("shadow", ctx);
+    assert.deepEqual(activeTools, ["read", "bash", "submit_implementation_plan"]);
+    await assert.rejects(
+      tools.get("submit_action_plan").execute("shadow-plan", irreversibleActionPlan(), undefined, undefined, ctx),
+      /active irreversible-action preflight/,
+    );
+    await assert.rejects(
+      tools.get("submit_safety_review").execute("shadow-review", {}, undefined, undefined, ctx),
+      /active generated independent review/,
+    );
+    await commands.get("route").handler("active", ctx);
+    assert.ok(activeTools.includes("submit_action_plan"));
+    assert.ok(activeTools.includes("submit_safety_review"));
     assert.match(
       hooks.get("tool_call")({ toolCallId: "active-edit", toolName: "edit", input: { path: "README.md" } }).reason,
       /preflight/,
@@ -3150,7 +3173,7 @@ describe("routerExtension", () => {
     assert.deepEqual(result, { action: "continue" });
     assert.deepEqual(workingMessages, ["Routing..."]);
     assert.deepEqual(visibility, [true]);
-    assert.deepEqual(activeTools, ["read", "bash"], "lease-scoped validators are hidden before classification");
+    assert.deepEqual(activeTools, ["read", "bash"], "shadow startup remains free of safety validators");
   });
 
   it("fails active mode back to shadow when the audit log cannot append", async () => {
@@ -3163,11 +3186,16 @@ describe("routerExtension", () => {
     const previousMode = process.env.PI_ROUTER_MODE;
     process.env.PI_ROUTER_TELEMETRY_PATH = telemetryDirectory;
     process.env.PI_ROUTER_MODE = "active";
+    let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
     const pi = {
       on: (event, handler) => hooks.set(event, handler),
       registerCommand: (name, command) => commands.set(name, command),
       registerTool: () => {},
       appendEntry: (customType, data) => appended.push({ customType, data }),
+      getActiveTools: () => activeTools,
+      setActiveTools: (tools) => {
+        activeTools = tools;
+      },
     };
     routerExtension(pi);
     const ctx = {
@@ -3181,6 +3209,7 @@ describe("routerExtension", () => {
     try {
       await hooks.get("model_select")({ source: "set", model: { provider: "openai-codex", id: "gpt-5.6-terra" } }, ctx);
       assert.equal(appended.at(-1).data.mode, "shadow");
+      assert.deepEqual(activeTools, ["read", "bash"], "telemetry fallback must hide both validators immediately");
       assert.match(notifications.at(-1).message, /telemetry failed/i);
       await commands.get("route").handler("active", ctx);
       assert.match(notifications.at(-1).message, /cannot enter active mode/i);
@@ -4052,7 +4081,7 @@ describe("routerExtension", () => {
         ctx,
       );
       assert.match(reviewStart.systemPrompt, /read-only authorization review/);
-      assert.deepEqual(activeTools, ["read", "bash", "submit_safety_review"]);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
       hooks.get("agent_start")();
       await tools.get("submit_safety_review").execute(
         `review-${verdict}`,
@@ -4091,14 +4120,26 @@ describe("routerExtension", () => {
         ctx,
       );
       assert.match(preflightStart.systemPrompt, /Safety lifecycle: remain non-mutating/);
-      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan"]);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
         /preflight/,
       );
+      await assert.rejects(
+        tools.get("submit_safety_review").execute("premature-review", {}, undefined, undefined, ctx),
+        /active generated independent review/,
+      );
       await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
       await hooks.get("agent_settled")({}, ctx);
+      // Pi does not emit before_agent_start for a generated review turn. Both validators must
+      // already be available when the custom-message continuation is queued.
+      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
       const rejectedChild = latestLease();
+      assert.match(hooks.get("tool_call")({ toolName: "submit_action_plan", input: {} }).reason, /read-only/);
+      await assert.rejects(
+        tools.get("submit_action_plan").execute("review-plan", irreversibleActionPlan(), undefined, undefined, ctx),
+        /active irreversible-action preflight/,
+      );
       assert.equal(rejectedChild.lifecycle.reviewKind, "authorization");
       await completeReview(rejectedChild, "reject");
       assert.equal(latestLease().lifecycle.phase, "preflight");
@@ -4122,11 +4163,15 @@ describe("routerExtension", () => {
         "the recorded authorization must name an independent reviewer vendor",
       );
       assert.equal(sent.length, 3, "approval adds the second review request and one execution continuation");
+      await assert.rejects(
+        tools.get("submit_safety_review").execute("late-review", {}, undefined, undefined, ctx),
+        /active generated independent review/,
+      );
       assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
       assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
 
       await hooks.get("input")({ text: "Change the target and continue", source: "interactive" }, ctx);
-      assert.deepEqual(activeTools, ["read", "bash"]);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_safety_review"]);
       assert.equal(latestLease().lifecycle.phase, "preflight");
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,

@@ -80,6 +80,20 @@ prompting/benchmark references consulted for background, is recorded in
 referenced by the implementation are recorded here as well, per this file's role as the repository's attribution record
 of first resort.
 
+### Pi generated-turn tool exposure
+
+- Source: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581) and the published
+  `@earendil-works/pi-coding-agent@1.0.3` extension and agent-session runtime
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Revision reviewed: published version `1.0.3`; no Git commit was pinned for the issue thread
+- License declared by the package: MIT
+
+Use: the reported fact that idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start` informs the
+router's original workaround: keep both safety validator tools declared throughout active mode, while checking the
+actual mode, lease phase, and review fingerprint when the tools execute. Shadow and off modes hide both tools. No Pi
+code or issue prose was copied or modified. We did not adopt the upstream proposed shared turn-preflight patch, fake
+user messages, prose-only safety verdicts, or permanent tool exposure when routing is disabled.
+
 ### `maximhq/bifrost`
 
 - Repository: <https://github.com/maximhq/bifrost>
@@ -471,10 +485,11 @@ version-pinned pi skills patch ([`patches/pi-0.83.0/skills.patch`](patches/pi-0.
 
 ## `shell-quote` and `shlex` (router shell tokenizer dependencies)
 
-- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.10.0`, MIT) and `shlex`
+- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.11.0`, MIT) and `shlex`
   (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
 - Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
-  copied or modified, and both ship their own type declarations.
+  copied or modified, and both ship their own type declarations. `shell-quote` was raised to the first patched release
+  for [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv); this does not change the adopted API.
 
 What each is used for, and why both:
 
