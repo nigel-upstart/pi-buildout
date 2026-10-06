@@ -54,10 +54,12 @@ Safety is an explicit persisted lease lifecycle, not an inference from archetype
 - High-risk, potentially irreversible external/repository/runtime actions start in a non-mutating `preflight` phase.
   `submit_action_plan` validates concrete targets, steps, effects, preconditions, verification, rollback, abort
   conditions, and tool names. A different-vendor reviewer must approve the exact task/plan fingerprint through
-  `submit_safety_review` before the lease becomes `authorized_execution`. Each validator is active in Pi's model-facing
-  tool set only during the lifecycle phase that accepts it, so ordinary work cannot accidentally call a lease-only tool.
-  Rejection, missing evidence, reviewer failure, plan change, new user input, compaction, session change, or manual
-  model/effort override cannot authorize execution.
+  `submit_safety_review` before the lease becomes `authorized_execution`. Both validators remain model-facing while
+  routing is active because Pi's extension-generated review turns skip `before_agent_start`; they are hidden in shadow
+  and off modes. Each tool validates the active mode and lifecycle phase at execution time, and the read-only review
+  gate still blocks wrong-phase calls. Exposure alone never authorizes execution. Rejection, missing evidence, reviewer
+  failure, plan change, new user input, compaction, session change, or manual model/effort override cannot authorize
+  execution.
 - Other high-risk reversible non-code work consults a read-only advisor before acting and receives a completion review
   afterward. Advice is explicitly not authorization; cautionary advice is carried back to the tracked worker.
 - Unattended or indefinite loops that repeatedly execute external or destructive actions (deploys, applies, publishes,
