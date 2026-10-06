@@ -8,8 +8,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { DiagLogLevel } from "@opentelemetry/api";
 import {
   DEFAULT_MAX_ATTRIBUTE_BYTES,
@@ -163,9 +163,7 @@ function normalizeMaxAttributeBytes(v: unknown): number {
 
 export function resolveConfig(cwd: string): OtelConfig {
   const projectSettings = tryReadJson(join(cwd, ".pi", "settings.json"));
-  const globalSettings = tryReadJson(
-    join(homedir(), ".pi", "agent", "settings.json"),
-  );
+  const globalSettings = tryReadJson(join(getAgentDir(), "settings.json"));
   const merged: SettingsShape["otel"] = {
     ...(globalSettings?.otel ?? {}),
     ...(projectSettings?.otel ?? {}),
@@ -215,9 +213,8 @@ export function resolveConfig(cwd: string): OtelConfig {
 
   const envTrue = (v: string | undefined): boolean => v === "1" || v === "true";
   const envSignal = (v: string | undefined): boolean | undefined => {
-    if (v === "1" || v === "true") return true;
-    if (v === "0" || v === "false") return false;
-    return undefined;
+    if (v === undefined) return undefined;
+    return v === "1" || v === "true";
   };
 
   return {

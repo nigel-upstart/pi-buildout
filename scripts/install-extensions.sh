@@ -182,11 +182,11 @@ if ((!INSTALL_EXTENSIONS && !APPLY_SKILLS_PATCH)); then
   printf 'Both the patch and extensions were skipped; nothing to install.\n' >&2
   exit 2
 fi
-if ((INSTALL_EXTENSIONS && !WITH_OTEL)) && [[ -e "$EXTENSION_DIR/otel" || -L "$EXTENSION_DIR/otel" ]]; then
-  # Never remove an unrelated Pi extension just because it occupies the managed name.
+if ((INSTALL_EXTENSIONS)) && [[ -e "$EXTENSION_DIR/otel" || -L "$EXTENSION_DIR/otel" ]]; then
+  # Never replace or remove an unrelated Pi extension occupying the managed name.
   if [[ -L "$EXTENSION_DIR/otel" || ! -f "$EXTENSION_DIR/otel/package.json" ]] \
     || ! node -e 'process.exit(require(process.argv[1]).name === "pi-buildout-otel" ? 0 : 1)' "$EXTENSION_DIR/otel/package.json"; then
-    printf 'Cannot opt out: %s is not the managed OTel extension.\n' "$EXTENSION_DIR/otel" >&2
+    printf 'Cannot replace or remove %s: it is not the managed OTel extension.\n' "$EXTENSION_DIR/otel" >&2
     exit 1
   fi
 fi

@@ -41,7 +41,7 @@ function recordingTracer() {
   };
 }
 
-/** Settings dir isolation: resolveConfig also reads $HOME/.pi/agent/settings.json. */
+/** Settings dir isolation: resolveConfig reads Pi's active agent settings directory. */
 function withSettings(otel, fn, globalOtel) {
   const home = mkdtempSync(join(tmpdir(), "pi-otel-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-otel-cwd-"));
@@ -55,8 +55,10 @@ function withSettings(otel, fn, globalOtel) {
   }
   const priorHome = process.env.HOME;
   const priorUserProfile = process.env.USERPROFILE;
+  const priorAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
   try {
     return fn(cwd);
   } finally {
@@ -64,6 +66,8 @@ function withSettings(otel, fn, globalOtel) {
     else process.env.HOME = priorHome;
     if (priorUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = priorUserProfile;
+    if (priorAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = priorAgentDir;
   }
 }
 
@@ -172,6 +176,29 @@ test("the bundled profile exports all signals and content by default, and remain
 test("explicit signal environment opt-outs override the enabled-by-default profile", () => {
   withCleanOtelEnv(() => withSettings(undefined, (cwd) => {
     withEnv("PI_OTEL_METRICS", "false", () => withEnv("PI_OTEL_LOGS", "0", () => {
+      assert.deepEqual(resolveConfig(cwd).signals, { traces: true, metrics: false, logs: false });
+    }));
+  }));
+});
+
+test("custom Pi agent directory settings retain telemetry and content opt-outs", () => {
+  withCleanOtelEnv(() => withSettings(undefined, (cwd) => {
+    const agentDir = mkdtempSync(join(tmpdir(), "pi-otel-agent-"));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
+      otel: { enabled: false, captureContent: "metadata_only", signals: { logs: false } },
+    }));
+    withEnv("PI_CODING_AGENT_DIR", agentDir, () => {
+      const config = resolveConfig(cwd);
+      assert.equal(config.enabled, false);
+      assert.equal(config.captureContent, "metadata_only");
+      assert.equal(config.signals.logs, false);
+    });
+  }));
+});
+
+test("unrecognized signal environment values cannot enable export", () => {
+  withCleanOtelEnv(() => withSettings(undefined, (cwd) => {
+    withEnv("PI_OTEL_METRICS", "off", () => withEnv("PI_OTEL_LOGS", "typo", () => {
       assert.deepEqual(resolveConfig(cwd).signals, { traces: true, metrics: false, logs: false });
     }));
   }));
