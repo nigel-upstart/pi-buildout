@@ -41,6 +41,7 @@
     "check": "npm run format:check && npm run evidence:check && npm run single-attempt:check && npm run lint && npm run typecheck && npm test && npm run knip && npm run secrets",
     "patches:build": "node scripts/build-pi-patch.mjs --all",
     "patches:check": "node scripts/build-pi-patch.mjs --check --all",
+    "release:packages": "node scripts/release-packages.mjs",
     "audit": "node scripts/check-audit.mjs"
   },
   "devDependencies": {

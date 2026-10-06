@@ -80,7 +80,20 @@ a no-op compatibility alias, and `--without-otel` opts out.
    permission set for domain owner `801997600626`; this machine currently only lists a read-only CodeArtifact profile.
    Authenticate that profile and check that each alpha version is unused. Do not assume a read-only token can publish.
 
-## Manual publish (only after the checkpoints)
+## Release CLI and manual publish (only after the checkpoints)
+
+The repository provides a small npm-script CLI. Select package names from `router-otel`, `clear`, `effort`,
+`markdown-backlinks`, `subagents`, and `skills-patch`. It defaults to `npm pack --dry-run --json`, which stages and
+prints the exact archive contents without publishing:
+
+```bash
+npm run release:packages -- --package clear,effort
+```
+
+Repeat `--package` to select more packages. After reviewing the dry-run output and completing the checkpoints above, add
+`--publish` to publish the selected packages at their manifest versions with the `alpha` tag. The CLI uses the
+repository's fixed CodeArtifact URL; it does not choose or bump versions. Authenticate npm against that registry using
+the setup below first. Publishing is a write operation and must be explicitly requested with `--publish`.
 
 These are the underlying AWS/npm operations, **not** `umt` or changes to a persistent `~/.npmrc`. Set `RW_PROFILE` to
 the publish-capable SSO profile actually configured on the machine (create one interactively with
@@ -114,7 +127,10 @@ for name in pi-router-otel pi-clear pi-effort pi-markdown-backlinks pi-subagents
     --repository npm-prod --format npm --namespace upstart --package "$name" --region us-east-1
 done
 
-# WRITE OPERATION — use once per explicitly approved package, substituting its directory.
+# WRITE OPERATION — only after human approval; publishes only the selected packages.
+npm run release:packages -- --package router-otel --publish
+
+# Or use npm directly for one package, if needed:
 (cd packages/pi-router-otel && PI_CODEARTIFACT_PUBLISH=1 npm publish --registry "$REGISTRY" --tag alpha)
 ```
 
