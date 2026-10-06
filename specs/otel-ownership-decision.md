@@ -1,6 +1,6 @@
 # Owning pi's OpenTelemetry export: decision record
 
-Status: **adopted — vendored fork, opt-in managed installation**. Tracks
+Status: **adopted — vendored fork, default-on managed installation with opt-out**. Tracks
 [issue zew1me/pi-buildout#45](https://github.com/zew1me/pi-buildout/issues/45).
 
 ## Problem
@@ -47,11 +47,12 @@ Two deviations are intentional and documented in `extensions/otel/README.md`: `g
 keeps its spelling because the registry has no cache-write attribute, and `gen_ai.system` is retained because the
 registry still defines it — the concern that it had been removed does not hold.
 
-## Why activation is opt-in
+## Why activation can be opted out
 
-The extension now uses provider-scoped trace, metric, and log pipelines, so a different SDK can own the global providers
-without disabling Pi telemetry. Activation remains explicit because installing telemetry is an operational choice, not
-because of a global-provider limitation.
+The extension uses provider-scoped trace, metric, and log pipelines, so a different SDK can own the global providers
+without disabling Pi telemetry. The managed installer now includes the fork by default; use `--without-otel` to omit it,
+or `PI_OTEL_DISABLED=1` / `otel.enabled=false` to disable export. Because the default profile captures full prompt and
+tool content to the staging collector, review the destination and capture policy before installing.
 
 The published `npm:pi-otel` package must still be removed before enabling this fork. Both extensions consume the same Pi
 lifecycle events, so provider coexistence would turn the old failure mode into duplicate spans, metrics, and logs rather
@@ -60,8 +61,8 @@ than make two Pi instrumentations desirable.
 ## Adoption state
 
 Managed adoption is complete: `upstart-dotfiles` removed the published package from settings, installs this repository
-with `--with-otel`, and supplies `user.email` in the `pi()` wrapper. This repository's real-SDK tests prove all three
-signals reach an in-process OTLP receiver, including a tool result above 60 KiB under a raised cap.
+with OTel enabled by default, and supplies `user.email` in the `pi()` wrapper. This repository's real-SDK tests prove
+all three signals reach an in-process OTLP receiver, including a tool result above 60 KiB under a raised cap.
 
 Production launch-path checks, convention mappings, exporter-delivery status, backend verification commands, and the
 remaining Datadog/APM ownership boundary are maintained in
@@ -69,8 +70,8 @@ remaining Datadog/APM ownership boundary are maintained in
 
 ## Rollback
 
-Re-add `npm:pi-otel@0.3.0` to `settings.json`, remove `~/.pi/agent/extensions/otel`, and re-run the installer without
-`--with-otel`. The published package resumes truncating at 60 KiB and also loses scoped-provider coexistence, exporter
+Re-run the installer with `--without-otel` to remove the managed fork before re-adding `npm:pi-otel@0.3.0` to
+`settings.json`. The published package resumes truncating at 60 KiB and also loses scoped-provider coexistence, exporter
 delivery health, session-labelled metrics, the cost metric, and current token-key spellings. Rollback therefore restores
 basic telemetry continuity but not production-readiness parity.
 
