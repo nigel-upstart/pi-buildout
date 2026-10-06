@@ -1,7 +1,7 @@
 // Run npm's dependency audit while narrowly accepting reviewed findings that this repository cannot
-// currently remediate. Every accepted direct finding is bound to an exact advisory and complete set
-// of installed paths. New high/critical advisories, path changes, malformed reports, and audit
-// transport failures all fail closed.
+// currently remediate. Direct findings are bound to exact advisories and complete installed paths;
+// derived findings also require a reviewed complete path set and source chain. New high/critical
+// advisories, path changes, malformed reports, and audit transport failures all fail closed.
 //
 // Review and prune this allowlist whenever ESLint or @earendil-works/pi-coding-agent is upgraded.
 import { execFileSync } from "node:child_process";
@@ -16,6 +16,15 @@ const ALLOWLIST = [
     package: "braces",
     advisoryUrl: "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
     nodePaths: ["node_modules/braces"],
+    derivedFindings: {
+      micromatch: { nodePaths: ["node_modules/micromatch"], sources: ["braces"] },
+      "fast-glob": { nodePaths: ["node_modules/fast-glob"], sources: ["micromatch"] },
+      globby: { nodePaths: ["node_modules/globby"], sources: ["fast-glob"] },
+      "markdownlint-cli2": {
+        nodePaths: ["node_modules/markdownlint-cli2"],
+        sources: ["globby", "markdown-it", "micromatch"],
+      },
+    },
     recordedAt: "2026-10-05",
     reason:
       "No patched braces release is published. The remaining high findings in micromatch, fast-glob, globby, and markdownlint-cli2 are derived from this exact development-tool dependency path.",
@@ -103,10 +112,17 @@ export function evaluateAudit(report, allowlist = ALLOWLIST) {
   }
 
   const vulnerabilities = entries.map(([, entry]) => entry);
+  const vulnerabilityNames = new Set(vulnerabilities.map((entry) => entry.name));
   const blocking = vulnerabilities.filter((entry) => BLOCKING_SEVERITIES.has(entry.severity));
   const blockingNames = new Set(blocking.map((entry) => entry.name));
   const acceptedNames = new Set();
   const acceptedAdvisories = new Map();
+  const acceptedRulesByName = new Map();
+  const recordAcceptedRule = (name, rule) => {
+    const rules = acceptedRulesByName.get(name) ?? new Set();
+    rules.add(rule);
+    acceptedRulesByName.set(name, rules);
+  };
 
   let changed = true;
   while (changed) {
@@ -130,13 +146,39 @@ export function evaluateAudit(report, allowlist = ALLOWLIST) {
       );
       const directAccepted = direct.length === 0 || matches.every(Boolean);
       const sourcesAccepted =
-        sources.length === 0 || sources.every((source) => !blockingNames.has(source) || acceptedNames.has(source));
-      if (!directAccepted || !sourcesAccepted) continue;
+        sources.length === 0 ||
+        sources.every(
+          (source) => vulnerabilityNames.has(source) && (!blockingNames.has(source) || acceptedNames.has(source)),
+        );
+      const acceptedRules = new Set([...acceptedRulesByName.values()].flatMap((rules) => [...rules]));
+      const derivedRules =
+        sources.length === 0 || direct.length > 0
+          ? []
+          : [...acceptedRules].filter((rule) => {
+              const finding = rule.derivedFindings?.[entry.name];
+              if (
+                !finding ||
+                !sameStrings(nodes, [...finding.nodePaths].sort()) ||
+                !sameStrings([...sources].sort(), [...finding.sources].sort())
+              ) {
+                return false;
+              }
+              const blockingSources = finding.sources.filter((source) => blockingNames.has(source));
+              return (
+                blockingSources.length > 0 &&
+                blockingSources.every((source) => acceptedRulesByName.get(source)?.has(rule))
+              );
+            });
+      const derivedPathAccepted = sources.length === 0 || direct.length > 0 || derivedRules.length > 0;
+      if (!directAccepted || !sourcesAccepted || !derivedPathAccepted) continue;
 
       acceptedNames.add(entry.name);
       for (const match of matches) {
-        if (match) acceptedAdvisories.set(match.advisoryUrl, match);
+        if (!match) continue;
+        acceptedAdvisories.set(match.advisoryUrl, match);
+        recordAcceptedRule(entry.name, match);
       }
+      for (const rule of derivedRules) recordAcceptedRule(entry.name, rule);
       changed = true;
     }
   }

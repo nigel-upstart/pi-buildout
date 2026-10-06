@@ -67,6 +67,84 @@ describe("evaluateAudit", () => {
     ]);
   });
 
+  it("fails closed when a derived finding moves to a different installed path", () => {
+    const report = auditReport();
+    report.vulnerabilities.micromatch.nodes.push("node_modules/new-consumer/node_modules/micromatch");
+
+    assert.deepEqual(
+      evaluateAudit(report)
+        .unexplained.map(({ name }) => name)
+        .sort(),
+      ["fast-glob", "globby", "markdownlint-cli2", "micromatch"],
+    );
+  });
+
+  it("fails closed when a derived source edge changes", () => {
+    const report = auditReport();
+    report.vulnerabilities["fast-glob"].via.push("braces");
+
+    assert.deepEqual(
+      evaluateAudit(report)
+        .unexplained.map(({ name }) => name)
+        .sort(),
+      ["fast-glob", "globby", "markdownlint-cli2"],
+    );
+  });
+
+  it("does not authorize a derived path through an unrelated allowlist rule", () => {
+    const report = {
+      metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 3, critical: 0, total: 3 } },
+      vulnerabilities: {
+        braces: {
+          name: "braces",
+          severity: "high",
+          nodes: ["node_modules/braces"],
+          via: [{ severity: "high", url: bracesAdvisoryUrl }],
+        },
+        "other-root": {
+          name: "other-root",
+          severity: "high",
+          nodes: ["node_modules/other-root"],
+          via: [{ severity: "high", url: "https://github.com/advisories/GHSA-other-root" }],
+        },
+        micromatch: {
+          name: "micromatch",
+          severity: "high",
+          nodes: ["node_modules/micromatch"],
+          via: ["braces"],
+        },
+      },
+    };
+    const allowlist = [
+      { package: "braces", advisoryUrl: bracesAdvisoryUrl, nodePaths: ["node_modules/braces"] },
+      {
+        package: "other-root",
+        advisoryUrl: "https://github.com/advisories/GHSA-other-root",
+        nodePaths: ["node_modules/other-root"],
+        derivedFindings: {
+          micromatch: { nodePaths: ["node_modules/micromatch"], sources: ["braces"] },
+        },
+      },
+    ];
+
+    assert.deepEqual(
+      evaluateAudit(report, allowlist).unexplained.map(({ name }) => name),
+      ["micromatch"],
+    );
+  });
+
+  it("fails closed when a derived source name is missing from the audit report", () => {
+    const report = auditReport();
+    delete report.vulnerabilities["markdown-it"];
+    report.metadata.vulnerabilities.moderate = 0;
+    report.metadata.vulnerabilities.total -= 1;
+
+    assert.deepEqual(
+      evaluateAudit(report).unexplained.map(({ name }) => name),
+      ["markdownlint-cli2"],
+    );
+  });
+
   it("fails closed when a derived finding also depends on an unreviewed high vulnerability", () => {
     const report = auditReport();
     report.metadata.vulnerabilities.high += 1;
