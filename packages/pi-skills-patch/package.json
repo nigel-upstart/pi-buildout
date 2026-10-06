@@ -1,0 +1,23 @@
+{
+  "name": "@upstart/pi-skills-patch",
+  "version": "0.1.0-alpha.0",
+  "type": "module",
+  "description": "Version-checked /skills runtime patch for supported Pi installations",
+  "license": "SEE LICENSE IN dist/LICENSE",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "pi-skills-patch": "dist/scripts/install-extensions.sh"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/stage-release-package.mjs skills-patch",
+    "prepublishOnly": "node ../../scripts/check-release-registry.mjs"
+  }
+}

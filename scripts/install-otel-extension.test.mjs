@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,15 +36,45 @@ async function install(args) {
 }
 
 describe("vendored OTel extension installation", () => {
-  it("stays out of the default install because telemetry activation is explicit", async () => {
+  it("installs telemetry by default and supports explicit opt-out", async () => {
     const agentDirectory = await install([]);
-    assert.equal(await exists(join(agentDirectory, "extensions", "otel")), false);
-    // The default set must still install, so the opt-in gate cannot silently skip everything.
+    assert.equal(await exists(join(agentDirectory, "extensions", "otel", "src", "index.ts")), true);
     assert.equal(await exists(join(agentDirectory, "extensions", "router", "index.ts")), true);
+
+    const optedOut = await install(["--without-otel"]);
+    assert.equal(await exists(join(optedOut, "extensions", "otel")), false);
+    assert.equal(await exists(join(optedOut, "extensions", "router", "index.ts")), true);
+
+    await execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch", "--without-otel"], {
+      cwd: root,
+      env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+    });
+    assert.equal(await exists(join(agentDirectory, "extensions", "otel")), false);
+  });
+
+  it("refuses to replace or remove an unrelated OTel extension", async () => {
+    const agentDirectory = await mkdtemp(join(tmpdir(), "pi-otel-foreign-"));
+    temporaryDirectories.push(agentDirectory);
+    const otel = join(agentDirectory, "extensions", "otel");
+    await mkdir(otel, { recursive: true });
+    await writeFile(join(otel, "package.json"), JSON.stringify({ name: "someone-else-otel" }));
+    await writeFile(join(otel, "keep.ts"), "unrelated extension\n");
+
+    for (const args of [[], ["--without-otel"]]) {
+      await assert.rejects(
+        execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch", ...args], {
+          cwd: root,
+          env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+        }),
+        /not the managed OTel extension/,
+      );
+      assert.equal(await readFile(join(otel, "keep.ts"), "utf8"), "unrelated extension\n");
+      assert.equal(await exists(join(agentDirectory, "extensions", "clear")), false);
+    }
   });
 
   it("installs the manifest-declared entrypoint and prunes tests and build output", async () => {
-    const agentDirectory = await install(["--with-otel"]);
+    const agentDirectory = await install([]);
     const otel = join(agentDirectory, "extensions", "otel");
 
     const manifest = JSON.parse(await readFile(join(otel, "package.json"), "utf8"));
@@ -64,7 +94,7 @@ describe("vendored OTel extension installation", () => {
   });
 
   it("resolves every declared dependency from inside the installed tree", async () => {
-    const agentDirectory = await install(["--with-otel"]);
+    const agentDirectory = await install([]);
     const otel = join(agentDirectory, "extensions", "otel");
     const manifest = JSON.parse(await readFile(join(otel, "package.json"), "utf8"));
     const dependencies = Object.keys(manifest.dependencies);

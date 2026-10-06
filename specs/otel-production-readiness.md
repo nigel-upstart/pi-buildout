@@ -10,13 +10,13 @@ adoption mechanics, and rollback origin are in [`otel-ownership-decision.md`](ot
 All supported Pi paths load the same installed extension and therefore use the same configuration resolver and health
 state. A launcher must not carry a second telemetry implementation.
 
-| Launch path                                    | Configuration and identity                                                                    | Verification                                                                 |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Managed `upstart-dotfiles` `pi()` wrapper      | Managed `.pi/agent/settings.json`; wrapper appends `user.email` to `OTEL_RESOURCE_ATTRIBUTES` | Run one prompt, then `/otel status`                                          |
-| Direct `pi` binary or mise shim                | Same managed settings; caller may set `OTEL_RESOURCE_ATTRIBUTES=user.email=...`               | Run one prompt, then `/otel status`                                          |
-| Custom `PI_AGENT_DIR` installation             | Settings under that agent directory; installer copies the owned fork with `--with-otel`       | Launch that Pi installation, run one prompt, then `/otel status`             |
-| Mid-session `/otel start` or `/otel connect`   | Command endpoint/protocol overrides resolved settings and rebuilds the scoped runtime         | `/otel status` after the first exported signal                               |
-| `/clear`, `/reload`, and `/resume` transitions | The process is reused; session id and scoped providers are reset per lifecycle                | Confirm the new session id on spans/metrics and a new `pi.session.start` log |
+| Launch path                                                                       | Configuration and identity                                                                    | Verification                                                                 |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Managed `upstart-dotfiles` `pi()` wrapper                                         | Managed `.pi/agent/settings.json`; wrapper appends `user.email` to `OTEL_RESOURCE_ATTRIBUTES` | Run one prompt, then `/otel status`                                          |
+| Direct `pi` binary or mise shim                                                   | Same managed settings; caller may set `OTEL_RESOURCE_ATTRIBUTES=user.email=...`               | Run one prompt, then `/otel status`                                          |
+| Custom agent directory (`PI_AGENT_DIR` for install; `PI_CODING_AGENT_DIR` for Pi) | Set both to the same directory; OTel reads Pi's settings there and installs by default        | Launch that Pi installation, run one prompt, then `/otel status`             |
+| Mid-session `/otel start` or `/otel connect`                                      | Command endpoint/protocol overrides resolved settings and rebuilds the scoped runtime         | `/otel status` after the first exported signal                               |
+| `/clear`, `/reload`, and `/resume` transitions                                    | The process is reused; session id and scoped providers are reset per lifecycle                | Confirm the new session id on spans/metrics and a new `pi.session.start` log |
 
 `/otel status` is non-blocking. It reports:
 
@@ -108,18 +108,18 @@ then the same queries must show the expected indexed set and Pi span resources.
 ## Rollout and rollback
 
 1. Run the OTel package typecheck, tests, and production-dependency audit.
-2. Install with `scripts/install-extensions.sh --with-otel`; remove published Pi telemetry packages to avoid duplicate
-   Pi lifecycle instrumentation.
+2. Install with `scripts/install-extensions.sh` (OTel is included by default); remove published Pi telemetry packages to
+   avoid duplicate Pi lifecycle instrumentation.
 3. Confirm managed settings resolve full capture, GenAI names, all intended signals, and the expected remote endpoint.
 4. Launch through each supported path, complete a prompt/tool interaction, and require `/otel status` to show endpoint
    reachability plus an accepted delivery for every enabled signal.
 5. Verify metric dimensions/cost and APM trace ingestion in Datadog with the read-only commands above.
 6. Apply the reviewed Datadog indexing policy and confirm metric series are not split by `service.instance.id`.
 
-Rollback is atomic at the managed-install layer: reinstall without `--with-otel`, restore the published package only if
-telemetry continuity is required, and remove the owned extension directory. The published package reintroduces its 60
-KiB cap, global-provider ownership, stale dependency train, old token keys, and reachability-only status; those are
-known rollback degradations, not silent equivalence.
+Rollback at the managed-install layer: reinstall with `--without-otel` to remove the owned extension directory, then
+restore the published package only if telemetry continuity is required. The published package reintroduces its 60 KiB
+cap, global-provider ownership, stale dependency train, old token keys, and reachability-only status; those are known
+rollback degradations, not silent equivalence.
 
 ## Production-readiness issue disposition
 

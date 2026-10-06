@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT_DIR=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)
 AGENT_DIR=${PI_AGENT_DIR:-"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"}
 EXTENSION_DIR="$AGENT_DIR/extensions"
 APPLY_SKILLS_PATCH=1
-EXTENSIONS=(clear effort markdown-backlinks router subagents)
-# extensions/otel is the vendored OpenTelemetry fork. It stays opt-in so installation does not
-# enable telemetry unexpectedly. Remove `npm:pi-otel` from settings first: scoped providers allow
-# other OTel SDKs to coexist, but two Pi lifecycle extensions would emit duplicate telemetry.
-# See specs/otel-ownership-decision.md for the migration and rollback steps.
-OPTIONAL_EXTENSIONS=(otel)
-WITH_OTEL=0
+EXTENSIONS=(clear effort markdown-backlinks router subagents otel)
+# Remove `npm:pi-otel` from settings first: two Pi lifecycle extensions would duplicate telemetry.
+# --without-otel remains available for deployments that cannot export telemetry.
+WITH_OTEL=1
+INSTALL_EXTENSIONS=1
+# The standalone npm package exposes this script as a `pi-skills-patch` bin symlink.
+# Resolve BASH_SOURCE for data paths, but use its invocation name to select patch-only mode.
+if [[ "$(basename "${BASH_SOURCE[0]}")" == pi-skills-patch ]]; then
+  set -- --skip-extensions "$@"
+fi
 PATCH_FILES=()
 PATCH_STATE_FILES=()
 UPGRADE_SUMS=()
@@ -151,10 +154,18 @@ for arg in "$@"; do
   case "$arg" in
     --skip-skill-loading-patch) APPLY_SKILLS_PATCH=0 ;;
     --with-otel) WITH_OTEL=1 ;;
+    --without-otel) WITH_OTEL=0 ;;
+    --skip-extensions) INSTALL_EXTENSIONS=0 ;;
     -h | --help)
-      printf 'Usage: %s [--skip-skill-loading-patch] [--with-otel]\n' "$(basename "$0")"
-      printf '  --with-otel  also install the vendored OpenTelemetry extension (extensions/otel).\n'
-      printf '               Remove npm:pi-otel from pi settings first to avoid duplicate Pi telemetry.\n'
+      if ((!INSTALL_EXTENSIONS)); then
+        printf 'Usage: pi-skills-patch [--help]\n'
+        printf '  Apply only the version-checked /skills runtime patch to the installed Pi package.\n'
+      else
+        printf 'Usage: %s [--skip-skill-loading-patch] [--without-otel] [--skip-extensions]\n' "$(basename "$0")"
+        printf '  --without-otel     omit the bundled OpenTelemetry extension.\n'
+        printf '  --skip-extensions  apply only the /skills patch.\n'
+        printf '  Remove npm:pi-otel from Pi settings first to avoid duplicate telemetry.\n'
+      fi
       exit 0
       ;;
     *)
@@ -164,22 +175,54 @@ for arg in "$@"; do
   esac
 done
 
-if ((WITH_OTEL)); then
-  EXTENSIONS+=("${OPTIONAL_EXTENSIONS[@]}")
+if ((!WITH_OTEL)); then
+  EXTENSIONS=(clear effort markdown-backlinks router subagents)
+fi
+if ((!INSTALL_EXTENSIONS && !APPLY_SKILLS_PATCH)); then
+  printf 'Both the patch and extensions were skipped; nothing to install.\n' >&2
+  exit 2
+fi
+if ((INSTALL_EXTENSIONS)) && [[ -e "$EXTENSION_DIR/otel" || -L "$EXTENSION_DIR/otel" ]]; then
+  # Never replace or remove an unrelated Pi extension occupying the managed name.
+  if [[ -L "$EXTENSION_DIR/otel" || ! -f "$EXTENSION_DIR/otel/package.json" ]] \
+    || ! node -e 'process.exit(require(process.argv[1]).name === "pi-buildout-otel" ? 0 : 1)' "$EXTENSION_DIR/otel/package.json"; then
+    printf 'Cannot replace or remove %s: it is not the managed OTel extension.\n' "$EXTENSION_DIR/otel" >&2
+    exit 1
+  fi
 fi
 
-for extension in "${EXTENSIONS[@]}"; do
-  entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
-  if [[ ! -f "$ROOT_DIR/extensions/$extension/$entrypoint" ]]; then
-    printf 'Missing packaged extension entrypoint: %s\n' "$ROOT_DIR/extensions/$extension/$entrypoint" >&2
-    exit 1
-  fi
-  # router and the vendored otel fork are multi-module trees without a helpers.ts seam.
-  if [[ "$extension" != router && "$extension" != otel && ! -f "$ROOT_DIR/extensions/$extension/helpers.ts" ]]; then
-    printf 'Missing packaged extension helper: %s\n' "$ROOT_DIR/extensions/$extension/helpers.ts" >&2
-    exit 1
-  fi
-done
+if ((INSTALL_EXTENSIONS)); then
+  # Pi also loads extensions/name.ts. Only retire top-level files that match this checkout's
+  # previous layout; an unrelated same-name extension must not be deleted on migration.
+  for extension in "${EXTENSIONS[@]}"; do
+    for suffix in .ts .test.mjs; do
+      legacy_file="$EXTENSION_DIR/$extension$suffix"
+      [[ -e "$legacy_file" || -L "$legacy_file" ]] || continue
+      if [[ "$suffix" == .ts ]]; then
+        legacy_source="$ROOT_DIR/extensions/$extension/index.ts"
+      else
+        legacy_source="$ROOT_DIR/extensions/$extension/index.test.mjs"
+      fi
+      if [[ -L "$legacy_file" || ! -f "$legacy_file" || ! -f "$legacy_source" ]] \
+        || ! cmp -s "$legacy_file" "$legacy_source"; then
+        printf 'Cannot retire %s: it is not a recognized managed legacy extension file.\n' "$legacy_file" >&2
+        exit 1
+      fi
+    done
+  done
+  for extension in "${EXTENSIONS[@]}"; do
+    entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
+    if [[ ! -f "$ROOT_DIR/extensions/$extension/$entrypoint" ]]; then
+      printf 'Missing packaged extension entrypoint: %s\n' "$ROOT_DIR/extensions/$extension/$entrypoint" >&2
+      exit 1
+    fi
+    # router and the vendored otel fork are multi-module trees without a helpers.ts seam.
+    if [[ "$extension" != router && "$extension" != otel && ! -f "$ROOT_DIR/extensions/$extension/helpers.ts" ]]; then
+      printf 'Missing packaged extension helper: %s\n' "$ROOT_DIR/extensions/$extension/helpers.ts" >&2
+      exit 1
+    fi
+  done
+fi
 
 if ((APPLY_SKILLS_PATCH)); then
   PI_PACKAGE_DIR=${PI_PACKAGE_DIR:-}
@@ -361,84 +404,99 @@ if ((APPLY_SKILLS_PATCH)); then
   fi
 fi
 
-mkdir -p "$EXTENSION_DIR"
-for extension in "${EXTENSIONS[@]}"; do
-  EXTENSION_STAGE_DIR=$(mktemp -d "$EXTENSION_DIR/.${extension}.XXXXXX")
-  entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
-  # A `package.json` travels with the extension so its runtime imports resolve outside this
-  # repository, and a `package-lock.json` travels with it so the installed tree gets the exact
-  # versions this repository tests. `LICENSE` and `NOTICE` travel with it because installing is
-  # redistribution: the vendored Apache-2.0 source must keep its notices. `node_modules` is pruned
-  # rather than copied: dependencies are installed into the staged tree below from that manifest, so
-  # the installed tree never inherits this repository's development tree.
-  while IFS= read -r -d '' source_file; do
-    relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
-    mkdir -p "$EXTENSION_STAGE_DIR/$(dirname "$relative_file")"
-    cp "$source_file" "$EXTENSION_STAGE_DIR/$relative_file"
-    # `test` directories are pruned wholesale rather than relying on the `*.test.*`
-    # name filter: test material that is not named that way (fixtures, helpers)
-    # would otherwise be published into the installed extension.
-  done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -name dist -prune -o -name test -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' -o -name 'package-lock.json' -o -name 'LICENSE' -o -name 'LICENSE.*' -o -name 'NOTICE' -o -name 'NOTICE.*' \) -print0)
+if ((INSTALL_EXTENSIONS)); then
+  mkdir -p "$EXTENSION_DIR"
+  for extension in "${EXTENSIONS[@]}"; do
+    EXTENSION_STAGE_DIR=$(mktemp -d "$EXTENSION_DIR/.${extension}.XXXXXX")
+    entrypoint=$(extension_entrypoint "$ROOT_DIR/extensions/$extension")
+    # A `package.json` travels with the extension so its runtime imports resolve outside this
+    # repository, and a `package-lock.json` travels with it so the installed tree gets the exact
+    # versions this repository tests. `LICENSE` and `NOTICE` travel with it because installing is
+    # redistribution: the vendored Apache-2.0 source must keep its notices. `node_modules` is pruned
+    # rather than copied: dependencies are installed into the staged tree below from that manifest, so
+    # the installed tree never inherits this repository's development tree.
+    while IFS= read -r -d '' source_file; do
+      relative_file=${source_file#"$ROOT_DIR/extensions/$extension/"}
+      mkdir -p "$EXTENSION_STAGE_DIR/$(dirname "$relative_file")"
+      cp "$source_file" "$EXTENSION_STAGE_DIR/$relative_file"
+      # `test` directories are pruned wholesale rather than relying on the `*.test.*`
+      # name filter: test material that is not named that way (fixtures, helpers)
+      # would otherwise be published into the installed extension.
+    done < <(find "$ROOT_DIR/extensions/$extension" -name node_modules -prune -o -name dist -prune -o -name test -prune -o -type f ! -name '*.test.*' \( -name '*.ts' -o -name 'package.json' -o -name 'package-lock.json' -o -name 'LICENSE' -o -name 'LICENSE.*' -o -name 'NOTICE' -o -name 'NOTICE.*' \) -print0)
 
-  # Runtime dependencies are installed before the atomic swap, so a failed or offline install leaves
-  # the previously working extension tree in place instead of publishing one that cannot load.
-  if [[ -f "$EXTENSION_STAGE_DIR/package.json" ]] && node -e 'const d = require(process.argv[1]).dependencies; process.exit(d && Object.keys(d).length > 0 ? 0 : 1)' "$EXTENSION_STAGE_DIR/package.json"; then
-    # `npm ci` when a lockfile shipped: it installs the exact tree this repository tested and fails
-    # rather than silently resolving something new.
-    if [[ -f "$EXTENSION_STAGE_DIR/package-lock.json" ]]; then
-      install_command=(npm ci --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts)
-    else
-      install_command=(npm install --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts)
-    fi
-    if ! (cd "$EXTENSION_STAGE_DIR" && "${install_command[@]}" > /dev/null); then
-      printf 'Could not install runtime dependencies for %s; leaving the existing extension in place.\n' "$extension" >&2
-      exit 1
-    fi
-    # Resolve every declared dependency the way pi will at load time, from the entrypoint that
-    # imports them. A dependency that installs but does not resolve would otherwise surface as a
-    # broken pi session rather than a failed install.
-    # The single quotes are deliberate: ${directory} is a JavaScript template literal evaluated by
-    # node, not a shell expansion.
-    # shellcheck disable=SC2016
-    if ! node -e '
+    # Runtime dependencies are installed before the atomic swap, so a failed or offline install leaves
+    # the previously working extension tree in place instead of publishing one that cannot load.
+    if [[ -f "$EXTENSION_STAGE_DIR/package.json" ]] && node -e 'const d = require(process.argv[1]).dependencies; process.exit(d && Object.keys(d).length > 0 ? 0 : 1)' "$EXTENSION_STAGE_DIR/package.json"; then
+      # `npm ci` when a lockfile shipped: it installs the exact tree this repository tested and fails
+      # rather than silently resolving something new.
+      if [[ -f "$EXTENSION_STAGE_DIR/package-lock.json" ]]; then
+        install_command=(npm ci --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts)
+      else
+        install_command=(npm install --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts)
+      fi
+      if ! (cd "$EXTENSION_STAGE_DIR" && "${install_command[@]}" > /dev/null); then
+        printf 'Could not install runtime dependencies for %s; leaving the existing extension in place.\n' "$extension" >&2
+        exit 1
+      fi
+      # Resolve every declared dependency the way pi will at load time, from the entrypoint that
+      # imports them. A dependency that installs but does not resolve would otherwise surface as a
+      # broken pi session rather than a failed install.
+      # The single quotes are deliberate: ${directory} is a JavaScript template literal evaluated by
+      # node, not a shell expansion.
+      # shellcheck disable=SC2016
+      if ! node -e '
       const { createRequire } = require("module");
       const [directory, entrypoint] = process.argv.slice(1);
       const resolver = createRequire(`${directory}/${entrypoint}`);
       for (const name of Object.keys(require(`${directory}/package.json`).dependencies)) resolver.resolve(name);
     ' "$EXTENSION_STAGE_DIR" "$entrypoint"; then
-      printf 'Runtime dependencies for %s did not resolve; leaving the existing extension in place.\n' "$extension" >&2
+        printf 'Runtime dependencies for %s did not resolve; leaving the existing extension in place.\n' "$extension" >&2
+        exit 1
+      fi
+    fi
+
+    EXTENSION_TARGET="$EXTENSION_DIR/$extension"
+    EXTENSION_BACKUP="$EXTENSION_STAGE_DIR.backup"
+    EXTENSION_COMMIT_IN_PROGRESS=1
+    if [[ -e "$EXTENSION_TARGET" || -L "$EXTENSION_TARGET" ]]; then
+      mv "$EXTENSION_TARGET" "$EXTENSION_BACKUP"
+    fi
+    if ! mv "$EXTENSION_STAGE_DIR" "$EXTENSION_TARGET"; then
+      printf 'Could not install %s; restoring its previous extension tree.\n' "$extension" >&2
+      rm -rf "$EXTENSION_TARGET"
+      if [[ -e "$EXTENSION_BACKUP" || -L "$EXTENSION_BACKUP" ]]; then
+        mv "$EXTENSION_BACKUP" "$EXTENSION_TARGET"
+      fi
+      EXTENSION_COMMIT_IN_PROGRESS=0
       exit 1
     fi
-  fi
-
-  EXTENSION_TARGET="$EXTENSION_DIR/$extension"
-  EXTENSION_BACKUP="$EXTENSION_STAGE_DIR.backup"
-  EXTENSION_COMMIT_IN_PROGRESS=1
-  if [[ -e "$EXTENSION_TARGET" || -L "$EXTENSION_TARGET" ]]; then
-    mv "$EXTENSION_TARGET" "$EXTENSION_BACKUP"
-  fi
-  if ! mv "$EXTENSION_STAGE_DIR" "$EXTENSION_TARGET"; then
-    printf 'Could not install %s; restoring its previous extension tree.\n' "$extension" >&2
-    rm -rf "$EXTENSION_TARGET"
-    if [[ -e "$EXTENSION_BACKUP" || -L "$EXTENSION_BACKUP" ]]; then
-      mv "$EXTENSION_BACKUP" "$EXTENSION_TARGET"
-    fi
+    EXTENSION_STAGE_DIR=
+    rm -rf "$EXTENSION_BACKUP"
+    EXTENSION_BACKUP=
+    EXTENSION_TARGET=
     EXTENSION_COMMIT_IN_PROGRESS=0
-    exit 1
-  fi
-  EXTENSION_STAGE_DIR=
-  rm -rf "$EXTENSION_BACKUP"
-  EXTENSION_BACKUP=
-  EXTENSION_TARGET=
-  EXTENSION_COMMIT_IN_PROGRESS=0
-done
+  done
 
-# Pi discovers both extensions/name.ts and extensions/name/index.ts. After every
-# managed directory replacement succeeds, remove any same-name top-level entrypoint
-# left by the legacy layout so each extension loads exactly once.
-for extension in "${EXTENSIONS[@]}"; do
-  rm -f "$EXTENSION_DIR/$extension.ts" "$EXTENSION_DIR/$extension.test.mjs"
-done
+  # Legacy files were checked against this checkout before installation; recheck before
+  # deletion in case another process changed one while dependencies were being installed.
+  for extension in "${EXTENSIONS[@]}"; do
+    for suffix in .ts .test.mjs; do
+      legacy_file="$EXTENSION_DIR/$extension$suffix"
+      [[ -e "$legacy_file" || -L "$legacy_file" ]] || continue
+      if [[ "$suffix" == .ts ]]; then
+        legacy_source="$ROOT_DIR/extensions/$extension/index.ts"
+      else
+        legacy_source="$ROOT_DIR/extensions/$extension/index.test.mjs"
+      fi
+      if [[ -L "$legacy_file" || ! -f "$legacy_file" || ! -f "$legacy_source" ]] \
+        || ! cmp -s "$legacy_file" "$legacy_source"; then
+        printf 'Cannot retire %s: it changed during installation.\n' "$legacy_file" >&2
+        exit 1
+      fi
+      rm -f "$legacy_file"
+    done
+  done
+fi
 
 if [[ -n "$PATCH_STAGE_DIR" ]]; then
   PATCH_COMMIT_IN_PROGRESS=1
@@ -456,6 +514,13 @@ if [[ -n "$PATCH_STAGE_DIR" ]]; then
   printf 'Applied /skills patch for pi %s\n' "$PI_VERSION"
 fi
 
-printf 'Installed pi extensions from %s\n' "$ROOT_DIR/extensions"
-printf 'Destination: %s\n' "$EXTENSION_DIR"
-printf 'Run /reload in an active pi session to load changes.\n'
+if ((INSTALL_EXTENSIONS && !WITH_OTEL)) && [[ -d "$EXTENSION_DIR/otel" ]]; then
+  rm -rf "$EXTENSION_DIR/otel"
+  printf 'Removed the previously managed OTel extension (--without-otel).\n'
+fi
+
+if ((INSTALL_EXTENSIONS)); then
+  printf 'Installed pi extensions from %s\n' "$ROOT_DIR/extensions"
+  printf 'Destination: %s\n' "$EXTENSION_DIR"
+  printf 'Run /reload in an active pi session to load changes.\n'
+fi

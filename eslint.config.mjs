@@ -18,6 +18,7 @@ export default tseslint.config(
       "coverage/**",
       "patches/**",
       "extensions/otel/**",
+      "packages/pi-*/dist/**",
       "pi-overlay/versions/**",
       // Type-checked by upstream's tsgo inside a Pi source tree, where its imports resolve.
       "pi-overlay/skill-management.ts",
