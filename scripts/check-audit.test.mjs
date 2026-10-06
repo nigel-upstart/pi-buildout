@@ -7,7 +7,7 @@ const bracesNodes = ["node_modules/braces"];
 
 function auditReport() {
   return {
-    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 2, high: 5, critical: 0, total: 7 } },
+    metadata: { vulnerabilities: { info: 0, low: 1, moderate: 2, high: 5, critical: 0, total: 8 } },
     vulnerabilities: {
       braces: {
         name: "braces",
@@ -37,7 +37,7 @@ function auditReport() {
         name: "markdownlint-cli2",
         severity: "high",
         nodes: ["node_modules/markdownlint-cli2"],
-        via: ["globby", "js-yaml", "markdown-it", "micromatch"],
+        via: ["globby", "js-yaml", "markdown-it", "markdownlint", "micromatch"],
       },
       "js-yaml": {
         name: "js-yaml",
@@ -50,6 +50,12 @@ function auditReport() {
         severity: "moderate",
         nodes: ["node_modules/markdown-it"],
         via: [{ severity: "moderate", url: "https://github.com/advisories/GHSA-253c-mchw-3w2r" }],
+      },
+      markdownlint: {
+        name: "markdownlint",
+        severity: "low",
+        nodes: ["node_modules/markdownlint"],
+        via: ["micromark-extension-math"],
       },
     },
   };

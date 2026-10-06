@@ -485,10 +485,11 @@ version-pinned pi skills patch ([`patches/pi-0.83.0/skills.patch`](patches/pi-0.
 
 ## `shell-quote` and `shlex` (router shell tokenizer dependencies)
 
-- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.10.0`, MIT) and `shlex`
+- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.11.0`, MIT) and `shlex`
   (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
 - Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
-  copied or modified, and both ship their own type declarations.
+  copied or modified, and both ship their own type declarations. `shell-quote` was raised to the first patched release
+  for [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv); this does not change the adopted API.
 
 What each is used for, and why both:
 
