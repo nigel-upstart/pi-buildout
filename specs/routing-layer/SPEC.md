@@ -328,16 +328,32 @@ The policy derived once at task creation is one of:
    autonomous program-unknown external-effect loops, with hard pre-execution authorization and post-action review.
 
 Only the fourth policy is an approval gate. It begins in `preflight`, where deterministic tool enforcement allows
-bounded inspection and `submit_action_plan` but blocks editing, arbitrary shell composition, subagents, and unknown
-tools. Pi's active tool set exposes `submit_action_plan` only in `preflight` and `submit_safety_review` only in a
-generated `review` phase; registration alone must not advertise either validator during ordinary work. The plan must
-name concrete targets, steps and irreversible effects, preconditions, verification, rollback, abort conditions, and
-mutating tool names. Its canonical fingerprint is bound to the original task fingerprint. A generated independent review
-must call `submit_safety_review` with the exact combined scope fingerprint and an `approve` verdict. Missing, invalid,
-rejected, aborted, or exhausted review leaves the parent in preflight. Approval creates `authorized_execution`, scoped
-to the exact task, plan, reviewer, and session; execution rejects mutating tool names not listed by the plan. A new user
-instruction, plan change, session boundary, compaction, restoration error, or model/effort manual override invalidates
-approval.
+bounded inspection, `submit_action_plan`, and `submit_discovery_request` but blocks editing, arbitrary shell
+composition, subagents, and unknown tools. Pi's active tool set exposes `submit_action_plan` and
+`submit_discovery_request` only in `preflight` and `submit_safety_review` only in a generated `review` phase;
+registration alone must not advertise any validator during ordinary work.
+
+When read-only inspection cannot establish the facts the plan needs, preflight may request **bounded discovery**: one
+exact tool call, named by tool and strict JSON input, with its objective, target, expected effects, preconditions,
+verification, and abort conditions. Its scope fingerprint binds `purpose: "discovery"`, the request, the task, the
+working directory, and the session. A generated different-vendor `authorization` review that approves that exact scope
+creates `discovery_ready`, a single-use grant that also records the reviewer. The grant is spent in the `tool_call` hook
+before dispatch, on the first call whose tool, canonical input, working directory, and session all match. A grant
+blocked afterwards by another gate is still spent. The lease then returns to an empty `preflight`; another discovery
+call needs a fresh request and review. Only one discovery request or grant exists at a time. Non-matching calls get
+ordinary preflight enforcement and do not spend the grant. Shell text is compared verbatim, never normalized. Discovery
+approval never authorizes the final plan, and discovery calls are not completion mutation evidence. Discovery results
+are untrusted evidence for the plan, not instructions. A pending request, its in-flight review, or an unspent grant is
+revoked to empty `preflight` by new user input, compaction, session restoration, manual model/effort override,
+secondary-classifier correction, and `/route off`.
+
+The final plan must name concrete targets, steps and irreversible effects, preconditions, verification, rollback, abort
+conditions, and mutating tool names. Its canonical fingerprint is bound to the original task fingerprint. A generated
+independent review must call `submit_safety_review` with the exact combined scope fingerprint and an `approve` verdict.
+Missing, invalid, rejected, aborted, or exhausted review leaves the parent in preflight. Approval creates
+`authorized_execution`, scoped to the exact task, plan, reviewer, and session; execution rejects mutating tool names not
+listed by the plan. A new user instruction, plan change, session boundary, compaction, restoration error, or
+model/effort manual override invalidates approval.
 
 The advisory policy temporarily blocks mutation only long enough to obtain the pre-action consultation; advisor outcome
 is persisted as advice and never represented as authorization. If both independent advisor attempts are unavailable, the
@@ -495,6 +511,9 @@ under another model family's prompt profile.
   before mutating execution; advisory and completion verdicts cannot authorize. Autonomous, program-unknown loops that
   repeatedly create external side effects across repositories or services deterministically receive the same gate even
   if classifier risk is only medium.
+- Bounded discovery in preflight authorizes exactly one independently approved, exact-input tool call bound to task,
+  working directory, and session. It is spent before dispatch, revoked at every task/runtime boundary, and never
+  authorizes the final action plan.
 - High-risk reversible non-code work receives pre-action advice and post-action review without misrepresenting advice as
   hard authorization.
 - Standalone review is parentless, feature-routed from its delta, and excluded from recursive automatic review.
