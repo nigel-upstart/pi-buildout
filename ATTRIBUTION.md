@@ -80,6 +80,20 @@ prompting/benchmark references consulted for background, is recorded in
 referenced by the implementation are recorded here as well, per this file's role as the repository's attribution record
 of first resort.
 
+### Pi generated-turn tool exposure
+
+- Source: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581) and the published
+  `@earendil-works/pi-coding-agent@1.0.3` extension and agent-session runtime
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Revision reviewed: published version `1.0.3`; no Git commit was pinned for the issue thread
+- License declared by the package: MIT
+
+Use: the reported fact that idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start` informs the
+router's original workaround: keep both safety validator tools declared throughout active mode, while checking the
+actual mode, lease phase, and review fingerprint when the tools execute. Shadow and off modes hide both tools. No Pi
+code or issue prose was copied or modified. We did not adopt the upstream proposed shared turn-preflight patch, fake
+user messages, prose-only safety verdicts, or permanent tool exposure when routing is disabled.
+
 ### `maximhq/bifrost`
 
 - Repository: <https://github.com/maximhq/bifrost>
@@ -367,20 +381,44 @@ unchanged and pinned by checksum. The entrypoint test uses a byte-identical five
 MIT-licensed loader. Inputs are fetched from the 0.99.2 release archive (verified against its published `SHA256SUMS`)
 and npm tarball; no complete Pi source checkout is committed.
 
+## Pi 1.0.3 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.0.3`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`), from npm `gitHead`
+- Source archive: `pi-1.0.3-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.0.3/integration.patch`](pi-overlay/versions/1.0.3/integration.patch) adapts the existing opt-in
+skills seam to the MIT-licensed 1.0.3 TypeScript sources and documentation. The generated
+[`skills.patch`](patches/pi-1.0.3/skills.patch) modifies the published resource loader, slash-command list, CLI and
+interactive entry points, and `docs/skills.md`; it adds this repository's original skill-management modules. The patch
+reuses Pi's package/resource discovery, project-trust, and `proper-lockfile` APIs, including the adapted lock pattern
+previously attributed above. It keeps discovered skills catalog-only, enables explicit global, repository, and session
+activation, preserves explicit `--skill` paths with `--no-skills`, and leaves Pi's unrelated extensions, prompts,
+themes, packages, providers, trust behavior, and bundled chunks unchanged. It does not copy Pi's automatic skill-loading
+behavior or its runtime implementation into the overlay.
+
+The `cli-runtime.js` and `rpc-entry.js` replacements are original wrappers reused from the earlier generated patch; Pi's
+published `dist/bundle/cli.js` compile-cache loader remains unchanged and is pinned by checksum. Source inputs are
+fetched from the 1.0.3 release archive and npm tarball with committed checksums; no complete Pi source checkout is
+committed.
+
 ## Pi `/skills` TypeScript overlay
 
-- Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`, and
-  `@earendil-works/pi-coding-agent@0.99.2`
+- Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`,
+  `@earendil-works/pi-coding-agent@0.99.2`, and `@earendil-works/pi-coding-agent@1.0.3`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
-  `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), and `005af57d88ee23b33778f343a9595b32e67ff788` (`v0.99.2`),
-  each taken from the npm registry's `gitHead` for that release
-- Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`, and
-  `pi-0.99.2-source.tar.gz`, each verified against upstream's published `SHA256SUMS` for that release
+  `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `005af57d88ee23b33778f343a9595b32e67ff788` (`v0.99.2`), and
+  `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`), each taken from the npm registry's `gitHead` for that release
+- Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
+  `pi-0.99.2-source.tar.gz`, and `pi-1.0.3-source.tar.gz`, each verified against upstream's published `SHA256SUMS` for
+  that release
 - License declared by the package: MIT
 
 [`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
-`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, and `patches/pi-0.99.2/` are generated from it.
+`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-0.99.2/`, and `patches/pi-1.0.3/` are generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
@@ -393,24 +431,25 @@ is a modified adaptation of the `acquireTrustLockSync` and `withTrustFileLock` p
 `src/core/trust-manager.ts`: a synchronous `proper-lockfile` lock on a sibling `.lock` path, retried only on `ELOCKED`,
 and released in `finally`. It differs by waiting with `Atomics.wait` instead of busy-spinning, allowing more attempts,
 and reporting rather than throwing a failed release so the update's own result or error is preserved. The shell binds
-Pi's existing `proper-lockfile` dependency, which 0.85.1, 0.87.1, and 0.99.2 all ship; no new upstream dependency is
-introduced.
+Pi's existing `proper-lockfile` dependency, which 0.85.1, 0.87.1, 0.99.2, and 1.0.3 all ship; no new upstream dependency
+is introduced.
 
-`pi-overlay/versions/0.85.1/integration.patch`, `pi-overlay/versions/0.87.1/integration.patch`, and
-`pi-overlay/versions/0.99.2/integration.patch` are modified-code patches against Pi's MIT-licensed TypeScript sources
-for those releases: `src/core/resource-loader.ts`, `src/core/slash-commands.ts`, `src/main.ts`,
-`src/modes/interactive/interactive-mode.ts`, and `docs/skills.md`. Their unchanged context and modified lines derive
-from the MIT-licensed Pi package. The 0.87.1 seam was rebased by re-reading the 0.87.1 sources: the code call sites are
-unchanged, its interactive-mode import extends the existing `utils/paths.ts` import, and its documentation hunk targets
-the rewritten skills page. The 0.99.2 seam is the 0.87.1 seam unchanged, re-checked against the 0.99.2 sources, where
-every hunk applies at the same call sites.
+`pi-overlay/versions/0.85.1/integration.patch`, `pi-overlay/versions/0.87.1/integration.patch`,
+`pi-overlay/versions/0.99.2/integration.patch`, and `pi-overlay/versions/1.0.3/integration.patch` are modified-code
+patches against Pi's MIT-licensed TypeScript sources for those releases: `src/core/resource-loader.ts`,
+`src/core/slash-commands.ts`, `src/main.ts`, `src/modes/interactive/interactive-mode.ts`, and `docs/skills.md`. Their
+unchanged context and modified lines derive from the MIT-licensed Pi package. The 0.87.1 seam was rebased by re-reading
+the 0.87.1 sources: the code call sites are unchanged, its interactive-mode import extends the existing `utils/paths.ts`
+import, and its documentation hunk targets the rewritten skills page. The 0.99.2 seam is the 0.87.1 seam unchanged,
+re-checked against the 0.99.2 sources, where every hunk applies at the same call sites. The 1.0.3 seam adapts the same
+opt-in behavior to that release's TypeScript sources.
 
 `pi-overlay/versions/0.85.1/replacements/dist/bundle/cli.js` and `rpc-entry.js`, and
-`pi-overlay/versions/0.87.1/replacements/dist/bundle/cli-runtime.js` and `rpc-entry.js` (reused byte-for-byte as
-`pi-overlay/versions/0.99.2/replacements/`), are original hand-written wrappers, not derived from upstream's generated
-bundle output. They replace Pi's esbuild-produced bundled entrypoints so the patched unbundled runtime handles CLI and
-RPC execution. The 0.87.1 wrappers have the same content as the 0.85.1 ones, because 0.87.1's `src/cli.ts`,
-`src/cli/setup.ts`, and `src/rpc-entry.ts` are unchanged from 0.85.1.
+`pi-overlay/versions/0.87.1/replacements/dist/bundle/cli-runtime.js` and `rpc-entry.js` (reused byte-for-byte in
+`pi-overlay/versions/0.99.2/replacements/` and `pi-overlay/versions/1.0.3/replacements/`) are original hand-written
+wrappers, not derived from upstream's generated bundle output. They replace Pi's esbuild-produced bundled entrypoints so
+the patched unbundled runtime handles CLI and RPC execution. The 0.87.1 wrappers have the same content as the 0.85.1
+ones, because 0.87.1's `src/cli.ts`, `src/cli/setup.ts`, and `src/rpc-entry.ts` are unchanged from 0.85.1.
 
 This repository vendors no upstream source and maintains no fork. Upstream source is fetched per generation run against
 pinned, checksum-verified inputs, and is not committed here.
@@ -429,12 +468,12 @@ Ideas and API patterns used:
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
 - Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
   during the lease phases that can accept them.
-- The Pi 0.85.1, 0.87.1, and 0.99.2 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its
+- The Pi 0.85.1, 0.87.1, 0.99.2, and 1.0.3 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its
   resolved-resource metadata to discover package and settings skills with upstream manifest, filtering, scope, and
   precedence behavior. The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading
   is intentionally not adopted.
-- The Pi 0.85.1, 0.87.1, and 0.99.2 patches adapt the synchronous `proper-lockfile` acquisition/retry and `finally`
-  release pattern from Pi's trust manager so skill configuration updates serialize across processes.
+- The Pi 0.85.1, 0.87.1, 0.99.2, and 1.0.3 patches adapt the synchronous `proper-lockfile` acquisition/retry and
+  `finally` release pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
@@ -475,10 +514,11 @@ version-pinned pi skills patch ([`patches/pi-0.83.0/skills.patch`](patches/pi-0.
 
 ## `shell-quote` and `shlex` (router shell tokenizer dependencies)
 
-- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.10.0`, MIT) and `shlex`
+- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.11.0`, MIT) and `shlex`
   (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
 - Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
-  copied or modified, and both ship their own type declarations.
+  copied or modified, and both ship their own type declarations. `shell-quote` was raised to the first patched release
+  for [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv); this does not change the adopted API.
 
 What each is used for, and why both:
 
