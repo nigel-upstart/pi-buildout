@@ -74,7 +74,7 @@ export const ActionPlanSchema = Type.Object(
 type ActionPlan = Static<typeof ActionPlanSchema>;
 
 // Discovery is one concrete tool invocation, not a list of tools or a final execution plan.
-export const DiscoveryRequestSchema = Type.Object(
+const DiscoveryRequestSchema = Type.Object(
   {
     purpose: Type.Literal("discovery"),
     objective: NonEmptyString,
@@ -186,7 +186,7 @@ export type CompletionEvidence = {
   evidenceFingerprint: string;
 };
 
-export type DiscoveryGrant = {
+type DiscoveryGrant = {
   request: DiscoveryRequest;
   requestFingerprint: string;
   scopeFingerprint: string;
