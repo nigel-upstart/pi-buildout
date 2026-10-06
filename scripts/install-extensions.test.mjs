@@ -77,7 +77,7 @@ test("installer retires legacy top-level extensions after installing directory r
 });
 
 test("installer refuses to delete unrecognized same-name top-level extensions or tests", async (context) => {
-  for (const name of ["clear.ts", "effort.test.mjs"]) {
+  for (const name of ["clear.ts", "effort.test.mjs", "otel.ts"]) {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "pi-extension-conflict-"));
     context.after(() => rm(temporaryRoot, { force: true, recursive: true }));
     const agentDirectory = join(temporaryRoot, "agent");
