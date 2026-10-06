@@ -256,18 +256,20 @@ Three review kinds have non-interchangeable effects:
 - **Completion review** runs after tracked high-risk work. Code builders must first supply attributable diff and passing
   deterministic-check evidence; the reviewer inspects that evidence rather than reviewing an intent-only plan.
 
-Generated reviews know their parent builder, route across the two other vendors, expose only bounded read tools plus the
-scoped verdict tool, and never fall back to the builder. Standalone review is orthogonal: it has no parent or fake
-builder, collects a bounded read-only local/PR delta before classification, then uses feature-based `code_review` model
-selection. It is an ordinary lease, may perform explicitly requested side effects, and cannot recursively trigger
-completion review.
+Generated reviews know their parent builder, route across the two other vendors, and never fall back to the builder. The
+deterministic review gate permits only bounded read tools plus the scoped verdict tool. Standalone review is orthogonal:
+it has no parent or fake builder, collects a bounded read-only local/PR delta before classification, then uses
+feature-based `code_review` model selection. It is an ordinary lease, may perform explicitly requested side effects, and
+cannot recursively trigger completion review.
 
 The irreversible preflight tool allowlist is deterministic. Unknown tools and shell composition are denied; after
 approval, mutating tool names are limited to those in the reviewed plan. The plan and verdict schemas, canonical
-fingerprints, lifecycle validation, and boundary invalidation are implemented locally. Pi's documented dynamic active-
-tool API is used as a second, model-facing layer: action-plan and verdict validators are registered for execution but
-activated only when the current lifecycle accepts them. No external safety-state-machine implementation or code was
-consulted or adapted for this decision; the Pi API provenance is recorded in the root attribution file.
+fingerprints, lifecycle validation, and boundary invalidation are implemented locally. While routing is active, all
+three validators (`submit_action_plan`, `submit_discovery_request`, `submit_safety_review`) stay declared through Pi's
+active-tool API, because extension-generated review turns skip `before_agent_start`. Each validator checks the active
+mode and lifecycle phase when it executes, so declaration never grants permission. None are declared in shadow or off
+mode. No external safety-state-machine implementation or code was consulted or adapted for this decision; the Pi API
+provenance is recorded in the root attribution file.
 
 ## Decision: bounded discovery authorization inside preflight
 
