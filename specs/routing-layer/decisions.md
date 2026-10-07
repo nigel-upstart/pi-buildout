@@ -333,8 +333,11 @@ reviewer's model is never left holding it.
 
 This was a hard transition with no compatibility for persisted session state: restored leases must match the current
 lifecycle shapes exactly, and any restored discovery request, in-flight discovery review, or unspent grant is revoked
-regardless. The earlier preflight behavior is in the history before the
-`feat(router): model exact single-use discovery grants` commit.
+regardless. The earlier preflight implementation is at revision `60c5c721703f` on `main`, the base this change was built
+on:
+[`core/safety.ts`](https://github.com/nigel-upstart/pi-buildout/blob/60c5c721703f83bd247e63ef2ff50a544f8fd834/extensions/router/core/safety.ts)
+and
+[`index.ts`](https://github.com/nigel-upstart/pi-buildout/blob/60c5c721703f83bd247e63ef2ff50a544f8fd834/extensions/router/index.ts).
 
 ## Deferred follow-up: evidence-aware synopsis compaction
 
