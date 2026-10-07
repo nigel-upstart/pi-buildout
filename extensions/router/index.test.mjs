@@ -3,6 +3,8 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import fc from "fast-check";
+import { fastCheckOptions } from "./fast-check-options.mjs";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
 // than reading whatever the developer happens to have enabled.
@@ -584,6 +586,7 @@ async function runAdapterTurn({
   await hooks.get("input")({ text: prompt, source }, ctx);
   const beforeAgentStart = await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
   return {
+    pi,
     hooks,
     commands,
     tools,
@@ -1046,7 +1049,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active },
       },
     ];
     const pi = {
@@ -1257,7 +1260,7 @@ describe("routerExtension", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { mode: "active", manualOverride: false, active },
+            data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active },
           },
         ];
         const pi = {
@@ -2783,7 +2786,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "shadow", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "shadow", manualOverride: false, active: lease },
       },
       {
         type: "message",
@@ -2896,7 +2899,7 @@ describe("routerExtension", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { mode: "shadow", manualOverride: false, active: lease },
+            data: { secondarySafetyPending: false, mode: "shadow", manualOverride: false, active: lease },
           },
           {
             type: "message",
@@ -3325,7 +3328,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3456,7 +3459,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3610,7 +3613,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3745,7 +3748,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3931,7 +3934,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -4091,7 +4094,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: parent },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
       },
     ];
     const pi = {
@@ -4341,7 +4344,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: parent },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
       },
     ];
     let activeTools = ["read", "bash"];
@@ -5069,6 +5072,257 @@ describe("routerExtension", () => {
     assert.equal(repairs(), repairsBefore, "the revoked review's outcome must not start a repair turn");
   });
 
+  it("never resurrects discovery reviews under generated ledger/model-switch schedules", async () => {
+    const commands = fc.commands(
+      [
+        fc.constantFrom("input", "compact", "off", "override", "reset").map((kind) => ({
+          check: () => true,
+          toString: () => `revoke(${kind})`,
+          async run(model, real) {
+            model.revoked = true;
+            let operation;
+            if (kind === "input")
+              operation = real.hooks.get("input")(
+                { text: "New task: inspect another target", source: "interactive" },
+                real.ctx,
+              );
+            else if (kind === "compact") operation = real.hooks.get("session_compact")({}, real.ctx);
+            else if (kind === "override")
+              operation = real.hooks.get("model_select")(
+                { model: routingModel("anthropic", "claude-sonnet-5"), source: "set" },
+                real.ctx,
+              );
+            else operation = real.commands.get("route").handler(kind, real.ctx);
+            real.pending.push(Promise.resolve(operation));
+          },
+        })),
+      ],
+      { maxCommands: 6 },
+    );
+    await fc.assert(
+      fc.asyncProperty(fc.scheduler(), commands, async (scheduler, sequence) => {
+        const events = [];
+        let scheduling = false;
+        const result = await runAdapterTurn({
+          classifyTask: successfulClassifier(1, {
+            confidence: 0.95,
+            risk: "critical",
+            actionMode: "destructive",
+            intent: "operate",
+            workflowType: "incident_or_operations",
+          }),
+          telemetry: {
+            read: async () => [],
+            append: async (event) => {
+              events.push(event);
+              if (scheduling) await scheduler.schedule(Promise.resolve(), `ledger:${event.kind}`);
+            },
+          },
+          models: [
+            ...standardRoutingModels(),
+            routingModel("google-vertex", "gemini-3.6-flash"),
+            routingModel("openai-codex", "gpt-6-astra"),
+          ],
+          mode: "active",
+          prompt: "Discover owner before production deletion",
+          sessionId: "scheduled-review",
+        });
+        startAgentRun(result);
+        await result.tools.get("submit_discovery_request").execute(
+          "request",
+          {
+            purpose: "discovery",
+            objective: "Find owner",
+            target: "inventory",
+            expectedEffects: ["Return owner"],
+            preconditions: ["Bounded query"],
+            verification: ["Compare identifiers"],
+            abortConditions: ["Unexpected effects"],
+            toolName: "bash",
+            input: { command: "glean search owner --limit 5" },
+          },
+          undefined,
+          undefined,
+          result.ctx,
+        );
+        result.pi.setModel = () => scheduler.schedule(Promise.resolve(true), "model switch");
+        scheduling = true;
+        let review;
+        const start = {
+          check: () => true,
+          toString: () => "startReview",
+          async run() {
+            review = settleAgentRun(result);
+          },
+        };
+        const model = { revoked: false };
+        const real = { ...result, pending: [] };
+        // Commands launch hooks synchronously. Awaiting an internally scheduled hook inside a
+        // scheduled command would hold the scheduler while waiting for itself to release a ledger write.
+        await fc.scheduledModelRun(scheduler, () => ({ model, real }), [start, ...sequence]);
+        await scheduler.waitFor(Promise.all([review, ...real.pending]));
+        const active = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+        if (model.revoked) {
+          assert.notEqual(active?.lifecycle.phase, "review");
+          assert.equal(active?.lifecycle.discovery, undefined);
+          assert.equal(active?.lifecycle.grant, undefined);
+        } else assert.equal(active.lifecycle.phase, "review");
+      }),
+      fastCheckOptions,
+    );
+  });
+
+  it("reconciles secondary before settlement advances the lease revision (#73)", async () => {
+    const secondary = deferred();
+    const features = {
+      risk: "critical",
+      actionMode: "destructive",
+      intent: "operate",
+      workflowType: "incident_or_operations",
+    };
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ ...features, confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: [
+        ...standardRoutingModels(),
+        routingModel("google-vertex", "gemini-3.6-flash"),
+        routingModel("openai-codex", "gpt-6-astra"),
+      ],
+      mode: "active",
+      prompt: "Rotate production credential",
+      sessionId: "secondary-before-settlement",
+    });
+    const latest = () => result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    startAgentRun(result);
+    result.ctx.model = result.ctx.modelRegistry.find(latest().selected.provider, latest().selected.modelId);
+    await endAgentTurn(result);
+    await result.hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: latest().selected.provider,
+            model: latest().selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      result.ctx,
+    );
+    secondary.resolve(classificationResult(2, { ...features, confidence: 0.95 }));
+    await flushMicrotasks();
+    await result.hooks.get("agent_settled")({}, result.ctx);
+    assert.equal(latest().lifecycle.evidenceRepairAttempted, true);
+    assert.ok(result.events.some((event) => event.kind === "secondary_reconciliation"));
+    assert.equal(
+      result.events.some((event) => event.data.reason === "lease_revision_changed"),
+      false,
+    );
+    const decision = result.hooks.get("tool_call")(
+      { toolCallId: "unapproved", toolName: "bash", input: { command: "rotate production credential" } },
+      result.ctx,
+    );
+    assert.match(decision.reason, /preflight/);
+    assert.doesNotMatch(decision.reason, /Secondary safety classification is pending/);
+  });
+
+  it("keeps the parent's secondary safety latch when classification fails during its review", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.constantFrom("transport", "schema", "valid"), fc.boolean(), async (failure, afterVerdict) => {
+        const secondary = deferred();
+        const result = await runAdapterTurn({
+          classifyPrimaryTask: async () =>
+            primaryClassificationResult({
+              confidence: 0.6,
+              risk: "critical",
+              actionMode: "destructive",
+              intent: "operate",
+              workflowType: "incident_or_operations",
+            }),
+          classifySecondaryTask: async () => secondary.promise,
+          models: [
+            ...standardRoutingModels(),
+            routingModel("google-vertex", "gemini-3.6-flash"),
+            routingModel("openai-codex", "gpt-6-astra"),
+          ],
+          mode: "active",
+          prompt: "Rotate production credential",
+          sessionId: "secondary-review-family",
+        });
+        const latest = () =>
+          result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+        startAgentRun(result);
+        await result.tools
+          .get("submit_action_plan")
+          .execute("plan", irreversibleActionPlan(), undefined, undefined, result.ctx);
+        await settleAgentRun(result);
+        const child = latest();
+        assert.equal(child.lifecycle.phase, "review");
+        startAgentRun(result);
+        const failSecondary = async () => {
+          if (failure === "transport") secondary.reject(new Error("secondary transport failed"));
+          else
+            secondary.resolve(
+              classificationResult(failure === "valid" ? 2 : 1, {
+                confidence: failure === "valid" ? 0.95 : 0.6,
+                risk: "critical",
+                actionMode: "destructive",
+                intent: "operate",
+                workflowType: "incident_or_operations",
+              }),
+            );
+          await flushMicrotasks();
+        };
+        if (!afterVerdict) await failSecondary();
+        await result.tools.get("submit_safety_review").execute(
+          "verdict",
+          {
+            reviewKind: "authorization",
+            scopeFingerprint: child.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "Checked exact plan",
+            evidence: ["Verified targets"],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          result.ctx,
+        );
+        if (afterVerdict) await failSecondary();
+        await settleAgentRun(result);
+        assert.equal(latest().lifecycle.phase, "authorized_execution");
+        const decision = result.hooks.get("tool_call")(
+          {
+            toolCallId: "execute-approved",
+            toolName: "bash",
+            input: { command: "rotate production credential" },
+          },
+          result.ctx,
+        );
+        if (failure === "valid")
+          assert.equal(decision, undefined, "a reconciled provider-diverse answer releases the gate");
+        else {
+          assert.equal(
+            decision?.block,
+            true,
+            "review approval must not resolve an unanswered secondary safety question",
+          );
+          assert.match(decision.reason, /Secondary safety classification is pending/);
+        }
+        result.ctx.sessionManager.getBranch = () => result.appended.map((entry) => ({ type: "custom", ...entry }));
+        await result.hooks.get("session_start")({ reason: "reload" }, result.ctx);
+        const restoredDecision = result.hooks.get("tool_call")(
+          { toolCallId: "after-reload", toolName: "bash", input: { command: "rotate production credential" } },
+          result.ctx,
+        );
+        if (failure === "valid") assert.equal(restoredDecision, undefined);
+        else assert.match(restoredDecision.reason, /Secondary safety classification is pending/);
+      }),
+      fastCheckOptions,
+    );
+  });
+
   it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
@@ -5237,7 +5491,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: parent },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
       },
     ];
     const pi = {

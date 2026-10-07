@@ -695,3 +695,19 @@ observations, without copying generated registry code or changing routing policy
 compile-cache loader is adapted from Pi 1.1.0's MIT-licensed `dist/bundle/cli.js` and verified byte-for-byte against its
 baseline checksum; the runtime and RPC behavior exercised comes from this repository's existing wrappers. Pre-1.0.1
 patch artifacts and overlays were removed; historical attribution above remains for shared ideas and code.
+
+## XState v5 and fast-check (router lease ownership and race testing)
+
+- XState: <https://github.com/statelyai/xstate>, npm `xstate@5.33.2`, MIT; reviewed the installed package's declarations
+  and [actor](https://stately.ai/docs/actors) / [invocation](https://stately.ai/docs/invoke) documentation on
+  2026-10-07. Consumed as an ordinary runtime dependency, with no upstream source copied or modified.
+- fast-check: <https://github.com/dubzzz/fast-check>, npm `fast-check@4.10.2`, MIT; reviewed installed scheduler/model
+  runner declarations and [race testing documentation](https://fast-check.dev/docs/advanced/race-conditions/) on
+  2026-10-07. Consumed as a development dependency, with no upstream source copied or modified.
+
+Conceptual use: XState's synchronous actor transitions, guarded statecharts, and cancellable promise children provide
+one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates JSON inputs,
+state-transition sequences, and adversarial schedules for actual router handlers and their ledger/model waits. The
+machine, adapter integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6
+alpha APIs, a global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check
+examples or its implementation; the existing Node test runner remains in place.

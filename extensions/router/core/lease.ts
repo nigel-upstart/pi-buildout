@@ -43,6 +43,8 @@ export type LeaseState = {
   active?: TaskLease;
   pendingHardBoundary?: HardBoundary;
   manualOverride: boolean;
+  /** Validated persistence marker; live decisions read the family actor's latch. */
+  secondarySafetyPending?: boolean;
 };
 
 export type BoundaryInput = {

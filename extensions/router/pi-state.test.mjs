@@ -310,6 +310,21 @@ describe("lease restoration and context estimates", () => {
     });
   }
 
+  it("validates the persisted secondary latch and discards ambiguous legacy low-confidence leases", () => {
+    const active = leaseFixture();
+    active.features = { ...active.features, confidence: 0.6 };
+    const restore = (extra) =>
+      restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active, ...extra } }],
+        "shadow",
+      );
+    assert.equal(restore({}).active, undefined);
+    assert.equal(restore({ secondarySafetyPending: "yes" }).active, undefined);
+    assert.equal(restore({ secondarySafetyPending: true }).secondarySafetyPending, true);
+    assert.equal(restore({ secondarySafetyPending: true }).active.taskId, active.taskId);
+    assert.equal(restore({ secondarySafetyPending: false }).active.taskId, active.taskId);
+  });
+
   it("restores only router-authored state entries", () => {
     const state = restoreLeaseState(
       [
@@ -323,7 +338,13 @@ describe("lease restoration and context estimates", () => {
     const active = leaseFixture();
     active.planValidationRepairAttempted = true;
     const restored = restoreLeaseState(
-      [{ type: "custom", customType: "model-router-state", data: { mode: "active", active } }],
+      [
+        {
+          type: "custom",
+          customType: "model-router-state",
+          data: { secondarySafetyPending: false, mode: "active", active },
+        },
+      ],
       "shadow",
     );
     assert.equal(restored.active.taskId, "task");
@@ -332,7 +353,13 @@ describe("lease restoration and context estimates", () => {
     malformedRepair.planValidationRepairAttempted = "yes";
     assert.equal(
       restoreLeaseState(
-        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: malformedRepair } }],
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { secondarySafetyPending: false, mode: "active", active: malformedRepair },
+          },
+        ],
         "shadow",
       ).active,
       undefined,
@@ -342,7 +369,13 @@ describe("lease restoration and context estimates", () => {
     legacyImplicitChild.parentLease = structuredClone(active);
     assert.equal(
       restoreLeaseState(
-        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: legacyImplicitChild } }],
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { secondarySafetyPending: false, mode: "active", active: legacyImplicitChild },
+          },
+        ],
         "shadow",
       ).active,
       undefined,
@@ -362,7 +395,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { mode: "active", active: malformedIndependentReview },
+            data: { secondarySafetyPending: false, mode: "active", active: malformedIndependentReview },
           },
         ],
         "shadow",
@@ -374,7 +407,13 @@ describe("lease restoration and context estimates", () => {
     legacyVersion.version = 1;
     assert.equal(
       restoreLeaseState(
-        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: legacyVersion } }],
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { secondarySafetyPending: false, mode: "active", active: legacyVersion },
+          },
+        ],
         "shadow",
       ).active,
       undefined,
@@ -384,7 +423,13 @@ describe("lease restoration and context estimates", () => {
     tampered.selected.modelId = "unknown-model";
     assert.equal(
       restoreLeaseState(
-        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: tampered } }],
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { secondarySafetyPending: false, mode: "active", active: tampered },
+          },
+        ],
         "shadow",
       ).active,
       undefined,
@@ -392,7 +437,13 @@ describe("lease restoration and context estimates", () => {
 
     const restore = (lease) =>
       restoreLeaseState(
-        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: lease } }],
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { secondarySafetyPending: false, mode: "active", active: lease },
+          },
+        ],
         "shadow",
       ).active;
 
@@ -458,7 +509,13 @@ describe("lease restoration and context estimates", () => {
   it("discards leases from the previous policy and restores the same lease under the current policy", () => {
     const restore = (lease) =>
       restoreLeaseState(
-        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: lease } }],
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { secondarySafetyPending: false, mode: "active", active: lease },
+          },
+        ],
         "shadow",
       ).active;
     const previousLease = leaseFixture();
