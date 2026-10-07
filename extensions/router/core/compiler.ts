@@ -19,7 +19,8 @@ export type CompiledPrompt = {
   sectionOrder: string[];
 };
 
-function escapeXml(value: string): string {
+/** Escape text placed inside an XML-style delimiter so it cannot close or forge the delimiter. */
+export function escapeXml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
