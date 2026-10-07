@@ -311,11 +311,21 @@ export type SafetyEvidenceLog = {
   mutations: { toolName: string; inputFingerprint: string; recordedAt: string }[];
 };
 
+/**
+ * Locale-independent total order on object keys: UTF-16 code units, as `<` compares strings. `localeCompare` is
+ * unsuitable here: it follows the host's collation, and it treats distinct but canonically equivalent keys such as
+ * "\u00e9" and "e\u0301" as equal, which would make the fingerprint depend on insertion order.
+ */
+function compareCodeUnits(left: string, right: string): number {
+  if (left < right) return -1;
+  return left > right ? 1 : 0;
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
       .join(",")}}`;
   }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { conservativeFeatures } from "./features.ts";
@@ -121,6 +122,18 @@ describe("irreversible action plans", () => {
     const invalid = actionPlan();
     invalid.steps[0].target = "staging/keyring";
     assert.match(validateActionPlan(invalid).errors.join("\n"), /undeclared target: staging\/keyring/);
+  });
+});
+
+describe("canonical fingerprints", () => {
+  it("orders object keys by UTF-16 code unit, independent of locale and insertion order", () => {
+    // Canonically equivalent but distinct keys: localeCompare treats them as equal, so a stable sort kept
+    // insertion order and reordering the object changed the fingerprint.
+    const precomposedFirst = { "\u00e9": 1, "e\u0301": 2 };
+    const decomposedFirst = { "e\u0301": 2, "\u00e9": 1 };
+    assert.equal(safetyFingerprint(precomposedFirst), safetyFingerprint(decomposedFirst));
+    // Code-unit order puts "B" (U+0042) before "a" (U+0061); a locale collation would not.
+    assert.equal(safetyFingerprint({ a: 1, B: 2 }), createHash("sha256").update('{"B":2,"a":1}').digest("hex"));
   });
 });
 

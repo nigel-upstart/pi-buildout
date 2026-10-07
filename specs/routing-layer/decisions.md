@@ -271,9 +271,13 @@ consulted or adapted for this decision; the Pi API provenance is recorded in the
 
 ## Decision: discovery grants match plain JSON exactly and are spent at `tool_call`
 
-A discovery grant authorizes one call by fingerprint. `safetyFingerprint` canonicalizes the request with sorted keys and
-hashes it, and `consumeDiscoveryGrant` compares the live call's input against the approved input the same way. That
-comparison is sound only if one fingerprint identifies exactly one call. Two guards in `core/safety.ts` make that true.
+A discovery grant authorizes one call by fingerprint. `safetyFingerprint` canonicalizes the request, with object keys
+sorted by UTF-16 code unit, and hashes it; `consumeDiscoveryGrant` compares the live call's input against the approved
+input the same way. That comparison is sound only if one fingerprint identifies exactly one call. Two guards in
+`core/safety.ts` make that true. The key order is locale-independent on purpose. `localeCompare` would follow the host's
+collation, and it treats canonically equivalent keys such as `"\u00e9"` and `"e\u0301"` as equal, which made the
+fingerprint depend on insertion order. A lease persisted under the earlier ordering fails fingerprint validation on
+restore and is discarded.
 
 **Plain-JSON validation (`isJsonObject`).** The canonicalizer walks `Object.entries` and serializes leaves with
 `JSON.stringify`, which is lossy for values that are not JSON. Measured against `safetyFingerprint`, each of these pairs
