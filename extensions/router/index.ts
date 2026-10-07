@@ -1915,12 +1915,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       };
     }
 
-    const parent = { ...original, updatedAt: now, lifecycle };
-    await applyChoice(ctx, parent.selected);
+    const restored = await applyChoice(ctx, original.selected);
     if (state.active !== owner) {
       reviewParentAttemptMetrics = undefined;
       return;
     }
+    if (!restored && (lifecycle.phase === "discovery_ready" || lifecycle.phase === "authorized_execution")) {
+      // An approval is usable only by the builder it was granted to. If the builder model cannot be
+      // restored, the reviewer's model would otherwise be left holding the grant, so withhold it.
+      lifecycle = {
+        phase: "preflight",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: original.lifecycle.taskFingerprint,
+        ...(lifecycle.phase === "authorized_execution" ? { plan: lifecycle.plan } : {}),
+        lastAuthorizationReview: {
+          ...reviewOutcome,
+          summary: "Approval withheld: the builder model could not be restored after the independent review.",
+        },
+      };
+      triggerContinuation = false;
+      ctx.ui.notify("Approval withheld: the builder model could not be restored after review", "error");
+    }
+    const parent = { ...original, updatedAt: now, lifecycle };
     state = installLease(state, parent);
     const installed = state.active;
     const reviewMetrics = lastAttemptMetrics;
@@ -3004,10 +3020,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     ) {
       return;
     }
-    await abortSecondaryWork(ctx, "manual_override");
+    // Revoke discovery and mark the override before any await, so an exact discovery call cannot
+    // be dispatched in the window while secondary work is being cancelled.
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual model override") };
     state = markManualOverride(state);
     persistState();
+    await abortSecondaryWork(ctx, "manual_override");
     updateStatus(ctx);
     await record(
       ctx,
@@ -3030,13 +3048,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("thinking_level_select", async (event, ctx) => {
     if (state.mode === "off" || applyingSelection) return;
-    await abortSecondaryWork(ctx, "manual_override");
+    // As for model overrides, all lease changes happen before the first await.
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual effort override") };
     const active = state.active;
     const changed = active ? changeEffortWithinLease(active, event.level, new Date().toISOString()) : undefined;
     if (changed?.success) state = { ...state, active: changed.lease };
     state = markManualOverride(state);
     persistState();
+    await abortSecondaryWork(ctx, "manual_override");
     updateStatus(ctx);
     await record(
       ctx,

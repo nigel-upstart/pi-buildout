@@ -4298,6 +4298,7 @@ describe("routerExtension", () => {
     let sessionId = "discovery-session";
     let modelGate = Promise.resolve();
     let setModelCalls = 0;
+    let setModelResult = true;
     let telemetryGate = Promise.resolve();
     let gatedKind;
     let gatedPending = false;
@@ -4310,7 +4311,7 @@ describe("routerExtension", () => {
       setModel: async () => {
         setModelCalls++;
         await modelGate;
-        return true;
+        return setModelResult;
       },
       setThinkingLevel: () => {},
       getThinkingLevel: () => "high",
@@ -4506,8 +4507,26 @@ describe("routerExtension", () => {
     ctx.model = models[0];
     await submit();
     await review("approve");
-    await hooks.get("model_select")({ source: "user", model: models[1] }, ctx);
+    const selecting = hooks.get("model_select")({ source: "user", model: models[1] }, ctx);
+    const duringModelOverride = hooks.get("tool_call")(
+      { toolCallId: "during-model-override", toolName: "bash", input: request.input },
+      ctx,
+    );
+    assert.equal(duringModelOverride?.block, true, "a model override revokes the grant before its first await");
+    await selecting;
     assert.equal(latest().lifecycle.phase, "preflight", "manual override revokes an unspent grant");
+    await commands.get("route").handler("active", ctx);
+    ctx.model = models[0];
+    await submit();
+    await review("approve");
+    const leveling = hooks.get("thinking_level_select")({ level: "low" }, ctx);
+    const duringEffortOverride = hooks.get("tool_call")(
+      { toolCallId: "during-effort-override", toolName: "bash", input: request.input },
+      ctx,
+    );
+    assert.equal(duringEffortOverride?.block, true, "an effort override revokes the grant before its first await");
+    await leveling;
+    assert.equal(latest().lifecycle.phase, "preflight", "an effort override revokes an unspent grant");
     await commands.get("route").handler("active", ctx);
     ctx.model = models[0];
     await submit();
@@ -4781,6 +4800,68 @@ describe("routerExtension", () => {
     gatedKind = undefined;
     assert.deepEqual(latest().lifecycle, revoked.lifecycle, "a stale fallback must not overwrite the revoked lease");
     assert.equal(latest().updatedAt, revoked.updatedAt);
+
+    // If the builder model cannot be restored after approval, the grant must be withheld.
+    ctx.model = models[0];
+    await submit();
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: builder.provider,
+            model: builder.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    await hooks.get("agent_settled")({}, ctx);
+    const unrestorable = latest();
+    assert.equal(unrestorable.lifecycle.phase, "review");
+    ctx.model = models.find((model) => model.id === unrestorable.selected.modelId);
+    await tools.get("submit_safety_review").execute(
+      "unrestorable-verdict",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: unrestorable.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "Checked the exact discovery scope",
+        evidence: ["Single bounded lookup"],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: unrestorable.selected.provider,
+            model: unrestorable.selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    const approvalsBeforeFailure = approvals();
+    setModelResult = false;
+    await hooks.get("agent_settled")({}, ctx);
+    setModelResult = true;
+    assert.equal(latest().lifecycle.phase, "preflight", "an unrestorable builder must not receive the grant");
+    assert.equal(latest().lifecycle.grant, undefined);
+    assert.match(latest().lifecycle.lastAuthorizationReview.summary, /could not be restored/);
+    assert.equal(approvals(), approvalsBeforeFailure, "a withheld approval must not be announced");
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "unrestored", toolName: "bash", input: request.input }, ctx)?.block,
+      true,
+    );
   });
 
   it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {
