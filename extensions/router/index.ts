@@ -2005,13 +2005,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         modelSnapshotId: active.modelSnapshotId,
       },
     );
+    // A lease replaced during telemetry or a model switch (for example, a discovery review revoked by
+    // new input or `/route off`) must never be overwritten by a fallback computed from the stale one.
+    if (state.active !== active) return;
     if (fallback.action === "use_choice") {
       if (!(await applyChoice(ctx, fallback.choice))) {
         attemptDisposition = "failed";
         return;
       }
-      // A lease replaced during telemetry or the model switch (for example, a revoked discovery
-      // review) must not be overwritten by a fallback computed from the stale one.
       if (state.active !== active) return;
       const fallbackLease =
         fallback.lease.lifecycle.phase === "review"
@@ -2053,6 +2054,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (fallback.action === "restore_previous") {
       attemptDisposition = "failed";
       if (fallback.choice) await applyChoice(ctx, fallback.choice);
+      if (state.active !== active) return;
       state = installLease(state, { ...fallback.lease, executionFailed: true });
       persistState();
       updateStatus(ctx);
@@ -3099,10 +3101,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("tool_execution_end", (event, ctx) => {
     activeToolExecutions = Math.max(0, activeToolExecutions - 1);
-    if (state.mode === "off") return;
-    attemptToolCalls++;
+    // Untrack the call even while off so a discovery call that ends after `/route off` cannot leak.
     const discovery = discoveryCalls.get(event.toolCallId);
     discoveryCalls.delete(event.toolCallId);
+    if (state.mode === "off") return;
+    attemptToolCalls++;
     if (discovery) {
       void record(
         ctx,
@@ -3553,6 +3556,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           deterministicCheckCalls.clear();
           deterministicCheckResults.clear();
           potentiallyMutatingCalls.clear();
+          discoveryCalls.clear();
           if (liftedPhase) {
             // Nothing else tells the model its earlier refusals no longer apply, and in practice it
             // keeps working around a gate that is gone. Mid-run this lands at the next turn boundary.

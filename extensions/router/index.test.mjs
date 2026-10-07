@@ -4299,6 +4299,8 @@ describe("routerExtension", () => {
     let modelGate = Promise.resolve();
     let setModelCalls = 0;
     let telemetryGate = Promise.resolve();
+    let gatedKind;
+    let gatedPending = false;
     const pi = {
       on: (name, handler) => hooks.set(name, handler),
       registerCommand: (name, command) => commands.set(name, command),
@@ -4339,7 +4341,10 @@ describe("routerExtension", () => {
     routerExtension(pi, {
       telemetry: {
         append: async (event) => {
-          await telemetryGate;
+          if (gatedKind === undefined || event.kind === gatedKind) {
+            if (gatedKind !== undefined) gatedPending = true;
+            await telemetryGate;
+          }
           events.push(event);
         },
         read: async () => [],
@@ -4721,6 +4726,61 @@ describe("routerExtension", () => {
     assert.equal(latest().lifecycle.phase, "preflight", "a revoked parent must not gain a review lease");
     assert.equal(latest().lifecycle.discovery, undefined);
     assert.equal(reviewPrompts(), promptsBefore, "a cancelled review must not be prompted");
+
+    // Revocation while a failed review awaits fallback telemetry must not be undone by the fallback.
+    ctx.model = models[0];
+    await submit();
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: builder.provider,
+            model: builder.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    await hooks.get("agent_settled")({}, ctx);
+    const reviewFailure = (lease) => ({
+      messages: [
+        {
+          role: "assistant",
+          provider: lease.selected.provider,
+          model: lease.selected.modelId,
+          stopReason: "error",
+          errorMessage: "provider failure",
+          usage: { input: 1, output: 0, cacheRead: 0, cost: { total: 0 } },
+        },
+      ],
+    });
+    const firstReviewer = latest();
+    assert.equal(firstReviewer.lifecycle.phase, "review");
+    ctx.model = models.find((model) => model.id === firstReviewer.selected.modelId);
+    await hooks.get("agent_end")(reviewFailure(firstReviewer), ctx);
+    const failingReview = latest();
+    assert.equal(failingReview.lifecycle.phase, "review");
+    assert.notEqual(failingReview.selected.modelId, firstReviewer.selected.modelId, "first failure uses the fallback");
+    assert.equal(failingReview.attemptIndex, failingReview.fallbacks.length, "the fallback chain is now exhausted");
+    ctx.model = models.find((model) => model.id === failingReview.selected.modelId);
+    const fallbackTelemetry = deferred();
+    telemetryGate = fallbackTelemetry.promise;
+    gatedKind = "fallback";
+    const failing = hooks.get("agent_end")(reviewFailure(failingReview), ctx);
+    await waitUntil(() => gatedPending);
+    assert.equal(latest().lifecycle.phase, "review", "the terminal fallback is in flight for the review lease");
+    const revokingFallback = hooks.get("input")({ text: "Revoke during fallback", source: "interactive" }, ctx);
+    const revoked = structuredClone(latest());
+    assert.equal(revoked.lifecycle.phase, "preflight");
+    fallbackTelemetry.resolve();
+    await Promise.all([failing, revokingFallback]);
+    telemetryGate = Promise.resolve();
+    gatedKind = undefined;
+    assert.deepEqual(latest().lifecycle, revoked.lifecycle, "a stale fallback must not overwrite the revoked lease");
+    assert.equal(latest().updatedAt, revoked.updatedAt);
   });
 
   it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {
