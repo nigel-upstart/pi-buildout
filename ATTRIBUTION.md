@@ -465,8 +465,8 @@ pinned, checksum-verified inputs, and is not committed here.
 Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
-- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
-  during the lease phases that can accept them.
+- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to keep all three safety
+  validators declared throughout active routing; each validator enforces its mode and lease phase at execution time.
 - The Pi 0.85.1 and 0.87.1 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
   metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
   The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
