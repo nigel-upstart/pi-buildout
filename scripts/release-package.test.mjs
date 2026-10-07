@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -85,6 +88,58 @@ test("release CLI defaults to selected-package dry runs and requires an explicit
     assert.match(missing.stderr, /Select at least one package/);
   } finally {
     rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
+test("all selected packages are validated before any package is published", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-release-validation-"));
+  const binDir = join(tempRoot, "bin");
+  const log = join(tempRoot, "calls.jsonl");
+  mkdirSync(binDir);
+  const cliDir = join(tempRoot, "scripts");
+  mkdirSync(cliDir);
+  copyFileSync(join(root, "scripts", "release-packages.mjs"), join(cliDir, "release-packages.mjs"));
+  for (const name of ["clear", "effort"]) {
+    const packageDir = join(tempRoot, "packages", `pi-${name}`);
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(
+      join(packageDir, "package.json"),
+      JSON.stringify({
+        name: `pi-${name}`,
+        version: "1.0.0-alpha.1",
+        publishConfig: { registry },
+      }),
+    );
+  }
+  writeFileSync(
+    join(tempRoot, "packages", "pi-effort", "package.json"),
+    JSON.stringify({ name: "pi-effort", version: "1.0.0", publishConfig: { registry } }),
+  );
+  const npm = join(binDir, "npm");
+  writeFileSync(
+    npm,
+    [
+      "#!/usr/bin/env node",
+      `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + String.fromCharCode(10));`,
+      "",
+    ].join("\n"),
+  );
+  chmodSync(npm, 0o755);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [join(cliDir, "release-packages.mjs"), "--package", "clear,effort", "--publish"],
+      {
+        cwd: tempRoot,
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /pi-effort must target the approved CodeArtifact registry and use an alpha.N version/);
+    assert.equal(existsSync(log), false);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 
