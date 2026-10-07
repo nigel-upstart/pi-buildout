@@ -4488,7 +4488,13 @@ describe("routerExtension", () => {
     ctx.model = models[0];
     await submit();
     await review("approve");
-    await hooks.get("session_compact")({}, ctx);
+    const compacting = hooks.get("session_compact")({}, ctx);
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "during-compaction", toolName: "bash", input: request.input }, ctx)?.block,
+      true,
+      "compaction revokes the grant before its first await",
+    );
+    await compacting;
     assert.equal(latest().lifecycle.phase, "preflight", "compaction revokes an unspent grant");
     ctx.model = models[0];
     await submit();
