@@ -165,5 +165,13 @@ describe("XState lease owner", () => {
     assert.throws(() => {
       owner.state.active.safetyEvidence.checks.push({});
     }, TypeError);
+    const shallow = createLeaseOwner({
+      mode: "active",
+      active: Object.freeze(lease("shallow")),
+      manualOverride: false,
+    });
+    assert.throws(() => {
+      shallow.state.active.features.confidence = 1;
+    }, TypeError);
   });
 });

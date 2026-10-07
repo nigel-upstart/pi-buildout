@@ -177,8 +177,10 @@ export function invalidateAuthorization(lease: TaskLease, reason: string): TaskL
 // Freeze the owned data, including nested review parents. Consumers can build candidate values,
 // but cannot mutate a snapshot in place and bypass the transition guards.
 function freezeState(state: LeaseState): LeaseState {
+  const seen = new WeakSet();
   function freeze(value: unknown): void {
-    if (!value || typeof value !== "object" || Object.isFrozen(value)) return;
+    if (!value || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
     for (const child of Object.values(value)) freeze(child);
     Object.freeze(value);
   }
