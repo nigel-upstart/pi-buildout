@@ -80,27 +80,27 @@ prompting/benchmark references consulted for background, is recorded in
 referenced by the implementation are recorded here as well, per this file's role as the repository's attribution record
 of first resort.
 
-### Pi generated-turn tool exposure
+### Pi extension event semantics
 
-- Source: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581) and the published
-  `@earendil-works/pi-coding-agent@1.0.3` extension and agent-session runtime
-- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
-- Revision reviewed: published version `1.0.3`; no Git commit was pinned for the issue thread
-- License declared by the package: MIT
+- Sources: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581); the `ToolExecutionMode`
+  declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and concurrency" section of
+  `@earendil-works/pi-coding-agent` `docs/extensions.md`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/agent-core`)
+- Revisions reviewed: published `1.0.3` for the issue behavior and `1.0.4` for tool-execution ordering; no Git commit
+  was pinned
+- License declared by the packages: MIT
 
-Use: the reported fact that idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start` informs the
-router's workaround: keep the safety validator tools (`submit_action_plan`, `submit_discovery_request`, and
-`submit_safety_review`) declared throughout active mode, while checking the actual mode, lease phase, and review
-fingerprint when the tools execute. Shadow and off modes hide all three. No Pi code or issue prose was copied or
-modified. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages, prose-only safety
-verdicts, or permanent tool exposure when routing is disabled.
+Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start`. The router therefore
+keeps its safety validator tools (`submit_action_plan`, `submit_discovery_request`, and `submit_safety_review`) declared
+throughout active mode, and checks the actual mode, lease phase, and review fingerprint when a tool executes. Shadow and
+off modes hide all three. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages,
+prose-only safety verdicts, or permanent tool exposure when routing is disabled.
 
-Use: the single-use discovery grant relies on Pi's documented tool-execution ordering. In the default `parallel` mode,
-Pi runs the `tool_call` hooks for every call in one assistant message sequentially, then executes the allowed calls
-concurrently. Source: the `ToolExecutionMode` declaration in `@earendil-works/pi-agent-core@1.0.4` (`dist/types.d.ts`),
-and the "Events and concurrency" section of `@earendil-works/pi-coding-agent@1.0.4` `docs/extensions.md`. The router
-therefore spends the grant in its `tool_call` handler, not at `tool_execution_end`. No Pi code or documentation prose
-was copied or modified.
+Use, tool-execution ordering: in the default `parallel` mode, Pi runs the `tool_call` hooks for every call in one
+assistant message sequentially, then executes the allowed calls concurrently. The router therefore spends a single-use
+discovery grant in its `tool_call` handler, not at `tool_execution_end`.
+
+No Pi code, issue prose, or documentation prose was copied or modified.
 
 ### `maximhq/bifrost`
 
