@@ -597,6 +597,9 @@ async function runAdapterTurn({
     get abortCount() {
       return abortCount;
     },
+    get activeTools() {
+      return activeTools;
+    },
     beforeAgentStart,
   };
 }
@@ -1168,7 +1171,12 @@ describe("routerExtension", () => {
       "re-enabling restores all safety tools immediately",
     );
     await commands.get("route").handler("shadow", ctx);
-    assert.deepEqual(activeTools, ["read", "bash", "submit_implementation_plan"]);
+    assert.deepEqual(activeTools, ["read", "bash"], "shadow must hide all router-only tools just like off");
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "shadow-edit", toolName: "edit", input: { path: "README.md" } }),
+      undefined,
+      "shadow must not enforce the persisted preflight lifecycle",
+    );
     await assert.rejects(
       tools.get("submit_action_plan").execute("shadow-plan", irreversibleActionPlan(), undefined, undefined, ctx),
       /active irreversible-action preflight/,
@@ -1185,6 +1193,41 @@ describe("routerExtension", () => {
       /preflight/,
       "re-enabling active mode must restore the existing safety lifecycle",
     );
+  });
+
+  it("observes a shadow route without blocking a persisted safety lifecycle", async () => {
+    const result = await runAdapterTurn({
+      classifyTask: successfulClassifier(1, { taskContinuity: "clear_continuation" }),
+      active: {
+        ...adapterLease(),
+        lifecycle: {
+          phase: "preflight",
+          policy: "authorization_then_completion_review",
+          taskFingerprint: "shadow-task",
+        },
+      },
+      prompt: "Continue",
+      sessionId: "shadow-preflight-bypass",
+    });
+
+    assert.equal(result.beforeAgentStart, undefined);
+    assert.deepEqual(result.selectedModels, []);
+    assert.deepEqual(result.selectedEfforts, []);
+    assert.deepEqual(result.sentMessages, []);
+    assert.deepEqual(result.activeTools, []);
+    assert.ok(result.events.some(({ kind }) => kind === "boundary"));
+    for (const toolName of ["edit", "bash", "custom_mutator"]) {
+      assert.equal(
+        result.hooks.get("tool_call")({ toolCallId: `shadow-${toolName}`, toolName, input: { command: "deploy" } }),
+        undefined,
+        `${toolName} must bypass the persisted safety gate in shadow`,
+      );
+    }
+    startAgentRun(result);
+    await result.hooks.get("agent_end")({ messages: [] }, result.ctx);
+    assert.equal(result.events.findLast(({ kind }) => kind === "attempt_completed")?.data.shadow, true);
+    assert.equal(result.abortCount, 0);
+    assert.deepEqual(result.sentMessages, []);
   });
 
   it("discards routing work already in flight when /route off lands", async (t) => {
@@ -1278,8 +1321,8 @@ describe("routerExtension", () => {
           await commands.get("route").handler(reenable, ctx);
           assert.deepEqual(
             sentMessages.map(({ message }) => message.details.reconciliation),
-            ["router_off", "router_reenabled"],
-            `${reenable} must supersede the off notice`,
+            ["router_off"],
+            "shadow must not announce restored safety restrictions",
           );
         }
         const entriesAfterOff = appended.length;
@@ -1296,7 +1339,14 @@ describe("routerExtension", () => {
           false,
           "a superseded hook must not re-expose lifecycle validators",
         );
-        assert.equal(activeTools.includes("submit_implementation_plan"), reenable !== undefined);
+        assert.equal(activeTools.includes("submit_implementation_plan"), false);
+        await commands.get("route").handler("active", ctx);
+        assert.deepEqual(
+          sentMessages.map(({ message }) => message.details.reconciliation),
+          ["router_off", "router_reenabled"],
+          "active must supersede the off notice even after passing through shadow",
+        );
+        assert.ok(activeTools.includes("submit_implementation_plan"));
       });
     }
   });
