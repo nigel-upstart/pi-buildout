@@ -60,6 +60,14 @@ describe("XState lease owner", () => {
           await scheduler.waitAll();
           await Promise.all([pending, revocation]);
           assert.equal(owner.advance("FALLBACK", candidate, original, epoch), false);
+          const revokedState = owner.state;
+          owner.send({
+            type: "RESTORE",
+            state: { mode: "active", active: original, manualOverride: false },
+            owner: original,
+            epoch,
+          });
+          assert.equal(owner.state, revokedState, "an async restore must not supersede a revocation");
         },
       ),
       fastCheckOptions,

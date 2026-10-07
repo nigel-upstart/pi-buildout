@@ -5318,6 +5318,23 @@ describe("routerExtension", () => {
         );
         if (failure === "valid") assert.equal(restoredDecision, undefined);
         else assert.match(restoredDecision.reason, /Secondary safety classification is pending/);
+        const reload = result.hooks.get("session_start")({ reason: "reload" }, result.ctx);
+        const duringReload = result.hooks.get("tool_call")(
+          { toolCallId: "during-reload", toolName: "bash", input: { command: "rotate production credential" } },
+          result.ctx,
+        );
+        assert.equal(duringReload?.block, true, "authorization must be closed while restoration awaits");
+        assert.match(duringReload.reason, /preflight/);
+        await result.hooks.get("input")(
+          { text: "Cancel rotation; investigate instead", source: "interactive" },
+          result.ctx,
+        );
+        await reload;
+        const supersededRestore = result.hooks.get("tool_call")(
+          { toolCallId: "superseded-reload", toolName: "bash", input: { command: "rotate production credential" } },
+          result.ctx,
+        );
+        assert.equal(supersededRestore?.block, true, "new input must supersede the persisted authorization");
       }),
       fastCheckOptions,
     );

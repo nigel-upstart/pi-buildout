@@ -2593,7 +2593,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_start", async (event, ctx) => {
-    await abortSecondaryWork(ctx, "session_start");
+    // The persisted snapshot is an async restore proposal. Keep the safety question closed while
+    // settings load, and let newer input/overrides win rather than restoring over their state.
+    invalidateLease("session startup");
+    const startupOwner = leaseOwner.state.active;
+    const startupEpoch = leaseOwner.epoch;
+    await abortSecondaryWork(ctx, "session_start", { retainSafetyLatch: true });
     attemptDisposition = "unknown";
     revokedReviewStillRunning = false;
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
@@ -2617,7 +2622,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       resolvedStartMode = resolution.mode;
     }
     const fallbackMode = carriedMode ?? resolvedStartMode ?? leaseOwner.state.mode;
-    leaseOwner.send({ type: "RESTORE", state: restoreLeaseState(branch, fallbackMode) });
+    if (!leaseOwner.owns(startupOwner, startupEpoch)) return;
+    leaseOwner.send({
+      type: "RESTORE",
+      state: restoreLeaseState(branch, fallbackMode),
+      owner: startupOwner,
+      epoch: startupEpoch,
+    });
     if (leaseOwner.state.active && holdsDiscovery(leaseOwner.state.active)) {
       // Discovery requests, their reviews, and unspent grants are bound to one runtime context and
       // never survive restoration; the parent returns to an empty preflight.
@@ -2634,7 +2645,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (event.reason !== "reload" && leaseOwner.state.active?.lifecycle.phase === "review") {
       // A generated review cannot cross into a new/forked session and later restore or authorize its
       // nested parent. The next user turn starts a fresh task under the hard-boundary gate.
-      leaseOwner.send({ type: "RESTORE", state: { mode: leaseOwner.state.mode, manualOverride: false } });
+      leaseOwner.send({
+        type: "RESTORE",
+        state: { mode: leaseOwner.state.mode, manualOverride: false },
+        owner: leaseOwner.state.active,
+        epoch: leaseOwner.epoch,
+      });
       persistState();
     }
     nextParentTaskId = event.reason === "fork" ? leaseOwner.state.active?.taskId : undefined;

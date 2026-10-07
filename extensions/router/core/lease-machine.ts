@@ -102,7 +102,7 @@ function validAdvance(event: LeaseAdvance): boolean {
 
 type LeaseEvent =
   | LeaseAdvance
-  | { type: "RESTORE"; state: LeaseState }
+  | { type: "RESTORE"; state: LeaseState; owner: TaskLease | undefined; epoch: number }
   | { type: "MODE"; mode: RouterMode }
   | { type: "INTENT" }
   | { type: "BOUNDARY"; boundary: HardBoundary }
@@ -240,6 +240,7 @@ const leaseMachine = setup({
     SPEND_DISCOVERY: { guard: "ownsLease", target: ".selecting", actions: "install" },
     EVIDENCE: { guard: "ownsLease", target: ".selecting", actions: "install" },
     RESTORE: {
+      guard: ({ context, event }) => context.state.active === event.owner && context.epoch === event.epoch,
       target: ".selecting",
       actions: [
         "discardSecondary",
