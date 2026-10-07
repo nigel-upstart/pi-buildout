@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { conservativeFeatures } from "./features.ts";
 import {
+  consumeDiscoveryGrant,
   deriveSafetyPolicy,
+  discoveryApprovalFingerprint,
+  discoveryScopeFingerprint,
   initialLifecycle,
   isLeaseLifecycle,
   isPotentiallyMutatingTool,
@@ -10,6 +14,7 @@ import {
   safetyContextForLifecycle,
   safetyFingerprint,
   validateActionPlan,
+  validateDiscoveryRequest,
   validateSafetyReview,
 } from "./safety.ts";
 
@@ -117,6 +122,166 @@ describe("irreversible action plans", () => {
     const invalid = actionPlan();
     invalid.steps[0].target = "staging/keyring";
     assert.match(validateActionPlan(invalid).errors.join("\n"), /undeclared target: staging\/keyring/);
+  });
+});
+
+describe("canonical fingerprints", () => {
+  it("orders object keys by UTF-16 code unit, independent of locale and insertion order", () => {
+    // Canonically equivalent but distinct keys: localeCompare treats them as equal, so a stable sort kept
+    // insertion order and reordering the object changed the fingerprint.
+    const precomposedFirst = { "\u00e9": 1, "e\u0301": 2 };
+    const decomposedFirst = { "e\u0301": 2, "\u00e9": 1 };
+    assert.equal(safetyFingerprint(precomposedFirst), safetyFingerprint(decomposedFirst));
+    // Code-unit order puts "B" (U+0042) before "a" (U+0061); a locale collation would not.
+    assert.equal(safetyFingerprint({ a: 1, B: 2 }), createHash("sha256").update('{"B":2,"a":1}').digest("hex"));
+  });
+});
+
+describe("single-call discovery grants", () => {
+  const context = { taskFingerprint: "task", cwd: "/repo", sessionId: "session" };
+  const request = () => ({
+    purpose: "discovery",
+    objective: "Inspect available incidents before proposing an irreversible action.",
+    target: "Glean incident search",
+    expectedEffects: ["Return matching incident metadata; no content changes expected"],
+    preconditions: ["Authenticated Glean access"],
+    verification: ["Review returned incident IDs"],
+    abortConditions: ["Unexpected write or broader search scope"],
+    toolName: "bash",
+    input: { command: "glean search 'key rotation'  " },
+  });
+  function ready() {
+    const validated = validateDiscoveryRequest(request());
+    assert.equal(validated.success, true);
+    const scopeFingerprint = discoveryScopeFingerprint(
+      validated.request,
+      context.taskFingerprint,
+      context.cwd,
+      context.sessionId,
+    );
+    return {
+      phase: "discovery_ready",
+      policy: "authorization_then_completion_review",
+      taskFingerprint: context.taskFingerprint,
+      grant: {
+        request: validated.request,
+        requestFingerprint: validated.fingerprint,
+        scopeFingerprint,
+        approvalFingerprint: discoveryApprovalFingerprint(
+          scopeFingerprint,
+          "independent-review",
+          "anthropic",
+          "2026-07-28T00:00:00.000Z",
+        ),
+        ...context,
+        reviewTaskId: "independent-review",
+        reviewerVendor: "anthropic",
+        approvedAt: "2026-07-28T00:00:00.000Z",
+      },
+    };
+  }
+
+  it("accepts only the narrow discovery schema and finite JSON object inputs", () => {
+    assert.equal(validateDiscoveryRequest(request()).success, true);
+    const nested = { ...request(), input: { command: "literal  ", options: [null, 1, { enabled: true }] } };
+    const reordered = { ...request(), input: { options: [null, 1, { enabled: true }], command: "literal  " } };
+    const nestedValidation = validateDiscoveryRequest(nested);
+    const reorderedValidation = validateDiscoveryRequest(reordered);
+    assert.equal(nestedValidation.success, true);
+    assert.equal(reorderedValidation.success, true);
+    assert.equal(nestedValidation.fingerprint, reorderedValidation.fingerprint);
+    for (const invalid of [
+      { ...request(), purpose: "execution" },
+      { ...request(), extra: "not in schema" },
+      { ...request(), input: ["command"] },
+      { ...request(), input: { command: undefined } },
+      { ...request(), input: { command: NaN } },
+      { ...request(), input: { command: Infinity } },
+      { ...request(), input: { command: -0 } },
+      { ...request(), input: { command: 1n } },
+      { ...request(), input: { command: new Date() } },
+      { ...request(), input: { nested: { accessor: () => "not JSON" } } },
+      { ...request(), input: { values: Array(1) } },
+    ]) {
+      assert.equal(validateDiscoveryRequest(invalid).success, false, `accepted ${String(invalid.input)}`);
+    }
+    const cyclic = { command: "test" };
+    cyclic.self = cyclic;
+    assert.equal(validateDiscoveryRequest({ ...request(), input: cyclic }).success, false);
+    const accessor = Object.defineProperty({}, "command", { enumerable: true, get: () => "unexpected" });
+    assert.equal(validateDiscoveryRequest({ ...request(), input: accessor }).success, false);
+    const topLevelAccessor = Object.defineProperty(request(), "objective", {
+      enumerable: true,
+      get: () => "unexpected",
+    });
+    assert.equal(validateDiscoveryRequest(topLevelAccessor).success, false);
+    const hidden = Object.defineProperty({ command: "search" }, "extra", { value: "hidden" });
+    assert.equal(validateDiscoveryRequest({ ...request(), input: hidden }).success, false);
+    const arraySubclass = Object.setPrototypeOf(["valid-looking"], Object.create(Array.prototype));
+    assert.equal(validateDiscoveryRequest({ ...request(), input: { args: arraySubclass } }).success, false);
+    let proxyReads = 0;
+    const shifting = new Proxy(
+      { command: "ls" },
+      { get: (target, key) => (key === "command" ? (proxyReads++ ? "rm -rf x" : "ls") : Reflect.get(target, key)) },
+    );
+    assert.equal(validateDiscoveryRequest({ ...request(), input: shifting }).success, false, "proxies are rejected");
+    assert.equal(validateDiscoveryRequest({ ...request(), input: { args: new Proxy([], {}) } }).success, false);
+    const bogusIndex = Array(1);
+    Object.defineProperty(bogusIndex, "4294967295", { value: 1, enumerable: true });
+    assert.equal(
+      validateDiscoveryRequest({ ...request(), input: { args: bogusIndex } }).success,
+      false,
+      "array keys must be exactly 0..length-1",
+    );
+    const revoked = Proxy.revocable({ command: "search" }, {});
+    revoked.revoke();
+    assert.equal(validateDiscoveryRequest({ ...request(), input: revoked.proxy }).success, false);
+  });
+
+  it("validates the grant binding to task, cwd, session, request and reviewer identity", () => {
+    const lifecycle = ready();
+    assert.equal(isLeaseLifecycle(lifecycle), true);
+    for (const tampered of [
+      { ...lifecycle, taskFingerprint: "other task" },
+      { ...lifecycle, grant: { ...lifecycle.grant, cwd: "/other" } },
+      { ...lifecycle, grant: { ...lifecycle.grant, sessionId: "other session" } },
+      { ...lifecycle, grant: { ...lifecycle.grant, reviewerVendor: "" } },
+      { ...lifecycle, grant: { ...lifecycle.grant, reviewerVendor: "other reviewer" } },
+      { ...lifecycle, grant: { ...lifecycle.grant, reviewTaskId: "" } },
+      { ...lifecycle, grant: { ...lifecycle.grant, request: { ...lifecycle.grant.request, toolName: "edit" } } },
+      { ...lifecycle, grant: { ...lifecycle.grant, scopeFingerprint: "a".repeat(64) } },
+      { ...lifecycle, grant: { ...lifecycle.grant, unexpected: true } },
+    ])
+      assert.equal(isLeaseLifecycle(tampered), false);
+  });
+
+  it("consumes an exact call once without accepting same-name/different-input or changed shell text", () => {
+    const lifecycle = ready();
+    assert.match(safetyContextForLifecycle(lifecycle), /one exact/);
+    assert.match(
+      lifecycleToolBlockReason(lifecycle, "bash", lifecycle.grant.request.input),
+      /exact approved discovery/,
+    );
+    assert.equal(lifecycleToolBlockReason(lifecycle, "read", { path: "README.md" }), undefined);
+    for (const [toolName, input, caller] of [
+      ["edit", lifecycle.grant.request.input, context],
+      ["bash", { command: "glean search 'key rotation'" }, context],
+      ["bash", { command: "glean search 'key rotation'  ", extra: true }, context],
+      ["bash", lifecycle.grant.request.input, { ...context, cwd: "/other" }],
+      ["bash", lifecycle.grant.request.input, { ...context, sessionId: "other" }],
+      ["bash", lifecycle.grant.request.input, { ...context, taskFingerprint: "other" }],
+    ]) {
+      assert.equal(consumeDiscoveryGrant(lifecycle, toolName, input, caller).allowed, false);
+      assert.equal(isLeaseLifecycle(lifecycle), true, "a mismatch must not mutate or consume the grant");
+    }
+    const allowed = consumeDiscoveryGrant(lifecycle, "bash", { command: "glean search 'key rotation'  " }, context);
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.lifecycle.phase, "preflight");
+    assert.equal(
+      consumeDiscoveryGrant(allowed.lifecycle, "bash", lifecycle.grant.request.input, context).allowed,
+      false,
+    );
+    assert.match(lifecycleToolBlockReason(allowed.lifecycle, "bash", lifecycle.grant.request.input), /preflight/);
   });
 });
 

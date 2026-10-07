@@ -269,6 +269,48 @@ tool API is used as a second, model-facing layer: action-plan and verdict valida
 activated only when the current lifecycle accepts them. No external safety-state-machine implementation or code was
 consulted or adapted for this decision; the Pi API provenance is recorded in the root attribution file.
 
+## Decision: discovery grants match plain JSON exactly and are spent at `tool_call`
+
+A discovery grant authorizes one call by fingerprint. `safetyFingerprint` canonicalizes the request, with object keys
+sorted by UTF-16 code unit, and hashes it; `consumeDiscoveryGrant` compares the live call's input against the approved
+input the same way. That comparison is sound only if one fingerprint identifies exactly one call. Two guards in
+`core/safety.ts` make that true. The key order is locale-independent on purpose. `localeCompare` would follow the host's
+collation, and it treats canonically equivalent keys such as `"\u00e9"` and `"e\u0301"` as equal, which made the
+fingerprint depend on insertion order. A lease persisted under the earlier ordering fails fingerprint validation on
+restore and is discarded.
+
+**Plain-JSON validation (`isJsonObject`).** The canonicalizer walks `Object.entries` and serializes leaves with
+`JSON.stringify`, which is lossy for values that are not JSON. Measured against `safetyFingerprint`, each of these pairs
+fingerprints identically: `NaN` or `Infinity` and `null`; `-0` and `0`; a `Date` or `Map` and `{}`; a sparse `[,]` and
+`[]`; a function and `undefined`. Without validation, approving one would authorize the other. A cyclic object makes the
+canonicalizer recurse until it throws `RangeError`. An accessor can return a different value on each read, so the value
+reviewed, fingerprinted, and executed could differ. `isJsonObject` therefore accepts only null, booleans, strings,
+finite numbers other than `-0`, plain arrays whose keys are exactly `"0"` through `String(length - 1)` plus `length`,
+and plain objects whose own properties are enumerable, string-keyed data properties. It rejects symbols, accessors,
+non-plain prototypes (including array subclasses), and every `Proxy`. A proxy can pass the reflective descriptor checks
+without running its `get` trap, then hand TypeBox or the fingerprint a different value. A numeric-looking key that is
+not an index, such as `"4294967295"`, is rejected because the fingerprint would silently drop it. Traversal is capped at
+depth 32 and 10,000 nodes, and anything that throws while being inspected is rejected. The whole request is validated
+before TypeBox reads its properties, so schema validation never invokes a getter or proxy trap.
+
+The `seen` set in `isJsonObject` tracks the current traversal path, not every object visited: an object is added on
+entry and removed on exit. A real cycle, where an object is reachable from itself, is rejected. The same object
+referenced from two places, such as `{ x: shared, y: shared }`, is accepted, because it serializes identically at each
+position and so fingerprints deterministically.
+
+**Consumption at `tool_call`.** `consumeDiscoveryGrant` is a pure transition from `discovery_ready` back to an empty
+`preflight`; the caller installs and persists the result before allowing the call. Spending the grant at `tool_call`
+rather than `tool_execution_end` is required by Pi's default parallel tool execution. Pi runs the `tool_call` hooks of
+every call in one assistant message sequentially, and only then executes the allowed calls concurrently. A grant cleared
+when the call ended would let two identical calls in one message both pass `tool_call` before either ended, so one
+approval would run twice. Spent at the first `tool_call`, the grant is gone when the second call is checked, and that
+call meets ordinary preflight enforcement. Nothing depends on the call completing, so a call that fails or is blocked by
+a later gate also leaves no reusable grant.
+
+This consumption rule is preventive: before discovery existed, preflight had no path for a non-read-only call, so there
+was no earlier race here. The races fixed in the runtime wiring were different: a lease captured before an `await` was
+reinstalled afterwards and could restore a revoked request or grant.
+
 ## Deferred follow-up: evidence-aware synopsis compaction
 
 The synopsis keeps bounded, newest-first items and now removes excess recent outcomes, goals, and prior decisions in

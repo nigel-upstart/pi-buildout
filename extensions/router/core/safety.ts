@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { Type } from "typebox";
 import type { Static, TUnsafe } from "typebox";
 import { Check, Errors } from "typebox/value";
@@ -73,6 +74,91 @@ export const ActionPlanSchema = Type.Object(
 
 type ActionPlan = Static<typeof ActionPlanSchema>;
 
+// Discovery is one concrete tool invocation, not a list of tools or a final execution plan.
+const DiscoveryRequestSchema = Type.Object(
+  {
+    purpose: Type.Literal("discovery"),
+    objective: NonEmptyString,
+    target: ShortString,
+    expectedEffects: Type.Array(NonEmptyString, { minItems: 1, maxItems: 20 }),
+    preconditions: Type.Array(NonEmptyString, { minItems: 1, maxItems: 20 }),
+    verification: Type.Array(NonEmptyString, { minItems: 1, maxItems: 20 }),
+    abortConditions: Type.Array(NonEmptyString, { minItems: 1, maxItems: 20 }),
+    toolName: Type.String({ minLength: 1, maxLength: 120 }),
+    input: Type.Record(Type.String(), Type.Unknown()),
+  },
+  { additionalProperties: false },
+);
+
+type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
+type JsonObject = { [key: string]: JsonValue };
+export type DiscoveryRequest = Omit<Static<typeof DiscoveryRequestSchema>, "input"> & { input: JsonObject };
+export type DiscoveryRequestValidation =
+  { success: true; request: DiscoveryRequest; fingerprint: string; errors: [] } | { success: false; errors: string[] };
+
+/** Reject JS-only values and unsafe object graphs before canonical JSON fingerprinting. */
+function isJsonObject(value: unknown): value is JsonObject {
+  // `seen` holds the objects on the current traversal path, not every object visited: entries are
+  // removed on the way back out. A true cycle is rejected; one object shared by two keys is not.
+  const seen = new Set<object>();
+  let nodes = 0;
+  function visit(item: unknown, depth: number): boolean {
+    if (++nodes > 10_000 || depth > 32) return false;
+    if (item === null || typeof item === "string" || typeof item === "boolean") return true;
+    if (typeof item === "number") return Number.isFinite(item) && !Object.is(item, -0);
+    if (typeof item !== "object" || seen.has(item)) return false;
+    // A proxy can satisfy every reflective check below without running its `get` trap, then return
+    // different values to TypeBox or the fingerprint, so the inspected value would not be the hashed one.
+    if (types.isProxy(item)) return false;
+    const array = Array.isArray(item);
+    const prototype: unknown = Object.getPrototypeOf(item);
+    if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) return false;
+    seen.add(item);
+    const keys = Reflect.ownKeys(item);
+    if (keys.some((key) => typeof key !== "string")) return false;
+    // An array must have exactly the index keys "0"..String(length - 1) plus "length". A numeric-looking
+    // name such as "4294967295" is not an index, and the fingerprint would drop it.
+    if (
+      array &&
+      (keys.length !== item.length + 1 ||
+        !Array.from({ length: item.length }, (_, index) => Object.hasOwn(item, String(index))).every(Boolean))
+    )
+      return false;
+    for (const key of keys) {
+      if (key === "length" && array) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor) || !visit(descriptor.value, depth + 1)) {
+        return false;
+      }
+    }
+    seen.delete(item);
+    return true;
+  }
+  try {
+    return value !== null && typeof value === "object" && !Array.isArray(value) && visit(value, 0);
+  } catch {
+    return false;
+  }
+}
+
+export function validateDiscoveryRequest(value: unknown): DiscoveryRequestValidation {
+  // Validate the whole object before TypeBox reads its properties or fingerprinting traverses it.
+  if (!isJsonObject(value)) {
+    return { success: false, errors: ["discovery request must contain only finite, acyclic JSON values"] };
+  }
+  if (!Check(DiscoveryRequestSchema, value)) {
+    return {
+      success: false,
+      errors: [...Errors(DiscoveryRequestSchema, value)]
+        .slice(0, 20)
+        .map((error) => `${error.instancePath || "/"}: ${error.message}`),
+    };
+  }
+  if (!isJsonObject(value.input)) return { success: false, errors: ["input must be a JSON object"] };
+  const request: DiscoveryRequest = { ...value, input: value.input };
+  return { success: true, request, fingerprint: safetyFingerprint(request), errors: [] };
+}
+
 export type ActionPlanValidation =
   { success: true; plan: ActionPlan; fingerprint: string; errors: [] } | { success: false; errors: string[] };
 
@@ -107,6 +193,39 @@ export type CompletionEvidence = {
   mutations: { toolName: string; inputFingerprint: string; recordedAt: string }[];
   evidenceFingerprint: string;
 };
+
+type DiscoveryGrant = {
+  request: DiscoveryRequest;
+  requestFingerprint: string;
+  scopeFingerprint: string;
+  approvalFingerprint: string;
+  taskFingerprint: string;
+  cwd: string;
+  sessionId: string;
+  reviewTaskId: string;
+  reviewerVendor: string;
+  approvedAt: string;
+};
+
+/** The scope presented for review; reviewer identity is recorded on the resulting grant. */
+export function discoveryScopeFingerprint(
+  request: DiscoveryRequest,
+  taskFingerprint: string,
+  cwd: string,
+  sessionId: string,
+): string {
+  return safetyFingerprint({ purpose: "discovery", request, taskFingerprint, cwd, sessionId });
+}
+
+/** Binds the reviewer's identity and approval record to the exact reviewed call and session. */
+export function discoveryApprovalFingerprint(
+  scopeFingerprint: string,
+  reviewTaskId: string,
+  reviewerVendor: string,
+  approvedAt: string,
+): string {
+  return safetyFingerprint({ scopeFingerprint, reviewTaskId, reviewerVendor, approvedAt });
+}
 
 type AuthorizationEvidence = {
   taskFingerprint: string;
@@ -154,6 +273,12 @@ export type LeaseLifecycle =
       evidenceRepairAttempted?: boolean;
     }
   | {
+      phase: "discovery_ready";
+      policy: "authorization_then_completion_review";
+      taskFingerprint: string;
+      grant: DiscoveryGrant;
+    }
+  | {
       phase: "authorized_execution";
       policy: "authorization_then_completion_review";
       taskFingerprint: string;
@@ -186,11 +311,21 @@ export type SafetyEvidenceLog = {
   mutations: { toolName: string; inputFingerprint: string; recordedAt: string }[];
 };
 
+/**
+ * Locale-independent total order on object keys: UTF-16 code units, as `<` compares strings. `localeCompare` is
+ * unsuitable here: it follows the host's collation, and it treats distinct but canonically equivalent keys such as
+ * "\u00e9" and "e\u0301" as equal, which would make the fingerprint depend on insertion order.
+ */
+function compareCodeUnits(left: string, right: string): number {
+  if (left < right) return -1;
+  return left > right ? 1 : 0;
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
       .join(",")}}`;
   }
@@ -289,6 +424,8 @@ export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | u
       return "Safety lifecycle: remain non-mutating. read and read-only bash (git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, including && and | chains of them) stay available for inspection. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. Execution requires a separate independent approval of the exact task and plan fingerprints.";
     case "advisory_pending":
       return "Safety lifecycle: remain non-mutating while gathering bounded context for a pre-action advisor.";
+    case "discovery_ready":
+      return "Safety lifecycle: remain non-mutating except for the one exact, independently approved discovery call. The discovery grant does not authorize final execution.";
     case "authorized_execution":
       return `Safety lifecycle: execute only authorized plan ${lifecycle.plan.planFingerprint}; changed targets, steps, or preconditions require a new preflight and review.`;
     case "review":
@@ -323,7 +460,10 @@ export function lifecycleToolBlockReason(
     return `Tool ${toolName} is outside the independently reviewed action plan`;
   }
   const restricted =
-    lifecycle.phase === "review" || lifecycle.phase === "preflight" || lifecycle.phase === "advisory_pending";
+    lifecycle.phase === "review" ||
+    lifecycle.phase === "preflight" ||
+    lifecycle.phase === "discovery_ready" ||
+    lifecycle.phase === "advisory_pending";
   if (!restricted) return undefined;
   if (toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls") return undefined;
   const shellRejection =
@@ -339,6 +479,8 @@ export function lifecycleToolBlockReason(
     ? ` (${shellRejection}). Read-only bash still runs: git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, joined with && ; || or |`
     : "";
   if (lifecycle.phase === "review") return `Independent safety review lease is read-only${detail}`;
+  if (lifecycle.phase === "discovery_ready")
+    return `Only the exact approved discovery call may bypass this gate${detail}`;
   if (lifecycle.phase === "preflight") {
     return `Irreversible-action preflight is non-mutating until its plan is approved${detail}. To perform mutating steps, call submit_action_plan`;
   }
@@ -374,6 +516,71 @@ function planEvidence(value: unknown, taskFingerprint: string): value is PlanEvi
   }
   const validation = validateActionPlan(evidence.plan);
   return validation.success && validation.fingerprint === evidence.planFingerprint;
+}
+
+function discoveryGrant(value: unknown, taskFingerprint: string): value is DiscoveryGrant {
+  const grant = object(value);
+  if (
+    !grant ||
+    Object.keys(grant).sort().join(",") !==
+      "approvalFingerprint,approvedAt,cwd,request,requestFingerprint,reviewTaskId,reviewerVendor,scopeFingerprint,sessionId,taskFingerprint"
+  )
+    return false;
+  const validated = validateDiscoveryRequest(grant.request);
+  return (
+    validated.success &&
+    grant.taskFingerprint === taskFingerprint &&
+    typeof grant.cwd === "string" &&
+    grant.cwd.length > 0 &&
+    typeof grant.sessionId === "string" &&
+    grant.sessionId.length > 0 &&
+    typeof grant.reviewTaskId === "string" &&
+    grant.reviewTaskId.length > 0 &&
+    typeof grant.reviewerVendor === "string" &&
+    grant.reviewerVendor.length > 0 &&
+    typeof grant.approvedAt === "string" &&
+    grant.approvedAt.length > 0 &&
+    grant.requestFingerprint === validated.fingerprint &&
+    grant.scopeFingerprint ===
+      discoveryScopeFingerprint(validated.request, taskFingerprint, grant.cwd, grant.sessionId) &&
+    grant.approvalFingerprint ===
+      discoveryApprovalFingerprint(grant.scopeFingerprint, grant.reviewTaskId, grant.reviewerVendor, grant.approvedAt)
+  );
+}
+
+/**
+ * Pure, fail-closed single-use transition. The caller must persist the returned lifecycle before
+ * dispatch: Pi runs every `tool_call` hook in an assistant message before executing any of them,
+ * so a grant cleared only when a call ends would let two identical calls in one message both pass.
+ */
+export function consumeDiscoveryGrant(
+  lifecycle: LeaseLifecycle | undefined,
+  toolName: string,
+  input: unknown,
+  context: { taskFingerprint: string; cwd: string; sessionId: string },
+): { allowed: true; lifecycle: LeaseLifecycle } | { allowed: false; reason: string } {
+  if (lifecycle?.phase !== "discovery_ready" || !isLeaseLifecycle(lifecycle)) {
+    return { allowed: false, reason: "No valid discovery grant is ready" };
+  }
+  const grant = lifecycle.grant;
+  if (
+    context.taskFingerprint !== lifecycle.taskFingerprint ||
+    context.cwd !== grant.cwd ||
+    context.sessionId !== grant.sessionId ||
+    toolName !== grant.request.toolName ||
+    !isJsonObject(input) ||
+    safetyFingerprint(input) !== safetyFingerprint(grant.request.input)
+  ) {
+    return { allowed: false, reason: "Tool call does not match the approved discovery scope" };
+  }
+  return {
+    allowed: true,
+    lifecycle: {
+      phase: "preflight",
+      policy: "authorization_then_completion_review",
+      taskFingerprint: lifecycle.taskFingerprint,
+    },
+  };
 }
 
 function authorizationEvidence(
@@ -421,6 +628,12 @@ export function isLeaseLifecycle(value: unknown): value is LeaseLifecycle {
         (lifecycle.plan === undefined || planEvidence(lifecycle.plan, taskFingerprint)) &&
         (lifecycle.lastAuthorizationReview === undefined ||
           reviewOutcome(lifecycle.lastAuthorizationReview, "authorization"))
+      );
+    case "discovery_ready":
+      return (
+        lifecycle.policy === "authorization_then_completion_review" &&
+        Object.keys(lifecycle).sort().join(",") === "grant,phase,policy,taskFingerprint" &&
+        discoveryGrant(lifecycle.grant, taskFingerprint)
       );
     case "authorized_execution":
       return (
