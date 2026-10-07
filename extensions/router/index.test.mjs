@@ -4930,6 +4930,75 @@ describe("routerExtension", () => {
     ctx.model = models[0];
     await submit();
     assert.ok(latest().lifecycle.discovery, "submissions reopen once the run has settled");
+
+    // Revocation while agent_end awaits its telemetry must not count the revoked review as a success.
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: builder.provider,
+            model: builder.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    await hooks.get("agent_settled")({}, ctx);
+    const endingReview = latest();
+    assert.equal(endingReview.lifecycle.phase, "review");
+    ctx.model = models.find((model) => model.id === endingReview.selected.modelId);
+    hooks.get("agent_start")({}, ctx);
+    await tools.get("submit_safety_review").execute(
+      "ending-verdict",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: endingReview.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "Checked the exact discovery scope",
+        evidence: ["Single bounded lookup"],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const repairs = () =>
+      messages.filter(({ message }) => message.details?.repairReason === "missing_action_plan").length;
+    const repairsBefore = repairs();
+    const completionTelemetry = deferred();
+    gatedPending = false;
+    gatedKind = "attempt_completed";
+    telemetryGate = completionTelemetry.promise;
+    const ending = hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: endingReview.selected.provider,
+            model: endingReview.selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    await waitUntil(() => gatedPending);
+    await hooks.get("input")(
+      { text: "Steer while the review ends", source: "interactive", streamingBehavior: "steer" },
+      ctx,
+    );
+    completionTelemetry.resolve();
+    await ending;
+    telemetryGate = Promise.resolve();
+    gatedKind = undefined;
+    await hooks.get("agent_settled")({}, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight");
+    assert.equal(latest().lifecycle.grant, undefined, "a revoked review's verdict grants nothing");
+    assert.equal(repairs(), repairsBefore, "the revoked review's outcome must not start a repair turn");
   });
 
   it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {

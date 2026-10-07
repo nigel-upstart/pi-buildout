@@ -3317,6 +3317,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         modelSnapshotId: active.modelSnapshotId,
       },
     );
+    const afterRecording: TaskLease | undefined = state.active;
+    if (afterRecording?.taskId !== active.taskId) {
+      // The lease was replaced while the outcome was being recorded (for example, new input revoked a running
+      // review). This attempt's outcome belongs to a lease that is gone, so it must not drive a repair or review.
+      attemptDisposition = "incomplete";
+      lastAttemptMetrics = undefined;
+      return;
+    }
     const deterministicVerificationFailed =
       isActiveAttempt && [...deterministicCheckResults.values()].some((passed) => !passed);
     const latestLifecycle = state.active?.taskId === active.taskId ? state.active.lifecycle : active.lifecycle;
