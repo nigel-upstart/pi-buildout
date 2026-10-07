@@ -97,6 +97,8 @@ export type DiscoveryRequestValidation =
 
 /** Reject JS-only values and unsafe object graphs before canonical JSON fingerprinting. */
 function isJsonObject(value: unknown): value is JsonObject {
+  // `seen` holds the objects on the current traversal path, not every object visited: entries are
+  // removed on the way back out. A true cycle is rejected; one object shared by two keys is not.
   const seen = new Set<object>();
   let nodes = 0;
   function visit(item: unknown, depth: number): boolean {
@@ -530,7 +532,11 @@ function discoveryGrant(value: unknown, taskFingerprint: string): value is Disco
   );
 }
 
-/** Pure, fail-closed single-use transition. The caller must persist the returned lifecycle before dispatch. */
+/**
+ * Pure, fail-closed single-use transition. The caller must persist the returned lifecycle before
+ * dispatch: Pi runs every `tool_call` hook in an assistant message before executing any of them,
+ * so a grant cleared only when a call ends would let two identical calls in one message both pass.
+ */
 export function consumeDiscoveryGrant(
   lifecycle: LeaseLifecycle | undefined,
   toolName: string,
