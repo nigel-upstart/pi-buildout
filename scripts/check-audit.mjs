@@ -22,7 +22,7 @@ const ALLOWLIST = [
       globby: { nodePaths: ["node_modules/globby"], sources: ["fast-glob"] },
       "markdownlint-cli2": {
         nodePaths: ["node_modules/markdownlint-cli2"],
-        sources: ["globby", "markdown-it", "micromatch"],
+        sources: ["globby", "micromatch"],
       },
     },
     recordedAt: "2026-10-05",
