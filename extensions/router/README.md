@@ -4,7 +4,8 @@ A task-leased, model-aware routing extension for pi. It classifies semantic task
 eligibility/ranking policy, selects a versioned model prompt profile, and records an audit trail.
 
 The extension starts in **shadow mode**: it logs and displays the route but does not change the model, effort, or system
-prompt. This is intentional.
+prompt. Like off mode, shadow exposes no router-only tools and never blocks tool calls, even when a safety lease is
+persisted. Shadow continues to record routing telemetry.
 
 ## Repository contract
 

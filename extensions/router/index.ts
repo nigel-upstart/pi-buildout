@@ -522,9 +522,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   // Bumped by `/route off`. Routing work already in flight still runs to completion, but a hook that
   // started under an earlier generation discards its result instead of applying it.
   let routingGeneration = 0;
-  // Off also hides the always-registered planning validator. Remembering that the router hid it lets
+  // Inactive modes hide the always-registered planning validator. Remembering that the router hid it lets
   // re-enabling restore the tool without overriding an operator who removed it deliberately.
-  let planningValidatorHiddenWhileOff = false;
+  let planningValidatorHiddenWhileInactive = false;
   // The restricted phase the model was last told `/route off` lifted, until re-enabling corrects it.
   let offNoticePhase: RestrictedPhase | undefined;
   let agentRunPhase: AgentRunPhase = "before_start";
@@ -539,13 +539,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   function syncRouterTools(): void {
     const current = pi.getActiveTools();
     let next = activeToolsForSafetyLifecycle(current, state.mode);
-    if (state.mode === "off") {
+    if (state.mode !== "active") {
       if (next.includes(PLANNING_VALIDATOR_TOOL_NAME)) {
         next = next.filter((name) => name !== PLANNING_VALIDATOR_TOOL_NAME);
-        planningValidatorHiddenWhileOff = true;
+        planningValidatorHiddenWhileInactive = true;
       }
-    } else if (planningValidatorHiddenWhileOff) {
-      planningValidatorHiddenWhileOff = false;
+    } else if (planningValidatorHiddenWhileInactive) {
+      planningValidatorHiddenWhileInactive = false;
       if (!next.includes(PLANNING_VALIDATOR_TOOL_NAME)) next.push(PLANNING_VALIDATOR_TOOL_NAME);
     }
     if (current.length !== next.length || current.some((name, index) => name !== next[index])) {
@@ -3187,7 +3187,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("tool_call", (event, ctx) => {
-    if (state.mode === "off") return undefined;
+    if (state.mode !== "active") return undefined;
     if (state.active?.lifecycle.phase === "discovery_ready" && (state.manualOverride || state.active.manualOverride)) {
       // A manual model/effort override voids the grant; the ordinary preflight gate then applies.
       state = installLease(state, revokeDiscovery(state.active));
@@ -3564,10 +3564,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         // Re-enabling restores tool gating for the persisted lifecycle, so an earlier off notice is
         // now wrong whether or not the model has seen it yet. Queue the correction behind it.
         const restoredPhase =
-          command !== "off" && state.mode === "off" && offNoticePhase
+          command === "active" && state.mode !== "active" && offNoticePhase
             ? restrictedPhaseLiftedByOff(state.active?.lifecycle)
             : undefined;
-        if (command !== "off" && state.mode === "off") offNoticePhase = undefined;
+        if (command === "active") offNoticePhase = undefined;
         if (restoredPhase) {
           pi.sendMessage(
             {
@@ -3621,7 +3621,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             offNoticePhase = liftedPhase;
           }
         }
-        // Off hides every router-only tool; shadow hides both safety validators. Re-enabling active
+        // Off and shadow hide every router-only tool. Re-enabling active
         // routing restores them immediately, including before an extension-generated turn.
         syncRouterTools();
         if (command === "active" && state.active) {
