@@ -37,7 +37,7 @@ function auditReport() {
         name: "markdownlint-cli2",
         severity: "high",
         nodes: ["node_modules/markdownlint-cli2"],
-        via: ["globby", "markdown-it", "micromatch"],
+        via: ["globby", "micromatch"],
       },
       "markdown-it": {
         name: "markdown-it",
@@ -135,8 +135,8 @@ describe("evaluateAudit", () => {
 
   it("fails closed when a derived source name is missing from the audit report", () => {
     const report = auditReport();
-    delete report.vulnerabilities["markdown-it"];
-    report.metadata.vulnerabilities.moderate = 0;
+    delete report.vulnerabilities.globby;
+    report.metadata.vulnerabilities.high -= 1;
     report.metadata.vulnerabilities.total -= 1;
 
     assert.deepEqual(
