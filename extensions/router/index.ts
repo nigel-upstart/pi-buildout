@@ -1033,6 +1033,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         input.classification.primaryFeatures.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD,
       settled: false,
     };
+    // The ledger write before scheduling may have replaced this lease without changing the
+    // routing epoch. Never track a task whose actor will reject START_SECONDARY.
+    if (leaseOwner.state.active !== input.lease) return undefined;
     secondaryTasks.add(task);
     leaseOwner.send({
       type: "START_SECONDARY",
@@ -1884,7 +1887,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
 
     const restored = await applyChoice(ctx, original.selected);
-    if (leaseOwner.state.active !== owner) {
+    if (!leaseOwner.owns(owner, leaseEpoch)) {
       reviewParentAttemptMetrics = undefined;
       return;
     }
@@ -1992,13 +1995,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
     // A lease replaced during telemetry or a model switch (for example, a discovery review revoked by
     // new input or `/route off`) must never be overwritten by a fallback computed from the stale one.
-    if (leaseOwner.state.active !== active) return;
+    if (!leaseOwner.owns(active, leaseEpoch)) return;
     if (fallback.action === "use_choice") {
-      if (!(await applyChoice(ctx, fallback.choice))) {
+      const applied = await applyChoice(ctx, fallback.choice);
+      if (!leaseOwner.owns(active, leaseEpoch)) return;
+      if (!applied) {
         attemptDisposition = "failed";
         return;
       }
-      if (leaseOwner.state.active !== active) return;
       const fallbackLease =
         fallback.lease.lifecycle.phase === "review"
           ? {
@@ -2037,18 +2041,21 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       return;
     }
     if (fallback.action === "restore_previous") {
-      attemptDisposition = "failed";
       if (fallback.choice) await applyChoice(ctx, fallback.choice);
-      if (leaseOwner.state.active !== active) return;
+      if (!leaseOwner.owns(active, leaseEpoch)) return;
+      attemptDisposition = "failed";
       if (!leaseOwner.advance("FALLBACK", { ...fallback.lease, executionFailed: true }, active, leaseEpoch)) return;
       persistState();
       updateStatus(ctx);
+      ctx.ui.notify(fallback.reason, "error");
+      return;
     }
-    if (fallback.action === "skip_review" && active.lifecycle.phase === "review") {
+    if (active.lifecycle.phase === "review") {
       attemptDisposition = "failed";
       await restoreParentAfterReview(ctx, active, "skipped");
+      if (leaseOwner.epoch !== leaseEpoch) return;
     }
-    ctx.ui.notify(fallback.reason, fallback.action === "skip_review" ? "warning" : "error");
+    ctx.ui.notify(fallback.reason, "warning");
   }
 
   async function startIndependentReview(
@@ -2139,8 +2146,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       ...(parent.contextSizeBucket ? { contextSizeBucket: parent.contextSizeBucket } : {}),
     });
     const applied = await applyWithAvailabilityFallback(ctx, child);
-    if (leaseOwner.state.active !== parent) {
-      // The parent was revoked or replaced during the model switch, so its review is moot.
+    if (!leaseOwner.owns(parent, leaseEpoch)) {
+      // The parent or routing context was superseded during the model switch.
       lastAttemptMetrics = reviewParentAttemptMetrics;
       reviewParentAttemptMetrics = undefined;
       return;

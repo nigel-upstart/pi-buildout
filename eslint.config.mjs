@@ -118,7 +118,7 @@ export default tseslint.config(
         },
         {
           selector:
-            "AssignmentExpression > MemberExpression MemberExpression[property.name=/^(active|lifecycle|parentLease|safetyEvidence)$/]",
+            "AssignmentExpression > MemberExpression.left MemberExpression[property.name=/^(active|lifecycle|parentLease|safetyEvidence)$/]",
           message: "Nested lease snapshots are immutable; send a transition to the lease owner.",
         },
         {

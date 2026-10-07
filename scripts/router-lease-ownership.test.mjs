@@ -21,4 +21,13 @@ snapshot.active.lifecycle.phase = "discovery_ready";
   assert.ok(violations.some(({ message }) => message.includes("second store")));
   assert.ok(violations.some(({ message }) => message.includes("only mutable lease store")));
   assert.ok(violations.some(({ message }) => message.includes("Nested lease snapshots")));
+
+  const [readOnly] = await eslint.lintText(
+    "const snapshot = { active: { lifecycle: { phase: 'ordinary' } } }; let value; value = snapshot.active.lifecycle.phase;",
+    { filePath: file },
+  );
+  assert.ok(
+    !readOnly.messages.some(({ ruleId }) => ruleId === "no-restricted-syntax"),
+    "reading a nested lease on the right side must not be reported as a mutation",
+  );
 });
