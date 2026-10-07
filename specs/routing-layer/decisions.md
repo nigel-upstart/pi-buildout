@@ -322,8 +322,9 @@ that fails or is blocked by a later gate also leaves no reusable grant. This rul
 existed, preflight had no path for a non-read-only call, so there was no earlier race here.
 
 **Revocation never loses to a stale write.** A pending request, its in-flight review, or an unspent grant is revoked to
-an empty `preflight` at every boundary that invalidates final-plan authorization (new user input, compaction, session
-restoration, manual model or effort override), plus `/route off` and secondary-classifier correction. The races found in
+an empty `preflight` at every boundary that also invalidates final-plan authorization (new user input, compaction, a
+session change, manual model or effort override). It is also revoked by `/route off`, secondary-classifier correction,
+and every session restoration, including a same-session reload, which keeps a final-plan approval. The races found in
 review came from code that captured a lease, awaited a model switch or telemetry write, and then reinstalled the
 captured copy, which could restore a revoked request or grant. Two rules prevent that. Every handler makes its lease
 changes before its first `await`. Code that resumes after an `await` installs its result only if the lease it started
@@ -331,7 +332,8 @@ from is still active. An approval is also withheld if the builder model cannot b
 reviewer's model is never left holding it.
 
 This was a hard transition with no compatibility for persisted session state: restored leases must match the current
-lifecycle shapes exactly. The earlier preflight behavior is in the history before the
+lifecycle shapes exactly, and any restored discovery request, in-flight discovery review, or unspent grant is revoked
+regardless. The earlier preflight behavior is in the history before the
 `feat(router): model exact single-use discovery grants` commit.
 
 ## Deferred follow-up: evidence-aware synopsis compaction
