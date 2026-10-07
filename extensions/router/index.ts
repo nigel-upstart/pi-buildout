@@ -2649,16 +2649,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    await abortSecondaryWork(ctx, "session_compact", { retainSafetyLatch: true });
     // Compaction rewrites history, not enablement. The mode stays in force, and re-persisting it puts
     // the mode after the compaction cut so a later resume of this session still sees it. The lease is
     // kept and a pending post_compaction boundary is recorded instead, so the next ordinary user
     // message re-routes while input queued into a running turn still finishes inside its own lease.
     // Authorization is invalidated immediately, because no approval may survive compaction even
     // though the lease itself does.
+    // Every lease change happens before the first await, as in the override handlers.
     if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "compaction boundary") };
     state = setHardBoundary(state, "post_compaction");
     persistState();
+    await abortSecondaryWork(ctx, "session_compact", { retainSafetyLatch: true });
     await rememberMode(state.mode);
     await record(ctx, "boundary", { boundary: "post_compaction" }, state.active ? { taskId: state.active.taskId } : {});
   });
