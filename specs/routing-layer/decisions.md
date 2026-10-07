@@ -279,7 +279,7 @@ a task no way to gather facts its plan depended on.
 The chosen fix is a single-use authorization of one exact call, not broader allowlists and not a "continue planning"
 pre-approval. A per-CLI read-only classifier would have to model each tool's side effects and would fail open on gaps.
 An open-ended planning approval would authorize effects nobody reviewed. One exact call keeps the reviewed object
-concrete: tool, canonical JSON input, working directory, and session.
+concrete: tool, canonical JSON input, task, working directory, and session.
 
 Discovery reuses the generated `authorization` review and its `approve`/`reject` verdicts, with `purpose` bound into the
 scope fingerprint rather than adding a review kind. It keeps a schema separate from `ActionPlan`, because a plan
