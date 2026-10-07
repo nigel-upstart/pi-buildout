@@ -281,10 +281,13 @@ fingerprints identically: `NaN` or `Infinity` and `null`; `-0` and `0`; a `Date`
 `[]`; a function and `undefined`. Without validation, approving one would authorize the other. A cyclic object makes the
 canonicalizer recurse until it throws `RangeError`. An accessor can return a different value on each read, so the value
 reviewed, fingerprinted, and executed could differ. `isJsonObject` therefore accepts only null, booleans, strings,
-finite numbers other than `-0`, dense plain arrays, and plain objects whose own properties are enumerable, string-keyed
-data properties. It rejects symbols, accessors, non-plain prototypes (including array subclasses), and anything that
-throws when inspected, such as a revoked proxy. Traversal is capped at depth 32 and 10,000 nodes. The whole request is
-validated before TypeBox reads its properties, so schema validation never invokes a getter or proxy trap.
+finite numbers other than `-0`, plain arrays whose keys are exactly `"0"` through `String(length - 1)` plus `length`,
+and plain objects whose own properties are enumerable, string-keyed data properties. It rejects symbols, accessors,
+non-plain prototypes (including array subclasses), and every `Proxy`. A proxy can pass the reflective descriptor checks
+without running its `get` trap, then hand TypeBox or the fingerprint a different value. A numeric-looking key that is
+not an index, such as `"4294967295"`, is rejected because the fingerprint would silently drop it. Traversal is capped at
+depth 32 and 10,000 nodes, and anything that throws while being inspected is rejected. The whole request is validated
+before TypeBox reads its properties, so schema validation never invokes a getter or proxy trap.
 
 The `seen` set in `isJsonObject` tracks the current traversal path, not every object visited: an object is added on
 entry and removed on exit. A real cycle, where an object is reachable from itself, is rejected. The same object

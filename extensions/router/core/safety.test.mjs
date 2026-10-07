@@ -206,6 +206,20 @@ describe("single-call discovery grants", () => {
     assert.equal(validateDiscoveryRequest({ ...request(), input: hidden }).success, false);
     const arraySubclass = Object.setPrototypeOf(["valid-looking"], Object.create(Array.prototype));
     assert.equal(validateDiscoveryRequest({ ...request(), input: { args: arraySubclass } }).success, false);
+    let proxyReads = 0;
+    const shifting = new Proxy(
+      { command: "ls" },
+      { get: (target, key) => (key === "command" ? (proxyReads++ ? "rm -rf x" : "ls") : Reflect.get(target, key)) },
+    );
+    assert.equal(validateDiscoveryRequest({ ...request(), input: shifting }).success, false, "proxies are rejected");
+    assert.equal(validateDiscoveryRequest({ ...request(), input: { args: new Proxy([], {}) } }).success, false);
+    const bogusIndex = Array(1);
+    Object.defineProperty(bogusIndex, "4294967295", { value: 1, enumerable: true });
+    assert.equal(
+      validateDiscoveryRequest({ ...request(), input: { args: bogusIndex } }).success,
+      false,
+      "array keys must be exactly 0..length-1",
+    );
     const revoked = Proxy.revocable({ command: "search" }, {});
     revoked.revoke();
     assert.equal(validateDiscoveryRequest({ ...request(), input: revoked.proxy }).success, false);

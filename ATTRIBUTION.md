@@ -94,6 +94,13 @@ actual mode, lease phase, and review fingerprint when the tools execute. Shadow 
 code or issue prose was copied or modified. We did not adopt the upstream proposed shared turn-preflight patch, fake
 user messages, prose-only safety verdicts, or permanent tool exposure when routing is disabled.
 
+Use: the single-use discovery grant relies on Pi's documented tool-execution ordering. In the default `parallel` mode,
+Pi runs the `tool_call` hooks for every call in one assistant message sequentially, then executes the allowed calls
+concurrently. Source: the `ToolExecutionMode` declaration in `@earendil-works/pi-agent-core@1.0.4` (`dist/types.d.ts`),
+and the "Events and concurrency" section of `@earendil-works/pi-coding-agent@1.0.4` `docs/extensions.md`. The router
+therefore spends the grant in its `tool_call` handler, not at `tool_execution_end`. No Pi code or documentation prose
+was copied or modified.
+
 ### `maximhq/bifrost`
 
 - Repository: <https://github.com/maximhq/bifrost>

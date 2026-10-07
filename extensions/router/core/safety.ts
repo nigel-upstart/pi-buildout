@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { Type } from "typebox";
 import type { Static, TUnsafe } from "typebox";
 import { Check, Errors } from "typebox/value";
@@ -106,16 +107,21 @@ function isJsonObject(value: unknown): value is JsonObject {
     if (item === null || typeof item === "string" || typeof item === "boolean") return true;
     if (typeof item === "number") return Number.isFinite(item) && !Object.is(item, -0);
     if (typeof item !== "object" || seen.has(item)) return false;
+    // A proxy can satisfy every reflective check below without running its `get` trap, then return
+    // different values to TypeBox or the fingerprint, so the inspected value would not be the hashed one.
+    if (types.isProxy(item)) return false;
     const array = Array.isArray(item);
     const prototype: unknown = Object.getPrototypeOf(item);
     if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) return false;
     seen.add(item);
     const keys = Reflect.ownKeys(item);
     if (keys.some((key) => typeof key !== "string")) return false;
+    // An array must have exactly the index keys "0"..String(length - 1) plus "length". A numeric-looking
+    // name such as "4294967295" is not an index, and the fingerprint would drop it.
     if (
       array &&
       (keys.length !== item.length + 1 ||
-        keys.some((key) => key !== "length" && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key))))
+        !Array.from({ length: item.length }, (_, index) => Object.hasOwn(item, String(index))).every(Boolean))
     )
       return false;
     for (const key of keys) {
