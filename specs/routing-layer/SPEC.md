@@ -341,7 +341,7 @@ exact tool call, named by tool and strict JSON input, with its objective, target
 verification, and abort conditions. Its scope fingerprint binds `purpose: "discovery"`, the request, the task, the
 working directory, and the session. A generated different-vendor `authorization` review that approves that exact scope
 creates `discovery_ready`, a single-use grant that also records the reviewer. The grant is spent in the `tool_call` hook
-before dispatch, on the first call whose tool, canonical input, working directory, and session all match. A grant
+before dispatch, on the first call whose tool, canonical input, task, working directory, and session all match. A grant
 blocked afterwards by another gate is still spent. The lease then returns to an empty `preflight`; another discovery
 call needs a fresh request and review. Only one discovery request or grant exists at a time. Non-matching calls get
 ordinary preflight enforcement and do not spend the grant. Shell text is compared verbatim, never normalized. Discovery
