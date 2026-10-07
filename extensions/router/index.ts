@@ -528,6 +528,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   // The restricted phase the model was last told `/route off` lifted, until re-enabling corrects it.
   let offNoticePhase: RestrictedPhase | undefined;
   let agentRunPhase: AgentRunPhase = "before_start";
+  /**
+   * Set when a discovery review is revoked while its run is still active. The parent lease is installed at once, but the
+   * reviewer model keeps running until that run settles, so preflight submissions stay blocked until then.
+   */
+  let revokedReviewStillRunning = false;
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
 
@@ -567,6 +572,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   function revokeDiscovery(lease: TaskLease): TaskLease {
     if (!holdsDiscovery(lease)) return lease;
     const base = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
+    if (base !== lease && agentRunPhase === "active") revokedReviewStillRunning = true;
     return {
       ...base,
       updatedAt: new Date().toISOString(),
@@ -2373,6 +2379,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error("submit_action_plan is only valid inside an active irreversible-action preflight lease");
       }
+      if (revokedReviewStillRunning) {
+        throw new Error(
+          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
+        );
+      }
       const validation = validateActionPlan(params);
       // Telemetry is awaited only after the lease update, so a lease replaced during the await can
       // never be overwritten with this stale submission.
@@ -2432,6 +2443,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const active = state.active;
       if (state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error("submit_discovery_request is only valid inside an active irreversible-action preflight lease");
+      }
+      if (revokedReviewStillRunning) {
+        throw new Error(
+          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
+        );
       }
       const validation = validateDiscoveryRequest(params);
       // As for action plans, the request is installed before telemetry is awaited.
@@ -2591,6 +2607,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("session_start", async (event, ctx) => {
     await abortSecondaryWork(ctx, "session_start");
     attemptDisposition = "unknown";
+    revokedReviewStillRunning = false;
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
     scope = await readRouterScope(ctx.cwd);
     const branch = ctx.sessionManager.getBranch();
@@ -3513,6 +3530,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const settled: ReconciliationBoundary = { kind: "agent_settled", promptRefreshAllowed: false, continuing: false };
       await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
+      revokedReviewStillRunning = false;
       insideProviderTurn = false;
       activeToolExecutions = 0;
       // A result queued while the drain above was awaited missed it, and the eager drain only runs
