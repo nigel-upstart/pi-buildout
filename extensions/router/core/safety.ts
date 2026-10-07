@@ -75,7 +75,7 @@ export const ActionPlanSchema = Type.Object(
 type ActionPlan = Static<typeof ActionPlanSchema>;
 
 // Discovery is one concrete tool invocation, not a list of tools or a final execution plan.
-const DiscoveryRequestSchema = Type.Object(
+export const DiscoveryRequestSchema = Type.Object(
   {
     purpose: Type.Literal("discovery"),
     objective: NonEmptyString,
@@ -194,6 +194,15 @@ export type CompletionEvidence = {
   evidenceFingerprint: string;
 };
 
+type PendingDiscovery = {
+  request: DiscoveryRequest;
+  requestFingerprint: string;
+  scopeFingerprint: string;
+  submittedAt: string;
+  cwd: string;
+  sessionId: string;
+};
+
 type DiscoveryGrant = {
   request: DiscoveryRequest;
   requestFingerprint: string;
@@ -269,6 +278,7 @@ export type LeaseLifecycle =
       policy: "authorization_then_completion_review";
       taskFingerprint: string;
       plan?: PlanEvidence;
+      discovery?: PendingDiscovery;
       lastAuthorizationReview?: ReviewOutcome;
       evidenceRepairAttempted?: boolean;
     }
@@ -421,7 +431,7 @@ export function initialLifecycle(policy: SafetyPolicy, taskFingerprint: string):
 export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | undefined {
   switch (lifecycle.phase) {
     case "preflight":
-      return "Safety lifecycle: remain non-mutating. read and read-only bash (git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, including && and | chains of them) stay available for inspection. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. Execution requires a separate independent approval of the exact task and plan fingerprints.";
+      return "Safety lifecycle: remain non-mutating. read and read-only bash (git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, including && and | chains of them) stay available for inspection. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. If read-only inspection cannot establish the facts needed for that plan, call submit_discovery_request with one exact bounded tool invocation for independent review first. Discovery approval is single-use and never authorizes final execution; the final plan requires its own independent approval.";
     case "advisory_pending":
       return "Safety lifecycle: remain non-mutating while gathering bounded context for a pre-action advisor.";
     case "discovery_ready":
@@ -472,7 +482,8 @@ export function lifecycleToolBlockReason(
       : undefined;
   if (toolName === "bash" && shellRejection === undefined) return undefined;
   if (lifecycle.phase === "review" && toolName === "submit_safety_review") return undefined;
-  if (lifecycle.phase === "preflight" && toolName === "submit_action_plan") return undefined;
+  if (lifecycle.phase === "preflight" && (toolName === "submit_action_plan" || toolName === "submit_discovery_request"))
+    return undefined;
   // A bare refusal reads as "bash is unavailable", and the model stops inspecting. Say which part
   // of the command was refused, that read-only bash still works, and how to leave the phase.
   const detail = shellRejection
@@ -516,6 +527,28 @@ function planEvidence(value: unknown, taskFingerprint: string): value is PlanEvi
   }
   const validation = validateActionPlan(evidence.plan);
   return validation.success && validation.fingerprint === evidence.planFingerprint;
+}
+
+function pendingDiscovery(value: unknown, taskFingerprint: string): value is PendingDiscovery {
+  const pending = object(value);
+  if (
+    !pending ||
+    Object.keys(pending).sort().join(",") !== "cwd,request,requestFingerprint,scopeFingerprint,sessionId,submittedAt"
+  )
+    return false;
+  const validated = validateDiscoveryRequest(pending.request);
+  return (
+    validated.success &&
+    pending.requestFingerprint === validated.fingerprint &&
+    typeof pending.cwd === "string" &&
+    pending.cwd.length > 0 &&
+    typeof pending.sessionId === "string" &&
+    pending.sessionId.length > 0 &&
+    typeof pending.submittedAt === "string" &&
+    pending.submittedAt.length > 0 &&
+    pending.scopeFingerprint ===
+      discoveryScopeFingerprint(validated.request, taskFingerprint, pending.cwd, pending.sessionId)
+  );
 }
 
 function discoveryGrant(value: unknown, taskFingerprint: string): value is DiscoveryGrant {
@@ -626,6 +659,7 @@ export function isLeaseLifecycle(value: unknown): value is LeaseLifecycle {
       return (
         lifecycle.policy === "authorization_then_completion_review" &&
         (lifecycle.plan === undefined || planEvidence(lifecycle.plan, taskFingerprint)) &&
+        (lifecycle.discovery === undefined || pendingDiscovery(lifecycle.discovery, taskFingerprint)) &&
         (lifecycle.lastAuthorizationReview === undefined ||
           reviewOutcome(lifecycle.lastAuthorizationReview, "authorization"))
       );
@@ -705,7 +739,12 @@ export function isSafetyEvidenceLog(value: unknown): value is SafetyEvidenceLog 
 }
 
 export function isPotentiallyMutatingTool(toolName: string, input: Record<string, unknown>): boolean {
-  if (toolName === "submit_action_plan" || toolName === "submit_safety_review") return false;
+  if (
+    toolName === "submit_action_plan" ||
+    toolName === "submit_discovery_request" ||
+    toolName === "submit_safety_review"
+  )
+    return false;
   if (toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls") return false;
   if (toolName === "bash") return !isReadOnlyShellCommand(typeof input.command === "string" ? input.command : "");
   return true;
