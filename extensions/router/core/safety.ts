@@ -41,6 +41,7 @@ const VERDICTS_BY_KIND: Readonly<Record<SafetyReviewKind, readonly SafetyReviewV
 
 const NonEmptyString = Type.String({ minLength: 1, maxLength: 2_000 });
 const ShortString = Type.String({ minLength: 1, maxLength: 300 });
+const MAX_DISCOVERY_REQUEST_BYTES = 64 * 1024;
 
 export const ActionPlanSchema = Type.Object(
   {
@@ -145,6 +146,17 @@ export function validateDiscoveryRequest(value: unknown): DiscoveryRequestValida
   // Validate the whole object before TypeBox reads its properties or fingerprinting traverses it.
   if (!isJsonObject(value)) {
     return { success: false, errors: ["discovery request must contain only finite, acyclic JSON values"] };
+  }
+  // The request appears in both the builder context and the independent review prompt. Bound the
+  // whole compact JSON encoding (the same byte size as canonical JSON), including keys and escapes.
+  // Reject rather than truncate: the reviewed input must remain the exact tool invocation.
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_DISCOVERY_REQUEST_BYTES) {
+    return {
+      success: false,
+      errors: [
+        `discovery request exceeds the 64 KiB (${String(MAX_DISCOVERY_REQUEST_BYTES)} bytes) limit for UTF-8 serialized JSON; submit a smaller exact request`,
+      ],
+    };
   }
   if (!Check(DiscoveryRequestSchema, value)) {
     return {
