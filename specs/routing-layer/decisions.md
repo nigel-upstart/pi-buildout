@@ -28,7 +28,7 @@ already exposes every hook this spec's pipeline needs:
 | Model eligibility, context window, cost, API keys        | `ctx.modelRegistry` / `ModelRegistry`                     |
 | Builder identity (for independent review routing)        | `ctx.model`                                               |
 | Apply the lease (model + effort)                         | `setModel(model)`, `setThinkingLevel(level)`              |
-| Expose only phase-valid lifecycle validators             | `getActiveTools()` / `setActiveTools()`                   |
+| Keep lifecycle validators declared while routing         | `getActiveTools()` / `setActiveTools()`                   |
 | Inject the compiled model-specific prompt profile        | `before_agent_start` → `systemPrompt` result              |
 | Resolve exact policy IDs against live endpoints          | `ctx.modelRegistry.getAll()` / `.getAvailable()`          |
 | Persist/reevaluate the lease across turns                | `appendEntry` + re-check on `input`                       |
@@ -78,9 +78,10 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
 - **UI:** `@earendil-works/pi-tui`, for a `/route` status command modeled on the existing `extensions/effort`.
 - **Classifier / continuity LLM calls:** `ExtensionAPI` itself has no one-shot inference method, but pi v0.80.7 exports
   `complete()` from `@earendil-works/pi-ai/compat`; pi's own `qna.ts` and `custom-compaction.ts` examples call it from
-  extensions using a model plus `ctx.modelRegistry.getApiKeyAndHeaders()`. Use that proven path. The classifier exposes
-  a tiny transport interface for deterministic tests, but production always uses `complete()` with one TypeBox schema
-  tool, low temperature where supported, and validated tool arguments.
+  extensions using a model plus `ctx.modelRegistry.getApiKeyAndHeaders()`. Use that proven path; no private `Models`
+  handle or direct provider SDK is needed. The classifier exposes a tiny transport interface for deterministic tests,
+  but production always uses `complete()` with one TypeBox schema tool, low temperature where supported, and validated
+  tool arguments.
 - **Provider access — registry-resolved, with Bifrost preferred where configured.** Production calls use the selected
   model's `baseUrl` and `ModelRegistry`-resolved auth. Deployments exposing models through Bifrost configure credentials
   in environment/settings and never hardcode them. Local pi installations may use an already-configured direct or OAuth
@@ -94,9 +95,8 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
 - **Runtime:** Node.js / ESM, matching pi's own `"type": "module"`. pi loads `.ts` extensions directly — no build step
   for the extension itself.
 - **Tests:** `node --test` over `*.test.mjs`, matching this repo's existing convention.
-- **Schema/validation:** **TypeBox**, reused from pi's dependency tree through its canonical `typebox` / `typebox/value`
-  exports — not Zod. One definition yields runtime validation (fail closed on malformed classifier output), static TS
-  types, and the schema used for the required classifier tool call. No separate extension-local install is needed.
+- **Schema/validation:** TypeBox, as in the dependency set. One definition yields runtime validation that fails closed
+  on malformed classifier output, static TS types, and the schema for the required classifier tool call.
 - **Telemetry — local JSONL store, plus OTel spans via `pi-telemetry-otel`:**
   - pi itself has **no OpenTelemetry plumbing to build on**. Its only telemetry is an install-ping toggle
     (`isInstallTelemetryEnabled`, gated by env `PI_TELEMETRY`); it reads no `OTEL_*` environment variables and
@@ -118,16 +118,14 @@ No web framework — this is a library plus a thin pi-extension adapter, not a s
     adds a second integration path with no additional capability, so it is intentionally omitted.
   - **Local JSONL remains the source of truth regardless of OTel configuration:** the spec's telemetry-promoted cost
     ranking requires the router to read its own history back in-process, and an OTel export is fire-and-forget to an
-    external backend — it cannot be queried back for that purpose. No sqlite: nothing in pi's dependency tree uses it,
-    and the retained event ledger is small enough for in-memory percentile computation over labeled outcome rows.
+    external backend — it cannot be queried back for that purpose. The retained event ledger is small enough for
+    in-memory percentile computation over labeled outcome rows.
   - Signal mapping: a `router.classify` or `router.classify_continuity` span covers one router-level classifier request,
-    while `router.route` covers deterministic selection. Classifier spans carry bounded `router.classifier.*` summary
-    attributes, one `router.classifier.attempt` event per observed stage attempt, and a final
-    `router.classifier.completed` event. They intentionally omit the prompt, synopsis, classifier evidence, credentials,
-    and free-form errors. Routing spans carry route/model/profile decision attributes. All span creation and annotation
-    no-op when the companion is absent and annotation failures cannot change routing. Isolation covers both synchronous
-    throws and rejected thenables: a tracer method that returns a promise has its rejection consumed without being
-    awaited, so a broken exporter can neither delay a routed turn nor terminate the process after it succeeded.
+    while `router.route` covers deterministic selection. Classifier span attributes and events are specified in the
+    telemetry decision below; routing spans carry route/model/profile decision attributes. All span creation and
+    annotation no-op when the companion is absent and annotation failures cannot change routing. Isolation covers both
+    synchronous throws and rejected thenables: a tracer method that returns a promise has its rejection consumed without
+    being awaited, so a broken exporter can neither delay a routed turn nor terminate the process after it succeeded.
 - **Lint/format:** use the repository-wide Prettier formatter and ESLint rules. Biome was removed after the repository
   adopted this toolchain so formatting and linting have one authority each.
 - **Packaging:** install via the existing `scripts/install-extensions.sh`; `/reload` after reinstalling. Use the repo's
@@ -247,69 +245,99 @@ to be selected previously.
 
 Three review kinds have non-interchangeable effects:
 
-- **Authorization review** evaluates a validated concrete plan before a high/critical-risk irreversible action. Only an
-  exact-scope `approve` from a generated different-vendor review creates an execution lease. Reviewer failure,
-  rejection, builder fallback, manual model/effort override, session change, compaction, new user input, or plan change
-  cannot do so.
+- **Authorization review** evaluates a validated concrete plan before a high/critical-risk irreversible action, or a
+  bounded discovery request inside its preflight (see below). Only an exact-scope `approve` from a generated
+  different-vendor review creates an execution lease or a discovery grant. Reviewer failure, rejection, builder
+  fallback, a builder model that cannot be restored after review, manual model/effort override, session change,
+  compaction, new user input, or plan change cannot do so.
 - **Advisory review** runs before other high-risk reversible non-code action. It supplies failure modes and safer
   sequencing but is not approval. This avoids turning every mutation into a hard authorization gate.
 - **Completion review** runs after tracked high-risk work. Code builders must first supply attributable diff and passing
   deterministic-check evidence; the reviewer inspects that evidence rather than reviewing an intent-only plan.
 
-Generated reviews know their parent builder, route across the two other vendors, expose only bounded read tools plus the
-scoped verdict tool, and never fall back to the builder. Standalone review is orthogonal: it has no parent or fake
-builder, collects a bounded read-only local/PR delta before classification, then uses feature-based `code_review` model
-selection. It is an ordinary lease, may perform explicitly requested side effects, and cannot recursively trigger
-completion review.
+Generated reviews know their parent builder, route across the two other vendors, and never fall back to the builder. The
+deterministic review gate permits only bounded read tools plus the scoped verdict tool. Standalone review is orthogonal:
+it has no parent or fake builder, collects a bounded read-only local/PR delta before classification, then uses
+feature-based `code_review` model selection. It is an ordinary lease, may perform explicitly requested side effects, and
+cannot recursively trigger completion review.
 
 The irreversible preflight tool allowlist is deterministic. Unknown tools and shell composition are denied; after
 approval, mutating tool names are limited to those in the reviewed plan. The plan and verdict schemas, canonical
-fingerprints, lifecycle validation, and boundary invalidation are implemented locally. Pi's documented dynamic active-
-tool API is used as a second, model-facing layer: action-plan and verdict validators are registered for execution but
-activated only when the current lifecycle accepts them. No external safety-state-machine implementation or code was
-consulted or adapted for this decision; the Pi API provenance is recorded in the root attribution file.
+fingerprints, lifecycle validation, and boundary invalidation are implemented locally. While routing is active, all
+three validators (`submit_action_plan`, `submit_discovery_request`, `submit_safety_review`) stay declared through Pi's
+active-tool API, because extension-generated review turns skip `before_agent_start`. Each validator checks the active
+mode and lifecycle phase when it executes, so declaration never grants permission. None are declared in shadow or off
+mode. No external safety-state-machine implementation or code was consulted or adapted for this decision; the Pi API
+provenance is recorded in the root attribution file.
 
-## Decision: discovery grants match plain JSON exactly and are spent at `tool_call`
+## Decision: bounded discovery authorization inside preflight
 
-A discovery grant authorizes one call by fingerprint. `safetyFingerprint` canonicalizes the request, with object keys
-sorted by UTF-16 code unit, and hashes it; `consumeDiscoveryGrant` compares the live call's input against the approved
-input the same way. That comparison is sound only if one fingerprint identifies exactly one call. Two guards in
-`core/safety.ts` make that true. The key order is locale-independent on purpose. `localeCompare` would follow the host's
-collation, and it treats canonically equivalent keys such as `"\u00e9"` and `"e\u0301"` as equal, which made the
-fingerprint depend on insertion order. A lease persisted under the earlier ordering fails fingerprint validation on
-restore and is discarded.
+The preflight shell gate is a closed allowlist over binaries and options, so it cannot tell a read-only call from a
+mutating one for an arbitrary CLI. For example, every `glean` invocation is refused, including `glean search`. That left
+a task no way to gather facts its plan depended on.
 
-**Plain-JSON validation (`isJsonObject`).** The canonicalizer walks `Object.entries` and serializes leaves with
-`JSON.stringify`, which is lossy for values that are not JSON. Measured against `safetyFingerprint`, each of these pairs
-fingerprints identically: `NaN` or `Infinity` and `null`; `-0` and `0`; a `Date` or `Map` and `{}`; a sparse `[,]` and
-`[]`; a function and `undefined`. Without validation, approving one would authorize the other. A cyclic object makes the
-canonicalizer recurse until it throws `RangeError`. An accessor can return a different value on each read, so the value
-reviewed, fingerprinted, and executed could differ. `isJsonObject` therefore accepts only null, booleans, strings,
-finite numbers other than `-0`, plain arrays whose keys are exactly `"0"` through `String(length - 1)` plus `length`,
-and plain objects whose own properties are enumerable, string-keyed data properties. It rejects symbols, accessors,
-non-plain prototypes (including array subclasses), and every `Proxy`. A proxy can pass the reflective descriptor checks
-without running its `get` trap, then hand TypeBox or the fingerprint a different value. A numeric-looking key that is
-not an index, such as `"4294967295"`, is rejected because the fingerprint would silently drop it. Traversal is capped at
-depth 32 and 10,000 nodes, and anything that throws while being inspected is rejected. The whole request is validated
-before TypeBox reads its properties, so schema validation never invokes a getter or proxy trap.
+The chosen fix is a single-use authorization of one exact call, not broader allowlists and not a "continue planning"
+pre-approval. A per-CLI read-only classifier would have to model each tool's side effects and would fail open on gaps.
+An open-ended planning approval would authorize effects nobody reviewed. One exact call keeps the reviewed object
+concrete: tool, canonical JSON input, task, working directory, and session.
+
+Discovery reuses the generated `authorization` review and its `approve`/`reject` verdicts, with `purpose` bound into the
+scope fingerprint rather than adding a review kind. It keeps a schema separate from `ActionPlan`, because a plan
+authorizes tool names for an irreversible step while discovery authorizes one input. A discovery approval never
+authorizes the final plan, which still needs its own review.
+
+**Exact matching requires plain JSON.** The grant is matched by fingerprint: `safetyFingerprint` canonicalizes with
+object keys sorted by UTF-16 code unit and hashes, and `consumeDiscoveryGrant` compares the live call's input against
+the approved input the same way. That is sound only if one fingerprint identifies exactly one call. The key order is
+locale-independent on purpose. `localeCompare` would follow the host's collation, and it treats canonically equivalent
+keys such as `"\u00e9"` and `"e\u0301"` as equal, which made the fingerprint depend on insertion order. A lease
+persisted under the earlier ordering fails fingerprint validation on restore and is discarded. The canonicalizer walks
+`Object.entries` and serializes leaves with `JSON.stringify`, which is lossy for values that are not JSON. Measured
+against `safetyFingerprint`, each of these pairs fingerprints identically: `NaN` or `Infinity` and `null`; `-0` and `0`;
+a `Date` or `Map` and `{}`; a sparse `[,]` and `[]`; a function and `undefined`. Without validation, approving one would
+authorize the other. A cyclic object makes the canonicalizer recurse until it throws `RangeError`. An accessor can
+return a different value on each read, so the value reviewed, fingerprinted, and executed could differ. `isJsonObject`
+therefore accepts only null, booleans, strings, finite numbers other than `-0`, plain arrays whose keys are exactly
+`"0"` through `String(length - 1)` plus `length`, and plain objects whose own properties are enumerable, string-keyed
+data properties. It rejects symbols, accessors, non-plain prototypes (including array subclasses), and every `Proxy`. A
+proxy can pass the reflective descriptor checks without running its `get` trap, then hand TypeBox or the fingerprint a
+different value. A numeric-looking key that is not an index, such as `"4294967295"`, is rejected because the fingerprint
+would silently drop it. Traversal is capped at depth 32 and 10,000 nodes, and anything that throws while being inspected
+is rejected. The whole request is validated before TypeBox reads its properties, so schema validation never invokes a
+getter or proxy trap.
 
 The `seen` set in `isJsonObject` tracks the current traversal path, not every object visited: an object is added on
 entry and removed on exit. A real cycle, where an object is reachable from itself, is rejected. The same object
 referenced from two places, such as `{ x: shared, y: shared }`, is accepted, because it serializes identically at each
 position and so fingerprints deterministically.
 
-**Consumption at `tool_call`.** `consumeDiscoveryGrant` is a pure transition from `discovery_ready` back to an empty
-`preflight`; the caller installs and persists the result before allowing the call. Spending the grant at `tool_call`
-rather than `tool_execution_end` is required by Pi's default parallel tool execution. Pi runs the `tool_call` hooks of
-every call in one assistant message sequentially, and only then executes the allowed calls concurrently. A grant cleared
-when the call ended would let two identical calls in one message both pass `tool_call` before either ended, so one
-approval would run twice. Spent at the first `tool_call`, the grant is gone when the second call is checked, and that
-call meets ordinary preflight enforcement. Nothing depends on the call completing, so a call that fails or is blocked by
-a later gate also leaves no reusable grant.
+**The grant is spent at `tool_call`.** `consumeDiscoveryGrant` is a pure transition from `discovery_ready` back to an
+empty `preflight`; the caller installs and persists the result before allowing the call. Spending the grant at
+`tool_call` rather than `tool_execution_end` is required by Pi's default parallel tool execution. Pi runs the
+`tool_call` hooks of every call in one assistant message sequentially, and only then executes the allowed calls
+concurrently. A grant cleared when the call ended would let two identical calls in one message both pass `tool_call`
+before either ended, so one approval would run twice. Spent at the first `tool_call`, the grant is gone when the second
+call is checked, and that call meets ordinary preflight enforcement. Nothing depends on the call completing, so a call
+that fails or is blocked by a later gate also leaves no reusable grant. This rule is preventive: before discovery
+existed, preflight had no path for a non-read-only call, so there was no earlier race here.
 
-This consumption rule is preventive: before discovery existed, preflight had no path for a non-read-only call, so there
-was no earlier race here. The races fixed in the runtime wiring were different: a lease captured before an `await` was
-reinstalled afterwards and could restore a revoked request or grant.
+**Revocation never loses to a stale write.** A pending request, its in-flight review, or an unspent grant is revoked to
+an empty `preflight` at every boundary that also invalidates final-plan authorization (new user input, compaction, a
+session change, manual model or effort override). It is also revoked by `/route off`, secondary-classifier correction,
+and every session restoration, including a same-session reload, which keeps a final-plan approval. The races found in
+review came from code that captured a lease, awaited a model switch or telemetry write, and then reinstalled the
+captured copy, which could restore a revoked request or grant. Two rules prevent that. Every handler makes its lease
+changes before its first `await`. Code that resumes after an `await` installs its result only if the lease it started
+from is still active. An approval is also withheld if the builder model cannot be restored after review, so the
+reviewer's model is never left holding it.
+
+This was a hard transition with no compatibility for persisted session state: restored leases must match the current
+lifecycle shapes exactly, and any restored discovery request, in-flight discovery review, or unspent grant is revoked
+regardless. The earlier preflight implementation is at revision `60c5c721703f` on `main`, the base this change was built
+on:
+[`core/safety.ts`](https://github.com/nigel-upstart/pi-buildout/blob/60c5c721703f83bd247e63ef2ff50a544f8fd834/extensions/router/core/safety.ts)
+and
+[`index.ts`](https://github.com/nigel-upstart/pi-buildout/blob/60c5c721703f83bd247e63ef2ff50a544f8fd834/extensions/router/index.ts).
 
 ## Deferred follow-up: evidence-aware synopsis compaction
 
@@ -325,20 +353,15 @@ semantic summary only if it outperforms the deterministic round-robin baseline.
 
 ## Implementation-time findings (resolved)
 
-1. **Classifier entrypoint:** use `complete()` from `@earendil-works/pi-ai/compat` with `ModelRegistry`-resolved auth.
-   This is the same supported extension pattern used by pi's bundled examples; no private `Models` handle or direct
-   provider SDK is needed.
-2. **Telemetry resolution:** use the companion extension's Symbol registries only. This preserves parented spans when
-   installed and deterministic no-op behavior otherwise, without another module root or runtime install step.
-3. **Provider endpoint:** production classification uses the endpoint already resolved on the chosen pi model. A
-   Bifrost-configured model therefore uses Bifrost; direct-provider configurations keep working. The real-call eval
-   runner requires explicit `BIFROST_*` configuration and never silently changes endpoints.
-4. **Concrete registry mapping:** policy v3 uses exact IDs present in pi v0.80.7's live registry
-   (`gpt-5.6-{luna,terra,sol}`, `claude-{haiku-4-5,sonnet-5,opus-4-8,fable-5}`, `gemini-3.5-flash`) plus the configured
-   `bifrost/bedrock/anthropic.claude-sonnet-5` endpoint as a Sonnet 5 availability alternative. These have version-aware
-   profile families and deterministic lower-tier fallback resolution when a preferred exact ID is unavailable. Bifrost
-   evaluation found its advertised Vertex 3.5 route unavailable in-region, so policy also lists exact
-   `google-vertex/gemini-2.5-flash` behind 3.5 with a separate generation-specific profile.
+The classifier entrypoint, telemetry resolution, and provider endpoint findings are recorded in the Framework and
+Tooling sections above. One finding is historical:
+
+**Concrete registry mapping:** policy v3 used exact IDs present in pi v0.80.7's live registry
+(`gpt-5.6-{luna,terra,sol}`, `claude-{haiku-4-5,sonnet-5,opus-4-8,fable-5}`, `gemini-3.5-flash`) plus the configured
+`bifrost/bedrock/anthropic.claude-sonnet-5` endpoint as a Sonnet 5 availability alternative. These had version-aware
+profile families and deterministic lower-tier fallback resolution when a preferred exact ID is unavailable. Bifrost
+evaluation found its advertised Vertex 3.5 route unavailable in-region, so policy also lists exact
+`google-vertex/gemini-2.5-flash` behind 3.5 with a separate generation-specific profile.
 
 ## Evidence-driven policy revision, 2026-07-25 (`router-policy-v5`)
 
