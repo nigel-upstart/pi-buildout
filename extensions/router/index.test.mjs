@@ -4475,6 +4475,24 @@ describe("routerExtension", () => {
         .execute("bad", { ...request, input: { command: NaN } }, undefined, undefined, ctx),
       /Invalid discovery request/,
     );
+    const beforeOversizedRequest = latest();
+    const modelCallsBeforeOversizedRequest = setModelCalls;
+    await assert.rejects(
+      tools
+        .get("submit_discovery_request")
+        .execute("oversized", { ...request, input: { command: "x".repeat(1_000_000) } }, undefined, undefined, ctx),
+      /Invalid discovery request:.*64 KiB \(65536 bytes\)/,
+    );
+    assert.equal(latest(), beforeOversizedRequest, "rejection must not persist a new lease");
+    assert.equal(events.at(-1).data.discoveryRequestValidated, false);
+    assert.match(events.at(-1).data.validationErrors.join("\n"), /64 KiB \(65536 bytes\)/);
+    await hooks.get("agent_settled")({}, ctx);
+    assert.equal(latest().lifecycle.phase, "preflight");
+    assert.equal(latest().lifecycle.discovery, undefined);
+    assert.equal(setModelCalls, modelCallsBeforeOversizedRequest, "rejection must not switch to a reviewer");
+    for (const message of messages) {
+      assert.doesNotMatch(message.message.content, /<untrusted_discovery_request>/);
+    }
     await submit();
     assert.equal(latest().lifecycle.discovery.sessionId, sessionId);
     assert.equal(latest().lifecycle.discovery.cwd, ctx.cwd);
