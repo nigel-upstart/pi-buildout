@@ -15,6 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
@@ -108,11 +109,25 @@ async function copyPackage(packageRoot, target, patchDirectory, { patched = true
     cp(join(packageRoot, "docs"), join(target, "docs"), { recursive: true }),
     copyFile(join(packageRoot, "package.json"), join(target, "package.json")),
   ]);
-  await symlink(
-    join(packageRoot, "node_modules"),
-    join(target, "node_modules"),
-    process.platform === "win32" ? "junction" : "dir",
-  );
+  // Pi 1.1.0 can hoist dependencies outside its own node_modules. Link the packages
+  // Node actually searches so a fixture outside this checkout has the same imports.
+  const packageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  const resolver = createRequire(join(packageRoot, "package.json"));
+  for (const name of Object.keys(packageJson.dependencies ?? {})) {
+    const candidates = resolver.resolve.paths(name) ?? [];
+    let dependency;
+    for (const directory of candidates) {
+      const candidate = join(directory, name);
+      if (await exists(join(candidate, "package.json"))) {
+        dependency = candidate;
+        break;
+      }
+    }
+    assert.ok(dependency, `Pi runtime dependency ${name} must be installed`);
+    const destination = join(target, "node_modules", name);
+    await mkdir(dirname(destination), { recursive: true });
+    await symlink(dependency, destination, process.platform === "win32" ? "junction" : "dir");
+  }
   if (patched) {
     await applyPatch(target, join(patchDirectory, "skills.patch"));
     await verifyManifest(patchDirectory, target, "patched.sha256");
