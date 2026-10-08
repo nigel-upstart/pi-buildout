@@ -115,6 +115,7 @@ type LeaseEvent =
 type LeaseContext = {
   state: LeaseState;
   epoch: number;
+  reviewEpoch: number | undefined;
   secondary: ActorRefFrom<typeof secondaryMachine> | undefined;
 };
 
@@ -193,7 +194,14 @@ const leaseMachine = setup({
   actors: { secondary: secondaryMachine },
   guards: {
     ownsLease: ({ context, event }) =>
-      isAdvance(event) && validAdvance(event) && context.state.active === event.owner && context.epoch === event.epoch,
+      isAdvance(event) &&
+      validAdvance(event) &&
+      context.state.active === event.owner &&
+      context.epoch === event.epoch &&
+      (event.type !== "REVIEW_FINISHED" ||
+        event.owner?.lifecycle.phase !== "review" ||
+        event.owner.lifecycle.reviewKind !== "authorization" ||
+        context.reviewEpoch === context.epoch),
   },
   actions: {
     discardSecondary: enqueueActions(({ context, enqueue }) => {
@@ -214,7 +222,17 @@ const leaseMachine = setup({
             }),
         });
       }
-      enqueue.assign({ state: freezeState(installLease(context.state, event.lease)) });
+      enqueue.assign({
+        state: freezeState(installLease(context.state, event.lease)),
+        // Verdict submission and fallback replace the child without starting a new review.
+        // Settlement's current epoch must never refresh the authorization it started with.
+        reviewEpoch:
+          event.lease.lifecycle.phase !== "review"
+            ? undefined
+            : event.type === "REVIEW_STARTED"
+              ? context.epoch
+              : context.reviewEpoch,
+      });
     }),
   },
 }).createMachine({
@@ -222,6 +240,7 @@ const leaseMachine = setup({
   context: ({ input, spawn }) => ({
     state: freezeState(input),
     epoch: 0,
+    reviewEpoch: undefined,
     secondary:
       input.active && input.secondarySafetyPending ? spawn("secondary", { input: unresolvedSecondary() }) : undefined,
   }),
@@ -251,6 +270,7 @@ const leaseMachine = setup({
               ? spawn("secondary", { input: unresolvedSecondary() })
               : undefined,
           epoch: ({ context }) => context.epoch + 1,
+          reviewEpoch: undefined,
         }),
       ],
     },
