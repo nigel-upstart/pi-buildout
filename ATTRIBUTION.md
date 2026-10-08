@@ -683,6 +683,8 @@ evidence review; only the version numbers are shared with upstream.
 - Revision reviewed: `effect@4.0.2` (npm `latest` at 2026-10-08). License declared by the package: MIT.
 
 Ideas studied: structuring timeouts, abort propagation, and timer cleanup as program structure; incremental adoption at
-Promise boundaries. No Effect source code or documentation text has been copied. See
+Promise boundaries. The published `effect@4.0.2` package was installed in a scratch directory only to measure import
+time and size and to confirm the `effect/testing` `TestClock` export; it is not a dependency of this repository. No
+Effect source code or documentation text has been copied. See
 [`specs/effect-adoption-evaluation.md`](specs/effect-adoption-evaluation.md) for the evaluation and the intentionally
 unadopted parts of the library.
