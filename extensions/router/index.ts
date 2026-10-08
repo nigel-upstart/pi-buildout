@@ -2384,6 +2384,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (!leaseOwner.advance("PREPARE", applied, active, leaseEpoch)) return;
       persistState();
     }
+    if (agentRunPhase === "before_start" && applied.lifecycle.phase !== "review") {
+      // A settlement switch may have failed; successful preparation now restores builder ownership.
+      revokedReviewStillRunning = false;
+    }
     return applied;
   }
 

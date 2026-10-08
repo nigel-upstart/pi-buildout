@@ -6186,10 +6186,19 @@ describe("routerExtension", () => {
     await ending;
     telemetryGate = Promise.resolve();
     gatedKind = undefined;
+    setModelResult = false;
     await hooks.get("agent_settled")({}, ctx);
     assert.equal(latest().lifecycle.phase, "preflight");
     assert.equal(latest().lifecycle.grant, undefined, "a revoked review's verdict grants nothing");
     assert.equal(repairs(), repairsBefore, "the revoked review's outcome must not start a repair turn");
+    await assert.rejects(submit(), /revoked independent review is still running/);
+    setModelResult = true;
+    await hooks.get("before_agent_start")({ prompt: "Continue the task", systemPrompt: "base", images: [] }, ctx);
+    assert.equal(ctx.model.id, builder.modelId, "a later ordinary turn can restore the builder");
+    await submit();
+    assert.ok(latest().lifecycle.discovery, "successful turn preparation reopens discovery submissions");
+    await tools.get("submit_action_plan").execute("restored-plan", irreversibleActionPlan(), undefined, undefined, ctx);
+    assert.ok(latest().lifecycle.plan, "successful turn preparation reopens action plan submissions");
   });
 
   it("never resurrects discovery reviews under generated ledger/model-switch schedules", async () => {
