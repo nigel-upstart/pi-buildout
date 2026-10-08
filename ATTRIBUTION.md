@@ -88,13 +88,17 @@ of first resort.
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/agent-core`)
 - Revisions reviewed: published `1.0.3` for the issue behavior and `1.0.4` for tool-execution ordering; no Git commit
   was pinned
+- Issue #108 follow-up: published `0.87.1` and `1.1.0` `AgentSession.setActiveToolsByName`, `sendCustomMessage`, and
+  `Agent` provider-request/tool-dispatch behavior, verified with an in-memory provider experiment
 - License declared by the packages: MIT
 
-Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start`. The router therefore
-keeps its safety validator tools (`submit_action_plan`, `submit_discovery_request`, and `submit_safety_review`) declared
-throughout active mode, and checks the actual mode, lease phase, and review fingerprint when a tool executes. Shadow and
-off modes hide all three. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages,
-prose-only safety verdicts, or permanent tool exposure when routing is disabled.
+Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start`. The router uses Pi's
+active-tool selection API at persisted lifecycle transitions before queuing those turns, so only phase-valid safety
+validators are declared. The pure implementation-plan validator remains callable throughout active mode regardless of
+the lease's archetype. Execution guards still check mode, phase, one-shot verdicts, and review fingerprints for stale
+calls. These are local API integration patterns and behavioral tests; no upstream implementation code was copied or
+modified. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages, prose-only safety
+verdicts, or permanent tool exposure when routing is disabled. Shadow and off hide router tools.
 
 Use, tool-execution ordering: in the default `parallel` mode, Pi runs the `tool_call` hooks for every call in one
 assistant message sequentially, then executes the allowed calls concurrently. The router therefore spends a single-use
@@ -489,8 +493,8 @@ pinned, checksum-verified inputs, and is not committed here.
 Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
-- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to keep all three safety
-  validators declared throughout active routing; each validator enforces its mode and lease phase at execution time.
+- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
+  at valid lifecycle phases, including generated review turns; stale calls retain execution-time guards.
 - The Pi 0.85.1 and 0.87.1 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
   metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
   The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
