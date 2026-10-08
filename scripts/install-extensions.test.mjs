@@ -23,7 +23,11 @@ async function runInstaller(agentDirectory) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("bash", [installerPath, "--skip-skill-loading-patch"], {
       cwd: repositoryRoot,
-      env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+      env: {
+        ...process.env,
+        PI_AGENT_DIR: agentDirectory,
+        PI_PACKAGE_DIR: join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

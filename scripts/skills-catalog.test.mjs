@@ -56,16 +56,18 @@ async function applyPatch(target, source, reverse = false) {
   }
 }
 
+const gitEnvironmentKeys = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
 function testEnvironment(overrides = {}) {
   const env = { ...process.env, ...overrides };
-  for (const key of [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  ]) {
+  for (const key of gitEnvironmentKeys) {
     delete env[key];
   }
   return env;
@@ -200,9 +202,15 @@ for (const version of patchVersions()) {
     const projectConfig = join(cwd, ".pi");
     const agentDir = join(fixtureRoot, "agent");
     const previousHome = process.env.HOME;
+    const previousGitEnvironment = new Map(gitEnvironmentKeys.map((key) => [key, process.env[key]]));
 
     try {
+      // The imported Pi shell also runs Git in this process, not only in CLI children.
+      for (const key of gitEnvironmentKeys) delete process.env[key];
       process.env.HOME = join(fixtureRoot, "home");
+      // Keep ancestor skill discovery inside this fixture, including when TMPDIR is in the checkout.
+      await mkdir(cwd, { recursive: true });
+      await runGit(cwd, ["init", "--quiet"]);
       try {
         await copyPackage(packageRoot, patchedPackage, patchDirectory);
       } catch (error) {
@@ -452,6 +460,10 @@ for (const version of patchVersions()) {
       assert.equal(untrustedByName.get("package-choice")?.description, "global package");
       assert.equal(untrustedByName.get("settings-choice")?.description, "global setting");
     } finally {
+      for (const [key, value] of previousGitEnvironment) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       if (previousHome === undefined) {
         delete process.env.HOME;
       } else {
