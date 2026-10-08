@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, copyFile, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -10,7 +22,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const patchDirectory = join(repositoryRoot, "patches", "pi-0.85.1");
 const patchPath = join(patchDirectory, "skills.patch");
-const packageRoot = join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent");
+// The repository develops against a newer Pi; the 0.85.1 baseline is installed under a pinned npm alias.
+const packageRoot = join(repositoryRoot, "node_modules", "pi-coding-agent-0.85.1");
 
 async function exists(path) {
   try {
@@ -29,7 +42,7 @@ async function sha256(path) {
 async function baselineProblem() {
   const packageJsonPath = join(packageRoot, "package.json");
   if (!(await exists(packageJsonPath))) {
-    return "the installed @earendil-works/pi-coding-agent package is unavailable";
+    return "the pinned pi-coding-agent-0.85.1 baseline package is unavailable";
   }
   if (!(await exists(join(packageRoot, "node_modules")))) {
     return "the installed pi package dependencies are unavailable";
@@ -138,6 +151,34 @@ async function runPatchedCli(target, args, { agentDir, cwd, home = process.env.H
   });
 }
 
+async function linkOnce(source, destination) {
+  if (!(await exists(destination))) {
+    await symlink(source, destination, process.platform === "win32" ? "junction" : "dir");
+  }
+}
+
+/**
+ * Recreates in-place module resolution for the copied package: its own nested dependencies win, then the
+ * dependencies npm hoisted to the repository root because they did not conflict with the repository's.
+ */
+async function linkDependencies(target) {
+  const destination = join(target, "node_modules");
+  await mkdir(destination, { recursive: true });
+  for (const layer of [join(packageRoot, "node_modules"), join(repositoryRoot, "node_modules")]) {
+    for (const entry of await readdir(layer, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      if (!entry.name.startsWith("@")) {
+        await linkOnce(join(layer, entry.name), join(destination, entry.name));
+        continue;
+      }
+      await mkdir(join(destination, entry.name), { recursive: true });
+      for (const scoped of await readdir(join(layer, entry.name))) {
+        await linkOnce(join(layer, entry.name, scoped), join(destination, entry.name, scoped));
+      }
+    }
+  }
+}
+
 async function createPatchedPackage(target) {
   await mkdir(target, { recursive: true });
   await Promise.all([
@@ -145,11 +186,7 @@ async function createPatchedPackage(target) {
     cp(join(packageRoot, "docs"), join(target, "docs"), { recursive: true }),
     copyFile(join(packageRoot, "package.json"), join(target, "package.json")),
   ]);
-  await symlink(
-    join(packageRoot, "node_modules"),
-    join(target, "node_modules"),
-    process.platform === "win32" ? "junction" : "dir",
-  );
+  await linkDependencies(target);
   await applyPatch(target);
   await verifyManifest(target, "patched.sha256");
 }

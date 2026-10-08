@@ -22,6 +22,14 @@
     "@earendil-works/pi-coding-agent": {
       "undici": "8.11.2"
     },
+    "@earendil-works/chord@>=1.0.0": "1.0.0",
+    "@earendil-works/pi-agent-core@>=1.0.0": "1.0.0",
+    "@earendil-works/pi-codemode@>=1.0.0": "1.0.0",
+    "@earendil-works/pi-mcp@>=1.0.0": "1.0.0",
+    "@earendil-works/pi-telemetry@>=1.0.0": "1.0.0",
+    "pi-coding-agent-0.85.1": {
+      "undici": "8.11.2"
+    },
     "katex": "0.18.11"
   },
   "scripts": {
@@ -42,9 +50,9 @@
     "audit": "node scripts/check-audit.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "@earendil-works/pi-tui": "0.85.1",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
     "@eslint/js": "^9.39.5",
     "@secretlint/secretlint-rule-preset-recommend": "^13.0.2",
     "@types/node": "^24.0.0",
@@ -57,6 +65,7 @@
     "knip": "^6.27.0",
     "lefthook": "^2.1.10",
     "markdownlint-cli2": "^0.23.0",
+    "pi-coding-agent-0.85.1": "npm:@earendil-works/pi-coding-agent@0.85.1",
     "prettier": "^3.6.0",
     "prettier-plugin-sh": "^0.19.0",
     "secretlint": "^13.0.2",

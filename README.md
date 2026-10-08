@@ -46,11 +46,11 @@ source of truth; `patches/pi-0.85.1/*`, `patches/pi-0.99.2/*`, `patches/pi-1.0.3
 produced from it:
 
 ```bash
-npm run patches:build                                    # regenerate the patch and its checksum manifests
-npm run patches:check                                    # check the pinned development version
-node scripts/build-pi-patch.mjs --version 0.99.2 --check # check the 0.99.2 patch
-node scripts/build-pi-patch.mjs --version 1.0.3 --check  # check the 1.0.3 patch
-node scripts/build-pi-patch.mjs --version 1.0.4 --check  # check the 1.0.4 patch
+npm run patches:build                                    # regenerate every versioned patch and its checksum manifests
+npm run patches:check                                    # check every versioned patch in pi-overlay/versions
+node scripts/build-pi-patch.mjs --version 0.99.2 --check # check only the 0.99.2 patch
+node scripts/build-pi-patch.mjs --version 1.0.3 --check  # check only the 1.0.3 patch
+node scripts/build-pi-patch.mjs --version 1.0.4 --check  # check only the 1.0.4 patch
 ```
 
 The pipeline fetches the pinned upstream release source archive and npm tarball, verifies both against checksums
@@ -61,9 +61,12 @@ workspace packages, so it runs in its own scheduled CI job rather than on every 
 
 ## Development and quality checks
 
-Use Node.js 22.19 or newer. The authored extensions and test suite target Pi `0.85.1`; compatibility with older Pi
-versions is not guaranteed. Install [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which
-also installs the repository's Git hooks:
+Use Node.js 22.19 or newer. The authored extensions, overlay, and scripts support Pi >= 1.0.0 and are developed and
+tested against the minimum supported release, Pi `1.0.0`, with every `@earendil-works/*` package held at `1.0.0`. Do not
+use Pi APIs introduced after 1.0.0. The version-specific `/skills` patches are separate: the installed-baseline tests
+for the 0.85.1 patch run against a pinned `pi-coding-agent-0.85.1` npm alias rather than the development Pi. Install
+[ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
+hooks:
 
 ```bash
 brew install shellcheck # macOS; use the equivalent package on other platforms
