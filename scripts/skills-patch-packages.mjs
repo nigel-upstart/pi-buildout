@@ -3,10 +3,11 @@
  *
  * The repository's development dependency pins one pi version (see `package.json`), but the patch tests run
  * for every version with an overlay. A test for another version needs an unpatched package of exactly that
- * version, supplied through `PI_SKILLS_TEST_PACKAGES`: a list of package directories separated by the
- * platform path delimiter (`:` on POSIX). Each directory must contain pi's `package.json`, `dist/`, `docs/`,
- * and a resolvable `node_modules/` (a symlink is fine). Tests only read these directories; they copy what
- * they patch into temporary trees.
+ * version. Candidates are searched in order: directories in `PI_SKILLS_TEST_PACKAGES`, a list separated by the
+ * platform path delimiter (`:` on POSIX); the pinned development dependency; then every root development
+ * dependency that aliases `npm:@earendil-works/pi-coding-agent@<version>`, such as `pi-coding-agent-0.87.1`.
+ * Each directory must contain pi's `package.json`, `dist/`, `docs/`, and a resolvable `node_modules/` (a
+ * symlink is fine). Tests only read these directories; they copy what they patch into temporary trees.
  *
  * A version with no matching clean package is skipped with the reason, never silently passed.
  */

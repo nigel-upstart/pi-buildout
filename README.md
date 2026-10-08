@@ -78,12 +78,14 @@ workspace packages, so it runs in its own scheduled CI job rather than on every 
 
 ## Development and quality checks
 
-Use Node.js 22.19 or newer. The extensions and packages support **pi >= 1.0.0**. The authored extensions, the vendored
-OTel extension, and the test suite pin the Pi `1.0.0` development packages, the minimum supported version, so they
-cannot rely on APIs added later, and the router's cost tests pin that model registry. Older Pi versions are not
-supported. The `/skills` patch tests run for every patched pi version; the root development dependencies also install a
-clean 0.87.1 package through the `pi-coding-agent-0.87.1` npm alias. For any other version, the tests that apply the
-patch to a real package skip unless `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
+Use Node.js 22.19 or newer. The extensions and their extension packages support **pi >= 1.0.0**. The `/skills` patch
+(`@upstart/pi-skills-patch`) is the exception: it supports only the exact pi versions that have a complete
+`patches/pi-<version>` artifact, and the installer refuses any other version. The authored extensions, the vendored OTel
+extension, and the test suite pin the Pi `1.0.0` development packages, the minimum supported version, so they cannot
+rely on APIs added later, and the router's cost tests pin that model registry. Older Pi versions are not supported. The
+`/skills` patch tests run for every patched pi version; the root development dependencies also install a clean 0.87.1
+package through the `pi-coding-agent-0.87.1` npm alias. For any other version, the tests that apply the patch to a real
+package skip unless `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
 [`patches/pi-1.0.4/README.md`](patches/pi-1.0.4/README.md#runtime-behavior-tests)). Install
 [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
 hooks:
