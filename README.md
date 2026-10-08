@@ -61,10 +61,11 @@ workspace packages, so it runs in its own scheduled CI job rather than on every 
 
 ## Development and quality checks
 
-Use Node.js 22.19 or newer. The authored extensions, overlay, and scripts support Pi >= 1.0.0 and are developed and
-tested against the minimum supported release, Pi `1.0.0`, with every `@earendil-works/*` package held at `1.0.0`. Do not
-use Pi APIs introduced after 1.0.0. The version-specific `/skills` patches are separate: the installed-baseline tests
-for the 0.85.1 patch run against a pinned `pi-coding-agent-0.85.1` npm alias rather than the development Pi. Install
+Use Node.js 22.19 or newer. The authored extensions, overlay, and scripts support Pi >= 1.0.1 and are developed and
+tested against the minimum supported release, Pi `1.0.1`, with every `@earendil-works/*` package held at `1.0.1`. Pi
+1.0.0 is not supported: its published `npm-shrinkwrap.json` pins a vulnerable `brace-expansion` 5.0.9. Do not use Pi
+APIs introduced after 1.0.1. The version-specific `/skills` patches are separate: the installed-baseline tests for the
+0.85.1 patch run against a pinned `pi-coding-agent-0.85.1` npm alias rather than the development Pi. Install
 [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
 hooks:
 
