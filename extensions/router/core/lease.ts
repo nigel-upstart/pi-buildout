@@ -1,3 +1,4 @@
+import { deriveArchetype } from "./archetype.ts";
 import type { Archetype } from "./archetype.ts";
 import { isCodeBuilder } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
@@ -142,11 +143,31 @@ export function deterministicBoundaryGate(state: LeaseState, input: BoundaryInpu
   };
 }
 
+const ACTION_MODE_RANK: Record<TaskFeatures["actionMode"], number> = {
+  information_only: 0,
+  local_read: 1,
+  reversible_mutation: 2,
+  external_side_effect: 3,
+  destructive: 4,
+};
+
+function isPlanningArchetype(archetype: Archetype): boolean {
+  return archetype === "implementation_planning" || archetype === "large_program_planning";
+}
+
 export function resolveContinuity(
   lease: TaskLease,
   features: TaskFeatures,
   cache: { cachedTokens: number; expectedReuseRatio: number },
 ): BoundaryGateResult {
+  // A continuation keeps the lease's tool policy, so it must not absorb work that needs a different one:
+  // a planning route (whose validator only accepts planning leases) or a riskier action mode.
+  if (
+    (isPlanningArchetype(deriveArchetype(features).archetype) && !isPlanningArchetype(lease.archetype)) ||
+    ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[lease.features.actionMode]
+  ) {
+    return { action: "new_task", reason: "continuity classification changed routing or action requirements" };
+  }
   if (features.taskContinuity === "clear_continuation") {
     return { action: "continue", reason: "continuity classifier found a clear continuation", lease };
   }
