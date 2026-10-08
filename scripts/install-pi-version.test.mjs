@@ -57,14 +57,16 @@ test("installer rejects Pi below 1.0.1 before changing extensions, even when pat
 
 test("installer rejects malformed versions and an explicit unrelated package", async (context) => {
   const layout = await fixture(context);
-  for (const version of ["not-a-version", "1.0", null]) {
+  for (const version of ["not-a-version", "1.0", "1.1.0-..", "1.1.0+..", "1.1.0-01", "1.1.0-rc.01", null]) {
     await writeFile(
       join(layout.packageRoot, "package.json"),
       JSON.stringify({ name: "@earendil-works/pi-coding-agent", version }),
     );
-    const result = run(layout, [], { PI_PACKAGE_DIR: layout.packageRoot });
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Invalid Pi version/u);
+    for (const args of [[], ["--skip-skill-loading-patch"]]) {
+      const result = run(layout, args, { PI_PACKAGE_DIR: layout.packageRoot });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Invalid Pi version/u);
+    }
   }
   await writeFile(
     join(layout.packageRoot, "package.json"),
@@ -77,7 +79,7 @@ test("installer rejects malformed versions and an explicit unrelated package", a
 });
 
 test("installer accepts the 1.0.1 boundary and newer versions before checking patch availability", async (context) => {
-  for (const version of ["1.0.1", "1.0.1+build.1", "1.0.2", "2.0.0"]) {
+  for (const version of ["1.0.1", "1.0.1+build.1", "1.0.2", "1.1.0-rc.1", "1.1.0+01", "2.0.0"]) {
     const layout = await fixture(context, version);
     const result = run(layout);
     assert.equal(result.status, 1);

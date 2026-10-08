@@ -7,7 +7,7 @@ picker.
 
 The picker uses the current model's `reasoning` and provider-verified `thinkingLevelMap` metadata, so unsupported effort
 levels are hidden and cannot be selected. A direct `/effort <level>` argument naming an unsupported level is rejected
-with an error instead of being applied. Older pi versions retain the historical full list.
+with an error instead of being applied.
 
 ## Install
 

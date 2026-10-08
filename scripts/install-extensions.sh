@@ -236,8 +236,8 @@ PI_PACKAGE_DIR=$(realpath "$PI_PACKAGE_DIR")
 # shellcheck disable=SC2016
 PI_VERSION=$(node -e '
   const version = require(process.argv[1]).version;
-  const match = typeof version === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
-  if (!match) {
+  const match = typeof version === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!match || (match[4] && match[4].split(".").some(identifier => /^0\d+$/.test(identifier)))) {
     console.error(`Invalid Pi version: ${String(version)}. Pi >=1.0.1 is required.`);
     process.exit(1);
   }
