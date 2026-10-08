@@ -534,7 +534,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let agentRunPhase: AgentRunPhase = "before_start";
   /**
    * Set when a discovery review is revoked while its run is still active. The parent lease is installed at once, but the
-   * reviewer model keeps running until that run settles, so preflight submissions stay blocked until then.
+   * reviewer model keeps running until that run settles, so preflight submissions stay blocked until the builder is restored.
    */
   let revokedReviewStillRunning = false;
   let insideProviderTurn = false;
@@ -3514,6 +3514,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     runEndEpoch = undefined;
     await drainSecondaryReconciliation(ctx, { kind: "agent_settled", promptRefreshAllowed: false, continuing: false });
     const leaseEpoch = leaseOwner.epoch;
+    let revokedReviewRestored = false;
     try {
       const active = leaseOwner.state.active;
       if (!active || active.executionFailed) return;
@@ -3530,6 +3531,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         return;
       }
       if (leaseOwner.state.mode !== "active") return;
+      if (revokedReviewStillRunning && !manualOverride) {
+        // Generated follow-ups skip before_agent_start, so restore the builder before settlement queues one,
+        // keeping preflight submissions blocked through the asynchronous switch and after a failed switch.
+        revokedReviewRestored = await applyChoice(ctx, active.selected);
+        if (!leaseOwner.owns(active, leaseEpoch)) return;
+        if (!revokedReviewRestored) {
+          ctx.ui.notify("Preflight remains blocked: the builder model could not be restored after review", "error");
+          return;
+        }
+      }
       if (active.lifecycle.phase === "review") {
         if (attemptDisposition === "success" && active.lifecycle.submission) {
           await restoreParentAfterReview(ctx, active, "completed");
@@ -3678,7 +3689,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const settled: ReconciliationBoundary = { kind: "agent_settled", promptRefreshAllowed: false, continuing: false };
       await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
-      revokedReviewStillRunning = false;
+      // A failed restore keeps submissions blocked until a later turn preparation restores the builder.
+      if (
+        revokedReviewRestored ||
+        leaseOwner.state.mode !== "active" ||
+        leaseOwner.state.manualOverride ||
+        leaseOwner.state.active?.manualOverride ||
+        !leaseOwner.state.active
+      ) {
+        revokedReviewStillRunning = false;
+      }
       insideProviderTurn = false;
       activeToolExecutions = 0;
       // A result queued while the drain above was awaited missed it, and the eager drain only runs

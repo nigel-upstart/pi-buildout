@@ -5460,9 +5460,10 @@ describe("routerExtension", () => {
       registerTool: (tool) => tools.set(tool.name, tool),
       appendEntry: (customType, data) => entries.push({ customType, data }),
       sendMessage: (message, options) => messages.push({ message, options }),
-      setModel: async () => {
+      setModel: async (model) => {
         setModelCalls++;
         await modelGate;
+        if (setModelResult) ctx.model = model;
         return setModelResult;
       },
       setThinkingLevel: () => {},
@@ -6093,13 +6094,33 @@ describe("routerExtension", () => {
       },
       ctx,
     );
+    setModelResult = false;
     await hooks.get("agent_settled")({}, ctx);
+    assert.equal(ctx.model.id, runningReview.selected.modelId, "a failed switch leaves the reviewer selected");
+    await assert.rejects(submit(), /revoked independent review is still running/);
+    await assert.rejects(
+      tools.get("submit_action_plan").execute("unrestored-plan", irreversibleActionPlan(), undefined, undefined, ctx),
+      /revoked independent review is still running/,
+    );
+    setModelResult = true;
+    const builderModel = deferred();
+    modelGate = builderModel.promise;
+    const settlingRevokedReview = hooks.get("agent_settled")({}, ctx);
+    await assert.rejects(submit(), /revoked independent review is still running/);
+    builderModel.resolve();
+    await settlingRevokedReview;
+    modelGate = Promise.resolve();
     assert.equal(latest().lifecycle.phase, "preflight");
     assert.equal(latest().lifecycle.discovery, undefined, "the reviewer model left no request behind");
     assert.equal(reviewPrompts(), reviewStartsBefore, "no review starts from the reviewer's run");
-    ctx.model = models[0];
+    assert.equal(ctx.model.provider, builder.provider, "settlement restores the selected builder provider");
+    assert.equal(ctx.model.id, builder.modelId, "settlement restores the selected builder model");
+    // Extension-generated follow-ups skip before_agent_start, so settlement must restore the model.
+    hooks.get("agent_start")({}, ctx);
     await submit();
     assert.ok(latest().lifecycle.discovery, "submissions reopen once the run has settled");
+    assert.equal(ctx.model.provider, latest().selected.provider, "the request author matches the lease provider");
+    assert.equal(ctx.model.id, latest().selected.modelId, "the request author matches the lease model");
 
     // Revocation while agent_end awaits its telemetry must not count the revoked review as a success.
     await hooks.get("agent_end")(
