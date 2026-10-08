@@ -39,20 +39,20 @@ New logic goes in `skill-management*.ts`. Upstream files get imports and a call 
 
 Measured against each clean package, edits to pre-existing upstream files:
 
-| Pre-existing upstream file                   | 0.85.1, previously hand-written | 0.85.1, generated | 0.87.1, generated | 1.0.3, generated | 1.0.4, generated |
-| -------------------------------------------- | ------------------------------- | ----------------- | ----------------- | ---------------- | ---------------- |
-| `dist/core/resource-loader.js`               | 55                              | 16                | 16                | 16               | 16               |
-| `dist/core/slash-commands.js`                | 1                               | 1                 | 1                 | 1                | 1                |
-| `dist/main.js`                               | 32                              | 5                 | 5                 | 5                | 5                |
-| `dist/modes/interactive/interactive-mode.js` | 82                              | 25                | 26                | 26               | 26               |
-| **Total**                                    | **170**                         | **47**            | **48**            | **48**           | **48**           |
+| Pre-existing upstream file                   | 0.85.1, previously hand-written | 0.85.1, generated | 0.87.1, generated | 1.0.3, generated | 1.0.4, generated | 1.1.0, generated |
+| -------------------------------------------- | ------------------------------- | ----------------- | ----------------- | ---------------- | ---------------- | ---------------- |
+| `dist/core/resource-loader.js`               | 55                              | 16                | 16                | 16               | 16               | 16               |
+| `dist/core/slash-commands.js`                | 1                               | 1                 | 1                 | 1                | 1                | 1                |
+| `dist/main.js`                               | 32                              | 5                 | 5                 | 5                | 5                | 5                |
+| `dist/modes/interactive/interactive-mode.js` | 82                              | 25                | 26                | 26               | 26               | 26               |
+| **Total**                                    | **170**                         | **47**            | **48**            | **48**           | **48**           | **48**           |
 
-The 0.87.1, 1.0.3, and 1.0.4 seams make the same calls as the 0.85.1 one. Each has one extra line in
+The 0.87.1, 1.0.3, 1.0.4, and 1.1.0 seams make the same calls as the 0.85.1 one. Each has one extra line in
 `interactive-mode.ts`: each extends the existing `getCwdRelativePath` import from `utils/paths.ts` with `resolvePath`,
 rather than adding a second import from the same module.
 
 The shared `skill-management-core.ts` and `skill-management.ts` compile to byte-identical
-`dist/core/skill-management*.js` across 0.85.1, 0.87.1, 1.0.3, and 1.0.4.
+`dist/core/skill-management*.js` across 0.85.1, 0.87.1, 1.0.3, 1.0.4, and 1.1.0.
 
 The budget counts only files where upstream code is edited in place. Files the patch _adds_ are ours; `docs/skills.md`
 and the two bundled entrypoints are replaced wholesale rather than surgically edited, so none of them belong in a number
@@ -90,7 +90,7 @@ Per version, `versions/<version>/upstream.json` pins the inputs. Two properties 
 - **The exact upstream commit is published.** The npm registry records `gitHead` for every release, and it matches the
   revisions in `ATTRIBUTION.md` exactly (`0.85.1` → `d981de1229ef899957bbe968bc8dcda02a21f477`, `0.87.1` →
   `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`, `1.0.3` → `d78dc83d633229d12f8b79631384c4c2717c399f`, `1.0.4` →
-  `7c10bd4337495ee613f2224843ecdf349b80d1df`).
+  `7c10bd4337495ee613f2224843ecdf349b80d1df`, `1.1.0` → `abe508e1b89912adde45528136c3221eb69acdd7`).
 - **Upstream ships a deterministic source archive.** Each GitHub release carries `pi-<version>-source.tar.gz` (built by
   upstream's `scripts/create-source-archive.sh`) alongside a `SHA256SUMS`. GitHub's _auto-generated_ tag tarballs are
   not byte-stable and are deliberately not used.
@@ -103,9 +103,9 @@ no upstream source.
 
 Verified for 0.85.1: building the pinned source archive reproduces the published npm runtime **exactly** — 209 of 209
 unbundled `.js` files byte-identical, including every tracked file. Verified the same way for 0.87.1: 219 of 219. For
-1.0.3 and 1.0.4, the clean build reproduces all four pre-existing runtime files tracked by each patch byte-for-byte
-before the overlay is applied. No normalization is applied. If that ever stops holding, generation fails rather than
-emitting a patch carrying toolchain noise.
+1.0.3, 1.0.4, and 1.1.0, the clean build reproduces all four pre-existing runtime files tracked by each patch
+byte-for-byte before the overlay is applied. No normalization is applied. If that ever stops holding, generation fails
+rather than emitting a patch carrying toolchain noise.
 
 Two caveats the pipeline must respect:
 
@@ -115,8 +115,9 @@ Two caveats the pipeline must respect:
   `dist/bundle/rpc-entry.js`. 0.87.1 made `dist/bundle/cli.js` a loader that enables Node's compile cache and then
   `require()`s `dist/bundle/cli-runtime.js`, so it replaces `cli-runtime.js` and `rpc-entry.js` and keeps upstream's
   loader. The loader is declared with `"source": "unchanged"`: it never appears in the patch, but both checksum
-  manifests pin it, so the installer rejects a package whose loader would bypass the replaced runtime. Pi 1.0.3 and
-  1.0.4 have the same loader contract and use the same wrappers.
+  manifests pin it, so the installer rejects a package whose loader would bypass the replaced runtime. Pi 1.0.3, 1.0.4,
+  and 1.1.0 have the same loader contract. Pi 1.1.0's RPC wrapper additionally preserves upstream's process markers and
+  HTTP-dispatcher setup.
 - The 0.85.1 source archive does not build cleanly end to end offline: `packages/ai`'s `generate-models` does not emit
   `src/providers/kimi-coding.models.ts`, so `tsgo` reports `TS2307` for that package. It still emits usable output, so
   `packages/coding-agent` is unaffected — but the pipeline must build the workspace chain explicitly and gate on the
@@ -125,12 +126,12 @@ Two caveats the pipeline must respect:
 
 `workspaceBuildOrder` follows upstream's root `build` script for that release. 0.87.1 added `packages/durable` between
 `packages/ai` and `packages/agent`; 1.0.3 builds `packages/codemode`, `packages/mcp`, and `packages/durable` before the
-agent package. Pi 1.0.4 also builds `packages/env` before `packages/agent`.
+agent package. Pi 1.0.4 also builds `packages/env` before `packages/agent`; Pi 1.1.0 retains that build order.
 
 `npm run patches:build` and `npm run patches:check` pass `--all`, so every version under `versions/` is regenerated and
 checked, not only the one the development dependencies pin. Use `node scripts/build-pi-patch.mjs --version <version>`
 for a single version.
 
-Upstream pins `@typescript/native-preview` to the dated dev build `7.0.0-dev.20260120.1` in 0.85.1 and 0.87.1. Pi 1.0.3
-and 1.0.4 build with the released `typescript` `7.0.2` (`tsc`). If a pinned compiler is withdrawn or its emit changes,
-reproducibility breaks; the scheduled drift job is the detector.
+Upstream pins `@typescript/native-preview` to the dated dev build `7.0.0-dev.20260120.1` in 0.85.1 and 0.87.1. Pi 1.0.3,
+1.0.4, and 1.1.0 build with the released `typescript` `7.0.2` (`tsc`). If a pinned compiler is withdrawn or its emit
+changes, reproducibility breaks; the scheduled drift job is the detector.
