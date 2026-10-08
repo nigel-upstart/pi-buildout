@@ -393,6 +393,45 @@ describe("task boundary gate", () => {
     assert.equal(sameRoute.action, "continue", "a less privileged continuation keeps the lease");
   });
 
+  it("starts a fresh lease when an information-only continuation leaves either planning route", () => {
+    for (const archetype of ["implementation_planning", "large_program_planning"]) {
+      const active = {
+        ...lease(),
+        archetype,
+        features: {
+          ...lease().features,
+          intent: "plan",
+          workflowType: "implementation_planning",
+          actionMode: "local_read",
+          horizon: archetype === "large_program_planning" ? "program_unknown_size" : "single_pr",
+        },
+      };
+      for (const taskContinuity of ["clear_continuation", "possible_continuation"]) {
+        const result = resolveContinuity(
+          active,
+          {
+            ...active.features,
+            intent: "summarize",
+            workflowType: "research_or_analysis",
+            actionMode: "information_only",
+            horizon: "one_response",
+            taskContinuity,
+          },
+          { cachedTokens: 100_000, expectedReuseRatio: 1 },
+        );
+        assert.equal(result.action, "new_task", `${archetype}: ${taskContinuity}`);
+        assert.match(result.reason, /routing or action requirements/);
+      }
+
+      const sameRoute = resolveContinuity(
+        active,
+        { ...active.features, taskContinuity: "clear_continuation" },
+        { cachedTokens: 100_000, expectedReuseRatio: 1 },
+      );
+      assert.equal(sameRoute.action, "continue", `${archetype}: continued planning keeps the lease`);
+    }
+  });
+
   it("lets strong discontinuity override cache but resists a marginal switch", () => {
     const active = lease();
     const marginal = resolveContinuity(

@@ -161,9 +161,9 @@ export function resolveContinuity(
   cache: { cachedTokens: number; expectedReuseRatio: number },
 ): BoundaryGateResult {
   // A continuation keeps the lease's tool policy, so it must not absorb work that needs a different one:
-  // a planning route (whose validator only accepts planning leases) or a riskier action mode.
+  // entering or leaving planning (whose validator only accepts planning leases), or a riskier action mode.
   if (
-    (isPlanningArchetype(deriveArchetype(features).archetype) && !isPlanningArchetype(lease.archetype)) ||
+    isPlanningArchetype(deriveArchetype(features).archetype) !== isPlanningArchetype(lease.archetype) ||
     ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[lease.features.actionMode]
   ) {
     return { action: "new_task", reason: "continuity classification changed routing or action requirements" };
