@@ -13,7 +13,7 @@
 
 import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -58,7 +58,25 @@ function candidatePackageRoots() {
     .map((entry) => entry.trim())
     .filter(Boolean)
     .map((entry) => resolve(entry));
-  return [...configured, join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent")];
+  return [
+    ...configured,
+    join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
+    ...aliasedPackageRoots(),
+  ];
+}
+
+const PI_PACKAGE_ALIAS_PREFIX = "npm:@earendil-works/pi-coding-agent@";
+
+/**
+ * Clean packages installed through npm aliases in the root development dependencies, such as
+ * `"pi-coding-agent-0.87.1": "npm:@earendil-works/pi-coding-agent@0.87.1"`. They keep a patched version's
+ * runtime tests running after the main development dependency moves to a version without a patch.
+ */
+function aliasedPackageRoots() {
+  const manifest = JSON.parse(readFileSync(join(repositoryRoot, "package.json"), "utf8"));
+  return Object.entries(manifest.devDependencies ?? {})
+    .filter(([, specifier]) => typeof specifier === "string" && specifier.startsWith(PI_PACKAGE_ALIAS_PREFIX))
+    .map(([alias]) => join(repositoryRoot, "node_modules", ...alias.split("/")));
 }
 
 /**

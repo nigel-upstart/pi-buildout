@@ -16,8 +16,8 @@ node scripts/build-pi-patch.mjs --version 0.87.1 --check   # fail if the committ
 npm run patches:check                                      # the same check for every overlay version
 ```
 
-The repository's `@earendil-works/*` development dependencies stay pinned to 0.85.1, because the router's cost
-tests pin that model registry, so this version is always named explicitly or reached through `--all`.
+The repository's `@earendil-works/*` development dependencies are pinned to 1.0.0, the minimum supported pi, so
+this version is always named explicitly or reached through `--all`.
 
 The pipeline fetches the pinned upstream source archive and npm tarball, verifies both against checksums in
 `pi-overlay/versions/0.87.1/upstream.json`, cross-checks the source archive against upstream's published
@@ -94,8 +94,9 @@ the clean package rather than overwritten.
   package, and settings catalog sources, trust boundaries, precedence, and activation through the packaged
   CLI entrypoint.
 
-The dispatch and catalog tests need a clean 0.87.1 package. The repository's development dependency is
-0.85.1, so they skip for 0.87.1 unless one is supplied:
+The dispatch and catalog tests need a clean 0.87.1 package. The root development dependencies install one
+through the `pi-coding-agent-0.87.1` npm alias, which `scripts/skills-patch-packages.mjs` finds automatically.
+Without that install, the tests skip for 0.87.1 unless one is supplied:
 
 ```bash
 PI_SKILLS_TEST_PACKAGES=/path/to/clean/pi-coding-agent-0.87.1 npm test

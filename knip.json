@@ -11,5 +11,10 @@
   "ignore": ["extensions/otel/**"],
   "ignoreUnresolved": ["^\\.{1,2}/.*\\.ts$"],
   "ignoreBinaries": ["patch", "shellcheck", "taskkill"],
-  "ignoreDependencies": ["@secretlint/secretlint-rule-preset-recommend", "chalk", "proper-lockfile"]
+  "ignoreDependencies": [
+    "@secretlint/secretlint-rule-preset-recommend",
+    "chalk",
+    "pi-coding-agent-0.87.1",
+    "proper-lockfile"
+  ]
 }
