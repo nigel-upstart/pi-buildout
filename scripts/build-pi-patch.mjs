@@ -9,6 +9,9 @@
  * Usage:
  *   node scripts/build-pi-patch.mjs [--version <semver>] [--check] [--work-dir <dir>] [--keep]
  *
+ * Without `--version`, every version under `pi-overlay/versions/` is built in turn; with several versions a
+ * `--work-dir` gets one subdirectory per version.
+ *
  * `--check` regenerates into a scratch directory and fails if the committed artifacts differ, which is how
  * CI detects drift. Without it, the committed artifacts are rewritten in place.
  */
@@ -380,30 +383,72 @@ function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
   }
 }
 
+/** Every Pi version with a committed overlay, oldest first. */
+function overlayVersions() {
+  const versionsDir = join(repositoryRoot, "pi-overlay", "versions");
+  const numeric = (version) => version.split(".").map(Number);
+  return readdirSync(versionsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(versionsDir, entry.name, "upstream.json")))
+    .map((entry) => entry.name)
+    .sort((left, right) => {
+      const [a, b] = [numeric(left), numeric(right)];
+      for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+        const difference = (a[index] ?? 0) - (b[index] ?? 0);
+        if (difference !== 0) return difference;
+      }
+      return 0;
+    });
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const check = argv.includes("--check");
   const keep = argv.includes("--keep");
   const versionFlag = argv.indexOf("--version");
   const workDirFlag = argv.indexOf("--work-dir");
+  const workDirArg = workDirFlag === -1 ? undefined : argv[workDirFlag + 1];
+  if (workDirFlag !== -1 && !workDirArg) throw new Error("--work-dir requires a directory.");
 
-  const version =
-    versionFlag === -1
-      ? JSON.parse(readFileSync(join(repositoryRoot, "package.json"), "utf-8")).devDependencies[
-          "@earendil-works/pi-coding-agent"
-        ]
-      : argv[versionFlag + 1];
-  if (!version) throw new Error("Could not determine which pi version to build.");
+  // The /skills patches are version-specific and independent of the Pi version the repository develops
+  // against, so without --version every committed overlay is built.
+  let versions;
+  if (versionFlag === -1) {
+    versions = overlayVersions();
+  } else {
+    const requested = argv[versionFlag + 1];
+    if (!requested) throw new Error("--version requires a Pi version.");
+    versions = [requested];
+  }
+  if (versions.length === 0) throw new Error("No pi-overlay/versions/<version>/upstream.json overlays found.");
 
+  const failures = [];
+  for (const version of versions) {
+    try {
+      const workDir =
+        workDirArg === undefined
+          ? undefined
+          : resolve(process.cwd(), workDirArg, versions.length === 1 ? "." : version);
+      await buildVersion(version, { check, keep, workDir });
+    } catch (error) {
+      if (versions.length === 1) throw error;
+      console.error(`\npi ${version} failed: ${error instanceof Error ? error.message : String(error)}`);
+      failures.push(version);
+    }
+  }
+  if (failures.length > 0) throw new Error(`Patch generation failed for pi ${failures.join(", ")}.`);
+}
+
+/**
+ * Regenerates, or with `check` verifies, the committed `/skills` patch artifacts for one Pi version.
+ * A caller-provided `workDir` is kept; otherwise a scratch directory is removed unless `keep` is set.
+ */
+async function buildVersion(version, { check, keep, workDir: requestedWorkDir }) {
   const overlayDir = join(repositoryRoot, "pi-overlay", "versions", version);
   const manifestPath = join(overlayDir, "upstream.json");
   if (!existsSync(manifestPath)) throw new Error(`No overlay for pi ${version} at ${manifestPath}`);
   const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
 
-  const workDir =
-    workDirFlag === -1
-      ? mkdtempSync(join(tmpdir(), `pi-patch-${version}-`))
-      : resolve(process.cwd(), argv[workDirFlag + 1]);
+  const workDir = requestedWorkDir ?? mkdtempSync(join(tmpdir(), `pi-patch-${version}-`));
   mkdirSync(workDir, { recursive: true });
   console.log(`pi ${version}\nwork directory: ${workDir}\n`);
 
@@ -521,7 +566,7 @@ async function main() {
     // just produced. Checking earlier would block the write that regenerating them depends on.
     assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir);
   } finally {
-    if (!keep && workDirFlag === -1) rmSync(workDir, { recursive: true, force: true });
+    if (!keep && requestedWorkDir === undefined) rmSync(workDir, { recursive: true, force: true });
     else console.log(`\nKept work directory: ${workDir}`);
   }
 }

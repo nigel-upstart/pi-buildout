@@ -10,7 +10,7 @@ npm_config_registry=https://registry.npmjs.org node scripts/build-pi-patch.mjs -
 npm test
 ```
 
-The pinned release archive, published checksum, npm tarball, source revision, workspace build order, and tracked files are in [`upstream.json`](../../pi-overlay/versions/0.99.2/upstream.json). The builder compares the unmodified source build with the published runtime before generating a patch, enforces the 48-line upstream seam budget, applies the patch to a clean package, and verifies every resulting checksum. The 0.99.2 patch can be built explicitly with `--version`; the default `npm run patches:check` checks the pinned development version. Do not apply this patch to another Pi version.
+The pinned release archive, published checksum, npm tarball, source revision, workspace build order, and tracked files are in [`upstream.json`](../../pi-overlay/versions/0.99.2/upstream.json). The builder compares the unmodified source build with the published runtime before generating a patch, enforces the 48-line upstream seam budget, applies the patch to a clean package, and verifies every resulting checksum. The 0.99.2 patch can be built explicitly with `--version`; the default `npm run patches:check` checks every versioned patch. Do not apply this patch to another Pi version.
 
 - `skills.patch` changes the unbundled resource loader, CLI and interactive dispatch, and skill documentation; it adds the shared skill-management modules and replaces bundled CLI and RPC runtime entrypoints.
 - `baseline.sha256` and `baseline.absent` specify the required clean state. `patched.sha256` pins the result, including the unchanged `dist/bundle/cli.js` loader.

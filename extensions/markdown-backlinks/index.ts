@@ -51,7 +51,8 @@ export default function markdownBacklinksExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", (event) => {
-    for (const file of event.systemPromptOptions.contextFiles ?? []) {
+    // The supported floor, Pi 1.0.1, normalizes systemPromptOptions, so contextFiles is always present.
+    for (const file of event.systemPromptOptions.contextFiles) {
       inspectMarkdown(file.path, file.content);
     }
 
