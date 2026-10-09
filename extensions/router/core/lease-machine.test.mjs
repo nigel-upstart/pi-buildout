@@ -52,17 +52,87 @@ describe("XState lease owner", () => {
       assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
       const verdict = { ...child, lifecycle: { ...child.lifecycle, submission: { verdict: "approve" } } };
       assert.equal(owner.advance("SUBMIT_REVIEW", verdict, child, owner.epoch), true);
+      assert.equal(owner.reviewBindingCurrent, true);
       owner.send(boundary);
+      assert.equal(owner.reviewBindingCurrent, false);
+      const authorized = {
+        ...parent,
+        lifecycle: {
+          phase: "authorized_execution",
+          policy: "authorization_then_completion_review",
+          taskFingerprint: "task",
+          plan: { planFingerprint: "plan" },
+          authorization: { taskFingerprint: "task", planFingerprint: "plan" },
+        },
+      };
       const revoked = owner.state;
-      assert.equal(owner.advance("REVIEW_FINISHED", parent, verdict, owner.epoch), false);
+      assert.equal(owner.advance("REVIEW_FINISHED", authorized, verdict, owner.epoch), false);
       assert.equal(owner.state, revoked);
       assert.equal(owner.state.pendingHardBoundary, boundary.boundary);
       // Progress and settlement capture the current epoch, but must retain the review's start epoch.
       const progressed = { ...verdict, attemptIndex: 1 };
       assert.equal(owner.advance("FALLBACK", progressed, verdict, owner.epoch), true);
+      assert.equal(owner.reviewBindingCurrent, false);
       const before = owner.state;
-      assert.equal(owner.advance("REVIEW_FINISHED", parent, progressed, owner.epoch), false);
+      assert.equal(owner.advance("REVIEW_FINISHED", authorized, progressed, owner.epoch), false);
       assert.equal(owner.state, before);
+    });
+
+    it(`hands a review stale after ${boundary.type} back without its grant, keeping any pending boundary`, () => {
+      const parent = lease();
+      const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
+      const child = {
+        ...parent,
+        taskId: "review",
+        parentTaskId: parent.taskId,
+        parentLease: parent,
+        lifecycle: {
+          phase: "review",
+          policy: "ordinary",
+          taskFingerprint: "task",
+          reviewKind: "authorization",
+          scopeFingerprint: "scope",
+          submission: { verdict: "approve" },
+        },
+      };
+      assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
+      owner.send(boundary);
+      // Without this hand-back the finished review would stay installed and block the task.
+      const withheld = {
+        ...parent,
+        lifecycle: { ...parent.lifecycle, lastAuthorizationReview: { kind: "authorization" } },
+      };
+      assert.equal(owner.advance("REVIEW_FINISHED", withheld, child, owner.epoch), true);
+      assert.equal(owner.state.active, withheld);
+      assert.equal(owner.state.pendingHardBoundary, boundary.boundary);
+    });
+  }
+
+  for (const grant of ["discovery_ready", "authorized_execution"]) {
+    it(`installs the ${grant} lifecycle only from an authorization review bound to the current epoch`, () => {
+      const parent = lease();
+      const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
+      const child = {
+        ...parent,
+        taskId: "review",
+        parentTaskId: parent.taskId,
+        parentLease: parent,
+        lifecycle: {
+          phase: "review",
+          policy: "ordinary",
+          taskFingerprint: "task",
+          reviewKind: "authorization",
+          scopeFingerprint: "scope",
+        },
+      };
+      assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
+      const granted = {
+        ...parent,
+        lifecycle: { phase: grant, policy: "authorization_then_completion_review", taskFingerprint: "task" },
+      };
+      assert.equal(owner.advance("REVIEW_FINISHED", granted, child, owner.epoch), true);
+      assert.equal(owner.state.active, granted);
+      assert.equal(owner.reviewBindingCurrent, false, "the binding ends once the review settles");
     });
   }
 

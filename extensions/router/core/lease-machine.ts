@@ -148,6 +148,11 @@ export function revokeDiscovery(lease: TaskLease): TaskLease {
   };
 }
 
+/** Lifecycles that let the builder act on an independent approval: one discovery call or an exact plan. */
+function grantsAuthority(lease: TaskLease): boolean {
+  return lease.lifecycle.phase === "discovery_ready" || lease.lifecycle.phase === "authorized_execution";
+}
+
 export function invalidateAuthorization(lease: TaskLease, reason: string): TaskLease {
   if (holdsDiscovery(lease)) return revokeDiscovery(lease);
   const lifecycle = lease.lifecycle;
@@ -201,7 +206,10 @@ const leaseMachine = setup({
       (event.type !== "REVIEW_FINISHED" ||
         event.owner?.lifecycle.phase !== "review" ||
         event.owner.lifecycle.reviewKind !== "authorization" ||
-        context.reviewEpoch === context.epoch),
+        context.reviewEpoch === context.epoch ||
+        // A review that crossed a revocation boundary can never grant, but it must still hand control
+        // back; otherwise the stale child lease would stay installed and block the task indefinitely.
+        !grantsAuthority(event.lease)),
   },
   actions: {
     discardSecondary: enqueueActions(({ context, enqueue }) => {
@@ -222,8 +230,14 @@ const leaseMachine = setup({
             }),
         });
       }
+      const installed = installLease(context.state, event.lease);
+      const pendingHardBoundary = context.state.pendingHardBoundary;
       enqueue.assign({
-        state: freezeState(installLease(context.state, event.lease)),
+        // Restoring a reviewed parent is a hand-back, not a fresh routing decision, so it must not
+        // consume a hard boundary (for example compaction) that arrived while the review ran.
+        state: freezeState(
+          event.type === "REVIEW_FINISHED" && pendingHardBoundary ? { ...installed, pendingHardBoundary } : installed,
+        ),
         // Verdict submission and fallback replace the child without starting a new review.
         // Settlement's current epoch must never refresh the authorization it started with.
         reviewEpoch:
@@ -385,6 +399,11 @@ export function createLeaseOwner(initial: LeaseState) {
     },
     get epoch(): number {
       return actor.getSnapshot().context.epoch;
+    },
+    /** Whether the active authorization review started in the current epoch and can still grant. */
+    get reviewBindingCurrent(): boolean {
+      const current = actor.getSnapshot().context;
+      return current.reviewEpoch !== undefined && current.reviewEpoch === current.epoch;
     },
     owns(lease: TaskLease | undefined, epoch: number): boolean {
       const current = actor.getSnapshot().context;

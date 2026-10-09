@@ -1891,9 +1891,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       reviewParentAttemptMetrics = undefined;
       return;
     }
-    if (!restored && (lifecycle.phase === "discovery_ready" || lifecycle.phase === "authorized_execution")) {
-      // An approval is usable only by the builder it was granted to. If the builder model cannot be
-      // restored, the reviewer's model would otherwise be left holding the grant, so withhold it.
+    const grants = lifecycle.phase === "discovery_ready" || lifecycle.phase === "authorized_execution";
+    // New input, compaction, a reload, or a routing change after the review started revokes its
+    // authority. The parent is still restored, without the grant, so the task is not left holding a
+    // finished review it can never settle.
+    const bindingStale = grants && !leaseOwner.reviewBindingCurrent;
+    // An approval is usable only by the builder it was granted to. If the builder model cannot be
+    // restored, the reviewer's model would otherwise be left holding the grant, so withhold it.
+    const builderLost = grants && !restored;
+    if (bindingStale || builderLost) {
       lifecycle = {
         phase: "preflight",
         policy: "authorization_then_completion_review",
@@ -1901,11 +1907,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         ...(lifecycle.phase === "authorized_execution" ? { plan: lifecycle.plan } : {}),
         lastAuthorizationReview: {
           ...reviewOutcome,
-          summary: "Approval withheld: the builder model could not be restored after the independent review.",
+          summary: bindingStale
+            ? "Approval withheld: new input or a routing boundary arrived before the independent review settled; resubmit for a fresh review."
+            : "Approval withheld: the builder model could not be restored after the independent review.",
         },
       };
       triggerContinuation = false;
-      ctx.ui.notify("Approval withheld: the builder model could not be restored after review", "error");
+      if (bindingStale) {
+        ctx.ui.notify("Approval withheld: input or a routing boundary arrived during the review", "warning");
+      } else {
+        ctx.ui.notify("Approval withheld: the builder model could not be restored after review", "error");
+      }
     }
     const parent = { ...original, updatedAt: now, lifecycle };
     if (!leaseOwner.advance("REVIEW_FINISHED", parent, owner, leaseEpoch)) return;
