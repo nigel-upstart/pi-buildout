@@ -527,7 +527,8 @@ export class ManagedSubagent {
       `child=${this.id}`,
       `pid=${String(this.proc.pid ?? "unknown")}`,
       `model=${this.model}`,
-      `exitCode=${String(code ?? "pending")}`,
+      // A signal-terminated child has a null exit code but is not still running.
+      `exitCode=${String(code ?? (signal ? "none" : "pending"))}`,
       `signal=${signal ?? "none"}`,
       ...(stderr ? [`stderr=${JSON.stringify(stderr.slice(-4_000))}`] : []),
     ].join(", ");

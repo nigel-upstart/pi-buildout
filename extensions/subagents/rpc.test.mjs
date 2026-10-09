@@ -137,6 +137,33 @@ test("unexpected child exits include process diagnostics and stderr", async (t) 
   assert.match(child.snapshot().stderr ?? "", /mock child fatal diagnostic/);
 });
 
+test("signal-terminated child exits do not report a pending exit code", async (t) => {
+  const child = new ManagedSubagent({
+    id: "signal123",
+    name: "signal-child",
+    task: "SIGNAL_UNEXPECTED",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => child.stop());
+
+  await assert.rejects(child.start(), (error) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /process closed unexpectedly/);
+    assert.match(error.message, /exitCode=none/);
+    assert.match(error.message, /signal=SIGKILL/);
+    assert.doesNotMatch(error.message, /exitCode=pending/);
+    assert.match(error.message, /mock child signal diagnostic/);
+    return true;
+  });
+});
+
 test("managed child accepts Pi-sized image event lines above four MiB", async (t) => {
   const child = new ManagedSubagent({
     id: "large123",
