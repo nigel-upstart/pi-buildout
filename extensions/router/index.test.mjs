@@ -2206,6 +2206,83 @@ describe("routerExtension", () => {
     );
   });
 
+  for (const superseded of [false, true]) {
+    it(`${superseded ? "skips" : "runs"} settlement lifecycle work when input ${superseded ? "arrives" : "does not arrive"} during the pre-settlement drain`, async () => {
+      const secondary = deferred();
+      const drainWrite = deferred();
+      const drainReached = deferred();
+      const events = [];
+      const result = await runAdapterTurn({
+        classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+        classifySecondaryTask: async () => secondary.promise,
+        models: standardRoutingModels(),
+        mode: "active",
+        prompt: "Implement one high-risk bounded repository change",
+        sessionId: `superseded-settlement-${superseded}`,
+        telemetry: {
+          append: async (event) => {
+            // Hold settlement inside its secondary drain, where newer input can arrive.
+            if (event.kind === "secondary_reconciliation") {
+              drainReached.resolve();
+              await drainWrite.promise;
+            }
+            events.push(event);
+          },
+          read: async () => [],
+        },
+      });
+      const lease = () =>
+        result.appended.findLast(({ customType }) => customType === "model-router-state")?.data.active;
+      assert.equal(lease().lifecycle.phase, "building");
+      startAgentRun(result);
+      // A counted tool keeps turn_end from draining, so the reconciliation waits for settlement.
+      result.hooks.get("tool_execution_start")({ toolCallId: "stuck-tool" });
+      secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+      await flushMicrotasks();
+      await endAgentTurn(result);
+      const active = lease();
+      result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+      await result.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: active.selected.provider,
+              model: active.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        result.ctx,
+      );
+      const messages = result.sentMessages.length;
+      const settling = result.hooks.get("agent_settled")({}, result.ctx);
+      await drainReached.promise;
+      if (superseded) {
+        await result.hooks.get("input")(
+          { text: "Actually, explain the plan first", source: "interactive", streamingBehavior: "followUp" },
+          result.ctx,
+        );
+      }
+      drainWrite.resolve();
+      await settling;
+
+      assert.ok(
+        events.some(({ kind }) => kind === "secondary_reconciliation"),
+        "same-epoch reconciliation still applies",
+      );
+      const repairs = result.sentMessages.slice(messages).filter(({ message }) => message.details?.repairReason);
+      if (superseded) {
+        assert.deepEqual(repairs, [], "a superseded run starts no router-generated repair turn");
+        assert.equal(lease().lifecycle.evidenceRepairAttempted, undefined);
+      } else {
+        assert.equal(repairs.length, 1, "an unsuperseded run still gets its settlement lifecycle work");
+        assert.equal(lease().lifecycle.evidenceRepairAttempted, true);
+      }
+    });
+  }
+
   it("keeps a secondary result that settles before agent_start queued until a run boundary", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({

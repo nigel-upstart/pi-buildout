@@ -3475,6 +3475,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    // The settled run is bound to the epoch before the drain. Same-epoch secondary reconciliation still
+    // applies, but input, a boundary, or a mode change during the drain supersedes the run.
+    const runEpoch = leaseOwner.epoch;
     await drainSecondaryReconciliation(ctx, { kind: "agent_settled", promptRefreshAllowed: false, continuing: false });
     const leaseEpoch = leaseOwner.epoch;
     try {
@@ -3499,6 +3502,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         return;
       }
       if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
+      // A superseded run must not start a review, repair, or completion check for work the newer input may
+      // change; that input drives the next turn. Review hand-back above has its own stale-binding rules.
+      if (leaseEpoch !== runEpoch) return;
 
       if (active.lifecycle.phase === "preflight") {
         const discovery = active.lifecycle.discovery;
