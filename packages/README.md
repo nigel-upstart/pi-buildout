@@ -54,7 +54,7 @@ write-capable SSO role are a separate, later checkpoint below.
 | `@upstart/pi-clear@0.1.0-alpha.0`              | Clear                                                            | `pi install npm:@upstart/pi-clear@0.1.0-alpha.0`                                |
 | `@upstart/pi-effort@0.1.0-alpha.0`             | Effort                                                           | `pi install npm:@upstart/pi-effort@0.1.0-alpha.0`                               |
 | `@upstart/pi-markdown-backlinks@0.1.0-alpha.0` | Backlinks                                                        | `pi install npm:@upstart/pi-markdown-backlinks@0.1.0-alpha.0`                   |
-| `@upstart/pi-subagents@0.1.0-alpha.0`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.0`                            |
+| `@upstart/pi-subagents@0.1.0-alpha.1`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.1`                            |
 | `@upstart/pi-skills-patch@0.1.0-alpha.0`       | Versioned `/skills` patch and patch-only CLI                     | `npm install -g @upstart/pi-skills-patch@0.1.0-alpha.0`, then `pi-skills-patch` |
 
 The packages can advance independently: increment `alpha.N` for each changed package, then use `-beta.N`, `-rc.N`, or
