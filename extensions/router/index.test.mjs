@@ -6546,6 +6546,19 @@ describe("routerExtension", () => {
     });
   }
 
+  it("withdraws router tools before /route off awaits its cleanup", async () => {
+    const result = await runAdapterTurn({ mode: "active", prompt: "Plan the change", sessionId: "off-sync" });
+    assert.ok(result.activeTools.includes("submit_implementation_plan"));
+    // The handler runs synchronously up to its first await, so tools must already be withdrawn here: an in-flight
+    // request must not see tools that the off-mode bypass and execute guards now refuse.
+    const turningOff = result.commands.get("route").handler("off", result.ctx);
+    assert.equal(result.activeTools.includes("submit_implementation_plan"), false);
+    await turningOff;
+    const turningOn = result.commands.get("route").handler("active", result.ctx);
+    assert.ok(result.activeTools.includes("submit_implementation_plan"), "re-enabling restores them at once too");
+    await turningOn;
+  });
+
   it("reconciles secondary before settlement advances the lease revision (#73)", async () => {
     const secondary = deferred();
     const features = {

@@ -3802,8 +3802,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           );
         }
         leaseOwner.send({ type: "MODE", mode: command });
+        if (command === "off" && leaseOwner.state.active) invalidateLease("router off", true);
+        // Advertise the new mode's tools before the first await below: an in-flight request must not see tools the
+        // off-mode bypass and execute guards now refuse, nor miss ones re-enabling makes valid.
+        syncRouterTools();
         if (command === "off") {
-          if (leaseOwner.state.active) invalidateLease("router off", true);
           // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
           // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
           // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
