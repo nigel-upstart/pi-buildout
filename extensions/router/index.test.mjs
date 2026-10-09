@@ -6519,6 +6519,11 @@ describe("routerExtension", () => {
       await flushMicrotasks();
       await result.commands.get("route").handler("active", result.ctx);
       await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+      assert.equal(
+        result.activeTools.includes("submit_discovery_request"),
+        false,
+        "a blocked preflight validator is not advertised",
+      );
       handBackTelemetry.resolve();
       await settling;
       assert.equal(latest().lifecycle.phase, "preflight");
@@ -6534,6 +6539,7 @@ describe("routerExtension", () => {
         result.ctx,
       );
       assert.equal(result.ctx.model.id, builder.modelId, "turn preparation restores the builder");
+      assert.ok(result.activeTools.includes("submit_discovery_request"), "the restored builder sees the validator");
       startAgentRun(result);
       await submit();
       assert.ok(latest().lifecycle.discovery, "submissions reopen once the builder is restored");
