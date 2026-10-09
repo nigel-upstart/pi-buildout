@@ -295,9 +295,13 @@ const leaseMachine = setup({
         epoch: ({ context }) => context.epoch + 1,
         state: ({ context, event }) => {
           const state = context.state;
-          const active = state.active
-            ? { ...state.active, ...(event.mode === "active" ? { manualOverride: false } : {}) }
-            : undefined;
+          // Keep the installed lease's identity unless entering active mode actually clears a manual override.
+          // Awaiting handlers check ownership by identity, so a needless copy would look like a replaced owner
+          // and strand work such as a finished review that only the epoch should have invalidated.
+          const active =
+            state.active && event.mode === "active" && state.active.manualOverride
+              ? { ...state.active, manualOverride: false }
+              : state.active;
           return freezeState({
             ...state,
             mode: event.mode,

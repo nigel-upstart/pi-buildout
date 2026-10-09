@@ -108,6 +108,23 @@ describe("XState lease owner", () => {
     });
   }
 
+  it("keeps the installed lease's identity across mode changes unless an override is cleared", () => {
+    const parent = lease();
+    const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
+    for (const mode of ["shadow", "off", "active"]) {
+      const epoch = owner.epoch;
+      owner.send({ type: "MODE", mode });
+      assert.equal(owner.state.active, parent, `${mode} must not replace the owner`);
+      assert.equal(owner.owns(parent, epoch), false, "the epoch still revokes captured work");
+    }
+    owner.send({ type: "OVERRIDE" });
+    const overridden = owner.state.active;
+    assert.equal(overridden.manualOverride, true);
+    owner.send({ type: "MODE", mode: "active" });
+    assert.notEqual(owner.state.active, overridden, "re-enabling clears the override on a new lease value");
+    assert.equal(owner.state.active.manualOverride, false);
+  });
+
   it("keeps a pending hard boundary across same-family advances until ROUTE installs a fresh lease", () => {
     for (const type of ["EVIDENCE", "FALLBACK", "REPAIR", "PREPARE", "REVIEW_STARTED"]) {
       const parent = lease();

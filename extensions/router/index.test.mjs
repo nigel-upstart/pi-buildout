@@ -168,6 +168,7 @@ function irreversibleActionPlan() {
 // with a builder and an independent reviewer from different vendors.
 async function authorizationLifecycleFixture() {
   const hooks = new Map();
+  const commands = new Map();
   const tools = new Map();
   const appended = [];
   const sent = [];
@@ -258,7 +259,7 @@ async function authorizationLifecycleFixture() {
   ];
   const pi = {
     on: (event, handler) => hooks.set(event, handler),
-    registerCommand: () => {},
+    registerCommand: (name, command) => commands.set(name, command),
     registerTool: (tool) => tools.set(tool.name, tool),
     appendEntry: (customType, data) => appended.push({ customType, data }),
     sendMessage: (message, options) => sent.push({ message, options }),
@@ -305,6 +306,7 @@ async function authorizationLifecycleFixture() {
   };
   return {
     hooks,
+    commands,
     tools,
     appended,
     sent,
@@ -4567,6 +4569,101 @@ describe("routerExtension", () => {
             /preflight/,
           );
         }
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  for (const mode of ["shadow", "off"]) {
+    it(`hands a finished review back when /route ${mode} lands during the builder model switch`, async () => {
+      const {
+        hooks,
+        commands,
+        tools,
+        appended,
+        sent,
+        models,
+        parent,
+        ctx,
+        latestLease,
+        restoreEnvironment,
+        onBuilderSwitch,
+      } = await authorizationLifecycleFixture();
+      try {
+        await hooks.get("session_start")({ reason: "reload" }, ctx);
+        await hooks.get("before_agent_start")(
+          { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+          ctx,
+        );
+        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+        await hooks.get("agent_settled")({}, ctx);
+        const child = latestLease();
+        assert.equal(child.lifecycle.reviewKind, "authorization");
+        const messagesBeforeReview = sent.length;
+
+        ctx.model = models.find(
+          (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
+        );
+        await hooks.get("before_agent_start")({ prompt: "Perform the generated review", systemPrompt: "base" }, ctx);
+        hooks.get("agent_start")();
+        await tools.get("submit_safety_review").execute(
+          "review-approve",
+          {
+            reviewKind: "authorization",
+            scopeFingerprint: child.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "The exact plan is bounded.",
+            evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          ctx,
+        );
+        // The operator changes mode while settlement awaits the switch back to the builder.
+        onBuilderSwitch(async (model) => {
+          if (model.provider !== parent.selected.provider || model.id !== parent.selected.modelId) return;
+          onBuilderSwitch(undefined);
+          await commands.get("route").handler(mode, ctx);
+        });
+        await hooks.get("agent_end")(
+          {
+            messages: [
+              {
+                role: "assistant",
+                provider: child.selected.provider,
+                model: child.selected.modelId,
+                stopReason: "stop",
+                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+              },
+            ],
+          },
+          ctx,
+        );
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = latestLease();
+        assert.equal(restored.taskId, parent.taskId, "a mode change must not strand the finished review");
+        assert.equal(restored.lifecycle.phase, "preflight");
+        assert.match(restored.lifecycle.lastAuthorizationReview.summary, /Approval withheld/);
+        assert.equal(
+          appended.some(
+            (entry) =>
+              entry.customType === "model-router-state" &&
+              entry.data.active?.lifecycle.phase === "authorized_execution",
+          ),
+          false,
+        );
+        assert.equal(
+          sent.slice(messagesBeforeReview).some(({ message }) => /is authorized for this task/.test(message.content)),
+          false,
+          "no execution continuation follows a withheld approval",
+        );
+
+        await commands.get("route").handler("active", ctx);
+        assert.equal(latestLease().taskId, parent.taskId);
+        assert.equal(latestLease().lifecycle.phase, "preflight", "re-enabling finds the parent, not a stale review");
       } finally {
         restoreEnvironment();
       }
