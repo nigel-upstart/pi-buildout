@@ -3532,14 +3532,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         // settlement must not strand the finished review: re-enabling does not replay this event, so the next
         // user turn would run under it. Neither records a usable disposition (agent_end skips while off, and an
         // override makes the run incomplete), so hand back on the submitted verdict alone, and skip otherwise.
+        // An inactive hand-back leaves the reviewer selected, and `/route active` restores the submission tools at
+        // once, even while the hand-back awaits its telemetry, so submissions wait for the builder from before the
+        // parent is installed (judged after the drains below). An override keeps the operator's model.
+        if (!manualOverride) revokedReviewStillRunning = true;
         await restoreParentAfterReview(ctx, active, active.lifecycle.submission ? "completed" : "skipped", {
           passive: true,
           manualOverride,
         });
-        // An inactive hand-back leaves the reviewer selected, and `/route active` restores the submission tools at
-        // once, so submissions wait for the builder (judged after the drains below). An override keeps the
-        // operator's model.
-        if (!manualOverride) revokedReviewStillRunning = true;
         return;
       }
       if (leaseOwner.state.mode !== "active") return;
@@ -3549,7 +3549,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const revokedReviewRestored = await applyChoice(ctx, active.selected);
         if (!leaseOwner.owns(active, leaseEpoch)) return;
         if (!revokedReviewRestored) {
-          ctx.ui.notify("Preflight remains blocked: the builder model could not be restored after review", "error");
+          ctx.ui.notify(
+            "Could not switch back to the builder model after the revoked review; preflight submissions stay blocked until it is restored",
+            "error",
+          );
           return;
         }
       }

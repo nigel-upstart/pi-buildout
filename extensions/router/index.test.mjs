@@ -6123,7 +6123,7 @@ describe("routerExtension", () => {
     modelGate = Promise.resolve();
     setModelResult = true;
     assert.equal(
-      notices.slice(noticesBefore).some(({ message }) => /could not be restored/.test(message)),
+      notices.slice(noticesBefore).some(({ message }) => /Could not switch back to the builder model/.test(message)),
       false,
       "a superseded switch is not reported as a restore failure",
     );
@@ -6338,6 +6338,7 @@ describe("routerExtension", () => {
 
   for (const inactiveMode of ["off", "shadow"]) {
     it(`keeps preflight blocked when /route ${inactiveMode} hands back a running review until the builder is restored`, async () => {
+      let outcomeGate;
       const result = await runAdapterTurn({
         classifyTask: successfulClassifier(1, {
           confidence: 0.95,
@@ -6351,6 +6352,15 @@ describe("routerExtension", () => {
           routingModel("google-vertex", "gemini-3.6-flash"),
           routingModel("openai-codex", "gpt-6-astra"),
         ],
+        telemetry: {
+          read: async () => [],
+          append: async (event) => {
+            if (event.kind !== "outcome" || !outcomeGate) return;
+            const gate = outcomeGate;
+            outcomeGate = undefined;
+            await gate.promise;
+          },
+        },
         mode: "active",
         prompt: "Discover owner before production deletion",
         sessionId: `route-${inactiveMode}-hand-back`,
@@ -6401,7 +6411,16 @@ describe("routerExtension", () => {
         },
         result.ctx,
       );
-      await result.hooks.get("agent_settled")({}, result.ctx);
+      // The hand-back installs the parent before awaiting its outcome telemetry; re-enabling during that await
+      // restores the submission tools at once, so the parent must already be blocked.
+      const handBackTelemetry = deferred();
+      outcomeGate = handBackTelemetry;
+      const settling = result.hooks.get("agent_settled")({}, result.ctx);
+      await flushMicrotasks();
+      await result.commands.get("route").handler("active", result.ctx);
+      await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+      handBackTelemetry.resolve();
+      await settling;
       assert.equal(latest().lifecycle.phase, "preflight");
       assert.equal(result.ctx.model.id, review.selected.modelId, "the reviewer model is still selected");
 
