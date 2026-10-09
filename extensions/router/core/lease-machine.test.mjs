@@ -108,6 +108,38 @@ describe("XState lease owner", () => {
     });
   }
 
+  it("keeps a pending hard boundary across same-family advances until ROUTE installs a fresh lease", () => {
+    for (const type of ["EVIDENCE", "FALLBACK", "REPAIR", "PREPARE", "REVIEW_STARTED"]) {
+      const parent = lease();
+      const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
+      owner.send({ type: "BOUNDARY", boundary: "post_compaction" });
+      const next =
+        type === "REVIEW_STARTED"
+          ? {
+              ...parent,
+              taskId: "review",
+              parentTaskId: parent.taskId,
+              parentLease: parent,
+              lifecycle: {
+                phase: "review",
+                policy: "ordinary",
+                taskFingerprint: "task",
+                reviewKind: "completion",
+                scopeFingerprint: "scope",
+              },
+            }
+          : { ...parent, updatedAt: "2026-10-08" };
+      assert.equal(owner.advance(type, next, parent, owner.epoch), true, type);
+      assert.equal(owner.state.pendingHardBoundary, "post_compaction", `${type} must not consume the boundary`);
+    }
+    const parent = lease();
+    const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
+    owner.send({ type: "BOUNDARY", boundary: "post_compaction" });
+    const fresh = lease("fresh");
+    assert.equal(owner.advance("ROUTE", fresh, parent, owner.epoch), true);
+    assert.equal("pendingHardBoundary" in owner.state, false, "the freshly routed lease consumes the boundary");
+  });
+
   for (const grant of ["discovery_ready", "authorized_execution"]) {
     it(`installs the ${grant} lifecycle only from an authorization review bound to the current epoch`, () => {
       const parent = lease();

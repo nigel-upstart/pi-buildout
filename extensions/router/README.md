@@ -406,7 +406,8 @@ stateDiagram-v2
 
 Lease advances (`ROUTE`, `SUBMIT_*`, `REVIEW_*`, `FALLBACK`, `REPAIR`, and the rest) must name the current owner lease
 and routing epoch. `INTENT`, `BOUNDARY`, `INVALIDATE`, `MODE`, `OVERRIDE`, `RESET`, and `RESTORE` bump the epoch, so
-work captured before them can no longer advance the lease.
+work captured before them can no longer advance the lease. Only `ROUTE`, which installs the lease freshly selected for a
+boundary, consumes a pending hard boundary; same-task advances leave it pending for the next ordinary input.
 
 The safety workflow lives in the lease's lifecycle phase. Each task starts in the phase its safety policy selects.
 Generated reviews run as read-only child leases that hold their parent: `REVIEW_STARTED` installs the child,

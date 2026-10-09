@@ -233,10 +233,11 @@ const leaseMachine = setup({
       const installed = installLease(context.state, event.lease);
       const pendingHardBoundary = context.state.pendingHardBoundary;
       enqueue.assign({
-        // Restoring a reviewed parent is a hand-back, not a fresh routing decision, so it must not
-        // consume a hard boundary (for example compaction) that arrived while the review ran.
+        // Only ROUTE, which installs the lease freshly selected for a boundary, consumes it. Every other
+        // advance (evidence, fallback, repair, preparation, or a review hand-back) continues the same task
+        // family, so a boundary such as compaction stays pending for the next ordinary input.
         state: freezeState(
-          event.type === "REVIEW_FINISHED" && pendingHardBoundary ? { ...installed, pendingHardBoundary } : installed,
+          event.type !== "ROUTE" && pendingHardBoundary ? { ...installed, pendingHardBoundary } : installed,
         ),
         // Verdict submission and fallback replace the child without starting a new review.
         // Settlement's current epoch must never refresh the authorization it started with.

@@ -164,6 +164,162 @@ function irreversibleActionPlan() {
   };
 }
 
+// Mirrors the irreversible-action authorization fixture: a parent lease in authorization preflight,
+// with a builder and an independent reviewer from different vendors.
+async function authorizationLifecycleFixture() {
+  const hooks = new Map();
+  const tools = new Map();
+  const appended = [];
+  const sent = [];
+  const selectedModels = [];
+  const hooksDuringSwitch = { duringBuilderSwitch: undefined };
+  const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-authorization-"));
+  const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+  process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+  const now = new Date().toISOString();
+  const features = {
+    ...conservativeFeatures("authorization lifecycle test"),
+    intent: "operate",
+    workflowType: "incident_or_operations",
+    actionMode: "destructive",
+    risk: "critical",
+    confidence: 0.99,
+  };
+  const parent = {
+    version: 2,
+    taskId: "irreversible-parent",
+    startedAt: now,
+    updatedAt: now,
+    archetype: "highest_risk_advisory",
+    features,
+    selected: {
+      provider: "openai-codex",
+      modelId: "gpt-6-sol",
+      logicalModelId: "gpt-6-sol",
+      vendor: "openai",
+      effort: "high",
+      ability: 4,
+      profileId: "openai-gpt-6-agent-v1",
+      contextWindow: 1_000_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    },
+    fallbacks: [
+      {
+        provider: "anthropic",
+        modelId: "claude-opus-5-5",
+        logicalModelId: "claude-opus-5-5",
+        vendor: "anthropic",
+        effort: "high",
+        ability: 4,
+        profileId: "anthropic-claude-planning-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "evidence_prior",
+      },
+    ],
+    attemptIndex: 0,
+    promptProfileId: "openai-gpt-6-agent-v1",
+    modelSnapshotId: "snapshot",
+    policyVersion: POLICY_VERSION,
+    lastPromptFingerprint: "fingerprint",
+    lifecycle: {
+      phase: "preflight",
+      policy: "authorization_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    },
+    safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+    manualOverride: false,
+  };
+  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
+  const makeModel = (provider, id, api) => ({
+    provider,
+    id,
+    name: id,
+    api,
+    baseUrl: "https://models.invalid",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  });
+  const models = [
+    makeModel("openai-codex", "gpt-6-sol", "openai-responses"),
+    makeModel("anthropic", "claude-opus-5-5", "anthropic-messages"),
+    makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
+  ];
+  const branch = [
+    {
+      type: "custom",
+      customType: "model-router-state",
+      data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
+    },
+  ];
+  const pi = {
+    on: (event, handler) => hooks.set(event, handler),
+    registerCommand: () => {},
+    registerTool: (tool) => tools.set(tool.name, tool),
+    appendEntry: (customType, data) => appended.push({ customType, data }),
+    sendMessage: (message, options) => sent.push({ message, options }),
+    setModel: async (model) => {
+      selectedModels.push(model);
+      // The interruption can land while settlement awaits the switch back to the builder.
+      await hooksDuringSwitch.duringBuilderSwitch?.(model);
+      return true;
+    },
+    setThinkingLevel: () => {},
+    getThinkingLevel: () => "high",
+    getActiveTools: () => activeTools,
+    setActiveTools: (tools) => {
+      activeTools = tools;
+    },
+    exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+  };
+  routerExtension(pi);
+  const ctx = {
+    cwd: telemetryDirectory,
+    model: models[0],
+    modelRegistry: {
+      getAll: () => models,
+      getAvailable: () => models,
+      find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+    },
+    sessionManager: {
+      getBranch: () => branch,
+      getSessionId: () => "authorization-session",
+    },
+    getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
+    ui: {
+      theme: { fg: (_color, text) => text },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+      setWorkingVisible: () => {},
+      notify: () => {},
+    },
+  };
+  const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+  const restoreEnvironment = () => {
+    if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+    else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+  };
+  return {
+    hooks,
+    tools,
+    appended,
+    sent,
+    selectedModels,
+    models,
+    parent,
+    ctx,
+    latestLease,
+    restoreEnvironment,
+    onBuilderSwitch: (handler) => {
+      hooksDuringSwitch.duringBuilderSwitch = handler;
+    },
+  };
+}
+
 describe("classifier deadline", () => {
   it("allows independent fifteen-second deadlines per classifier stage", () => {
     assert.equal(CLASSIFICATION_STAGE_TIMEOUT_MS, 15_000);
@@ -4293,138 +4449,19 @@ describe("routerExtension", () => {
     [interruption, "during the builder model switch"],
   ])) {
     it(`withholds an approval when ${interruption.name} arrives ${timing} and hands control back`, async () => {
-      const hooks = new Map();
-      const tools = new Map();
-      const appended = [];
-      const sent = [];
-      const selectedModels = [];
-      let duringBuilderSwitch;
-      const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-authorization-"));
-      const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
-      process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
-      const now = new Date().toISOString();
-      const features = {
-        ...conservativeFeatures("authorization lifecycle test"),
-        intent: "operate",
-        workflowType: "incident_or_operations",
-        actionMode: "destructive",
-        risk: "critical",
-        confidence: 0.99,
-      };
-      const parent = {
-        version: 2,
-        taskId: "irreversible-parent",
-        startedAt: now,
-        updatedAt: now,
-        archetype: "highest_risk_advisory",
-        features,
-        selected: {
-          provider: "openai-codex",
-          modelId: "gpt-6-sol",
-          logicalModelId: "gpt-6-sol",
-          vendor: "openai",
-          effort: "high",
-          ability: 4,
-          profileId: "openai-gpt-6-agent-v1",
-          contextWindow: 1_000_000,
-          endpointTier: "manufacturer",
-          rankReason: "bootstrap",
-        },
-        fallbacks: [
-          {
-            provider: "anthropic",
-            modelId: "claude-opus-5-5",
-            logicalModelId: "claude-opus-5-5",
-            vendor: "anthropic",
-            effort: "high",
-            ability: 4,
-            profileId: "anthropic-claude-planning-v1",
-            contextWindow: 1_000_000,
-            endpointTier: "manufacturer",
-            rankReason: "evidence_prior",
-          },
-        ],
-        attemptIndex: 0,
-        promptProfileId: "openai-gpt-6-agent-v1",
-        modelSnapshotId: "snapshot",
-        policyVersion: POLICY_VERSION,
-        lastPromptFingerprint: "fingerprint",
-        lifecycle: {
-          phase: "preflight",
-          policy: "authorization_then_completion_review",
-          taskFingerprint: "task-fingerprint",
-        },
-        safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
-        manualOverride: false,
-      };
-      let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
-      const makeModel = (provider, id, api) => ({
-        provider,
-        id,
-        name: id,
-        api,
-        baseUrl: "https://models.invalid",
-        reasoning: true,
-        input: ["text"],
-        cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
-        contextWindow: 1_000_000,
-        maxTokens: 128_000,
-      });
-      const models = [
-        makeModel("openai-codex", "gpt-6-sol", "openai-responses"),
-        makeModel("anthropic", "claude-opus-5-5", "anthropic-messages"),
-        makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
-      ];
-      const branch = [
-        {
-          type: "custom",
-          customType: "model-router-state",
-          data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
-        },
-      ];
-      const pi = {
-        on: (event, handler) => hooks.set(event, handler),
-        registerCommand: () => {},
-        registerTool: (tool) => tools.set(tool.name, tool),
-        appendEntry: (customType, data) => appended.push({ customType, data }),
-        sendMessage: (message, options) => sent.push({ message, options }),
-        setModel: async (model) => {
-          selectedModels.push(model);
-          // The interruption can land while settlement awaits the switch back to the builder.
-          await duringBuilderSwitch?.(model);
-          return true;
-        },
-        setThinkingLevel: () => {},
-        getThinkingLevel: () => "high",
-        getActiveTools: () => activeTools,
-        setActiveTools: (tools) => {
-          activeTools = tools;
-        },
-        exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
-      };
-      routerExtension(pi);
-      const ctx = {
-        cwd: telemetryDirectory,
-        model: models[0],
-        modelRegistry: {
-          getAll: () => models,
-          getAvailable: () => models,
-          find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
-        },
-        sessionManager: {
-          getBranch: () => branch,
-          getSessionId: () => "authorization-session",
-        },
-        getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
-        ui: {
-          theme: { fg: (_color, text) => text },
-          setStatus: () => {},
-          setWorkingMessage: () => {},
-          setWorkingVisible: () => {},
-          notify: () => {},
-        },
-      };
-      const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+      const {
+        hooks,
+        tools,
+        appended,
+        sent,
+        selectedModels,
+        models,
+        parent,
+        ctx,
+        latestLease,
+        restoreEnvironment,
+        onBuilderSwitch,
+      } = await authorizationLifecycleFixture();
       try {
         await hooks.get("session_start")({ reason: "reload" }, ctx);
         await hooks.get("before_agent_start")(
@@ -4463,11 +4500,11 @@ describe("routerExtension", () => {
         if (timing === "before settlement") {
           await interruption.apply(hooks, ctx);
         } else {
-          duringBuilderSwitch = async (model) => {
+          onBuilderSwitch(async (model) => {
             if (model.provider !== parent.selected.provider || model.id !== parent.selected.modelId) return;
-            duringBuilderSwitch = undefined;
+            onBuilderSwitch(undefined);
             await interruption.apply(hooks, ctx);
-          };
+          });
         }
         await hooks.get("agent_end")(
           {
@@ -4531,11 +4568,39 @@ describe("routerExtension", () => {
           );
         }
       } finally {
-        if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
-        else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+        restoreEnvironment();
       }
     });
   }
+
+  it("keeps a compaction boundary pending across a same-task repair so the next input re-routes", async () => {
+    const { hooks, sent, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+        ctx,
+      );
+      // Compaction lands mid-run; settlement then nudges the same task to submit its missing plan.
+      await hooks.get("session_compact")({ type: "session_compact" }, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().lifecycle.phase, "preflight");
+      assert.equal(latestLease().lifecycle.evidenceRepairAttempted, true, "settlement repaired the same lease");
+      assert.equal(sent.at(-1).message.details.repairReason, "missing_action_plan");
+
+      await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
+      await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
+      const boundary = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .findLast(({ kind, data }) => kind === "boundary" && data.action !== undefined);
+      assert.equal(boundary.data.action, "new_task");
+      assert.match(boundary.data.reason, /hard boundary: post_compaction/);
+    } finally {
+      restoreEnvironment();
+    }
+  });
 
   it("reviews a bounded discovery call independently and spends its grant exactly once", async () => {
     const hooks = new Map();
