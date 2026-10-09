@@ -72,6 +72,71 @@ test("managed child starts, streams a bounded transcript, accepts more work, and
   assert.equal(child.snapshot().state, "stopped");
 });
 
+test("RPC timeouts include child diagnostics and stderr", async (t) => {
+  const child = new ManagedSubagent({
+    id: "timeout123",
+    name: "timeout-child",
+    task: "do the task",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => child.stop());
+  await child.start();
+
+  const testOnlyChild =
+    /** @type {{ request: (command: Record<string, unknown>, timeoutMs: number) => Promise<unknown> }} */ (
+      /** @type {unknown} */ (child)
+    );
+  await assert.rejects(testOnlyChild.request({ type: "timeout" }, 100), (error) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /RPC timeout/);
+    assert.match(error.message, /child=timeout123/);
+    assert.match(error.message, /pid=\d+/);
+    assert.match(error.message, /model=test\/model/);
+    assert.match(error.message, /exitCode=pending/);
+    assert.match(error.message, /signal=none/);
+    assert.match(error.message, /mock timeout diagnostic/);
+    return true;
+  });
+});
+
+test("unexpected child exits include process diagnostics and stderr", async (t) => {
+  const child = new ManagedSubagent({
+    id: "exit123",
+    name: "exit-child",
+    task: "EXIT_UNEXPECTED",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => child.stop());
+
+  await assert.rejects(child.start(), (error) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /process closed unexpectedly/);
+    assert.match(error.message, /child=exit123/);
+    assert.match(error.message, /pid=\d+/);
+    assert.match(error.message, /model=test\/model/);
+    assert.match(error.message, /exitCode=17/);
+    assert.match(error.message, /signal=none/);
+    assert.match(error.message, /mock child fatal diagnostic/);
+    return true;
+  });
+  assert.match(child.snapshot().error ?? "", /process closed unexpectedly/);
+  assert.match(child.snapshot().stderr ?? "", /mock child fatal diagnostic/);
+});
+
 test("managed child accepts Pi-sized image event lines above four MiB", async (t) => {
   const child = new ManagedSubagent({
     id: "large123",

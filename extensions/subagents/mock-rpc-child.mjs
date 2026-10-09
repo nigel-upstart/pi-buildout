@@ -54,7 +54,15 @@ input.on("line", (line) => {
     send({ id: command.id, type: "response", command: command.type, success: true });
     return;
   }
+  if (command.type === "timeout") {
+    process.stderr.write("mock timeout diagnostic\n");
+    return;
+  }
   if (command.type === "prompt") {
+    if (String(command.message).includes("EXIT_UNEXPECTED")) {
+      process.stderr.write("mock child fatal diagnostic\n", () => process.exit(17));
+      return;
+    }
     prompts++;
     const promptNumber = prompts;
     const operation = ++activeOperation;
