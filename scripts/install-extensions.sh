@@ -117,22 +117,47 @@ track_patch_file() {
   PATCH_STATE_FILES+=("$candidate")
 }
 
+is_pi_package() {
+  [[ -f "$1/package.json" ]] && node -e '
+    try {
+      const manifest = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+      process.exit(manifest.name === "@earendil-works/pi-coding-agent" ? 0 : 1);
+    }
+    catch { process.exit(1); }
+  ' "$1/package.json"
+}
+
 find_pi_package() {
-  local path package_dir
+  local path package_dir managed_root managed_version
   path=$(realpath "$1" 2> /dev/null) || return 1
+  # The managed bin is a shell launcher, not a link into node_modules. Follow its
+  # current-version file, never the install project's own package.json.
+  managed_root="$(dirname "$path")/../install"
+  if [[ -f "$managed_root/current-version" ]]; then
+    managed_version=$(cat "$managed_root/current-version")
+    if [[ "$managed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+      package_dir="$managed_root/releases/$managed_version/node_modules/@earendil-works/pi-coding-agent"
+      if is_pi_package "$package_dir"; then
+        printf '%s\n' "$(realpath "$package_dir")"
+        return 0
+      fi
+    fi
+    printf 'Could not locate the active managed Pi package under %s.\n' "$managed_root" >&2
+    return 2
+  fi
   # Homebrew's wrapper lives in <formula>/bin while the package is nested under
   # <formula>/libexec/lib/node_modules. Check that layout before walking parents.
   for package_dir in \
     "$(dirname "$path")/../libexec/lib/node_modules/@earendil-works/pi-coding-agent" \
     "$(dirname "$path")/../lib/node_modules/@earendil-works/pi-coding-agent"; do
-    if [[ -f "$package_dir/package.json" ]]; then
+    if is_pi_package "$package_dir"; then
       printf '%s\n' "$(realpath "$package_dir")"
       return 0
     fi
   done
   path=$(dirname "$path")
   while [[ "$path" != / ]]; do
-    if [[ -f "$path/package.json" ]]; then
+    if is_pi_package "$path"; then
       printf '%s\n' "$path"
       return 0
     fi
@@ -146,7 +171,7 @@ find_global_pi_package() {
   command -v npm > /dev/null || return 1
   npm_root=$(npm root --global 2> /dev/null) || return 1
   package_dir="$npm_root/@earendil-works/pi-coding-agent"
-  [[ -f "$package_dir/package.json" ]] || return 1
+  is_pi_package "$package_dir" || return 1
   printf '%s\n' "$package_dir"
 }
 
@@ -182,6 +207,48 @@ if ((!INSTALL_EXTENSIONS && !APPLY_SKILLS_PATCH)); then
   printf 'Both the patch and extensions were skipped; nothing to install.\n' >&2
   exit 2
 fi
+
+PI_PACKAGE_DIR=${PI_PACKAGE_DIR:-}
+if [[ -z "$PI_PACKAGE_DIR" ]]; then
+  PI_BIN=$(command -v pi || true)
+  if [[ -n "$PI_BIN" ]]; then
+    if ! PI_PACKAGE_DIR=$(find_pi_package "$PI_BIN"); then
+      # A broken managed install must not redirect patching to a different global Pi.
+      # Ordinary unresolved version-manager shims can still use npm's global root.
+      PI_PACKAGE_DIR=
+      resolved_bin=$(realpath "$PI_BIN" 2> /dev/null || true)
+      if [[ -n "$resolved_bin" && -f "$(dirname "$resolved_bin")/../install/current-version" ]]; then
+        exit 1
+      fi
+    fi
+  fi
+  # Version-manager shims may not point into the package; use npm's global root.
+  if [[ -z "$PI_PACKAGE_DIR" ]]; then
+    PI_PACKAGE_DIR=$(find_global_pi_package || true)
+  fi
+fi
+if [[ -z "$PI_PACKAGE_DIR" ]] || ! is_pi_package "$PI_PACKAGE_DIR"; then
+  printf 'Could not locate @earendil-works/pi-coding-agent; install Pi >=1.0.1 or set PI_PACKAGE_DIR.\n' >&2
+  exit 1
+fi
+PI_PACKAGE_DIR=$(realpath "$PI_PACKAGE_DIR")
+# JavaScript template literals below must reach Node unchanged.
+# shellcheck disable=SC2016
+PI_VERSION=$(node -e '
+  const version = require(process.argv[1]).version;
+  const match = typeof version === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!match || (match[4] && match[4].split(".").some(identifier => /^0\d+$/.test(identifier)))) {
+    console.error(`Invalid Pi version: ${String(version)}. Pi >=1.0.1 is required.`);
+    process.exit(1);
+  }
+  const [, major, minor, patch, prerelease] = match;
+  if (BigInt(major) < 1n || (BigInt(major) === 1n && BigInt(minor) === 0n && (BigInt(patch) < 1n || (BigInt(patch) === 1n && prerelease)))) {
+    console.error(`Unsupported Pi version ${version}; Pi >=1.0.1 is required. Upgrade Pi before installing.`);
+    process.exit(1);
+  }
+  process.stdout.write(version);
+' "$PI_PACKAGE_DIR/package.json")
+
 if ((INSTALL_EXTENSIONS)) && [[ -e "$EXTENSION_DIR/otel" || -L "$EXTENSION_DIR/otel" ]]; then
   # Never replace or remove an unrelated Pi extension occupying the managed name.
   if [[ -L "$EXTENSION_DIR/otel" || ! -f "$EXTENSION_DIR/otel/package.json" ]] \
@@ -225,25 +292,6 @@ if ((INSTALL_EXTENSIONS)); then
 fi
 
 if ((APPLY_SKILLS_PATCH)); then
-  PI_PACKAGE_DIR=${PI_PACKAGE_DIR:-}
-  if [[ -z "$PI_PACKAGE_DIR" ]]; then
-    PI_BIN=$(command -v pi || true)
-    if [[ -n "$PI_BIN" ]]; then
-      # `pi` is commonly a symlink to <package>/dist/cli.js, so find the
-      # package from its resolved entry point instead of assuming npm's bin layout.
-      PI_PACKAGE_DIR=$(find_pi_package "$PI_BIN" || true)
-    fi
-    # Version managers such as mise can expose `pi` through a shim rather
-    # than the package's CLI entrypoint. Fall back to npm's global package root.
-    if [[ -z "$PI_PACKAGE_DIR" ]]; then
-      PI_PACKAGE_DIR=$(find_global_pi_package || true)
-    fi
-  fi
-  if [[ -z "$PI_PACKAGE_DIR" || ! -f "$PI_PACKAGE_DIR/package.json" ]]; then
-    printf 'Could not locate pi package; install extensions only or set PI_PACKAGE_DIR.\n' >&2
-    exit 1
-  fi
-  PI_VERSION=$(node -p 'require(process.argv[1]).version' "$PI_PACKAGE_DIR/package.json")
   PATCH_DIR="$ROOT_DIR/patches/pi-$PI_VERSION"
   PATCH_FILE="$PATCH_DIR/skills.patch"
   BASELINE_SUMS="$PATCH_DIR/baseline.sha256"

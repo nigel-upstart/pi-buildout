@@ -15,6 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
@@ -56,16 +57,18 @@ async function applyPatch(target, source, reverse = false) {
   }
 }
 
+const gitEnvironmentKeys = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
 function testEnvironment(overrides = {}) {
   const env = { ...process.env, ...overrides };
-  for (const key of [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  ]) {
+  for (const key of gitEnvironmentKeys) {
     delete env[key];
   }
   return env;
@@ -106,11 +109,25 @@ async function copyPackage(packageRoot, target, patchDirectory, { patched = true
     cp(join(packageRoot, "docs"), join(target, "docs"), { recursive: true }),
     copyFile(join(packageRoot, "package.json"), join(target, "package.json")),
   ]);
-  await symlink(
-    join(packageRoot, "node_modules"),
-    join(target, "node_modules"),
-    process.platform === "win32" ? "junction" : "dir",
-  );
+  // Pi 1.1.0 can hoist dependencies outside its own node_modules. Link the packages
+  // Node actually searches so a fixture outside this checkout has the same imports.
+  const packageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  const resolver = createRequire(join(packageRoot, "package.json"));
+  for (const name of Object.keys(packageJson.dependencies ?? {})) {
+    const candidates = resolver.resolve.paths(name) ?? [];
+    let dependency;
+    for (const directory of candidates) {
+      const candidate = join(directory, name);
+      if (await exists(join(candidate, "package.json"))) {
+        dependency = candidate;
+        break;
+      }
+    }
+    assert.ok(dependency, `Pi runtime dependency ${name} must be installed`);
+    const destination = join(target, "node_modules", name);
+    await mkdir(dirname(destination), { recursive: true });
+    await symlink(dependency, destination, process.platform === "win32" ? "junction" : "dir");
+  }
   if (patched) {
     await applyPatch(target, join(patchDirectory, "skills.patch"));
     await verifyManifest(patchDirectory, target, "patched.sha256");
@@ -200,9 +217,15 @@ for (const version of patchVersions()) {
     const projectConfig = join(cwd, ".pi");
     const agentDir = join(fixtureRoot, "agent");
     const previousHome = process.env.HOME;
+    const previousGitEnvironment = new Map(gitEnvironmentKeys.map((key) => [key, process.env[key]]));
 
     try {
+      // The imported Pi shell also runs Git in this process, not only in CLI children.
+      for (const key of gitEnvironmentKeys) delete process.env[key];
       process.env.HOME = join(fixtureRoot, "home");
+      // Keep ancestor skill discovery inside this fixture, including when TMPDIR is in the checkout.
+      await mkdir(cwd, { recursive: true });
+      await runGit(cwd, ["init", "--quiet"]);
       try {
         await copyPackage(packageRoot, patchedPackage, patchDirectory);
       } catch (error) {
@@ -452,6 +475,10 @@ for (const version of patchVersions()) {
       assert.equal(untrustedByName.get("package-choice")?.description, "global package");
       assert.equal(untrustedByName.get("settings-choice")?.description, "global setting");
     } finally {
+      for (const [key, value] of previousGitEnvironment) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       if (previousHome === undefined) {
         delete process.env.HOME;
       } else {

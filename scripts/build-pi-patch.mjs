@@ -308,7 +308,7 @@ function assertBuildReproducesBaseline(builtRoot, baselineRoot, manifest) {
  * Assembles the patched package tree: baseline, overwritten by built, documented and replacement files.
  *
  * An `unchanged` entry keeps its baseline bytes. It is tracked only so both manifests pin it, for a file the patch
- * depends on without editing, such as 0.87.1's `dist/bundle/cli.js` loader that selects the replaced
+ * depends on without editing, such as 1.1.0's `dist/bundle/cli.js` loader that selects the replaced
  * `cli-runtime.js`. The installer then refuses a package whose copy of it differs.
  */
 async function assemblePatchedTree(target, baselineRoot, builtRoot, patchedSourceRoot, overlayDir, manifest) {
