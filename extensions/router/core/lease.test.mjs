@@ -393,6 +393,59 @@ describe("task boundary gate", () => {
     assert.equal(sameRoute.action, "continue", "a less privileged continuation keeps the lease");
   });
 
+  it("starts a fresh lease when a continuation needs a stricter safety policy at the same action mode", () => {
+    const external = {
+      ...lease().features,
+      intent: "operate",
+      workflowType: "incident_or_operations",
+      actionMode: "external_side_effect",
+      risk: "medium",
+    };
+    const active = { ...lease(), features: external };
+    assert.equal(active.lifecycle.policy, "ordinary");
+    const cache = { cachedTokens: 100_000, expectedReuseRatio: 1 };
+    // Raising risk at an unchanged action mode moves an external side effect into authorization preflight.
+    const escalated = resolveContinuity(
+      active,
+      { ...external, risk: "high", taskContinuity: "clear_continuation" },
+      cache,
+    );
+    assert.equal(escalated.action, "new_task");
+    assert.match(escalated.reason, /routing or action requirements/);
+
+    const authorized = {
+      ...active,
+      features: { ...external, risk: "high" },
+      lifecycle: { phase: "preflight", policy: "authorization_then_completion_review", taskFingerprint: "task" },
+    };
+    const relaxed = resolveContinuity(
+      authorized,
+      { ...external, risk: "low", taskContinuity: "clear_continuation" },
+      cache,
+    );
+    assert.equal(relaxed.action, "continue", "a relaxed policy keeps the stricter lease and its preflight");
+
+    // A generated review child carries the ordinary policy; its task family's policy is what continues.
+    const review = {
+      ...authorized,
+      taskId: "review",
+      parentLease: authorized,
+      lifecycle: {
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: "task",
+        reviewKind: "authorization",
+        scopeFingerprint: "scope",
+      },
+    };
+    const sameFamily = resolveContinuity(
+      review,
+      { ...external, risk: "high", taskContinuity: "clear_continuation" },
+      cache,
+    );
+    assert.equal(sameFamily.action, "continue");
+  });
+
   it("starts a fresh lease when an information-only continuation leaves either planning route", () => {
     for (const archetype of ["implementation_planning", "large_program_planning"]) {
       const active = {

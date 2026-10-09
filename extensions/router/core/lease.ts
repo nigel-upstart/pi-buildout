@@ -7,7 +7,7 @@ import { findPromptProfile } from "./profiles.ts";
 import type { EffortLevel } from "./profiles.ts";
 import type { RouteChoice } from "./routing.ts";
 import { deriveSafetyPolicy, initialLifecycle } from "./safety.ts";
-import type { LeaseLifecycle, SafetyEvidenceLog } from "./safety.ts";
+import type { LeaseLifecycle, SafetyEvidenceLog, SafetyPolicy } from "./safety.ts";
 
 export type HardBoundary = "new_session" | "post_compaction" | "post_push" | "subagent";
 export type RouterMode = "off" | "shadow" | "active";
@@ -151,6 +151,15 @@ const ACTION_MODE_RANK: Record<TaskFeatures["actionMode"], number> = {
   destructive: 4,
 };
 
+// Safety policies ordered by the gates they impose. Both completion-review policies require a completion review of
+// reversible mutation; only authorization adds a non-mutating preflight and an independently approved plan.
+const SAFETY_POLICY_RANK: Record<SafetyPolicy, number> = {
+  ordinary: 0,
+  completion_review: 1,
+  advisory_then_completion_review: 1,
+  authorization_then_completion_review: 2,
+};
+
 function isPlanningArchetype(archetype: Archetype): boolean {
   return archetype === "implementation_planning" || archetype === "large_program_planning";
 }
@@ -161,10 +170,14 @@ export function resolveContinuity(
   cache: { cachedTokens: number; expectedReuseRatio: number },
 ): BoundaryGateResult {
   // A continuation keeps the lease's tool policy, so it must not absorb work that needs a different one:
-  // entering or leaving planning (whose validator only accepts planning leases), or a riskier action mode.
+  // entering or leaving planning (whose validator only accepts planning leases), a riskier action mode, or a
+  // stricter safety policy. Risk alone can demand authorization at an unchanged action mode. A relaxed policy
+  // keeps the stricter lease rather than letting a reclassification escape an in-flight preflight.
+  const family = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
   if (
     isPlanningArchetype(deriveArchetype(features).archetype) !== isPlanningArchetype(lease.archetype) ||
-    ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[lease.features.actionMode]
+    ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[lease.features.actionMode] ||
+    SAFETY_POLICY_RANK[deriveSafetyPolicy(features)] > SAFETY_POLICY_RANK[family.lifecycle.policy]
   ) {
     return { action: "new_task", reason: "continuity classification changed routing or action requirements" };
   }
