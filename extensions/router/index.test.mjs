@@ -6105,9 +6105,11 @@ describe("routerExtension", () => {
     );
     setModelResult = true;
     // New input during settlement's builder switch supersedes the settled run: no failure notice, no
-    // generated follow-up, and submissions stay blocked until that input's turn preparation restores the builder.
+    // generated follow-up, and while the reviewer is still selected submissions stay blocked until that input's turn
+    // preparation restores the builder.
     const supersededSwitch = deferred();
     modelGate = supersededSwitch.promise;
+    setModelResult = false;
     const followUpsBefore = messages.length;
     const noticesBefore = notices.length;
     const supersededSettlement = hooks.get("agent_settled")({}, ctx);
@@ -6119,6 +6121,7 @@ describe("routerExtension", () => {
     supersededSwitch.resolve();
     await supersededSettlement;
     modelGate = Promise.resolve();
+    setModelResult = true;
     assert.equal(
       notices.slice(noticesBefore).some(({ message }) => /could not be restored/.test(message)),
       false,

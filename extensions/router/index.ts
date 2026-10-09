@@ -3523,7 +3523,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     runEndEpoch = undefined;
     await drainSecondaryReconciliation(ctx, { kind: "agent_settled", promptRefreshAllowed: false, continuing: false });
     const leaseEpoch = leaseOwner.epoch;
-    let revokedReviewRestored = false;
     try {
       const active = leaseOwner.state.active;
       if (!active || active.executionFailed) return;
@@ -3543,7 +3542,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (revokedReviewStillRunning && !manualOverride) {
         // Generated follow-ups skip before_agent_start, so restore the builder before settlement queues one,
         // keeping preflight submissions blocked through the asynchronous switch and after a failed switch.
-        revokedReviewRestored = await applyChoice(ctx, active.selected);
+        const revokedReviewRestored = await applyChoice(ctx, active.selected);
         if (!leaseOwner.owns(active, leaseEpoch)) return;
         if (!revokedReviewRestored) {
           ctx.ui.notify("Preflight remains blocked: the builder model could not be restored after review", "error");
@@ -3699,21 +3698,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
       revokedReviewRunActive = false;
-      // A failed restore keeps submissions blocked until a later turn preparation restores the builder. So does
-      // an inactive mode, which switches no models: `/route active` restores the safety tools before any turn.
-      if (
-        revokedReviewRestored ||
-        leaseOwner.state.manualOverride ||
-        leaseOwner.state.active?.manualOverride ||
-        !leaseOwner.state.active
-      ) {
-        revokedReviewStillRunning = false;
-      }
       insideProviderTurn = false;
       activeToolExecutions = 0;
       // A result queued while the drain above was awaited missed it, and the eager drain only runs
       // once the phase is settled, so drain again rather than leave it for the next run.
       await drainSecondaryReconciliation(ctx, settled);
+      // Submissions reopen only once the live model is the final lease's selection, judged after both drains
+      // because a correction can switch models and still be rejected. A failed restore, or an inactive mode
+      // (which switches no models while `/route active` restores the safety tools at once), keeps them blocked
+      // until a later turn preparation restores the builder.
+      const final = leaseOwner.state.active;
+      if (
+        !final ||
+        leaseOwner.state.manualOverride ||
+        final.manualOverride ||
+        (ctx.model?.provider === final.selected.provider && ctx.model.id === final.selected.modelId)
+      ) {
+        revokedReviewStillRunning = false;
+      }
     }
   });
 
