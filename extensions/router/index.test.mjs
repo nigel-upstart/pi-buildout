@@ -3,6 +3,8 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import fc from "fast-check";
+import { fastCheckOptions } from "./fast-check-options.mjs";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
 // than reading whatever the developer happens to have enabled.
@@ -159,6 +161,170 @@ function irreversibleActionPlan() {
     rollback: ["Reactivate the old credential before overlap ends."],
     abortConditions: ["Stop if break-glass access or replacement verification fails."],
     authorizedToolNames: ["bash"],
+  };
+}
+
+// Mirrors the irreversible-action authorization fixture: a parent lease in authorization preflight,
+// with a builder and an independent reviewer from different vendors.
+async function authorizationLifecycleFixture() {
+  const hooks = new Map();
+  const commands = new Map();
+  const tools = new Map();
+  const appended = [];
+  const sent = [];
+  const selectedModels = [];
+  const hooksDuringSwitch = { duringBuilderSwitch: undefined };
+  const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-authorization-"));
+  const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
+  process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
+  const now = new Date().toISOString();
+  const features = {
+    ...conservativeFeatures("authorization lifecycle test"),
+    intent: "operate",
+    workflowType: "incident_or_operations",
+    actionMode: "destructive",
+    risk: "critical",
+    confidence: 0.99,
+  };
+  const parent = {
+    version: 2,
+    taskId: "irreversible-parent",
+    startedAt: now,
+    updatedAt: now,
+    archetype: "highest_risk_advisory",
+    features,
+    selected: {
+      provider: "openai-codex",
+      modelId: "gpt-6-sol",
+      logicalModelId: "gpt-6-sol",
+      vendor: "openai",
+      effort: "high",
+      ability: 4,
+      profileId: "openai-gpt-6-agent-v1",
+      contextWindow: 1_000_000,
+      endpointTier: "manufacturer",
+      rankReason: "bootstrap",
+    },
+    fallbacks: [
+      {
+        provider: "anthropic",
+        modelId: "claude-opus-5-5",
+        logicalModelId: "claude-opus-5-5",
+        vendor: "anthropic",
+        effort: "high",
+        ability: 4,
+        profileId: "anthropic-claude-planning-v1",
+        contextWindow: 1_000_000,
+        endpointTier: "manufacturer",
+        rankReason: "evidence_prior",
+      },
+    ],
+    attemptIndex: 0,
+    promptProfileId: "openai-gpt-6-agent-v1",
+    modelSnapshotId: "snapshot",
+    policyVersion: POLICY_VERSION,
+    lastPromptFingerprint: "fingerprint",
+    lifecycle: {
+      phase: "preflight",
+      policy: "authorization_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    },
+    safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
+    manualOverride: false,
+  };
+  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
+  const makeModel = (provider, id, api) => ({
+    provider,
+    id,
+    name: id,
+    api,
+    baseUrl: "https://models.invalid",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  });
+  const models = [
+    makeModel("openai-codex", "gpt-6-sol", "openai-responses"),
+    makeModel("anthropic", "claude-opus-5-5", "anthropic-messages"),
+    makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
+  ];
+  const branch = [
+    {
+      type: "custom",
+      customType: "model-router-state",
+      data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
+    },
+  ];
+  const pi = {
+    on: (event, handler) => hooks.set(event, handler),
+    registerCommand: (name, command) => commands.set(name, command),
+    registerTool: (tool) => tools.set(tool.name, tool),
+    appendEntry: (customType, data) => appended.push({ customType, data }),
+    sendMessage: (message, options) => sent.push({ message, options }),
+    setModel: async (model) => {
+      selectedModels.push(model);
+      // The interruption can land while settlement awaits the switch back to the builder.
+      await hooksDuringSwitch.duringBuilderSwitch?.(model);
+      return true;
+    },
+    setThinkingLevel: () => {},
+    getThinkingLevel: () => "high",
+    getActiveTools: () => activeTools,
+    setActiveTools: (tools) => {
+      activeTools = tools;
+    },
+    exec: async (command, args) => {
+      await hooksDuringSwitch.duringExec?.(command, args);
+      return { stdout: "", stderr: "", code: 1, killed: false };
+    },
+  };
+  routerExtension(pi);
+  const ctx = {
+    cwd: telemetryDirectory,
+    model: models[0],
+    modelRegistry: {
+      getAll: () => models,
+      getAvailable: () => models,
+      find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+    },
+    sessionManager: {
+      getBranch: () => branch,
+      getSessionId: () => "authorization-session",
+    },
+    getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
+    ui: {
+      theme: { fg: (_color, text) => text },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+      setWorkingVisible: () => {},
+      notify: () => {},
+    },
+  };
+  const latestLease = () => appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+  const restoreEnvironment = () => {
+    if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
+    else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+  };
+  return {
+    hooks,
+    commands,
+    tools,
+    appended,
+    sent,
+    selectedModels,
+    models,
+    parent,
+    ctx,
+    latestLease,
+    restoreEnvironment,
+    onExec: (handler) => {
+      hooksDuringSwitch.duringExec = handler;
+    },
+    onBuilderSwitch: (handler) => {
+      hooksDuringSwitch.duringBuilderSwitch = handler;
+    },
   };
 }
 
@@ -542,12 +708,16 @@ async function runAdapterTurn({
       sentMessages.push({ message, options });
     },
   };
-  const telemetry = telemetryOverride ?? {
-    append: async (event) => {
-      events.push(event);
-    },
-    read: async () => [],
-  };
+  // A telemetry factory receives late-bound access to the adapter so a ledger write can interleave Pi events.
+  const telemetry =
+    typeof telemetryOverride === "function"
+      ? telemetryOverride({ hooks, events, getCtx: () => ctx })
+      : (telemetryOverride ?? {
+          append: async (event) => {
+            events.push(event);
+          },
+          read: async () => [],
+        });
   // Active mode only means something when the leased choice is reachable, so the registry and the
   // current model mirror the lease. A retention assertion then proves the router left that selection
   // alone rather than merely never reaching the apply step.
@@ -584,6 +754,7 @@ async function runAdapterTurn({
   await hooks.get("input")({ text: prompt, source }, ctx);
   const beforeAgentStart = await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
   return {
+    pi,
     hooks,
     commands,
     tools,
@@ -1046,7 +1217,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active },
       },
     ];
     const pi = {
@@ -1257,7 +1428,7 @@ describe("routerExtension", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { mode: "active", manualOverride: false, active },
+            data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active },
           },
         ];
         const pi = {
@@ -1605,6 +1776,60 @@ describe("routerExtension", () => {
     assert.equal(
       result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
       "no_material_delta",
+    );
+  });
+
+  it("starts the real secondary even when input supersedes the route during its ledger write", async () => {
+    const secondary = deferred();
+    let secondaryStarted = false;
+    let injected = false;
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        secondaryStarted = true;
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "secondary-before-route-ledger",
+      telemetry: ({ hooks, events, getCtx }) => ({
+        append: async (event) => {
+          events.push(event);
+          // Steering lands while the route decision is being written, superseding this hook.
+          if (event.kind === "route_decision" && !injected) {
+            injected = true;
+            await hooks.get("input")(
+              { text: "Also cover the error path", source: "interactive", streamingBehavior: "steer" },
+              getCtx(),
+            );
+          }
+        },
+        read: async () => [],
+      }),
+    });
+    assert.equal(injected, true);
+    assert.equal(secondaryStarted, true, "the reserved safety question must have a classifier that can answer it");
+    startAgentRun(result);
+    assert.match(
+      result.hooks.get("tool_call")({
+        toolCallId: "edit-while-pending",
+        toolName: "edit",
+        input: { path: "README.md", oldString: "old", newString: "new" },
+      }).reason,
+      /Secondary safety classification is pending/,
+    );
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+    await endAgentTurn(result);
+    assert.equal(
+      result.hooks.get("tool_call")({
+        toolCallId: "edit-after-reconcile",
+        toolName: "edit",
+        input: { path: "README.md", oldString: "old", newString: "new" },
+      }),
+      undefined,
+      "the latch resolves once the secondary answers",
     );
   });
 
@@ -2043,6 +2268,126 @@ describe("routerExtension", () => {
       result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
       "no_material_delta",
     );
+  });
+
+  for (const superseded of [false, true]) {
+    it(`${superseded ? "skips" : "runs"} settlement lifecycle work when input ${superseded ? "arrives" : "does not arrive"} during the pre-settlement drain`, async () => {
+      const secondary = deferred();
+      const drainWrite = deferred();
+      const drainReached = deferred();
+      const events = [];
+      const result = await runAdapterTurn({
+        classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.9, risk: "high" }),
+        classifySecondaryTask: async () => secondary.promise,
+        models: standardRoutingModels(),
+        mode: "active",
+        prompt: "Implement one high-risk bounded repository change",
+        sessionId: `superseded-settlement-${superseded}`,
+        telemetry: {
+          append: async (event) => {
+            // Hold settlement inside its secondary drain, where newer input can arrive.
+            if (event.kind === "secondary_reconciliation") {
+              drainReached.resolve();
+              await drainWrite.promise;
+            }
+            events.push(event);
+          },
+          read: async () => [],
+        },
+      });
+      const lease = () =>
+        result.appended.findLast(({ customType }) => customType === "model-router-state")?.data.active;
+      assert.equal(lease().lifecycle.phase, "building");
+      startAgentRun(result);
+      // A counted tool keeps turn_end from draining, so the reconciliation waits for settlement.
+      result.hooks.get("tool_execution_start")({ toolCallId: "stuck-tool" });
+      secondary.resolve(classificationResult(2, { confidence: 0.95, risk: "high" }));
+      await flushMicrotasks();
+      await endAgentTurn(result);
+      const active = lease();
+      result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+      await result.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: active.selected.provider,
+              model: active.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        result.ctx,
+      );
+      const messages = result.sentMessages.length;
+      const settling = result.hooks.get("agent_settled")({}, result.ctx);
+      await drainReached.promise;
+      if (superseded) {
+        await result.hooks.get("input")(
+          { text: "Actually, explain the plan first", source: "interactive", streamingBehavior: "followUp" },
+          result.ctx,
+        );
+      }
+      drainWrite.resolve();
+      await settling;
+
+      assert.ok(
+        events.some(({ kind }) => kind === "secondary_reconciliation"),
+        "same-epoch reconciliation still applies",
+      );
+      const repairs = result.sentMessages.slice(messages).filter(({ message }) => message.details?.repairReason);
+      if (superseded) {
+        assert.deepEqual(repairs, [], "a superseded run starts no router-generated repair turn");
+        assert.equal(lease().lifecycle.evidenceRepairAttempted, undefined);
+      } else {
+        assert.equal(repairs.length, 1, "an unsuperseded run still gets its settlement lifecycle work");
+        assert.equal(lease().lifecycle.evidenceRepairAttempted, true);
+      }
+    });
+  }
+
+  it("skips settlement lifecycle work when input arrives after the run ends but before settlement", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.95, risk: "high" }),
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "input-before-settlement",
+    });
+    const lease = () => result.appended.findLast(({ customType }) => customType === "model-router-state")?.data.active;
+    assert.equal(lease().lifecycle.phase, "building");
+    startAgentRun(result);
+    await endAgentTurn(result);
+    const active = lease();
+    result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+    await result.hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: active.selected.provider,
+            model: active.selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      result.ctx,
+    );
+    const messages = result.sentMessages.length;
+    // The user's follow-up lands after the run ended but before Pi delivers agent_settled.
+    await result.hooks.get("input")(
+      { text: "Actually, explain the plan first", source: "interactive", streamingBehavior: "followUp" },
+      result.ctx,
+    );
+    await result.hooks.get("agent_settled")({}, result.ctx);
+    assert.deepEqual(
+      result.sentMessages.slice(messages).filter(({ message }) => message.details?.repairReason),
+      [],
+      "a superseded run starts no router-generated repair turn",
+    );
+    assert.equal(lease().lifecycle.evidenceRepairAttempted, undefined);
   });
 
   it("keeps a secondary result that settles before agent_start queued until a run boundary", async () => {
@@ -2783,7 +3128,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "shadow", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "shadow", manualOverride: false, active: lease },
       },
       {
         type: "message",
@@ -2896,7 +3241,7 @@ describe("routerExtension", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { mode: "shadow", manualOverride: false, active: lease },
+            data: { secondarySafetyPending: false, mode: "shadow", manualOverride: false, active: lease },
           },
           {
             type: "message",
@@ -3150,6 +3495,65 @@ describe("routerExtension", () => {
     }
   });
 
+  it("applies the configured start mode when input arrives while startup settings load", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-router-start-race-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousMode = process.env.PI_ROUTER_MODE;
+    const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempDir;
+      delete process.env.PI_ROUTER_MODE;
+      process.env.PI_ROUTER_LAST_MODE_PATH = join(tempDir, "router-last-mode.jsonl");
+      await writeFile(join(tempDir, "router-config.json"), JSON.stringify({ startMode: "active" }));
+      const hooks = new Map();
+      const appended = [];
+      const statuses = [];
+      const lookup = deferred();
+      const lookupReached = deferred();
+      routerExtension({
+        on: (event, handler) => hooks.set(event, handler),
+        registerCommand: () => {},
+        registerTool: () => {},
+        appendEntry: (customType, data) => appended.push({ customType, data }),
+        exec: async (command, args) => {
+          if (command === "git" && args.includes("get-url")) {
+            lookupReached.resolve();
+            await lookup.promise;
+          }
+          return { stdout: "", stderr: "", code: 1, killed: false };
+        },
+      });
+      const ctx = {
+        cwd: tempDir,
+        sessionManager: { getSessionId: () => "start-race", getBranch: () => [] },
+        modelRegistry: { getAvailable: () => [], getAll: () => [] },
+        model: undefined,
+        getContextUsage: () => ({ tokens: 0, contextWindow: 128000 }),
+        ui: {
+          setStatus: (_key, text) => statuses.push(text),
+          setWorkingMessage: () => {},
+          setWorkingVisible: () => {},
+          notify: () => {},
+          theme: { fg: (_color, text) => text },
+        },
+      };
+      const starting = hooks.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+      await lookupReached.promise;
+      // The first prompt arrives before startup finishes resolving its repository and start mode.
+      await hooks.get("input")({ text: "Summarize the repository", source: "interactive" }, ctx);
+      lookup.resolve();
+      await starting;
+      assert.equal(
+        appended.filter(({ customType }) => customType === "model-router-state").at(-1)?.data.mode,
+        "active",
+        "the configured start mode still applies",
+      );
+      assert.match(statuses.at(-1), /^route:active/);
+    } finally {
+      restoreEnv({ previousAgentDir, previousMode, previousLastModePath });
+    }
+  });
+
   it("starts in the last recorded mode by default so enablement survives a restart", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "pi-router-last-"));
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -3325,7 +3729,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3456,7 +3860,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3610,7 +4014,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3745,7 +4149,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -3931,7 +4335,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: lease },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: lease },
       },
     ];
     const pi = {
@@ -4091,7 +4495,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: parent },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
       },
     ];
     const pi = {
@@ -4270,6 +4674,704 @@ describe("routerExtension", () => {
     }
   });
 
+  for (const [interruption, timing] of [
+    {
+      name: "queued steering input",
+      apply: (hooks, ctx) =>
+        hooks.get("input")(
+          { text: "Also confirm the staging keyring is untouched", source: "interactive", streamingBehavior: "steer" },
+          ctx,
+        ),
+      nextTurnStartsNewTask: false,
+    },
+    {
+      name: "compaction",
+      apply: (hooks, ctx) => hooks.get("session_compact")({ type: "session_compact" }, ctx),
+      nextTurnStartsNewTask: true,
+    },
+  ].flatMap((interruption) => [
+    [interruption, "before settlement"],
+    [interruption, "during the builder model switch"],
+  ])) {
+    it(`withholds an approval when ${interruption.name} arrives ${timing} and hands control back`, async () => {
+      const {
+        hooks,
+        tools,
+        appended,
+        sent,
+        selectedModels,
+        models,
+        parent,
+        ctx,
+        latestLease,
+        restoreEnvironment,
+        onBuilderSwitch,
+      } = await authorizationLifecycleFixture();
+      try {
+        await hooks.get("session_start")({ reason: "reload" }, ctx);
+        await hooks.get("before_agent_start")(
+          { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+          ctx,
+        );
+        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+        await hooks.get("agent_settled")({}, ctx);
+        const child = latestLease();
+        assert.equal(child.lifecycle.phase, "review");
+        assert.equal(child.lifecycle.reviewKind, "authorization");
+        const plan = child.parentLease.lifecycle.plan;
+        const messagesBeforeReview = sent.length;
+
+        ctx.model = models.find(
+          (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
+        );
+        await hooks.get("before_agent_start")({ prompt: "Perform the generated review", systemPrompt: "base" }, ctx);
+        hooks.get("agent_start")();
+        await tools.get("submit_safety_review").execute(
+          "review-approve",
+          {
+            reviewKind: "authorization",
+            scopeFingerprint: child.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "The exact plan is bounded.",
+            evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          ctx,
+        );
+        // The revocation arrives after the verdict: either before the review run settles, or while
+        // settlement is awaiting the switch back to the builder model.
+        if (timing === "before settlement") {
+          await interruption.apply(hooks, ctx);
+        } else {
+          onBuilderSwitch(async (model) => {
+            if (model.provider !== parent.selected.provider || model.id !== parent.selected.modelId) return;
+            onBuilderSwitch(undefined);
+            await interruption.apply(hooks, ctx);
+          });
+        }
+        await hooks.get("agent_end")(
+          {
+            messages: [
+              {
+                role: "assistant",
+                provider: child.selected.provider,
+                model: child.selected.modelId,
+                stopReason: "stop",
+                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+              },
+            ],
+          },
+          ctx,
+        );
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = latestLease();
+        assert.equal(restored.taskId, parent.taskId, "the parent is restored instead of leaving the review stranded");
+        assert.equal(restored.lifecycle.phase, "preflight");
+        assert.equal(restored.lifecycle.plan.planFingerprint, plan.planFingerprint);
+        assert.match(
+          restored.lifecycle.lastAuthorizationReview.summary,
+          /Approval withheld: new input or a routing boundary/,
+        );
+        assert.equal(
+          appended.some(
+            (entry) =>
+              entry.customType === "model-router-state" &&
+              entry.data.active?.lifecycle.phase === "authorized_execution",
+          ),
+          false,
+          "a review that crossed a revocation boundary must never authorize its parent",
+        );
+        assert.equal(sent.length, messagesBeforeReview, "a withheld approval must not send an execution continuation");
+        assert.deepEqual(
+          [selectedModels.at(-1).provider, selectedModels.at(-1).id],
+          [parent.selected.provider, parent.selected.modelId],
+        );
+
+        ctx.model = models[0];
+        await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
+        const next = await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
+        assert.doesNotMatch(next?.systemPrompt ?? "", /authorization review/);
+        const boundary = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+          .findLast(({ kind, data }) => kind === "boundary" && data.action !== undefined);
+        if (interruption.nextTurnStartsNewTask) {
+          // Restoring the parent must not consume the boundary that compaction recorded mid-review.
+          assert.equal(boundary.data.action, "new_task");
+          assert.match(boundary.data.reason, /hard boundary: post_compaction/);
+        } else {
+          assert.equal(boundary.data.action, "continue");
+          assert.equal(latestLease().taskId, parent.taskId);
+          assert.equal(latestLease().lifecycle.phase, "preflight");
+          assert.match(
+            hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
+            /preflight/,
+          );
+        }
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  for (const mode of ["shadow", "off"]) {
+    it(`hands a finished review back when /route ${mode} lands during the builder model switch`, async () => {
+      const {
+        hooks,
+        commands,
+        tools,
+        appended,
+        sent,
+        models,
+        parent,
+        ctx,
+        latestLease,
+        restoreEnvironment,
+        onBuilderSwitch,
+      } = await authorizationLifecycleFixture();
+      try {
+        await hooks.get("session_start")({ reason: "reload" }, ctx);
+        await hooks.get("before_agent_start")(
+          { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+          ctx,
+        );
+        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+        await hooks.get("agent_settled")({}, ctx);
+        const child = latestLease();
+        assert.equal(child.lifecycle.reviewKind, "authorization");
+        const messagesBeforeReview = sent.length;
+
+        ctx.model = models.find(
+          (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
+        );
+        await hooks.get("before_agent_start")({ prompt: "Perform the generated review", systemPrompt: "base" }, ctx);
+        hooks.get("agent_start")();
+        await tools.get("submit_safety_review").execute(
+          "review-approve",
+          {
+            reviewKind: "authorization",
+            scopeFingerprint: child.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "The exact plan is bounded.",
+            evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          ctx,
+        );
+        // The operator changes mode while settlement awaits the switch back to the builder.
+        onBuilderSwitch(async (model) => {
+          if (model.provider !== parent.selected.provider || model.id !== parent.selected.modelId) return;
+          onBuilderSwitch(undefined);
+          await commands.get("route").handler(mode, ctx);
+        });
+        await hooks.get("agent_end")(
+          {
+            messages: [
+              {
+                role: "assistant",
+                provider: child.selected.provider,
+                model: child.selected.modelId,
+                stopReason: "stop",
+                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+              },
+            ],
+          },
+          ctx,
+        );
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = latestLease();
+        assert.equal(restored.taskId, parent.taskId, "a mode change must not strand the finished review");
+        assert.equal(restored.lifecycle.phase, "preflight");
+        assert.match(restored.lifecycle.lastAuthorizationReview.summary, /Approval withheld/);
+        assert.equal(
+          appended.some(
+            (entry) =>
+              entry.customType === "model-router-state" &&
+              entry.data.active?.lifecycle.phase === "authorized_execution",
+          ),
+          false,
+        );
+        assert.equal(
+          sent.slice(messagesBeforeReview).some(({ message }) => /is authorized for this task/.test(message.content)),
+          false,
+          "no execution continuation follows a withheld approval",
+        );
+
+        await commands.get("route").handler("active", ctx);
+        assert.equal(latestLease().taskId, parent.taskId);
+        assert.equal(latestLease().lifecycle.phase, "preflight", "re-enabling finds the parent, not a stale review");
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  // Drives the real lifecycle: preflight, approved plan, authorized execution with one recorded mutation, and the
+  // completion review that settlement then starts with the authorized builder as its parent.
+  async function startAuthorizedCompletionReview(fixture) {
+    const { hooks, tools, models, parent, ctx, latestLease } = fixture;
+    const finishRun = async (lease) =>
+      hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: lease.selected.provider,
+              model: lease.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+    await hooks.get("session_start")({ reason: "reload" }, ctx);
+    await hooks.get("before_agent_start")(
+      { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+      ctx,
+    );
+    await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+    await hooks.get("agent_settled")({}, ctx);
+    const authorizationReview = latestLease();
+    ctx.model = models.find(
+      (model) =>
+        model.provider === authorizationReview.selected.provider && model.id === authorizationReview.selected.modelId,
+    );
+    hooks.get("agent_start")();
+    await tools.get("submit_safety_review").execute(
+      "authorize",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: authorizationReview.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "The exact plan is bounded.",
+        evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await finishRun(authorizationReview);
+    await hooks.get("agent_settled")({}, ctx);
+    assert.equal(latestLease().lifecycle.phase, "authorized_execution");
+
+    // The generated execution turn performs the authorized mutation.
+    ctx.model = models[0];
+    hooks.get("agent_start")();
+    assert.equal(
+      hooks.get("tool_call")({ toolName: "bash", toolCallId: "deploy", input: { command: "deploy production" } }),
+      undefined,
+    );
+    hooks.get("tool_execution_end")({ toolCallId: "deploy", toolName: "bash", isError: false });
+    await finishRun(parent);
+    await hooks.get("agent_settled")({}, ctx);
+    const completionReview = latestLease();
+    assert.equal(completionReview.lifecycle.reviewKind, "completion");
+    assert.equal(completionReview.parentLease.lifecycle.phase, "authorized_execution");
+    ctx.model = models.find(
+      (model) =>
+        model.provider === completionReview.selected.provider && model.id === completionReview.selected.modelId,
+    );
+    hooks.get("agent_start")();
+    await tools.get("submit_safety_review").execute(
+      "complete",
+      {
+        reviewKind: "completion",
+        scopeFingerprint: completionReview.lifecycle.scopeFingerprint,
+        verdict: "pass",
+        summary: "The executed change matches the reviewed plan.",
+        evidence: ["Inspected the recorded mutation."],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    return { completionReview, finishRun };
+  }
+
+  it("returns a completed authorized plan from an uninterrupted completion review", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    try {
+      const { completionReview, finishRun } = await startAuthorizedCompletionReview(fixture);
+      await finishRun(completionReview);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      const restored = fixture.latestLease();
+      assert.equal(restored.taskId, fixture.parent.taskId);
+      assert.equal(restored.lifecycle.phase, "completed");
+      assert.equal(restored.lifecycle.completionReview.verdict, "pass");
+      assert.ok(restored.lifecycle.authorization, "an uninterrupted review keeps the session-bound authorization");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  for (const [interruption, timing] of [
+    {
+      name: "queued steering input",
+      apply: (hooks, ctx) =>
+        hooks.get("input")(
+          { text: "Also rotate the staging credential", source: "interactive", streamingBehavior: "steer" },
+          ctx,
+        ),
+    },
+    { name: "compaction", apply: (hooks, ctx) => hooks.get("session_compact")({ type: "session_compact" }, ctx) },
+  ].flatMap((interruption) => [
+    [interruption, "before settlement"],
+    [interruption, "during the builder model switch"],
+  ])) {
+    it(`revokes the parent's authorization when ${interruption.name} arrives during its completion review ${timing}`, async () => {
+      const fixture = await authorizationLifecycleFixture();
+      const { hooks, appended, parent, ctx, latestLease, onBuilderSwitch } = fixture;
+      try {
+        const { completionReview, finishRun } = await startAuthorizedCompletionReview(fixture);
+        const before = appended.length;
+        if (timing === "before settlement") {
+          await interruption.apply(hooks, ctx);
+        } else {
+          onBuilderSwitch(async (model) => {
+            if (model.provider !== parent.selected.provider || model.id !== parent.selected.modelId) return;
+            onBuilderSwitch(undefined);
+            await interruption.apply(hooks, ctx);
+          });
+        }
+        await finishRun(completionReview);
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = latestLease();
+        assert.equal(restored.taskId, parent.taskId, "the finished completion review hands control back");
+        assert.equal(restored.lifecycle.phase, "preflight", "the old exact-plan approval does not survive");
+        assert.equal(
+          restored.lifecycle.plan.planFingerprint,
+          completionReview.parentLease.lifecycle.plan.planFingerprint,
+        );
+        assert.equal(restored.lifecycle.lastAuthorizationReview.kind, "authorization");
+        assert.equal(restored.lifecycle.lastAuthorizationReview.verdict, undefined);
+        assert.equal(
+          appended
+            .slice(before)
+            .some(
+              ({ customType, data }) =>
+                customType === "model-router-state" &&
+                (data.active?.lifecycle.phase === "authorized_execution" ||
+                  (data.active?.lifecycle.phase === "completed" && data.active.lifecycle.authorization)),
+            ),
+          false,
+          "no state after the interruption may carry the revoked authorization",
+        );
+        assert.match(
+          hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
+          /preflight/,
+        );
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    });
+  }
+
+  for (const [mode, kind, order] of ["off", "shadow"].flatMap((mode) =>
+    ["authorization", "completion"].flatMap((kind) =>
+      ["after the review run ends", "before the review run ends"].map((order) => [mode, kind, order]),
+    ),
+  )) {
+    it(`hands back a finished ${kind} review when /route ${mode} lands ${order}, without switching models`, async () => {
+      const fixture = await authorizationLifecycleFixture();
+      const { hooks, commands, tools, models, parent, ctx, latestLease, sent, selectedModels, restoreEnvironment } =
+        fixture;
+      const finishRun = (lease) =>
+        hooks.get("agent_end")(
+          {
+            messages: [
+              {
+                role: "assistant",
+                provider: lease.selected.provider,
+                model: lease.selected.modelId,
+                stopReason: "stop",
+                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+              },
+            ],
+          },
+          ctx,
+        );
+      try {
+        let review;
+        if (kind === "authorization") {
+          await hooks.get("session_start")({ reason: "reload" }, ctx);
+          await hooks.get("before_agent_start")(
+            { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+            ctx,
+          );
+          await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+          await hooks.get("agent_settled")({}, ctx);
+          review = latestLease();
+          ctx.model = models.find(
+            (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
+          );
+          hooks.get("agent_start")();
+          await tools.get("submit_safety_review").execute(
+            "approve",
+            {
+              reviewKind: "authorization",
+              scopeFingerprint: review.lifecycle.scopeFingerprint,
+              verdict: "approve",
+              summary: "The exact plan is bounded.",
+              evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+              findings: [],
+            },
+            undefined,
+            undefined,
+            ctx,
+          );
+        } else {
+          review = (await startAuthorizedCompletionReview(fixture)).completionReview;
+        }
+        assert.equal(latestLease().lifecycle.phase, "review");
+        if (order === "after the review run ends") await finishRun(review);
+        await commands.get("route").handler(mode, ctx);
+        if (order === "before the review run ends") await finishRun(review);
+        const modelSwitches = selectedModels.length;
+        const messages = sent.length;
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = latestLease();
+        assert.equal(restored.taskId, parent.taskId, "settlement while inactive must not strand the finished review");
+        assert.equal(restored.lifecycle.phase, "preflight", "no authority survives the mode change");
+        assert.match(restored.lifecycle.lastAuthorizationReview.summary, /Approval withheld/);
+        assert.equal(selectedModels.length, modelSwitches, "an inactive router does not switch models");
+        assert.equal(sent.length, messages, "an inactive router does not start a continuation");
+
+        await commands.get("route").handler("active", ctx);
+        assert.equal(latestLease().taskId, parent.taskId, "re-enabling finds the parent, not the review");
+        await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
+        await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
+        assert.deepEqual(
+          [selectedModels.at(-1).provider, selectedModels.at(-1).id],
+          [parent.selected.provider, parent.selected.modelId],
+          "the next user turn runs on the builder",
+        );
+        assert.match(
+          hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
+          /Irreversible-action preflight/,
+        );
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  it("gates input that arrives during a new session's startup as a new task, not the previous session's lease", async () => {
+    const { hooks, parent, ctx, latestLease, restoreEnvironment, onExec } = await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+        ctx,
+      );
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().taskId, parent.taskId, "the first session holds a lease");
+      await hooks.get("session_shutdown")({ reason: "new" }, ctx);
+      const nextCtx = {
+        ...ctx,
+        cwd: await mkdtemp(join(tmpdir(), "pi-router-new-session-")),
+        sessionManager: { getBranch: () => [], getSessionId: () => "next-session" },
+      };
+      // Hold the new session's startup in its repository lookup while the user types.
+      const lookup = deferred();
+      const lookupReached = deferred();
+      onExec(async () => {
+        onExec(undefined);
+        lookupReached.resolve();
+        await lookup.promise;
+      });
+      const starting = hooks.get("session_start")({ reason: "new" }, nextCtx);
+      await lookupReached.promise;
+      await hooks.get("input")({ text: "continue", source: "interactive" }, nextCtx);
+      lookup.resolve();
+      await starting;
+      await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, nextCtx);
+      const boundary = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .findLast(({ kind, data }) => kind === "boundary" && data.action !== undefined);
+      assert.equal(boundary.data.action, "new_task", "the previous session's lease must not absorb the input");
+      assert.match(boundary.data.reason, /hard boundary: new_session/);
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  for (const when of ["before the review run ends", "after the review run ends"]) {
+    it(`hands a review back without switching models when the operator overrides the model ${when}`, async () => {
+      const fixture = await authorizationLifecycleFixture();
+      const { hooks, tools, models, parent, ctx, appended, selectedModels, sent, restoreEnvironment } = fixture;
+      const lastState = () => appended.filter(({ customType }) => customType === "model-router-state").at(-1)?.data;
+      try {
+        await hooks.get("session_start")({ reason: "reload" }, ctx);
+        await hooks.get("before_agent_start")(
+          { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+          ctx,
+        );
+        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+        await hooks.get("agent_settled")({}, ctx);
+        const review = lastState().active;
+        ctx.model = models.find(
+          (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
+        );
+        hooks.get("agent_start")();
+        await tools.get("submit_safety_review").execute(
+          "approve",
+          {
+            reviewKind: "authorization",
+            scopeFingerprint: review.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "The exact plan is bounded.",
+            evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          ctx,
+        );
+        // The operator picks a third model mid-review.
+        const chosen = models[2];
+        const override = async () => {
+          ctx.model = chosen;
+          await hooks.get("model_select")({ model: chosen, source: "set" }, ctx);
+        };
+        const endRun = () =>
+          hooks.get("agent_end")(
+            {
+              messages: [
+                {
+                  role: "assistant",
+                  provider: review.selected.provider,
+                  model: review.selected.modelId,
+                  stopReason: "stop",
+                  usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+                },
+              ],
+            },
+            ctx,
+          );
+        if (when === "before the review run ends") {
+          await override();
+          await endRun();
+        } else {
+          await endRun();
+          await override();
+        }
+        const switches = selectedModels.length;
+        const messages = sent.length;
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = lastState().active;
+        assert.equal(restored.taskId, parent.taskId, "the finished review must not stay installed");
+        assert.equal(restored.lifecycle.phase, "preflight", "the override revokes the review's authority");
+        assert.equal(restored.manualOverride, true, "the operator's override stays in force");
+        assert.equal(selectedModels.length, switches, "the router does not switch away from the operator's model");
+        assert.equal(sent.length, messages, "no automatic continuation follows an override");
+
+        await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
+        await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
+        assert.equal(selectedModels.length, switches, "the next user turn keeps the operator's model");
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  it("keeps a valid approval when the operator re-requests the current mode during the review", async () => {
+    const { hooks, commands, tools, models, parent, ctx, latestLease, restoreEnvironment } =
+      await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+        ctx,
+      );
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const review = latestLease();
+      ctx.model = models.find(
+        (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
+      );
+      hooks.get("agent_start")();
+      await tools.get("submit_safety_review").execute(
+        "approve",
+        {
+          reviewKind: "authorization",
+          scopeFingerprint: review.lifecycle.scopeFingerprint,
+          verdict: "approve",
+          summary: "The exact plan is bounded.",
+          evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+          findings: [],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      // Routing is already active; re-requesting it changes nothing and must not revoke the review.
+      await commands.get("route").handler("active", ctx);
+      await hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: review.selected.provider,
+              model: review.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().taskId, parent.taskId);
+      assert.equal(latestLease().lifecycle.phase, "authorized_execution");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("keeps a compaction boundary pending across a same-task repair so the next input re-routes", async () => {
+    const { hooks, sent, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+        ctx,
+      );
+      // Compaction lands mid-run; settlement then nudges the same task to submit its missing plan.
+      await hooks.get("session_compact")({ type: "session_compact" }, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().lifecycle.phase, "preflight");
+      assert.equal(latestLease().lifecycle.evidenceRepairAttempted, true, "settlement repaired the same lease");
+      assert.equal(sent.at(-1).message.details.repairReason, "missing_action_plan");
+
+      await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
+      await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
+      const boundary = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .findLast(({ kind, data }) => kind === "boundary" && data.action !== undefined);
+      assert.equal(boundary.data.action, "new_task");
+      assert.match(boundary.data.reason, /hard boundary: post_compaction/);
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
   it("reviews a bounded discovery call independently and spends its grant exactly once", async () => {
     const hooks = new Map();
     const tools = new Map();
@@ -4341,7 +5443,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: parent },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
       },
     ];
     let activeTools = ["read", "bash"];
@@ -5069,6 +6171,274 @@ describe("routerExtension", () => {
     assert.equal(repairs(), repairsBefore, "the revoked review's outcome must not start a repair turn");
   });
 
+  it("never resurrects discovery reviews under generated ledger/model-switch schedules", async () => {
+    const commands = fc.commands(
+      [
+        fc.constantFrom("input", "compact", "off", "override", "reset").map((kind) => ({
+          check: () => true,
+          toString: () => `revoke(${kind})`,
+          async run(model, real) {
+            model.revoked = true;
+            let operation;
+            if (kind === "input")
+              operation = real.hooks.get("input")(
+                { text: "New task: inspect another target", source: "interactive" },
+                real.ctx,
+              );
+            else if (kind === "compact") operation = real.hooks.get("session_compact")({}, real.ctx);
+            else if (kind === "override")
+              operation = real.hooks.get("model_select")(
+                { model: routingModel("anthropic", "claude-sonnet-5"), source: "set" },
+                real.ctx,
+              );
+            else operation = real.commands.get("route").handler(kind, real.ctx);
+            real.pending.push(Promise.resolve(operation));
+          },
+        })),
+      ],
+      { maxCommands: 6 },
+    );
+    await fc.assert(
+      fc.asyncProperty(fc.scheduler(), commands, async (scheduler, sequence) => {
+        const events = [];
+        let scheduling = false;
+        const result = await runAdapterTurn({
+          classifyTask: successfulClassifier(1, {
+            confidence: 0.95,
+            risk: "critical",
+            actionMode: "destructive",
+            intent: "operate",
+            workflowType: "incident_or_operations",
+          }),
+          telemetry: {
+            read: async () => [],
+            append: async (event) => {
+              events.push(event);
+              if (scheduling) await scheduler.schedule(Promise.resolve(), `ledger:${event.kind}`);
+            },
+          },
+          models: [
+            ...standardRoutingModels(),
+            routingModel("google-vertex", "gemini-3.6-flash"),
+            routingModel("openai-codex", "gpt-6-astra"),
+          ],
+          mode: "active",
+          prompt: "Discover owner before production deletion",
+          sessionId: "scheduled-review",
+        });
+        startAgentRun(result);
+        await result.tools.get("submit_discovery_request").execute(
+          "request",
+          {
+            purpose: "discovery",
+            objective: "Find owner",
+            target: "inventory",
+            expectedEffects: ["Return owner"],
+            preconditions: ["Bounded query"],
+            verification: ["Compare identifiers"],
+            abortConditions: ["Unexpected effects"],
+            toolName: "bash",
+            input: { command: "glean search owner --limit 5" },
+          },
+          undefined,
+          undefined,
+          result.ctx,
+        );
+        result.pi.setModel = () => scheduler.schedule(Promise.resolve(true), "model switch");
+        scheduling = true;
+        let review;
+        const start = {
+          check: () => true,
+          toString: () => "startReview",
+          async run() {
+            review = settleAgentRun(result);
+          },
+        };
+        const model = { revoked: false };
+        const real = { ...result, pending: [] };
+        // Commands launch hooks synchronously. Awaiting an internally scheduled hook inside a
+        // scheduled command would hold the scheduler while waiting for itself to release a ledger write.
+        await fc.scheduledModelRun(scheduler, () => ({ model, real }), [start, ...sequence]);
+        await scheduler.waitFor(Promise.all([review, ...real.pending]));
+        const active = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+        if (model.revoked) {
+          assert.notEqual(active?.lifecycle.phase, "review");
+          assert.equal(active?.lifecycle.discovery, undefined);
+          assert.equal(active?.lifecycle.grant, undefined);
+        } else assert.equal(active.lifecycle.phase, "review");
+      }),
+      fastCheckOptions,
+    );
+  });
+
+  it("reconciles secondary before settlement advances the lease revision (#73)", async () => {
+    const secondary = deferred();
+    const features = {
+      risk: "critical",
+      actionMode: "destructive",
+      intent: "operate",
+      workflowType: "incident_or_operations",
+    };
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ ...features, confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: [
+        ...standardRoutingModels(),
+        routingModel("google-vertex", "gemini-3.6-flash"),
+        routingModel("openai-codex", "gpt-6-astra"),
+      ],
+      mode: "active",
+      prompt: "Rotate production credential",
+      sessionId: "secondary-before-settlement",
+    });
+    const latest = () => result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    startAgentRun(result);
+    result.ctx.model = result.ctx.modelRegistry.find(latest().selected.provider, latest().selected.modelId);
+    await endAgentTurn(result);
+    await result.hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: latest().selected.provider,
+            model: latest().selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      result.ctx,
+    );
+    secondary.resolve(classificationResult(2, { ...features, confidence: 0.95 }));
+    await flushMicrotasks();
+    await result.hooks.get("agent_settled")({}, result.ctx);
+    assert.equal(latest().lifecycle.evidenceRepairAttempted, true);
+    assert.ok(result.events.some((event) => event.kind === "secondary_reconciliation"));
+    assert.equal(
+      result.events.some((event) => event.data.reason === "lease_revision_changed"),
+      false,
+    );
+    const decision = result.hooks.get("tool_call")(
+      { toolCallId: "unapproved", toolName: "bash", input: { command: "rotate production credential" } },
+      result.ctx,
+    );
+    assert.match(decision.reason, /preflight/);
+    assert.doesNotMatch(decision.reason, /Secondary safety classification is pending/);
+  });
+
+  it("keeps the parent's secondary safety latch when classification fails during its review", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.constantFrom("transport", "schema", "valid"), fc.boolean(), async (failure, afterVerdict) => {
+        const secondary = deferred();
+        const result = await runAdapterTurn({
+          classifyPrimaryTask: async () =>
+            primaryClassificationResult({
+              confidence: 0.6,
+              risk: "critical",
+              actionMode: "destructive",
+              intent: "operate",
+              workflowType: "incident_or_operations",
+            }),
+          classifySecondaryTask: async () => secondary.promise,
+          models: [
+            ...standardRoutingModels(),
+            routingModel("google-vertex", "gemini-3.6-flash"),
+            routingModel("openai-codex", "gpt-6-astra"),
+          ],
+          mode: "active",
+          prompt: "Rotate production credential",
+          sessionId: "secondary-review-family",
+        });
+        const latest = () =>
+          result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+        startAgentRun(result);
+        await result.tools
+          .get("submit_action_plan")
+          .execute("plan", irreversibleActionPlan(), undefined, undefined, result.ctx);
+        await settleAgentRun(result);
+        const child = latest();
+        assert.equal(child.lifecycle.phase, "review");
+        startAgentRun(result);
+        const failSecondary = async () => {
+          if (failure === "transport") secondary.reject(new Error("secondary transport failed"));
+          else
+            secondary.resolve(
+              classificationResult(failure === "valid" ? 2 : 1, {
+                confidence: failure === "valid" ? 0.95 : 0.6,
+                risk: "critical",
+                actionMode: "destructive",
+                intent: "operate",
+                workflowType: "incident_or_operations",
+              }),
+            );
+          await flushMicrotasks();
+        };
+        if (!afterVerdict) await failSecondary();
+        await result.tools.get("submit_safety_review").execute(
+          "verdict",
+          {
+            reviewKind: "authorization",
+            scopeFingerprint: child.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "Checked exact plan",
+            evidence: ["Verified targets"],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          result.ctx,
+        );
+        if (afterVerdict) await failSecondary();
+        await settleAgentRun(result);
+        assert.equal(latest().lifecycle.phase, "authorized_execution");
+        const decision = result.hooks.get("tool_call")(
+          {
+            toolCallId: "execute-approved",
+            toolName: "bash",
+            input: { command: "rotate production credential" },
+          },
+          result.ctx,
+        );
+        if (failure === "valid")
+          assert.equal(decision, undefined, "a reconciled provider-diverse answer releases the gate");
+        else {
+          assert.equal(
+            decision?.block,
+            true,
+            "review approval must not resolve an unanswered secondary safety question",
+          );
+          assert.match(decision.reason, /Secondary safety classification is pending/);
+        }
+        result.ctx.sessionManager.getBranch = () => result.appended.map((entry) => ({ type: "custom", ...entry }));
+        await result.hooks.get("session_start")({ reason: "reload" }, result.ctx);
+        const restoredDecision = result.hooks.get("tool_call")(
+          { toolCallId: "after-reload", toolName: "bash", input: { command: "rotate production credential" } },
+          result.ctx,
+        );
+        if (failure === "valid") assert.equal(restoredDecision, undefined);
+        else assert.match(restoredDecision.reason, /Secondary safety classification is pending/);
+        const reload = result.hooks.get("session_start")({ reason: "reload" }, result.ctx);
+        const duringReload = result.hooks.get("tool_call")(
+          { toolCallId: "during-reload", toolName: "bash", input: { command: "rotate production credential" } },
+          result.ctx,
+        );
+        assert.equal(duringReload?.block, true, "authorization must be closed while restoration awaits");
+        assert.match(duringReload.reason, /preflight/);
+        await result.hooks.get("input")(
+          { text: "Cancel rotation; investigate instead", source: "interactive" },
+          result.ctx,
+        );
+        await reload;
+        const supersededRestore = result.hooks.get("tool_call")(
+          { toolCallId: "superseded-reload", toolName: "bash", input: { command: "rotate production credential" } },
+          result.ctx,
+        );
+        assert.equal(supersededRestore?.block, true, "new input must supersede the persisted authorization");
+      }),
+      fastCheckOptions,
+    );
+  });
+
   it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
@@ -5237,7 +6607,7 @@ describe("routerExtension", () => {
       {
         type: "custom",
         customType: "model-router-state",
-        data: { mode: "active", manualOverride: false, active: parent },
+        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
       },
     ];
     const pi = {

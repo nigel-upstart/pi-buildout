@@ -186,6 +186,10 @@ test("router and OTel share dependencies and keep the vendored license", () => {
     [],
   );
   assert.equal(manifest.dependencies["shell-quote"], "1.11.0");
+  const router = JSON.parse(readFileSync(join(root, "extensions", "router", "package.json"), "utf8"));
+  for (const [name, version] of Object.entries(router.dependencies)) assert.equal(manifest.dependencies[name], version);
+  assert.equal(manifest.dependencies.xstate, "5.33.2");
+  assert.ok(readFileSync(join(staged, "router", "core", "lease-machine.ts"), "utf8").includes("xstate"));
   const otel = JSON.parse(readFileSync(join(root, "extensions", "otel", "package.json"), "utf8"));
   for (const [name, version] of Object.entries(otel.dependencies)) assert.equal(manifest.dependencies[name], version);
 });

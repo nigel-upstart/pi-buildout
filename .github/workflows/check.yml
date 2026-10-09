@@ -28,6 +28,9 @@ jobs:
       - name: Install pinned dependencies
         run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
       - name: Check formatting, lint, types, and tests
+        env:
+          FC_NUM_RUNS: 500
+          FC_SEED: 730100
         run: npm run check
       - name: Audit dependencies
         run: npm run audit
