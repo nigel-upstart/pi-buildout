@@ -172,11 +172,13 @@ export function resolveContinuity(
   // A continuation keeps the lease's tool policy, so it must not absorb work that needs a different one:
   // entering or leaving planning (whose validator only accepts planning leases), a riskier action mode, or a
   // stricter safety policy. Risk alone can demand authorization at an unchanged action mode. A relaxed policy
-  // keeps the stricter lease rather than letting a reclassification escape an in-flight preflight.
+  // keeps the stricter lease rather than letting a reclassification escape an in-flight preflight. A generated
+  // review child carries reviewer attributes (code_review, local_read, ordinary), so every comparison uses its
+  // task family: the work that continues is the parent's.
   const family = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
   if (
-    isPlanningArchetype(deriveArchetype(features).archetype) !== isPlanningArchetype(lease.archetype) ||
-    ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[lease.features.actionMode] ||
+    isPlanningArchetype(deriveArchetype(features).archetype) !== isPlanningArchetype(family.archetype) ||
+    ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[family.features.actionMode] ||
     SAFETY_POLICY_RANK[deriveSafetyPolicy(features)] > SAFETY_POLICY_RANK[family.lifecycle.policy]
   ) {
     return { action: "new_task", reason: "continuity classification changed routing or action requirements" };

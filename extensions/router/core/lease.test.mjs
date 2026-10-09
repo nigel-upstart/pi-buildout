@@ -444,6 +444,18 @@ describe("task boundary gate", () => {
       cache,
     );
     assert.equal(sameFamily.action, "continue");
+    // The child's reviewer archetype and read-only action mode do not make the parent's own work look riskier.
+    const reviewerChild = {
+      ...review,
+      archetype: "code_review",
+      features: { ...review.features, actionMode: "local_read", intent: "review", workflowType: "code_review" },
+    };
+    assert.equal(
+      resolveContinuity(reviewerChild, { ...external, risk: "high", taskContinuity: "clear_continuation" }, cache)
+        .action,
+      "continue",
+      "continuity is judged against the task family, not the reviewer child",
+    );
 
     // Leaving code work for high-risk reversible non-code work adds the advisory phase's pre-action gate.
     const codeFeatures = {
