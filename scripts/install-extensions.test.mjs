@@ -115,6 +115,8 @@ test("installer locates pi through the managed launcher shim", async (context) =
   await mkdir(packageDirectory, { recursive: true });
   await writeFile(join(agentDirectory, "bin", "pi"), "#!/bin/sh\nexit 0\n");
   await chmod(join(agentDirectory, "bin", "pi"), 0o755);
+  // A failed managed lookup must not be rescued by a real globally installed Pi.
+  await writeFile(join(agentDirectory, "bin", "npm"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   await writeFile(join(agentDirectory, "install", "current-version"), `${releaseVersion}\n`);
   await writeFile(
     join(packageDirectory, "package.json"),
@@ -122,7 +124,7 @@ test("installer locates pi through the managed launcher shim", async (context) =
   );
 
   // No /skills patch exists for the fake release, so the installer stops after locating the package.
-  // Reaching that message proves the shim resolved; "Could not locate pi package" would be the old failure.
+  // Reaching that message proves the shim resolved without a globally installed Pi.
   const env = {
     ...process.env,
     PI_AGENT_DIR: agentDirectory,
@@ -144,6 +146,6 @@ test("installer locates pi through the managed launcher shim", async (context) =
   });
 
   assert.equal(result.code, 1);
-  assert.doesNotMatch(result.stderr, /Could not locate pi package/u);
+  assert.doesNotMatch(result.stderr, /Could not locate/u);
   assert.match(result.stderr, /No complete \/skills patch exists for pi 9\.9\.9/u);
 });
