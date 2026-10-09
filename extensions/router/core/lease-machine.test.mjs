@@ -157,6 +157,37 @@ describe("XState lease owner", () => {
     }
   });
 
+  it("ignores a redundant mode command so captured work and review bindings stay current", () => {
+    const parent = lease();
+    const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
+    const child = {
+      ...parent,
+      taskId: "review",
+      parentTaskId: parent.taskId,
+      parentLease: parent,
+      lifecycle: {
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: "task",
+        reviewKind: "authorization",
+        scopeFingerprint: "scope",
+      },
+    };
+    assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
+    const epoch = owner.epoch;
+    owner.send({ type: "MODE", mode: "active" });
+    assert.equal(owner.epoch, epoch, "re-requesting the current mode is not a revocation");
+    assert.equal(owner.reviewBindingCurrent, true);
+    owner.send({ type: "MODE", mode: "shadow" });
+    assert.notEqual(owner.epoch, epoch, "an actual mode change still revokes");
+    owner.send({ type: "MODE", mode: "active" });
+    owner.send({ type: "OVERRIDE" });
+    const overridden = owner.epoch;
+    owner.send({ type: "MODE", mode: "active" });
+    assert.notEqual(owner.epoch, overridden, "re-entering active mode still clears a manual override");
+    assert.equal(owner.state.active.manualOverride, false);
+  });
+
   it("keeps the installed lease's identity across mode changes unless an override is cleared", () => {
     const parent = lease();
     const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });

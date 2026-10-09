@@ -5231,6 +5231,60 @@ describe("routerExtension", () => {
     });
   }
 
+  it("keeps a valid approval when the operator re-requests the current mode during the review", async () => {
+    const { hooks, commands, tools, models, parent, ctx, latestLease, restoreEnvironment } =
+      await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+        ctx,
+      );
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const review = latestLease();
+      ctx.model = models.find(
+        (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
+      );
+      hooks.get("agent_start")();
+      await tools.get("submit_safety_review").execute(
+        "approve",
+        {
+          reviewKind: "authorization",
+          scopeFingerprint: review.lifecycle.scopeFingerprint,
+          verdict: "approve",
+          summary: "The exact plan is bounded.",
+          evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+          findings: [],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      // Routing is already active; re-requesting it changes nothing and must not revoke the review.
+      await commands.get("route").handler("active", ctx);
+      await hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: review.selected.provider,
+              model: review.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().taskId, parent.taskId);
+      assert.equal(latestLease().lifecycle.phase, "authorized_execution");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
   it("keeps a compaction boundary pending across a same-task repair so the next input re-routes", async () => {
     const { hooks, sent, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
     try {

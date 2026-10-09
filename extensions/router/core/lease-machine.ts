@@ -300,6 +300,12 @@ const leaseMachine = setup({
       ],
     },
     MODE: {
+      // A redundant mode command changes nothing, so it must not bump the epoch: that would make a valid
+      // in-flight review verdict look stale and supersede an in-flight routing turn. Re-entering active mode
+      // still applies when it clears a manual override.
+      guard: ({ context, event }) =>
+        context.state.mode !== event.mode ||
+        (event.mode === "active" && (context.state.manualOverride || context.state.active?.manualOverride === true)),
       target: ".selecting",
       actions: assign({
         epoch: ({ context }) => context.epoch + 1,
