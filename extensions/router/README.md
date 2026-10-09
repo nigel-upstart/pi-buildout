@@ -471,10 +471,10 @@ sequenceDiagram
   Lease->>Reviewer: REVIEW_STARTED, review bound to epoch n
   Reviewer->>Lease: SUBMIT_REVIEW (approve)
   Note over Lease: user input or compaction: INTENT or BOUNDARY, epoch n+1
-  Reviewer->>Lease: REVIEW_FINISHED with authorized_execution
-  Lease--xReviewer: rejected (review epoch n is not current)
+  Note over Reviewer: settlement sees the binding is stale and computes a preflight parent
   Reviewer->>Lease: REVIEW_FINISHED with preflight, approval withheld
   Lease-->>Builder: parent restored with plan kept, no execution continuation
+  Note over Lease: the guard would reject an authorized parent from this stale review
 ```
 
 A low-confidence secondary classification runs as a cancellable child actor of the task family, so it survives temporary
