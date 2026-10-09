@@ -4834,6 +4834,96 @@ describe("routerExtension", () => {
     });
   }
 
+  for (const [mode, kind, order] of ["off", "shadow"].flatMap((mode) =>
+    ["authorization", "completion"].flatMap((kind) =>
+      ["after the review run ends", "before the review run ends"].map((order) => [mode, kind, order]),
+    ),
+  )) {
+    it(`hands back a finished ${kind} review when /route ${mode} lands ${order}, without switching models`, async () => {
+      const fixture = await authorizationLifecycleFixture();
+      const { hooks, commands, tools, models, parent, ctx, latestLease, sent, selectedModels, restoreEnvironment } =
+        fixture;
+      const finishRun = (lease) =>
+        hooks.get("agent_end")(
+          {
+            messages: [
+              {
+                role: "assistant",
+                provider: lease.selected.provider,
+                model: lease.selected.modelId,
+                stopReason: "stop",
+                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+              },
+            ],
+          },
+          ctx,
+        );
+      try {
+        let review;
+        if (kind === "authorization") {
+          await hooks.get("session_start")({ reason: "reload" }, ctx);
+          await hooks.get("before_agent_start")(
+            { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+            ctx,
+          );
+          await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+          await hooks.get("agent_settled")({}, ctx);
+          review = latestLease();
+          ctx.model = models.find(
+            (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
+          );
+          hooks.get("agent_start")();
+          await tools.get("submit_safety_review").execute(
+            "approve",
+            {
+              reviewKind: "authorization",
+              scopeFingerprint: review.lifecycle.scopeFingerprint,
+              verdict: "approve",
+              summary: "The exact plan is bounded.",
+              evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+              findings: [],
+            },
+            undefined,
+            undefined,
+            ctx,
+          );
+        } else {
+          review = (await startAuthorizedCompletionReview(fixture)).completionReview;
+        }
+        assert.equal(latestLease().lifecycle.phase, "review");
+        if (order === "after the review run ends") await finishRun(review);
+        await commands.get("route").handler(mode, ctx);
+        if (order === "before the review run ends") await finishRun(review);
+        const modelSwitches = selectedModels.length;
+        const messages = sent.length;
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = latestLease();
+        assert.equal(restored.taskId, parent.taskId, "settlement while inactive must not strand the finished review");
+        assert.equal(restored.lifecycle.phase, "preflight", "no authority survives the mode change");
+        assert.match(restored.lifecycle.lastAuthorizationReview.summary, /Approval withheld/);
+        assert.equal(selectedModels.length, modelSwitches, "an inactive router does not switch models");
+        assert.equal(sent.length, messages, "an inactive router does not start a continuation");
+
+        await commands.get("route").handler("active", ctx);
+        assert.equal(latestLease().taskId, parent.taskId, "re-enabling finds the parent, not the review");
+        await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
+        await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
+        assert.deepEqual(
+          [selectedModels.at(-1).provider, selectedModels.at(-1).id],
+          [parent.selected.provider, parent.selected.modelId],
+          "the next user turn runs on the builder",
+        );
+        assert.match(
+          hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
+          /Irreversible-action preflight/,
+        );
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
   it("keeps a compaction boundary pending across a same-task repair so the next input re-routes", async () => {
     const { hooks, sent, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
     try {

@@ -1764,6 +1764,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     ctx: ExtensionContext,
     child: TaskLease,
     outcome: "completed" | "skipped",
+    // While routing is off or in shadow, the router must not switch models or start turns. The parent is still
+    // restored so re-enabling finds it rather than a finished review, and any authority stays withheld.
+    options: { inactive?: boolean } = {},
   ): Promise<void> {
     const leaseEpoch = leaseOwner.epoch;
     if (!child.parentLease || child.lifecycle.phase !== "review") return;
@@ -1887,7 +1890,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       };
     }
 
-    const restored = await applyChoice(ctx, original.selected);
+    const restored = options.inactive ? false : await applyChoice(ctx, original.selected);
+    if (options.inactive) triggerContinuation = false;
     if (leaseOwner.state.active !== owner) {
       // Another lease replaced the review during the model switch; it owns what happens next.
       reviewParentAttemptMetrics = undefined;
@@ -3475,7 +3479,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const leaseEpoch = leaseOwner.epoch;
     try {
       const active = leaseOwner.state.active;
-      if (!active || leaseOwner.state.mode !== "active" || active.executionFailed) return;
+      if (!active || active.executionFailed) return;
+      if (active.lifecycle.phase === "review" && leaseOwner.state.mode !== "active") {
+        // `/route off` or `shadow` between the review's verdict and settlement must not strand the finished
+        // review: re-enabling does not replay this event, so the next user turn would run under it. agent_end
+        // records no disposition while off, so hand back on the submitted verdict alone, and skip otherwise.
+        await restoreParentAfterReview(ctx, active, active.lifecycle.submission ? "completed" : "skipped", {
+          inactive: true,
+        });
+        return;
+      }
+      if (leaseOwner.state.mode !== "active") return;
       if (active.lifecycle.phase === "review") {
         if (attemptDisposition === "success" && active.lifecycle.submission) {
           await restoreParentAfterReview(ctx, active, "completed");
