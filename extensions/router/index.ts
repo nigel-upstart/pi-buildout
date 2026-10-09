@@ -3020,6 +3020,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         deterministicCheckCalls.clear();
         deterministicCheckResults.clear();
         potentiallyMutatingCalls.clear();
+        // Start the real secondary before the first await. ROUTE reserved a gated placeholder for the task
+        // family; if newer input superseded this hook during the ledger write, a same-task continuation would
+        // never start one, leaving that placeholder latch with nothing able to resolve it.
+        const secondaryTask = startSecondaryReconciliation({
+          ctx,
+          registry: routed.registry,
+          prompt: event.prompt,
+          synopsis: currentSynopsis,
+          classification: routedClassification,
+          lease,
+          hasImages: pending?.hasImages ?? Boolean(event.images?.length),
+          languageBucket,
+          languageBuckets: repository.languageBuckets,
+          contextBucket,
+          explorationKey: promptFingerprint(event.prompt),
+          cache: pending?.cache ?? { cachedTokens: 0, expectedReuseRatio: 0 },
+          primaryCompletedAtMs,
+        });
         await record(
           ctx,
           "route_decision",
@@ -3054,21 +3072,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           },
         );
         if (superseded()) return;
-        const secondaryTask = startSecondaryReconciliation({
-          ctx,
-          registry: routed.registry,
-          prompt: event.prompt,
-          synopsis: currentSynopsis,
-          classification: routedClassification,
-          lease,
-          hasImages: pending?.hasImages ?? Boolean(event.images?.length),
-          languageBucket,
-          languageBuckets: repository.languageBuckets,
-          contextBucket,
-          explorationKey: promptFingerprint(event.prompt),
-          cache: pending?.cache ?? { cachedTokens: 0, expectedReuseRatio: 0 },
-          primaryCompletedAtMs,
-        });
         if (secondaryTask) {
           await waitForSecondaryGrace(ctx, secondaryTask);
           if (superseded()) return;

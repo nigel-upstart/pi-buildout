@@ -708,12 +708,16 @@ async function runAdapterTurn({
       sentMessages.push({ message, options });
     },
   };
-  const telemetry = telemetryOverride ?? {
-    append: async (event) => {
-      events.push(event);
-    },
-    read: async () => [],
-  };
+  // A telemetry factory receives late-bound access to the adapter so a ledger write can interleave Pi events.
+  const telemetry =
+    typeof telemetryOverride === "function"
+      ? telemetryOverride({ hooks, events, getCtx: () => ctx })
+      : (telemetryOverride ?? {
+          append: async (event) => {
+            events.push(event);
+          },
+          read: async () => [],
+        });
   // Active mode only means something when the leased choice is reachable, so the registry and the
   // current model mirror the lease. A retention assertion then proves the router left that selection
   // alone rather than merely never reaching the apply step.
@@ -1772,6 +1776,60 @@ describe("routerExtension", () => {
     assert.equal(
       result.events.findLast(({ kind }) => kind === "secondary_reconciliation")?.data.reason,
       "no_material_delta",
+    );
+  });
+
+  it("starts the real secondary even when input supersedes the route during its ledger write", async () => {
+    const secondary = deferred();
+    let secondaryStarted = false;
+    let injected = false;
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => {
+        secondaryStarted = true;
+        return secondary.promise;
+      },
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "secondary-before-route-ledger",
+      telemetry: ({ hooks, events, getCtx }) => ({
+        append: async (event) => {
+          events.push(event);
+          // Steering lands while the route decision is being written, superseding this hook.
+          if (event.kind === "route_decision" && !injected) {
+            injected = true;
+            await hooks.get("input")(
+              { text: "Also cover the error path", source: "interactive", streamingBehavior: "steer" },
+              getCtx(),
+            );
+          }
+        },
+        read: async () => [],
+      }),
+    });
+    assert.equal(injected, true);
+    assert.equal(secondaryStarted, true, "the reserved safety question must have a classifier that can answer it");
+    startAgentRun(result);
+    assert.match(
+      result.hooks.get("tool_call")({
+        toolCallId: "edit-while-pending",
+        toolName: "edit",
+        input: { path: "README.md", oldString: "old", newString: "new" },
+      }).reason,
+      /Secondary safety classification is pending/,
+    );
+    secondary.resolve(classificationResult(2, { confidence: 0.95 }));
+    await flushMicrotasks();
+    await endAgentTurn(result);
+    assert.equal(
+      result.hooks.get("tool_call")({
+        toolCallId: "edit-after-reconcile",
+        toolName: "edit",
+        input: { path: "README.md", oldString: "old", newString: "new" },
+      }),
+      undefined,
+      "the latch resolves once the secondary answers",
     );
   });
 
