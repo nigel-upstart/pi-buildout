@@ -5379,6 +5379,7 @@ describe("routerExtension", () => {
     const entries = [];
     const messages = [];
     const events = [];
+    const notices = [];
     const now = new Date().toISOString();
     const choice = (provider, modelId, vendor, profileId) => ({
       provider,
@@ -5460,9 +5461,10 @@ describe("routerExtension", () => {
       registerTool: (tool) => tools.set(tool.name, tool),
       appendEntry: (customType, data) => entries.push({ customType, data }),
       sendMessage: (message, options) => messages.push({ message, options }),
-      setModel: async () => {
+      setModel: async (model) => {
         setModelCalls++;
         await modelGate;
+        if (setModelResult) ctx.model = model;
         return setModelResult;
       },
       setThinkingLevel: () => {},
@@ -5488,7 +5490,7 @@ describe("routerExtension", () => {
         setStatus: () => {},
         setWorkingMessage: () => {},
         setWorkingVisible: () => {},
-        notify: () => {},
+        notify: (message, level) => notices.push({ message, level }),
       },
     };
     routerExtension(pi, {
@@ -6093,13 +6095,59 @@ describe("routerExtension", () => {
       },
       ctx,
     );
+    setModelResult = false;
     await hooks.get("agent_settled")({}, ctx);
+    assert.equal(ctx.model.id, runningReview.selected.modelId, "a failed switch leaves the reviewer selected");
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+    await assert.rejects(
+      tools.get("submit_action_plan").execute("unrestored-plan", irreversibleActionPlan(), undefined, undefined, ctx),
+      /builder model was not restored after a revoked independent review/,
+    );
+    setModelResult = true;
+    // New input during settlement's builder switch supersedes the settled run: no failure notice, no
+    // generated follow-up, and while the reviewer is still selected submissions stay blocked until that input's turn
+    // preparation restores the builder.
+    const supersededSwitch = deferred();
+    modelGate = supersededSwitch.promise;
+    setModelResult = false;
+    const followUpsBefore = messages.length;
+    const noticesBefore = notices.length;
+    const supersededSettlement = hooks.get("agent_settled")({}, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    await hooks.get("input")(
+      { text: "Steer during the builder switch", source: "interactive", streamingBehavior: "steer" },
+      ctx,
+    );
+    supersededSwitch.resolve();
+    await supersededSettlement;
+    modelGate = Promise.resolve();
+    setModelResult = true;
+    assert.equal(
+      notices.slice(noticesBefore).some(({ message }) => /Could not switch back to the builder model/.test(message)),
+      false,
+      "a superseded switch is not reported as a restore failure",
+    );
+    assert.equal(messages.length, followUpsBefore, "the superseded run queues no generated follow-up");
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+    ctx.model = models.find((model) => model.id === runningReview.selected.modelId);
+    const builderModel = deferred();
+    modelGate = builderModel.promise;
+    const settlingRevokedReview = hooks.get("agent_settled")({}, ctx);
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+    builderModel.resolve();
+    await settlingRevokedReview;
+    modelGate = Promise.resolve();
     assert.equal(latest().lifecycle.phase, "preflight");
     assert.equal(latest().lifecycle.discovery, undefined, "the reviewer model left no request behind");
     assert.equal(reviewPrompts(), reviewStartsBefore, "no review starts from the reviewer's run");
-    ctx.model = models[0];
+    assert.equal(ctx.model.provider, builder.provider, "settlement restores the selected builder provider");
+    assert.equal(ctx.model.id, builder.modelId, "settlement restores the selected builder model");
+    // Extension-generated follow-ups skip before_agent_start, so settlement must restore the model.
+    hooks.get("agent_start")({}, ctx);
     await submit();
     assert.ok(latest().lifecycle.discovery, "submissions reopen once the run has settled");
+    assert.equal(ctx.model.provider, latest().selected.provider, "the request author matches the lease provider");
+    assert.equal(ctx.model.id, latest().selected.modelId, "the request author matches the lease model");
 
     // Revocation while agent_end awaits its telemetry must not count the revoked review as a success.
     await hooks.get("agent_end")(
@@ -6165,10 +6213,27 @@ describe("routerExtension", () => {
     await ending;
     telemetryGate = Promise.resolve();
     gatedKind = undefined;
+    setModelResult = false;
     await hooks.get("agent_settled")({}, ctx);
     assert.equal(latest().lifecycle.phase, "preflight");
     assert.equal(latest().lifecycle.grant, undefined, "a revoked review's verdict grants nothing");
     assert.equal(repairs(), repairsBefore, "the revoked review's outcome must not start a repair turn");
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+    // A later run whose preparation also fails to restore the builder (no candidate can be selected) is not the
+    // revoked review's run, so it must not be reported as one.
+    const revokedRunModel = ctx.model;
+    ctx.model = { provider: "unlisted", id: "unlisted-model" };
+    await hooks.get("before_agent_start")({ prompt: "Continue the task", systemPrompt: "base", images: [] }, ctx);
+    hooks.get("agent_start")({}, ctx);
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+    ctx.model = revokedRunModel;
+    setModelResult = true;
+    await hooks.get("before_agent_start")({ prompt: "Continue the task", systemPrompt: "base", images: [] }, ctx);
+    assert.equal(ctx.model.id, builder.modelId, "a later ordinary turn can restore the builder");
+    await submit();
+    assert.ok(latest().lifecycle.discovery, "successful turn preparation reopens discovery submissions");
+    await tools.get("submit_action_plan").execute("restored-plan", irreversibleActionPlan(), undefined, undefined, ctx);
+    assert.ok(latest().lifecycle.plan, "successful turn preparation reopens action plan submissions");
   });
 
   it("never resurrects discovery reviews under generated ledger/model-switch schedules", async () => {
@@ -6270,6 +6335,110 @@ describe("routerExtension", () => {
       fastCheckOptions,
     );
   });
+
+  for (const inactiveMode of ["off", "shadow"]) {
+    it(`keeps preflight blocked when /route ${inactiveMode} hands back a running review until the builder is restored`, async () => {
+      let outcomeGate;
+      const result = await runAdapterTurn({
+        classifyTask: successfulClassifier(1, {
+          confidence: 0.95,
+          risk: "critical",
+          actionMode: "destructive",
+          intent: "operate",
+          workflowType: "incident_or_operations",
+        }),
+        models: [
+          ...standardRoutingModels(),
+          routingModel("google-vertex", "gemini-3.6-flash"),
+          routingModel("openai-codex", "gpt-6-astra"),
+        ],
+        telemetry: {
+          read: async () => [],
+          append: async (event) => {
+            if (event.kind !== "outcome" || !outcomeGate) return;
+            const gate = outcomeGate;
+            outcomeGate = undefined;
+            await gate.promise;
+          },
+        },
+        mode: "active",
+        prompt: "Discover owner before production deletion",
+        sessionId: `route-${inactiveMode}-hand-back`,
+      });
+      result.pi.setModel = async (model) => {
+        result.ctx.model = model;
+        return true;
+      };
+      const latest = () => result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+      const request = {
+        purpose: "discovery",
+        objective: "Find owner",
+        target: "inventory",
+        expectedEffects: ["Return owner"],
+        preconditions: ["Bounded query"],
+        verification: ["Compare identifiers"],
+        abortConditions: ["Unexpected effects"],
+        toolName: "bash",
+        input: { command: "glean search owner --limit 5" },
+      };
+      const submit = () =>
+        result.tools.get("submit_discovery_request").execute("request", request, undefined, undefined, result.ctx);
+      startAgentRun(result);
+      await submit();
+      const builder = latest().selected;
+      await settleAgentRun(result);
+      const review = latest();
+      assert.equal(review.lifecycle.phase, "review");
+      assert.notEqual(review.selected.modelId, builder.modelId, "the review runs on a separate model");
+
+      // /route off revokes the running review and shadow leaves it installed; either way, settlement while inactive
+      // hands it back passively and switches no models.
+      result.ctx.model = result.ctx.modelRegistry.find(review.selected.provider, review.selected.modelId);
+      startAgentRun(result);
+      await result.commands.get("route").handler(inactiveMode, result.ctx);
+      await endAgentTurn(result);
+      await result.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: review.selected.provider,
+              model: review.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        result.ctx,
+      );
+      // The hand-back installs the parent before awaiting its outcome telemetry; re-enabling during that await
+      // restores the submission tools at once, so the parent must already be blocked.
+      const handBackTelemetry = deferred();
+      outcomeGate = handBackTelemetry;
+      const settling = result.hooks.get("agent_settled")({}, result.ctx);
+      await flushMicrotasks();
+      await result.commands.get("route").handler("active", result.ctx);
+      await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+      handBackTelemetry.resolve();
+      await settling;
+      assert.equal(latest().lifecycle.phase, "preflight");
+      assert.equal(result.ctx.model.id, review.selected.modelId, "the reviewer model is still selected");
+
+      // Re-enabling restores the safety tools at once, before any turn could restore the builder, so an
+      // extension-generated turn must not submit under the reviewer model.
+      await result.commands.get("route").handler("active", result.ctx);
+      await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+
+      await result.hooks.get("before_agent_start")(
+        { prompt: "Continue the task", systemPrompt: "base", images: [] },
+        result.ctx,
+      );
+      assert.equal(result.ctx.model.id, builder.modelId, "turn preparation restores the builder");
+      startAgentRun(result);
+      await submit();
+      assert.ok(latest().lifecycle.discovery, "submissions reopen once the builder is restored");
+    });
+  }
 
   it("reconciles secondary before settlement advances the lease revision (#73)", async () => {
     const secondary = deferred();

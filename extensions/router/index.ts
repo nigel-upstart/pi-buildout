@@ -534,9 +534,20 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let agentRunPhase: AgentRunPhase = "before_start";
   /**
    * Set when a discovery review is revoked while its run is still active. The parent lease is installed at once, but the
-   * reviewer model keeps running until that run settles, so preflight submissions stay blocked until then.
+   * reviewer model keeps running until that run settles, so preflight submissions stay blocked until the builder is restored.
    */
   let revokedReviewStillRunning = false;
+  /** The revoked review's own run is still in progress, as opposed to a later turn awaiting the builder's restoration. */
+  let revokedReviewRunActive = false;
+
+  /** Explains why a submission is blocked: the revoked reviewer is still running, or its builder was never restored. */
+  function revokedReviewSubmissionError(): Error {
+    return new Error(
+      revokedReviewRunActive
+        ? "A revoked independent review is still running; submit after this run ends and the builder model is restored"
+        : "The builder model was not restored after a revoked independent review; submit on a later turn once the router restores it",
+    );
+  }
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
 
@@ -561,6 +572,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const active = leaseOwner.state.active;
     if (active && holdsDiscovery(active) && active.lifecycle.phase === "review" && agentRunPhase === "active") {
       revokedReviewStillRunning = true;
+      revokedReviewRunActive = true;
     }
     leaseOwner.send({ type: "INVALIDATE", reason, discoveryOnly });
   }
@@ -2384,6 +2396,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (!leaseOwner.advance("PREPARE", applied, active, leaseEpoch)) return;
       persistState();
     }
+    if (agentRunPhase === "before_start" && applied.lifecycle.phase !== "review") {
+      // A settlement switch may have failed; successful preparation now restores builder ownership.
+      revokedReviewStillRunning = false;
+    }
     return applied;
   }
 
@@ -2398,11 +2414,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error("submit_action_plan is only valid inside an active irreversible-action preflight lease");
       }
-      if (revokedReviewStillRunning) {
-        throw new Error(
-          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
-        );
-      }
+      if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateActionPlan(params);
       // Telemetry is awaited only after the lease update, so a lease replaced during the await can
       // never be overwritten with this stale submission.
@@ -2468,11 +2480,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error("submit_discovery_request is only valid inside an active irreversible-action preflight lease");
       }
-      if (revokedReviewStillRunning) {
-        throw new Error(
-          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
-        );
-      }
+      if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateDiscoveryRequest(params);
       // As for action plans, the request is installed before telemetry is awaited.
       const recordValidation = () =>
@@ -2654,6 +2662,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     await abortSecondaryWork(ctx, "session_start", { retainSafetyLatch: true });
     attemptDisposition = "unknown";
     revokedReviewStillRunning = false;
+    revokedReviewRunActive = false;
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
     scope = await readRouterScope(ctx.cwd);
     const branch = ctx.sessionManager.getBranch();
@@ -3523,6 +3532,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         // settlement must not strand the finished review: re-enabling does not replay this event, so the next
         // user turn would run under it. Neither records a usable disposition (agent_end skips while off, and an
         // override makes the run incomplete), so hand back on the submitted verdict alone, and skip otherwise.
+        // An inactive hand-back leaves the reviewer selected, and `/route active` restores the submission tools at
+        // once, even while the hand-back awaits its telemetry, so submissions wait for the builder from before the
+        // parent is installed (judged after the drains below). An override keeps the operator's model.
+        if (!manualOverride) revokedReviewStillRunning = true;
         await restoreParentAfterReview(ctx, active, active.lifecycle.submission ? "completed" : "skipped", {
           passive: true,
           manualOverride,
@@ -3530,6 +3543,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         return;
       }
       if (leaseOwner.state.mode !== "active") return;
+      if (revokedReviewStillRunning && !manualOverride) {
+        // Generated follow-ups skip before_agent_start, so restore the builder before settlement queues one,
+        // keeping preflight submissions blocked through the asynchronous switch and after a failed switch.
+        const revokedReviewRestored = await applyChoice(ctx, active.selected);
+        if (!leaseOwner.owns(active, leaseEpoch)) return;
+        if (!revokedReviewRestored) {
+          ctx.ui.notify(
+            "Could not switch back to the builder model after the revoked review; preflight submissions stay blocked until it is restored",
+            "error",
+          );
+          return;
+        }
+      }
       if (active.lifecycle.phase === "review") {
         if (attemptDisposition === "success" && active.lifecycle.submission) {
           await restoreParentAfterReview(ctx, active, "completed");
@@ -3678,12 +3704,25 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const settled: ReconciliationBoundary = { kind: "agent_settled", promptRefreshAllowed: false, continuing: false };
       await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
-      revokedReviewStillRunning = false;
+      revokedReviewRunActive = false;
       insideProviderTurn = false;
       activeToolExecutions = 0;
       // A result queued while the drain above was awaited missed it, and the eager drain only runs
       // once the phase is settled, so drain again rather than leave it for the next run.
       await drainSecondaryReconciliation(ctx, settled);
+      // Submissions reopen only once the live model is the final lease's selection, judged after both drains
+      // because a correction can switch models and still be rejected. A failed restore, or an inactive mode
+      // (which switches no models while `/route active` restores the safety tools at once), keeps them blocked
+      // until a later turn preparation restores the builder.
+      const final = leaseOwner.state.active;
+      if (
+        !final ||
+        leaseOwner.state.manualOverride ||
+        final.manualOverride ||
+        (ctx.model?.provider === final.selected.provider && ctx.model.id === final.selected.modelId)
+      ) {
+        revokedReviewStillRunning = false;
+      }
     }
   });
 
