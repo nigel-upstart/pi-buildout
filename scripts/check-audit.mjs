@@ -29,6 +29,19 @@ const ALLOWLIST = [
     reason:
       "No patched braces release is published. The remaining high findings in micromatch, fast-glob, globby, and markdownlint-cli2 are derived from this exact development-tool dependency path; markdownlint's separate low-severity finding is also a source of the cli2 aggregate.",
   },
+  ...["https://github.com/advisories/GHSA-qhr7-859c-m2p7", "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p"].map(
+    (advisoryUrl) => ({
+      package: "brace-expansion",
+      advisoryUrl,
+      nodePaths: [
+        "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
+        "node_modules/pi-coding-agent-0.87.1/node_modules/brace-expansion",
+      ],
+      recordedAt: "2026-10-07",
+      reason:
+        "The published npm-shrinkwrap.json of pi-coding-agent 1.0.0 (the minimum supported pi, pinned exactly) and 0.87.1 (the patch-baseline alias) pins brace-expansion 5.0.9, and npm overrides do not reach shrinkwrapped dependencies. Pi 1.0.1 and later ship no shrinkwrap; drop this entry when the development pin or the alias moves.",
+    }),
+  ),
 ];
 
 function runAudit() {

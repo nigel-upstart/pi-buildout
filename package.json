@@ -62,6 +62,7 @@
     "knip": "^6.27.0",
     "lefthook": "^2.1.10",
     "markdownlint-cli2": "^0.23.0",
+    "pi-coding-agent-1.0.3": "npm:@earendil-works/pi-coding-agent@1.0.3",
     "prettier": "^3.6.0",
     "prettier-plugin-sh": "^0.19.0",
     "secretlint": "^13.0.2",
