@@ -384,3 +384,106 @@ logical model and effort still precedes every different-model fallback.
 - A validated provider-diverse classifier result may serve as failover, but complete classification failure retains the
   current selection instead of manufacturing evidence for a premium route.
 - The request remains a native user message and is never paraphrased into system policy.
+
+### Lease lifecycle state machine
+
+A single XState v5 actor (`core/lease-machine.ts`) owns the router mode, pending hard boundaries, and the installed
+lease. The actor is deliberately flat: every accepted event is handled at the root and re-enters the transient
+`selecting` state, which projects the current mode and lifecycle phase onto one of the states below.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> selecting
+  selecting --> off: mode is off
+  selecting --> idle: no active lease
+  selecting --> review: phase review
+  selecting --> preflight: phase preflight
+  selecting --> discovery: phase discovery_ready
+  selecting --> completed: phase completed
+  selecting --> execution: any other phase
+```
+
+Lease advances (`ROUTE`, `SUBMIT_*`, `REVIEW_*`, `FALLBACK`, `REPAIR`, and the rest) must name the current owner lease
+and routing epoch. `INTENT`, `BOUNDARY`, `INVALIDATE`, `MODE`, `OVERRIDE`, `RESET`, and `RESTORE` bump the epoch, so
+work captured before them can no longer advance the lease.
+
+The safety workflow lives in the lease's lifecycle phase. Each task starts in the phase its safety policy selects.
+Generated reviews run as read-only child leases that hold their parent: `REVIEW_STARTED` installs the child,
+`SUBMIT_REVIEW` records its verdict, and `REVIEW_FINISHED` restores the parent with the outcome.
+
+The `authorization_then_completion_review` policy governs irreversible actions:
+
+```mermaid
+stateDiagram-v2
+  state "authorization review" as auth_review
+  state "completion review" as completion_review
+  [*] --> preflight
+  preflight --> preflight: SUBMIT_PLAN or SUBMIT_DISCOVERY
+  preflight --> auth_review: REVIEW_STARTED
+  auth_review --> authorized_execution: plan approved
+  auth_review --> discovery_ready: discovery approved
+  auth_review --> preflight: rejected or withheld
+  discovery_ready --> preflight: SPEND_DISCOVERY or INVALIDATE
+  authorized_execution --> preflight: INVALIDATE
+  authorized_execution --> completion_review: REVIEW_STARTED
+  completion_review --> completed: REVIEW_FINISHED
+  completed --> preflight: new user input
+```
+
+Approval requires a reviewer from a different vendor than the builder, an exact scope fingerprint, a restored builder
+model, and an authorization review bound to the epoch in which it started. New input, compaction, a manual override, or
+a session change invalidates an authorization. A resumed authorized task regains `authorized_execution` only in the
+session that obtained the approval; elsewhere it returns to `preflight`.
+
+The `completion_review` and `advisory_then_completion_review` policies govern high-risk reversible work. An advisory
+review's verdict is advice, never authorization:
+
+```mermaid
+stateDiagram-v2
+  state "advisory review" as advisory_review
+  state "completion review" as completion_review
+  [*] --> ordinary: ordinary policy
+  [*] --> building: completion_review
+  [*] --> advisory_pending: advisory_then_completion_review
+  advisory_pending --> advisory_review: REVIEW_STARTED
+  advisory_review --> ready_after_advisory: REVIEW_FINISHED
+  building --> completion_review: REVIEW_STARTED
+  ready_after_advisory --> completion_review: REVIEW_STARTED
+  completion_review --> completed: REVIEW_FINISHED
+  completed --> building: resumed
+  completed --> ready_after_advisory: resumed
+```
+
+The epoch binding closes a race between a verdict and its settlement. If new input, compaction, a reload, or a mode or
+override change arrives after `REVIEW_STARTED`, the review can still finish, but only by handing control back without
+the grant. The pending hard boundary survives the hand-back.
+
+```mermaid
+sequenceDiagram
+  participant Builder as Builder turn
+  participant Lease as Lease actor
+  participant Reviewer as Reviewer turn
+  Builder->>Lease: SUBMIT_PLAN (epoch n)
+  Lease->>Reviewer: REVIEW_STARTED, review bound to epoch n
+  Reviewer->>Lease: SUBMIT_REVIEW (approve)
+  Note over Lease: user input or compaction: INTENT or BOUNDARY, epoch n+1
+  Reviewer->>Lease: REVIEW_FINISHED with authorized_execution
+  Lease--xReviewer: rejected (review epoch n is not current)
+  Reviewer->>Lease: REVIEW_FINISHED with preflight, approval withheld
+  Lease-->>Builder: parent restored with plan kept, no execution continuation
+```
+
+A low-confidence secondary classification runs as a cancellable child actor of the task family, so it survives temporary
+review children. Its safety latch stays closed until a valid, provider-diverse answer is reconciled: `RESOLVE` releases
+it, and `RETAIN` or a failed attempt keeps it closed.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> running
+  running --> queued: classification settles
+  running --> stopped: error
+  running --> stopped: ABORT (latch kept when requested)
+  queued --> stopped: ABORT
+```
