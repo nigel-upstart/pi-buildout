@@ -238,6 +238,73 @@ describe("single-call discovery grants", () => {
     assert.equal(validateDiscoveryRequest({ ...request(), input: revoked.proxy }).success, false);
   });
 
+  it("accepts requests up to 64 KiB of serialized JSON without changing exact inputs", () => {
+    const empty = { ...request(), input: { command: "" } };
+    const overhead = Buffer.byteLength(JSON.stringify(empty), "utf8");
+    for (const bytes of [65_535, 65_536, 65_537]) {
+      const candidate = { ...empty, input: { command: "x".repeat(bytes - overhead - 2) + "  " } };
+      assert.equal(Buffer.byteLength(JSON.stringify(candidate), "utf8"), bytes);
+      const validated = validateDiscoveryRequest(candidate);
+      assert.equal(validated.success, bytes <= 65_536);
+      if (validated.success) {
+        assert.deepEqual(validated.request, candidate);
+        assert.equal(validated.request.input, candidate.input);
+        assert.equal(validated.fingerprint, safetyFingerprint(candidate));
+      } else {
+        assert.match(validated.errors.join("\n"), /64 KiB \(65536 bytes\)/);
+        assert.equal("request" in validated, false);
+        assert.equal("fingerprint" in validated, false);
+      }
+    }
+  });
+
+  it("counts UTF-8 bytes and JSON escaping at the size boundary", () => {
+    const empty = { ...request(), input: { command: "" } };
+    const available = 65_536 - Buffer.byteLength(JSON.stringify(empty), "utf8");
+    for (const character of ["é", "😀", '"', "\u0000", "\ud800"]) {
+      const bytesPerCharacter = Buffer.byteLength(JSON.stringify(character), "utf8") - 2;
+      const command =
+        character.repeat(Math.floor(available / bytesPerCharacter)) + " ".repeat(available % bytesPerCharacter);
+      const candidate = { ...empty, input: { command } };
+      assert.equal(Buffer.byteLength(JSON.stringify(candidate), "utf8"), 65_536);
+      const validated = validateDiscoveryRequest(candidate);
+      assert.equal(validated.success, true);
+      assert.equal(validated.request.input.command, command);
+      const tooLarge = { ...candidate, input: { command: command + "x" } };
+      assert.match(validateDiscoveryRequest(tooLarge).errors.join("\n"), /64 KiB \(65536 bytes\)/);
+    }
+  });
+
+  it("counts metadata, input keys, and nested values in the aggregate limit", () => {
+    const candidates = [
+      { ...request(), input: { command: "x".repeat(65_536 - 20) } },
+      { ...request(), input: { ["x".repeat(65_536)]: "" } },
+      { ...request(), input: { parts: Array.from({ length: 128 }, () => "x".repeat(512)) } },
+      {
+        ...request(),
+        expectedEffects: Array.from({ length: 20 }, () => "x".repeat(2_000)),
+        preconditions: Array.from({ length: 20 }, () => "x".repeat(2_000)),
+        input: {},
+      },
+    ];
+    assert.ok(Buffer.byteLength(JSON.stringify(candidates[0].input), "utf8") < 65_536);
+    for (const candidate of candidates) {
+      assert.ok(Buffer.byteLength(JSON.stringify(candidate), "utf8") > 65_536);
+      assert.match(validateDiscoveryRequest(candidate).errors.join("\n"), /64 KiB \(65536 bytes\)/);
+    }
+  });
+
+  it("rejects a very large single string with a bounded error instead of truncating it", () => {
+    const candidate = { ...request(), input: { command: "x".repeat(5_000_000) } };
+    const validated = validateDiscoveryRequest(candidate);
+    assert.equal(validated.success, false);
+    assert.match(validated.errors.join("\n"), /64 KiB \(65536 bytes\)/);
+    assert.ok(validated.errors.join("\n").length < 300);
+    assert.equal("request" in validated, false);
+    assert.equal("fingerprint" in validated, false);
+    assert.equal(candidate.input.command.length, 5_000_000);
+  });
+
   it("validates the grant binding to task, cwd, session, request and reviewer identity", () => {
     const lifecycle = ready();
     assert.equal(isLeaseLifecycle(lifecycle), true);

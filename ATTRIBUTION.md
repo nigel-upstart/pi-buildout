@@ -311,20 +311,21 @@ scale, because the cost-bearing Verified population tops out at a prior-generati
 router's cost-to-done model requires and single-attempt submissions cannot measure were not estimated or defaulted, and
 the data is structurally barred from that model rather than down-weighted within it. No model became routable.
 
-## Pi 0.85.1 `/skills` runtime patch
+## Pi 0.85.1 `/skills` runtime patch (retired)
+
+Historical attribution retained for the shared overlay. Its versioned artifacts were removed in #109.
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`)
 - License declared by the package: MIT
 
-[`patches/pi-0.85.1/skills.patch`](patches/pi-0.85.1/skills.patch) is a modified-code patch against Pi's published,
-generated runtime and documentation. It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`,
-`dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
-`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
-from the MIT-licensed Pi package. The bundled entrypoints become thin wrappers so the patched unbundled runtime handles
-CLI and RPC execution. The added `dist/core/skill-management.js` is primarily an original implementation for this
-repository, informed by Pi's resource-loading and command conventions.
+`patches/pi-0.85.1/skills.patch` is a modified-code patch against Pi's published, generated runtime and documentation.
+It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`, `dist/core/resource-loader.js`,
+`dist/core/slash-commands.js`, `dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their
+unchanged context and modified lines derive from the MIT-licensed Pi package. The bundled entrypoints become thin
+wrappers so the patched unbundled runtime handles CLI and RPC execution. The added `dist/core/skill-management.js` is
+primarily an original implementation for this repository, informed by Pi's resource-loading and command conventions.
 
 The persisted-skill locking helpers are modified adaptations of the synchronous `proper-lockfile` retry and guaranteed
 release pattern in Pi's MIT-licensed `dist/core/trust-manager.js`; the integration around the complete skill
@@ -336,20 +337,22 @@ precedence and project-trust behavior. It intentionally does not adopt automatic
 configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's unrelated extension, prompt,
 theme, package, trust, and provider behavior.
 
-## Pi 0.87.1 `/skills` runtime patch
+## Pi 0.87.1 `/skills` runtime patch (retired)
+
+Historical attribution retained for the shared overlay. Its versioned artifacts were removed in #109.
 
 - Source: `@earendil-works/pi-coding-agent@0.87.1`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revision reviewed: `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`)
 - License declared by the package: MIT
 
-[`patches/pi-0.87.1/skills.patch`](patches/pi-0.87.1/skills.patch) is a modified-code patch against Pi's published,
-generated runtime and documentation, generated from the TypeScript overlay below. It modifies upstream
-`dist/bundle/cli-runtime.js`, `dist/bundle/rpc-entry.js`, `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
-`dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
-lines derive from the MIT-licensed Pi package. The bundled runtime and RPC entrypoints become thin wrappers so the
-patched unbundled runtime handles CLI and RPC execution; upstream's `dist/bundle/cli.js` compile-cache loader is left
-unchanged and is only pinned by checksum in both manifests. The added `dist/core/skill-management.js` and
+`patches/pi-0.87.1/skills.patch` is a modified-code patch against Pi's published, generated runtime and documentation,
+generated from the TypeScript overlay below. It modifies upstream `dist/bundle/cli-runtime.js`,
+`dist/bundle/rpc-entry.js`, `dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
+`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
+from the MIT-licensed Pi package. The bundled runtime and RPC entrypoints become thin wrappers so the patched unbundled
+runtime handles CLI and RPC execution; upstream's `dist/bundle/cli.js` compile-cache loader is left unchanged and is
+only pinned by checksum in both manifests. The added `dist/core/skill-management.js` and
 `dist/core/skill-management-core.js` are compiled from this repository's original overlay code and are byte-identical to
 the 0.85.1 patch's copies.
 
@@ -362,7 +365,7 @@ intentionally does not adopt Pi 0.87.1's automatic loading of every discovered s
 extension, prompt, theme, package, trust, provider, compile-cache, or bundled-chunk behavior. The `docs/skills.md`
 changes were rewritten against 0.87.1's restructured skills page rather than carried over from 0.85.1.
 
-`scripts/skills-patch-entrypoint.test.mjs` writes a five-line stand-in for upstream 0.87.1's `dist/bundle/cli.js`
+The retired 0.87.1 entrypoint test wrote a five-line stand-in for upstream 0.87.1's `dist/bundle/cli.js`
 (`enableCompileCache()` followed by `createRequire(import.meta.url)("./cli-runtime.js")`). That shape is adapted from
 the MIT-licensed Pi package so the test can exercise the same `require()` dispatch the published loader performs.
 
@@ -408,21 +411,42 @@ its skill implementation were not copied into the overlay. The original `cli-run
 reused from the earlier patch; the published `dist/bundle/cli.js` loader is unchanged and checksum-pinned. Inputs come
 from the verified release archive and npm tarball; no complete Pi source checkout is committed.
 
+## Pi 1.1.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.1.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`)
+- Source archive: `pi-1.1.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.1.0/integration.patch`](pi-overlay/versions/1.1.0/integration.patch) adapts the opt-in skills
+seam to Pi 1.1.0's MIT-licensed TypeScript sources and documentation. The generated
+[`skills.patch`](patches/pi-1.1.0/skills.patch) modifies the published resource loader, slash-command list, CLI and
+interactive entry points, and skill documentation. It adds this repository's original skill-management modules and
+reuses Pi's package/resource discovery, project-trust, and `proper-lockfile` APIs. It keeps catalog skills inactive
+until explicitly enabled, preserves explicit `--skill` paths with `--no-skills`, and does not copy Pi's automatic skill
+loading or its skill implementation. The original `cli-runtime.js` wrapper reuses Pi's `setupCli()` path; the original
+`rpc-entry.js` wrapper also preserves Pi 1.1.0's process markers and HTTP-dispatcher setup. The published
+`dist/bundle/cli.js` loader remains unchanged and checksum-pinned. No complete Pi source checkout is committed.
+
 ## Pi `/skills` TypeScript overlay
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`,
-  `@earendil-works/pi-coding-agent@1.0.3`, and `@earendil-works/pi-coding-agent@1.0.4`
+  `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`, and
+  `@earendil-works/pi-coding-agent@1.1.0`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
-  `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`), and
-  `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), each taken from the npm registry's `gitHead` for that release
+  `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`),
+  `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), and `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`),
+  taken from the corresponding signed release tag
 - Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
-  `pi-1.0.3-source.tar.gz`, and `pi-1.0.4-source.tar.gz`, each verified against upstream's published `SHA256SUMS` for
-  that release
+  `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, and `pi-1.1.0-source.tar.gz`, each verified against upstream's
+  published `SHA256SUMS` for that release
 - License declared by the package: MIT
 
 [`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
-`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, and `patches/pi-1.0.4/` are generated from it.
+`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, and `patches/pi-1.1.0/` are
+generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
@@ -496,8 +520,8 @@ patterns.
 ### Router start-mode scoping (`extensions/router/core/start-mode.ts`)
 
 The router's start-mode configuration reuses the repository-identity scoping mechanism introduced by this repository's
-version-pinned pi skills patch ([`patches/pi-0.83.0/skills.patch`](patches/pi-0.83.0/skills.patch), applied to
-`@earendil-works/pi-coding-agent@0.83.0`, MIT), which itself extends pi's skills configuration.
+version-pinned pi skills patch (`patches/pi-0.83.0/skills.patch`, applied to `@earendil-works/pi-coding-agent@0.83.0`,
+MIT), which itself extends pi's skills configuration.
 
 - Adopted as **modified code**: the git-remote normalization and repository-key resolution algorithm — remote preference
   order `upstream`, `origin`, then the first configured remote; normalization of SCP-style, HTTPS, `git+`, and `ssh://`
@@ -651,3 +675,23 @@ per-version loop and upgrades every recorded state.
 The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from the sync at `bc127ebf` because the
 router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
 evidence review; only the version numbers are shared with upstream.
+
+## Pi 1.1.0 supported-install discovery and registry refresh
+
+- Source: [Pi installer](https://pi.dev/install.sh) and `@earendil-works/pi-coding-agent@1.1.0` /
+  `@earendil-works/pi-ai@1.1.0`
+- Canonical repository: <https://github.com/earendil-works/pi>
+- Package revision reviewed: `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`); installer fetched 2026-10-08
+- Declared package license: MIT; the fetched standalone installer does not declare a separate license
+
+Conceptual use: `scripts/install-extensions.sh` independently follows the managed launcher's `install/current-version`
+and `install/releases/<version>/node_modules/@earendil-works/pi-coding-agent` layout. The layout was checked against Pi
+1.1.0's published `dist/package-manager-cli.js`. Package identity and the minimum supported version are checked before
+installation. No installer code was copied; Pi's downloads, installation, self-update, release retention, runtime
+marker, and shell-profile machinery were not adopted.
+
+The router registry tests use the published 1.1.0 catalog's Azure Sol absence and existing cache-write rates as
+observations, without copying generated registry code or changing routing policy. The entrypoint test's five-line
+compile-cache loader is adapted from Pi 1.1.0's MIT-licensed `dist/bundle/cli.js` and verified byte-for-byte against its
+baseline checksum; the runtime and RPC behavior exercised comes from this repository's existing wrappers. Pre-1.0.1
+patch artifacts and overlays were removed; historical attribution above remains for shared ideas and code.

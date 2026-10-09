@@ -186,7 +186,9 @@ describe("cache-write classification", () => {
       }
     }
 
-    for (const provider of [...billedProviders, "github-copilot"]) {
+    // Pi 1.1.0 no longer publishes Azure Sol; keep the remaining routes required.
+    assert.equal(getModel("azure-openai-responses", "gpt-5.6-sol"), undefined);
+    for (const provider of ["openai", "openai-codex", "amazon-bedrock", "opencode", "github-copilot"]) {
       const model = requiredModel(provider, modelId(provider, "gpt-5.6-sol"));
       assert.equal(classifyCacheWriteRate(model.cost), "priced_write", `${provider}/${model.id}`);
       const writeMultiplier = model.cost.cacheWrite / model.cost.input;
@@ -199,11 +201,11 @@ describe("cache-write classification", () => {
     assert.equal(cloudflare.cost.cacheWrite / cloudflare.cost.input, 1.25);
   });
 
-  it("pins the 1.0.0 registry boundary and its Opus 5 observation", async () => {
+  it("pins the 1.1.0 registry boundary and its Opus 5 observation", async () => {
     const packageJson = JSON.parse(
       await readFile(new URL("../../../node_modules/@earendil-works/pi-ai/package.json", import.meta.url), "utf8"),
     );
-    assert.equal(packageJson.version, "1.0.0");
+    assert.equal(packageJson.version, "1.1.0");
     assert.ok(getModel("anthropic", "claude-opus-5"));
   });
 });

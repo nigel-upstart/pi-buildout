@@ -14,7 +14,7 @@
   "ignoreDependencies": [
     "@secretlint/secretlint-rule-preset-recommend",
     "chalk",
-    "pi-coding-agent-0.87.1",
+    "pi-coding-agent-1.0.3",
     "proper-lockfile"
   ]
 }
