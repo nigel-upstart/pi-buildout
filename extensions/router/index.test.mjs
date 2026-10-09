@@ -663,6 +663,7 @@ async function runAdapterTurn({
   prompt,
   sessionId,
   source = "interactive",
+  streamingBehavior,
   reason = "reload",
   mode = "shadow",
   models,
@@ -691,7 +692,10 @@ async function runAdapterTurn({
   const pi = {
     on: (event, handler) => hooks.set(event, handler),
     registerCommand: (name, command) => commands.set(name, command),
-    registerTool: (tool) => tools.set(tool.name, tool),
+    registerTool: (tool) => {
+      tools.set(tool.name, tool);
+      activeTools.push(tool.name);
+    },
     appendEntry: (customType, data) => appended.push({ customType, data }),
     exec: async () => ({ code: 1, stdout: "", stderr: "" }),
     getActiveTools: () => activeTools,
@@ -751,7 +755,7 @@ async function runAdapterTurn({
     ...(secondaryGracePolicy ? { secondaryGracePolicy } : {}),
   });
   await hooks.get("session_start")({ reason }, ctx);
-  await hooks.get("input")({ text: prompt, source }, ctx);
+  await hooks.get("input")({ text: prompt, source, ...(streamingBehavior ? { streamingBehavior } : {}) }, ctx);
   const beforeAgentStart = await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
   return {
     pi,
@@ -869,20 +873,136 @@ describe("router-off safety notice", () => {
 });
 
 describe("router-mode tool exposure", () => {
-  it("keeps both safety validators active across generated turns but hides them in shadow and off", () => {
+  for (const taskContinuity of ["clear_continuation", "possible_continuation", "streaming"]) {
+    it(`validates the advertised plan on a retained research lease (${taskContinuity}, session 01a119bf)`, async () => {
+      const research = {
+        ...adapterLease(),
+        archetype: "fast_classification",
+        features: implementationFeatures({ intent: "research", actionMode: "local_read" }),
+      };
+      const result = await runAdapterTurn({
+        active: research,
+        mode: "active",
+        prompt: "Please produce an implementation plan and a gh-stack PR stack for this research",
+        sessionId: "01a119bf-regression",
+        classifyTask: successfulClassifier(1, {
+          intent: "plan",
+          workflowType: "implementation_planning",
+          taskContinuity,
+        }),
+        branchEntries: [cachedAssistantEntry()],
+        contextUsage: { tokens: 100_000, contextWindow: 1_000_000 },
+        ...(taskContinuity === "streaming" ? { streamingBehavior: "steer" } : {}),
+      });
+      const retained =
+        result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active ?? research;
+      // A queued steer stays inside the running lease. A classified continuation into planning re-routes (#103),
+      // and this fixture offers no eligible planning endpoint, so the router retains the research lease and model.
+      if (taskContinuity === "streaming") {
+        assert.ok(result.beforeAgentStart);
+        assert.equal(result.beforeAgentStart.message.details.taskId, research.taskId);
+      } else {
+        assert.equal(result.beforeAgentStart, undefined);
+        assert.match(result.notifications.at(-1)?.message ?? "", /Router retained current model/);
+      }
+      assert.equal(retained.taskId, research.taskId);
+      assert.equal(retained.archetype, "fast_classification");
+      assert.deepEqual(retained.selected, research.selected);
+      assert.ok(result.activeTools.includes("submit_implementation_plan"));
+      assert.deepEqual([...result.tools.keys()].sort(), [
+        "submit_action_plan",
+        "submit_discovery_request",
+        "submit_implementation_plan",
+        "submit_safety_review",
+      ]);
+      const plan = {
+        objective: "Implement the researched change as a PR stack.",
+        assumptions: [],
+        unknowns: [],
+        pullRequests: [
+          {
+            id: "implementation",
+            title: "Implement the change",
+            goal: "Deliver the researched behavior",
+            dependsOn: [],
+            acceptanceCriteria: ["Regression passes"],
+            rollout: "Merge the validated PR",
+            rollback: "Revert the PR",
+            risks: [],
+            unknowns: [],
+          },
+        ],
+      };
+      assert.equal(result.hooks.get("tool_call")({ toolName: "submit_implementation_plan", input: plan }), undefined);
+      const validation = await result.tools
+        .get("submit_implementation_plan")
+        .execute("plan", plan, undefined, undefined, result.ctx);
+      assert.deepEqual(validation.details.topologicalOrder, ["implementation"]);
+      assert.equal(result.events.findLast((event) => event.data.planValidated)?.data.planningLease, false);
+    });
+  }
+
+  it("exposes only phase-valid safety validators and preserves their ordering", () => {
     const ordinaryTools = ["read", "bash", "submit_action_plan", "submit_discovery_request", "submit_safety_review"];
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "off"), ["read", "bash"]);
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "shadow"), ["read", "bash"]);
-    assert.deepEqual(activeToolsForSafetyLifecycle(["read", "bash"], "active"), ordinaryTools);
-    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active"), ordinaryTools);
+    for (const mode of ["active", "shadow", "off"]) {
+      for (const phase of [
+        undefined,
+        "ordinary",
+        "building",
+        "ready_after_advisory",
+        "authorized_execution",
+        "completed",
+        "advisory_pending",
+        "discovery_ready",
+        "preflight",
+        "review",
+      ]) {
+        const lifecycle = phase ? { phase, policy: "ordinary", taskFingerprint: "t" } : undefined;
+        const expected =
+          mode !== "active"
+            ? []
+            : phase === "preflight"
+              ? ["submit_action_plan", "submit_discovery_request"]
+              : phase === "review"
+                ? ["submit_safety_review"]
+                : [];
+        assert.deepEqual(
+          activeToolsForSafetyLifecycle(ordinaryTools, mode, lifecycle),
+          ["read", "bash", ...expected],
+          `${mode}/${phase}`,
+        );
+        assert.equal(
+          safetyToolBlockReason({ lifecycle, manualOverride: true }, "submit_implementation_plan", {}),
+          undefined,
+          `plan validation stays pure in ${mode}/${phase}`,
+        );
+      }
+    }
+    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active", { phase: "review", submission: {} }), [
+      "read",
+      "bash",
+    ]);
+    assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active", { phase: "preflight" }, true), [
+      "read",
+      "bash",
+    ]);
     assert.deepEqual(
       activeToolsForSafetyLifecycle(
         ["read", "submit_action_plan", "bash", "submit_discovery_request", "submit_safety_review"],
         "active",
+        { phase: "preflight" },
       ),
-      ["read", "submit_action_plan", "bash", "submit_discovery_request", "submit_safety_review"],
+      ["read", "submit_action_plan", "bash", "submit_discovery_request"],
       "repeated syncs must not reorder the prompt's tool declarations",
     );
+    for (const phase of ["preflight", "review"]) {
+      assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active", { phase }, false, true), [
+        "read",
+        "bash",
+      ]);
+    }
   });
 });
 
@@ -1267,7 +1387,6 @@ describe("routerExtension", () => {
       "submit_implementation_plan",
       "submit_action_plan",
       "submit_discovery_request",
-      "submit_safety_review",
     ]);
     await commands.get("route").handler("off", ctx);
     assert.equal(sentMessages.length, 1, "off must tell the model the preflight restriction is lifted");
@@ -1331,15 +1450,8 @@ describe("routerExtension", () => {
     await commands.get("route").handler("active", ctx);
     assert.deepEqual(
       activeTools,
-      [
-        "read",
-        "bash",
-        "submit_action_plan",
-        "submit_discovery_request",
-        "submit_safety_review",
-        "submit_implementation_plan",
-      ],
-      "re-enabling restores all safety tools immediately",
+      ["read", "bash", "submit_action_plan", "submit_discovery_request", "submit_implementation_plan"],
+      "re-enabling restores preflight tools immediately",
     );
     await commands.get("route").handler("shadow", ctx);
     assert.deepEqual(activeTools, ["read", "bash"], "shadow must hide all router-only tools just like off");
@@ -1358,7 +1470,7 @@ describe("routerExtension", () => {
     );
     await commands.get("route").handler("active", ctx);
     assert.ok(activeTools.includes("submit_action_plan"));
-    assert.ok(activeTools.includes("submit_safety_review"));
+    assert.equal(activeTools.includes("submit_safety_review"), false);
     assert.match(
       hooks.get("tool_call")({ toolCallId: "active-edit", toolName: "edit", input: { path: "README.md" } }).reason,
       /preflight/,
@@ -1763,6 +1875,18 @@ describe("routerExtension", () => {
     });
     assert.equal(blocked.block, true);
     assert.match(blocked.reason, /Secondary safety classification is pending/);
+    for (const [toolName, input] of [
+      ["submit_implementation_plan", {}],
+      [
+        "bash",
+        { command: "git rev-parse --abbrev-ref HEAD; git worktree list | grep main; git branch -r --contains HEAD" },
+      ],
+    ]) {
+      assert.equal(
+        result.hooks.get("tool_call")({ toolCallId: "read-only-while-pending", toolName, input }),
+        undefined,
+      );
+    }
 
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
     await flushMicrotasks();
@@ -4548,13 +4672,7 @@ describe("routerExtension", () => {
         ctx,
       );
       assert.match(reviewStart.systemPrompt, /read-only authorization review/);
-      assert.deepEqual(activeTools, [
-        "read",
-        "bash",
-        "submit_action_plan",
-        "submit_safety_review",
-        "submit_discovery_request",
-      ]);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_safety_review"]);
       hooks.get("agent_start")();
       await tools.get("submit_safety_review").execute(
         `review-${verdict}`,
@@ -4570,6 +4688,7 @@ describe("routerExtension", () => {
         undefined,
         ctx,
       );
+      assert.deepEqual(activeTools, ["read", "bash"], "the recorded verdict removes the one-shot validator");
       await hooks.get("agent_end")(
         {
           messages: [
@@ -4593,13 +4712,7 @@ describe("routerExtension", () => {
         ctx,
       );
       assert.match(preflightStart.systemPrompt, /Safety lifecycle: remain non-mutating/);
-      assert.deepEqual(activeTools, [
-        "read",
-        "bash",
-        "submit_action_plan",
-        "submit_safety_review",
-        "submit_discovery_request",
-      ]);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_discovery_request"]);
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
         /preflight/,
@@ -4610,15 +4723,8 @@ describe("routerExtension", () => {
       );
       await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
       await hooks.get("agent_settled")({}, ctx);
-      // Pi does not emit before_agent_start for a generated review turn. Both validators must
-      // already be available when the custom-message continuation is queued.
-      assert.deepEqual(activeTools, [
-        "read",
-        "bash",
-        "submit_action_plan",
-        "submit_safety_review",
-        "submit_discovery_request",
-      ]);
+      // Pi skips before_agent_start on generated turns: exposure must already match the review.
+      assert.deepEqual(activeTools, ["read", "bash", "submit_safety_review"]);
       const rejectedChild = latestLease();
       assert.match(hooks.get("tool_call")({ toolName: "submit_action_plan", input: {} }).reason, /read-only/);
       await assert.rejects(
@@ -4656,13 +4762,7 @@ describe("routerExtension", () => {
       assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
 
       await hooks.get("input")({ text: "Change the target and continue", source: "interactive" }, ctx);
-      assert.deepEqual(activeTools, [
-        "read",
-        "bash",
-        "submit_action_plan",
-        "submit_safety_review",
-        "submit_discovery_request",
-      ]);
+      assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_discovery_request"]);
       assert.equal(latestLease().lifecycle.phase, "preflight");
       assert.match(
         hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
@@ -6419,6 +6519,11 @@ describe("routerExtension", () => {
       await flushMicrotasks();
       await result.commands.get("route").handler("active", result.ctx);
       await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+      assert.equal(
+        result.activeTools.includes("submit_discovery_request"),
+        false,
+        "a blocked preflight validator is not advertised",
+      );
       handBackTelemetry.resolve();
       await settling;
       assert.equal(latest().lifecycle.phase, "preflight");
@@ -6434,11 +6539,25 @@ describe("routerExtension", () => {
         result.ctx,
       );
       assert.equal(result.ctx.model.id, builder.modelId, "turn preparation restores the builder");
+      assert.ok(result.activeTools.includes("submit_discovery_request"), "the restored builder sees the validator");
       startAgentRun(result);
       await submit();
       assert.ok(latest().lifecycle.discovery, "submissions reopen once the builder is restored");
     });
   }
+
+  it("withdraws router tools before /route off awaits its cleanup", async () => {
+    const result = await runAdapterTurn({ mode: "active", prompt: "Plan the change", sessionId: "off-sync" });
+    assert.ok(result.activeTools.includes("submit_implementation_plan"));
+    // The handler runs synchronously up to its first await, so tools must already be withdrawn here: an in-flight
+    // request must not see tools that the off-mode bypass and execute guards now refuse.
+    const turningOff = result.commands.get("route").handler("off", result.ctx);
+    assert.equal(result.activeTools.includes("submit_implementation_plan"), false);
+    await turningOff;
+    const turningOn = result.commands.get("route").handler("active", result.ctx);
+    assert.ok(result.activeTools.includes("submit_implementation_plan"), "re-enabling restores them at once too");
+    await turningOn;
+  });
 
   it("reconciles secondary before settlement advances the lease revision (#73)", async () => {
     const secondary = deferred();

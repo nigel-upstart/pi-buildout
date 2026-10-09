@@ -251,6 +251,13 @@ function gitRemoteRejection(args: readonly string[]): string | undefined {
   return "git remote is read-only only as a listing or get-url";
 }
 
+function gitWorktreeRejection(args: readonly string[]): string | undefined {
+  if (args[0] === "list" && args.slice(1).every((token) => ["--porcelain", "-z", "-v", "--verbose"].includes(token))) {
+    return undefined;
+  }
+  return "git worktree is read-only only as list; use git worktree list to inspect worktrees";
+}
+
 // Deliberately excluded from `git`: every other top-level option (`-c`, `--exec-path`,
 // `--paginate`), `--output`/`-o` (writes a file), and `--ext-diff`/`--textconv` (run external
 // programs). `-C <dir>` is permitted because it is exactly `cd <dir> && git ...`.
@@ -267,13 +274,19 @@ const GIT_POLICY: BinaryPolicy = {
     "branch",
     "stash",
     "remote",
+    "worktree",
   ],
   // `git status` and `git diff` may refresh the index and start a pager or fsmonitor. Neither changes
   // tracked content, so they stay permitted, but the two options that suppress those effects are
   // allowed in the one position git accepts them.
   preSubcommandFlags: ["--no-optional-locks", "--no-pager"],
   preSubcommandValueFlags: ["-C"],
-  subcommandRules: { branch: gitBranchRejection, stash: gitStashRejection, remote: gitRemoteRejection },
+  subcommandRules: {
+    branch: gitBranchRejection,
+    stash: gitStashRejection,
+    remote: gitRemoteRejection,
+    worktree: gitWorktreeRejection,
+  },
   longFlags: [
     "--abbrev",
     "--abbrev-commit",

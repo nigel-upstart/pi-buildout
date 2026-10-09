@@ -60,11 +60,17 @@ Safety is an explicit persisted lease lifecycle, not an inference from archetype
   entire request must fit within 64 KiB (65536 bytes) of compact UTF-8 JSON, including metadata and input. Oversized
   requests are rejected at submission with a validation error; inputs are never truncated. Approval yields a single-use
   `discovery_ready` grant bound to task, working directory, and session. The grant is spent before dispatch, revoked at
-  task/runtime boundaries, and never authorizes the final plan. The validators remain model-facing while routing is
-  active because Pi's extension-generated review turns skip `before_agent_start`; they are hidden in shadow and off
-  modes. Each tool validates the active mode and lifecycle phase at execution time, and the read-only review gate still
-  blocks wrong-phase calls. Exposure alone never authorizes execution. Rejection, missing evidence, reviewer failure,
-  plan change, new user input, compaction, session change, or manual model/effort override cannot authorize execution.
+  task/runtime boundaries, and never authorizes the final plan. Active routing exposes plan/discovery submissions only
+  in preflight, and scoped verdict submission only during a generated review without a recorded verdict. Exposure
+  updates at lifecycle transitions before generated messages are queued, including turns that skip `before_agent_start`;
+  shadow and off hide all router tools. Stale calls receive recovery instructions. Exposure alone never authorizes
+  execution. Rejection, missing evidence, reviewer failure, plan change, new user input, compaction, session change, or
+  manual model/effort override cannot authorize execution.
+
+`submit_implementation_plan` validates implementation-plan DAGs throughout active routing, including a planning
+follow-up kept on a research lease. It preserves the task and model and grants no execution permission. Planning routes
+still require validation; telemetry records `planningLease` to distinguish other routes' optional submissions.
+
 - Other high-risk reversible non-code work consults a read-only advisor before acting and receives a completion review
   afterward. Advice is explicitly not authorization; cautionary advice is carried back to the tracked worker.
 - Unattended or indefinite loops that repeatedly execute external or destructive actions (deploys, applies, publishes,

@@ -233,12 +233,29 @@ export function routerOffNotice(phase: RestrictedPhase): string {
 }
 const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
-/** Keep both validators declared across generated turns, but only while routing is active. */
-export function activeToolsForSafetyLifecycle(activeTools: readonly string[], mode: RouterMode): string[] {
-  if (mode !== "active") return activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name));
-  const next = [...activeTools];
+/**
+ * Advertise each safety validator only in the lifecycle phase that accepts it. Sync at every lifecycle transition,
+ * including those that queue generated turns without before_agent_start.
+ */
+export function activeToolsForSafetyLifecycle(
+  activeTools: readonly string[],
+  mode: RouterMode,
+  lifecycle?: LeaseLifecycle,
+  revokedReviewStillRunning = false,
+  manualOverride = false,
+): string[] {
+  const available = new Set<string>();
+  if (mode === "active" && !manualOverride) {
+    if (lifecycle?.phase === "preflight" && !revokedReviewStillRunning) {
+      available.add("submit_action_plan");
+      available.add("submit_discovery_request");
+    } else if (lifecycle?.phase === "review" && !lifecycle.submission) {
+      available.add("submit_safety_review");
+    }
+  }
+  const next = activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name) || available.has(name));
   for (const name of SAFETY_LIFECYCLE_TOOL_NAMES) {
-    if (!next.includes(name)) next.push(name);
+    if (available.has(name) && !next.includes(name)) next.push(name);
   }
   return next;
 }
@@ -281,6 +298,8 @@ export function safetyToolBlockReason(
   toolName: string,
   input: Record<string, unknown>,
 ): string | undefined {
+  // Pure plan validation grants nothing, so no lifecycle blocks it.
+  if (toolName === PLANNING_VALIDATOR_TOOL_NAME) return undefined;
   if (lease?.manualOverride && (lease.lifecycle.policy !== "ordinary" || lease.lifecycle.phase === "review")) {
     return "Manual model/effort override invalidated the active safety lifecycle; re-enable active routing or start a new task";
   }
@@ -553,7 +572,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   function syncRouterTools(): void {
     const current = pi.getActiveTools();
-    let next = activeToolsForSafetyLifecycle(current, leaseOwner.state.mode);
+    let next = activeToolsForSafetyLifecycle(
+      current,
+      leaseOwner.state.mode,
+      leaseOwner.state.active?.lifecycle,
+      revokedReviewStillRunning,
+      leaseOwner.state.manualOverride || leaseOwner.state.active?.manualOverride,
+    );
     if (leaseOwner.state.mode !== "active") {
       if (next.includes(PLANNING_VALIDATOR_TOOL_NAME)) {
         next = next.filter((name) => name !== PLANNING_VALIDATOR_TOOL_NAME);
@@ -578,6 +603,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   function persistState(): void {
+    syncRouterTools();
     pi.appendEntry(STATE_ENTRY, {
       mode: leaseOwner.state.mode,
       manualOverride: leaseOwner.state.manualOverride,
@@ -1192,7 +1218,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   function secondarySafetyBlockReason(toolName: string, input: Record<string, unknown>): string | undefined {
     if (!leaseOwner.secondaryGated || !isPotentiallyMutatingTool(toolName, input)) return undefined;
-    return "Secondary safety classification is pending after a low-confidence primary; mutating tools are blocked until reconciliation reaches a safe boundary";
+    return "Secondary safety classification is pending after a low-confidence primary; this potentially mutating call is blocked until reconciliation reaches a safe boundary. Read-only inspection still works; retry after the next turn boundary reconciles the classification.";
   }
 
   /**
@@ -2399,6 +2425,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (agentRunPhase === "before_start" && applied.lifecycle.phase !== "review") {
       // A settlement switch may have failed; successful preparation now restores builder ownership.
       revokedReviewStillRunning = false;
+      syncRouterTools();
     }
     return applied;
   }
@@ -2412,7 +2439,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = leaseOwner.state.active;
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
-        throw new Error("submit_action_plan is only valid inside an active irreversible-action preflight lease");
+        throw new Error(
+          "submit_action_plan requires active irreversible-action preflight. Read-only inspection remains available; wait for preflight or start a new irreversible-action task before submitting.",
+        );
       }
       if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateActionPlan(params);
@@ -2478,7 +2507,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = leaseOwner.state.active;
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
-        throw new Error("submit_discovery_request is only valid inside an active irreversible-action preflight lease");
+        throw new Error(
+          "submit_discovery_request requires active irreversible-action preflight. Read-only inspection remains available; wait for preflight or start a new irreversible-action task before requesting discovery.",
+        );
       }
       if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateDiscoveryRequest(params);
@@ -2550,10 +2581,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = leaseOwner.state.active;
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "review") {
-        throw new Error("submit_safety_review is only valid inside an active generated independent review lease");
+        throw new Error(
+          "submit_safety_review requires an active generated independent review. Read-only inspection remains available; wait for the router's review request with its exact scope fingerprint before submitting.",
+        );
       }
       if (active.lifecycle.submission) {
-        throw new Error("submit_safety_review may be called only once for a generated review attempt");
+        throw new Error(
+          "submit_safety_review may be called only once for a generated review attempt; the verdict is already recorded. Finish this review without submitting again.",
+        );
       }
       const validation = validateSafetyReview(params, active.lifecycle.reviewKind, active.lifecycle.scopeFingerprint);
       // The verdict is installed before telemetry is awaited, so a review revoked during the await is
@@ -2606,26 +2641,31 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "Submit a complete implementation-plan DAG. Required on implementation_planning and large_program_planning routes. Validates IDs, dependencies, cycles, acceptance criteria, rollout, and rollback.",
     parameters: ProgramPlanSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const active = leaseOwner.state.active;
-      if (
-        !active ||
-        (active.archetype !== "implementation_planning" && active.archetype !== "large_program_planning")
-      ) {
-        throw new Error("submit_implementation_plan is only valid inside a planning lease");
+      if (leaseOwner.state.mode !== "active") {
+        throw new Error(
+          "submit_implementation_plan requires active routing; use /route active before submitting the plan.",
+        );
       }
+      // Validation grants nothing, so it is accepted on any lease, including a research lease that continuity or a
+      // failed planning route retained. `planningLease` records which case this was.
+      const active = leaseOwner.state.active;
+      const planningLease =
+        active?.archetype === "implementation_planning" || active?.archetype === "large_program_planning";
       const validation = validateProgramPlan(params);
       await record(
         ctx,
         "outcome",
         {
           planValidated: validation.success,
+          planningLease,
           validationErrors: validation.errors,
           topologicalOrder: validation.topologicalOrder,
         },
-        { taskId: active.taskId, archetype: active.archetype },
+        active ? { taskId: active.taskId, archetype: active.archetype } : {},
       );
       if (!validation.success) throw new Error(`Invalid implementation plan: ${validation.errors.join("; ")}`);
-      validatedPlanAttempts.add(`${active.taskId}:${String(active.attemptIndex)}:${String(agentRunSequence)}`);
+      if (active)
+        validatedPlanAttempts.add(`${active.taskId}:${String(active.attemptIndex)}:${String(agentRunSequence)}`);
       return {
         content: [
           {
@@ -3723,6 +3763,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       ) {
         revokedReviewStillRunning = false;
       }
+      syncRouterTools();
     }
   });
 
@@ -3761,8 +3802,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           );
         }
         leaseOwner.send({ type: "MODE", mode: command });
+        if (command === "off" && leaseOwner.state.active) invalidateLease("router off", true);
+        // Advertise the new mode's tools before the first await below: an in-flight request must not see tools the
+        // off-mode bypass and execute guards now refuse, nor miss ones re-enabling makes valid.
+        syncRouterTools();
         if (command === "off") {
-          if (leaseOwner.state.active) invalidateLease("router off", true);
           // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
           // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
           // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
