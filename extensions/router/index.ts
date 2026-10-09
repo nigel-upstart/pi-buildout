@@ -1887,10 +1887,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
 
     const restored = await applyChoice(ctx, original.selected);
-    if (!leaseOwner.owns(owner, leaseEpoch)) {
+    if (leaseOwner.state.active !== owner) {
+      // Another lease replaced the review during the model switch; it owns what happens next.
       reviewParentAttemptMetrics = undefined;
       return;
     }
+    // Input, compaction, or a mode or override change during the switch moves only the epoch. The finished
+    // review still hands control back at the current epoch, or it would stay installed indefinitely. Any
+    // authorization grant is withheld below because the binding is stale, and no continuation is sent:
+    // the new input or boundary decides what runs next.
+    const settleEpoch = leaseOwner.epoch;
+    if (settleEpoch !== leaseEpoch) triggerContinuation = false;
     const grants = lifecycle.phase === "discovery_ready" || lifecycle.phase === "authorized_execution";
     // New input, compaction, a reload, or a routing change after the review started revokes its
     // authority. The parent is still restored, without the grant, so the task is not left holding a
@@ -1920,7 +1927,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
     }
     const parent = { ...original, updatedAt: now, lifecycle };
-    if (!leaseOwner.advance("REVIEW_FINISHED", parent, owner, leaseEpoch)) return;
+    if (!leaseOwner.advance("REVIEW_FINISHED", parent, owner, settleEpoch)) return;
     const installed = leaseOwner.state.active;
     const reviewMetrics = lastAttemptMetrics;
     // Cost, wall time, and retry are task-level totals, so the review's share is added to the

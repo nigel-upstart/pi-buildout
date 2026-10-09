@@ -4273,7 +4273,7 @@ describe("routerExtension", () => {
     }
   });
 
-  for (const interruption of [
+  for (const [interruption, timing] of [
     {
       name: "queued steering input",
       apply: (hooks, ctx) =>
@@ -4288,13 +4288,17 @@ describe("routerExtension", () => {
       apply: (hooks, ctx) => hooks.get("session_compact")({ type: "session_compact" }, ctx),
       nextTurnStartsNewTask: true,
     },
-  ]) {
-    it(`withholds an approval that settles after ${interruption.name} and hands control back to the builder`, async () => {
+  ].flatMap((interruption) => [
+    [interruption, "before settlement"],
+    [interruption, "during the builder model switch"],
+  ])) {
+    it(`withholds an approval when ${interruption.name} arrives ${timing} and hands control back`, async () => {
       const hooks = new Map();
       const tools = new Map();
       const appended = [];
       const sent = [];
       const selectedModels = [];
+      let duringBuilderSwitch;
       const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-authorization-"));
       const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
       process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
@@ -4386,6 +4390,8 @@ describe("routerExtension", () => {
         sendMessage: (message, options) => sent.push({ message, options }),
         setModel: async (model) => {
           selectedModels.push(model);
+          // The interruption can land while settlement awaits the switch back to the builder.
+          await duringBuilderSwitch?.(model);
           return true;
         },
         setThinkingLevel: () => {},
@@ -4452,8 +4458,17 @@ describe("routerExtension", () => {
           undefined,
           ctx,
         );
-        // The revocation arrives after the verdict but before the review run settles.
-        await interruption.apply(hooks, ctx);
+        // The revocation arrives after the verdict: either before the review run settles, or while
+        // settlement is awaiting the switch back to the builder model.
+        if (timing === "before settlement") {
+          await interruption.apply(hooks, ctx);
+        } else {
+          duringBuilderSwitch = async (model) => {
+            if (model.provider !== parent.selected.provider || model.id !== parent.selected.modelId) return;
+            duringBuilderSwitch = undefined;
+            await interruption.apply(hooks, ctx);
+          };
+        }
         await hooks.get("agent_end")(
           {
             messages: [
