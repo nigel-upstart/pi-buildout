@@ -2634,8 +2634,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // The persisted snapshot is an async restore proposal. Keep the safety question closed while
     // settings load, and let newer input/overrides win rather than restoring over their state.
     invalidateLease("session startup");
+    if (event.reason !== "reload") {
+      // A new, resumed, or forked session never inherits the previous session's in-memory lease, even when
+      // newer input supersedes the async restore below; that input is then gated as a new task.
+      leaseOwner.send({ type: "RESET" });
+      if (event.reason === "fork") leaseOwner.send({ type: "BOUNDARY", boundary: "subagent" });
+    }
     const startupOwner = leaseOwner.state.active;
     const startupEpoch = leaseOwner.epoch;
+    const modeAtStartup = leaseOwner.state.mode;
     await abortSecondaryWork(ctx, "session_start", { retainSafetyLatch: true });
     attemptDisposition = "unknown";
     revokedReviewStillRunning = false;
@@ -2660,10 +2667,22 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       resolvedStartMode = resolution.mode;
     }
     const fallbackMode = carriedMode ?? resolvedStartMode ?? leaseOwner.state.mode;
-    if (!leaseOwner.owns(startupOwner, startupEpoch)) return;
+    const proposed = restoreLeaseState(branch, fallbackMode);
+    if (!leaseOwner.owns(startupOwner, startupEpoch)) {
+      // Newer input, a /route change, or a telemetry fallback arrived while startup settings loaded. Keep the
+      // lease state it produced rather than restoring over it, but still apply this session's mode unless
+      // the mode itself changed meanwhile: an explicit change or a telemetry fallback wins.
+      if (leaseOwner.state.mode === modeAtStartup && proposed.mode !== modeAtStartup) {
+        leaseOwner.send({ type: "MODE", mode: proposed.mode });
+        persistState();
+      }
+      syncRouterTools();
+      updateStatus(ctx);
+      return;
+    }
     leaseOwner.send({
       type: "RESTORE",
-      state: restoreLeaseState(branch, fallbackMode),
+      state: proposed,
       owner: startupOwner,
       epoch: startupEpoch,
     });

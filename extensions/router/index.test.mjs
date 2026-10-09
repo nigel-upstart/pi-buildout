@@ -275,7 +275,10 @@ async function authorizationLifecycleFixture() {
     setActiveTools: (tools) => {
       activeTools = tools;
     },
-    exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+    exec: async (command, args) => {
+      await hooksDuringSwitch.duringExec?.(command, args);
+      return { stdout: "", stderr: "", code: 1, killed: false };
+    },
   };
   routerExtension(pi);
   const ctx = {
@@ -316,6 +319,9 @@ async function authorizationLifecycleFixture() {
     ctx,
     latestLease,
     restoreEnvironment,
+    onExec: (handler) => {
+      hooksDuringSwitch.duringExec = handler;
+    },
     onBuilderSwitch: (handler) => {
       hooksDuringSwitch.duringBuilderSwitch = handler;
     },
@@ -3388,6 +3394,65 @@ describe("routerExtension", () => {
     }
   });
 
+  it("applies the configured start mode when input arrives while startup settings load", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-router-start-race-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousMode = process.env.PI_ROUTER_MODE;
+    const previousLastModePath = process.env.PI_ROUTER_LAST_MODE_PATH;
+    try {
+      process.env.PI_CODING_AGENT_DIR = tempDir;
+      delete process.env.PI_ROUTER_MODE;
+      process.env.PI_ROUTER_LAST_MODE_PATH = join(tempDir, "router-last-mode.jsonl");
+      await writeFile(join(tempDir, "router-config.json"), JSON.stringify({ startMode: "active" }));
+      const hooks = new Map();
+      const appended = [];
+      const statuses = [];
+      const lookup = deferred();
+      const lookupReached = deferred();
+      routerExtension({
+        on: (event, handler) => hooks.set(event, handler),
+        registerCommand: () => {},
+        registerTool: () => {},
+        appendEntry: (customType, data) => appended.push({ customType, data }),
+        exec: async (command, args) => {
+          if (command === "git" && args.includes("get-url")) {
+            lookupReached.resolve();
+            await lookup.promise;
+          }
+          return { stdout: "", stderr: "", code: 1, killed: false };
+        },
+      });
+      const ctx = {
+        cwd: tempDir,
+        sessionManager: { getSessionId: () => "start-race", getBranch: () => [] },
+        modelRegistry: { getAvailable: () => [], getAll: () => [] },
+        model: undefined,
+        getContextUsage: () => ({ tokens: 0, contextWindow: 128000 }),
+        ui: {
+          setStatus: (_key, text) => statuses.push(text),
+          setWorkingMessage: () => {},
+          setWorkingVisible: () => {},
+          notify: () => {},
+          theme: { fg: (_color, text) => text },
+        },
+      };
+      const starting = hooks.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+      await lookupReached.promise;
+      // The first prompt arrives before startup finishes resolving its repository and start mode.
+      await hooks.get("input")({ text: "Summarize the repository", source: "interactive" }, ctx);
+      lookup.resolve();
+      await starting;
+      assert.equal(
+        appended.filter(({ customType }) => customType === "model-router-state").at(-1)?.data.mode,
+        "active",
+        "the configured start mode still applies",
+      );
+      assert.match(statuses.at(-1), /^route:active/);
+    } finally {
+      restoreEnv({ previousAgentDir, previousMode, previousLastModePath });
+    }
+  });
+
   it("starts in the last recorded mode by default so enablement survives a restart", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "pi-router-last-"));
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -5000,6 +5065,48 @@ describe("routerExtension", () => {
       }
     });
   }
+
+  it("gates input that arrives during a new session's startup as a new task, not the previous session's lease", async () => {
+    const { hooks, parent, ctx, latestLease, restoreEnvironment, onExec } = await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await hooks.get("before_agent_start")(
+        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+        ctx,
+      );
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().taskId, parent.taskId, "the first session holds a lease");
+      await hooks.get("session_shutdown")({ reason: "new" }, ctx);
+      const nextCtx = {
+        ...ctx,
+        cwd: await mkdtemp(join(tmpdir(), "pi-router-new-session-")),
+        sessionManager: { getBranch: () => [], getSessionId: () => "next-session" },
+      };
+      // Hold the new session's startup in its repository lookup while the user types.
+      const lookup = deferred();
+      const lookupReached = deferred();
+      onExec(async () => {
+        onExec(undefined);
+        lookupReached.resolve();
+        await lookup.promise;
+      });
+      const starting = hooks.get("session_start")({ reason: "new" }, nextCtx);
+      await lookupReached.promise;
+      await hooks.get("input")({ text: "continue", source: "interactive" }, nextCtx);
+      lookup.resolve();
+      await starting;
+      await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, nextCtx);
+      const boundary = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .findLast(({ kind, data }) => kind === "boundary" && data.action !== undefined);
+      assert.equal(boundary.data.action, "new_task", "the previous session's lease must not absorb the input");
+      assert.match(boundary.data.reason, /hard boundary: new_session/);
+    } finally {
+      restoreEnvironment();
+    }
+  });
 
   it("keeps a compaction boundary pending across a same-task repair so the next input re-routes", async () => {
     const { hooks, sent, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
