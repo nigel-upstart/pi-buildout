@@ -5379,6 +5379,7 @@ describe("routerExtension", () => {
     const entries = [];
     const messages = [];
     const events = [];
+    const notices = [];
     const now = new Date().toISOString();
     const choice = (provider, modelId, vendor, profileId) => ({
       provider,
@@ -5489,7 +5490,7 @@ describe("routerExtension", () => {
         setStatus: () => {},
         setWorkingMessage: () => {},
         setWorkingVisible: () => {},
-        notify: () => {},
+        notify: (message, level) => notices.push({ message, level }),
       },
     };
     routerExtension(pi, {
@@ -6103,6 +6104,29 @@ describe("routerExtension", () => {
       /revoked independent review is still running/,
     );
     setModelResult = true;
+    // New input during settlement's builder switch supersedes the settled run: no failure notice, no
+    // generated follow-up, and submissions stay blocked until that input's turn preparation restores the builder.
+    const supersededSwitch = deferred();
+    modelGate = supersededSwitch.promise;
+    const followUpsBefore = messages.length;
+    const noticesBefore = notices.length;
+    const supersededSettlement = hooks.get("agent_settled")({}, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+    await hooks.get("input")(
+      { text: "Steer during the builder switch", source: "interactive", streamingBehavior: "steer" },
+      ctx,
+    );
+    supersededSwitch.resolve();
+    await supersededSettlement;
+    modelGate = Promise.resolve();
+    assert.equal(
+      notices.slice(noticesBefore).some(({ message }) => /could not be restored/.test(message)),
+      false,
+      "a superseded switch is not reported as a restore failure",
+    );
+    assert.equal(messages.length, followUpsBefore, "the superseded run queues no generated follow-up");
+    await assert.rejects(submit(), /revoked independent review is still running/);
+    ctx.model = models.find((model) => model.id === runningReview.selected.modelId);
     const builderModel = deferred();
     modelGate = builderModel.promise;
     const settlingRevokedReview = hooks.get("agent_settled")({}, ctx);
