@@ -6098,10 +6098,10 @@ describe("routerExtension", () => {
     setModelResult = false;
     await hooks.get("agent_settled")({}, ctx);
     assert.equal(ctx.model.id, runningReview.selected.modelId, "a failed switch leaves the reviewer selected");
-    await assert.rejects(submit(), /revoked independent review is still running/);
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
     await assert.rejects(
       tools.get("submit_action_plan").execute("unrestored-plan", irreversibleActionPlan(), undefined, undefined, ctx),
-      /revoked independent review is still running/,
+      /builder model was not restored after a revoked independent review/,
     );
     setModelResult = true;
     // New input during settlement's builder switch supersedes the settled run: no failure notice, no
@@ -6125,12 +6125,12 @@ describe("routerExtension", () => {
       "a superseded switch is not reported as a restore failure",
     );
     assert.equal(messages.length, followUpsBefore, "the superseded run queues no generated follow-up");
-    await assert.rejects(submit(), /revoked independent review is still running/);
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
     ctx.model = models.find((model) => model.id === runningReview.selected.modelId);
     const builderModel = deferred();
     modelGate = builderModel.promise;
     const settlingRevokedReview = hooks.get("agent_settled")({}, ctx);
-    await assert.rejects(submit(), /revoked independent review is still running/);
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
     builderModel.resolve();
     await settlingRevokedReview;
     modelGate = Promise.resolve();
@@ -6215,7 +6215,7 @@ describe("routerExtension", () => {
     assert.equal(latest().lifecycle.phase, "preflight");
     assert.equal(latest().lifecycle.grant, undefined, "a revoked review's verdict grants nothing");
     assert.equal(repairs(), repairsBefore, "the revoked review's outcome must not start a repair turn");
-    await assert.rejects(submit(), /revoked independent review is still running/);
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
     setModelResult = true;
     await hooks.get("before_agent_start")({ prompt: "Continue the task", systemPrompt: "base", images: [] }, ctx);
     assert.equal(ctx.model.id, builder.modelId, "a later ordinary turn can restore the builder");

@@ -537,6 +537,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    * reviewer model keeps running until that run settles, so preflight submissions stay blocked until the builder is restored.
    */
   let revokedReviewStillRunning = false;
+
+  /** Explains why a submission is blocked: the revoked reviewer is still running, or its builder was never restored. */
+  function revokedReviewSubmissionError(): Error {
+    return new Error(
+      agentRunPhase === "active"
+        ? "A revoked independent review is still running; submit after this run ends and the builder model is restored"
+        : "The builder model was not restored after a revoked independent review; submit on a later turn once the router restores it",
+    );
+  }
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
 
@@ -2402,11 +2411,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error("submit_action_plan is only valid inside an active irreversible-action preflight lease");
       }
-      if (revokedReviewStillRunning) {
-        throw new Error(
-          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
-        );
-      }
+      if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateActionPlan(params);
       // Telemetry is awaited only after the lease update, so a lease replaced during the await can
       // never be overwritten with this stale submission.
@@ -2472,11 +2477,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error("submit_discovery_request is only valid inside an active irreversible-action preflight lease");
       }
-      if (revokedReviewStillRunning) {
-        throw new Error(
-          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
-        );
-      }
+      if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateDiscoveryRequest(params);
       // As for action plans, the request is installed before telemetry is awaited.
       const recordValidation = () =>
