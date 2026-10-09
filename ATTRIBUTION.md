@@ -499,6 +499,12 @@ Ideas and API patterns used:
   pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
+- Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
+  `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
+  `dist/core/extensions/types.d.ts`. `extensions/subagents/rpc.integration.test.mjs` uses these to launch the pinned Pi
+  CLI in RPC mode, and `rpc.integration-provider.mjs` registers a test-only `openai-completions` provider that points at
+  a local deterministic fixture. The test asserts Pi's observable `prompt`, `follow_up` (queued while streaming),
+  `get_state`, `get_session_stats`, and shutdown behavior. No Pi code was copied.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
   resource inheritance.
 - The `@earendil-works/pi-ai@0.80.7` generated registry's endpoint rates and capabilities, plus its `calculateCost`
@@ -513,9 +519,9 @@ Ideas and API patterns used:
   bounds, and compaction setup.
 
 Major pieces intentionally not adopted include Pi's full interactive mode, session-replacement runtime, prompt-template
-workflows, custom provider implementations, and bundled role-based subagent profiles. No Pi source file or example was
-copied verbatim; the extension is original code using Pi's published APIs and adapting the documented architectural
-patterns.
+workflows, custom provider implementations (beyond the test-only integration fixture above), and bundled role-based
+subagent profiles. No Pi source file or example was copied verbatim; the extension is original code using Pi's published
+APIs and adapting the documented architectural patterns.
 
 ### Router start-mode scoping (`extensions/router/core/start-mode.ts`)
 
