@@ -3260,13 +3260,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           if (!safetyToolBlockReason(active, event.toolName, event.input)) return undefined;
           return { block: true, reason: consumed.reason };
         }
-        // Spend before the secondary gate or the tool dispatcher can observe the call.
-        leaseOwner.advance(
-          "SPEND_DISCOVERY",
-          { ...active, updatedAt: new Date().toISOString(), lifecycle: consumed.lifecycle },
-          active,
-          leaseOwner.epoch,
-        );
+        // Spend before the secondary gate or the tool dispatcher can observe the call. The grant is
+        // single-use, so a spend the actor refuses must block the call rather than leave it reusable.
+        if (
+          !leaseOwner.advance(
+            "SPEND_DISCOVERY",
+            { ...active, updatedAt: new Date().toISOString(), lifecycle: consumed.lifecycle },
+            active,
+            leaseOwner.epoch,
+          )
+        ) {
+          return { block: true, reason: "The discovery grant could not be spent; resubmit the request for review." };
+        }
         persistState();
         const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
         if (secondaryReason) return { block: true, reason: secondaryReason };
