@@ -148,9 +148,18 @@ export function revokeDiscovery(lease: TaskLease): TaskLease {
   };
 }
 
-/** Lifecycles that let the builder act on an independent approval: one discovery call or an exact plan. */
-function grantsAuthority(lease: TaskLease): boolean {
-  return lease.lifecycle.phase === "discovery_ready" || lease.lifecycle.phase === "authorized_execution";
+/**
+ * Lifecycles that let the builder act on an independent approval: one discovery call, an exact plan, or a
+ * completed plan whose authorization can resume in the session that obtained it.
+ */
+export function grantsAuthority(lifecycle: TaskLease["lifecycle"]): boolean {
+  return (
+    lifecycle.phase === "discovery_ready" ||
+    lifecycle.phase === "authorized_execution" ||
+    (lifecycle.phase === "completed" &&
+      lifecycle.policy === "authorization_then_completion_review" &&
+      lifecycle.authorization !== undefined)
+  );
 }
 
 export function invalidateAuthorization(lease: TaskLease, reason: string): TaskLease {
@@ -203,13 +212,14 @@ const leaseMachine = setup({
       validAdvance(event) &&
       context.state.active === event.owner &&
       context.epoch === event.epoch &&
+      // Every review is bound to the epoch in which it started. That covers authorization reviews granting
+      // new authority and completion reviews returning a parent that still holds an earlier authorization.
       (event.type !== "REVIEW_FINISHED" ||
         event.owner?.lifecycle.phase !== "review" ||
-        event.owner.lifecycle.reviewKind !== "authorization" ||
         context.reviewEpoch === context.epoch ||
-        // A review that crossed a revocation boundary can never grant, but it must still hand control
-        // back; otherwise the stale child lease would stay installed and block the task indefinitely.
-        !grantsAuthority(event.lease)),
+        // A review that crossed a revocation boundary can never restore authority, but it must still hand
+        // control back; otherwise the stale child lease would stay installed and block the task indefinitely.
+        !grantsAuthority(event.lease.lifecycle)),
   },
   actions: {
     discardSecondary: enqueueActions(({ context, enqueue }) => {
@@ -405,7 +415,7 @@ export function createLeaseOwner(initial: LeaseState) {
     get epoch(): number {
       return actor.getSnapshot().context.epoch;
     },
-    /** Whether the active authorization review started in the current epoch and can still grant. */
+    /** Whether the active review started in the current epoch and can still grant or restore authority. */
     get reviewBindingCurrent(): boolean {
       const current = actor.getSnapshot().context;
       return current.reviewEpoch !== undefined && current.reviewEpoch === current.epoch;

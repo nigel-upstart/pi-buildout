@@ -108,6 +108,55 @@ describe("XState lease owner", () => {
     });
   }
 
+  it("binds a completion review to its start epoch before it can return an authorized plan", () => {
+    const authorized = {
+      ...lease(),
+      lifecycle: {
+        phase: "authorized_execution",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: "task",
+        plan: { planFingerprint: "plan" },
+        authorization: { taskFingerprint: "task", planFingerprint: "plan" },
+      },
+    };
+    const completedWith = (authorization) => ({
+      ...authorized,
+      lifecycle: {
+        phase: "completed",
+        policy: "authorization_then_completion_review",
+        taskFingerprint: "task",
+        completionReview: { kind: "completion", verdict: "pass" },
+        plan: { planFingerprint: "plan" },
+        ...(authorization ? { authorization: authorized.lifecycle.authorization } : {}),
+      },
+    });
+    for (const interrupted of [false, true]) {
+      const owner = createLeaseOwner({ mode: "active", active: authorized, manualOverride: false });
+      const child = {
+        ...authorized,
+        taskId: "completion-review",
+        parentTaskId: authorized.taskId,
+        parentLease: authorized,
+        lifecycle: {
+          phase: "review",
+          policy: "ordinary",
+          taskFingerprint: "task",
+          reviewKind: "completion",
+          scopeFingerprint: "evidence",
+        },
+      };
+      assert.equal(owner.advance("REVIEW_STARTED", child, authorized, owner.epoch), true);
+      if (interrupted) owner.send({ type: "INTENT" });
+      const withAuthorization = completedWith(true);
+      assert.equal(owner.advance("REVIEW_FINISHED", withAuthorization, child, owner.epoch), !interrupted);
+      if (!interrupted) continue;
+      // The stale review still hands back, but only to a parent that no longer carries the authorization.
+      const withheld = { ...authorized, lifecycle: { ...lease().lifecycle, plan: { planFingerprint: "plan" } } };
+      assert.equal(owner.advance("REVIEW_FINISHED", withheld, child, owner.epoch), true);
+      assert.equal(owner.state.active, withheld);
+    }
+  });
+
   it("keeps the installed lease's identity across mode changes unless an override is cleared", () => {
     const parent = lease();
     const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });

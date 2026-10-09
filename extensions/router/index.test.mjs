@@ -4670,6 +4670,170 @@ describe("routerExtension", () => {
     });
   }
 
+  // Drives the real lifecycle: preflight, approved plan, authorized execution with one recorded mutation, and the
+  // completion review that settlement then starts with the authorized builder as its parent.
+  async function startAuthorizedCompletionReview(fixture) {
+    const { hooks, tools, models, parent, ctx, latestLease } = fixture;
+    const finishRun = async (lease) =>
+      hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: lease.selected.provider,
+              model: lease.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+    await hooks.get("session_start")({ reason: "reload" }, ctx);
+    await hooks.get("before_agent_start")(
+      { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+      ctx,
+    );
+    await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+    await hooks.get("agent_settled")({}, ctx);
+    const authorizationReview = latestLease();
+    ctx.model = models.find(
+      (model) =>
+        model.provider === authorizationReview.selected.provider && model.id === authorizationReview.selected.modelId,
+    );
+    hooks.get("agent_start")();
+    await tools.get("submit_safety_review").execute(
+      "authorize",
+      {
+        reviewKind: "authorization",
+        scopeFingerprint: authorizationReview.lifecycle.scopeFingerprint,
+        verdict: "approve",
+        summary: "The exact plan is bounded.",
+        evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await finishRun(authorizationReview);
+    await hooks.get("agent_settled")({}, ctx);
+    assert.equal(latestLease().lifecycle.phase, "authorized_execution");
+
+    // The generated execution turn performs the authorized mutation.
+    ctx.model = models[0];
+    hooks.get("agent_start")();
+    assert.equal(
+      hooks.get("tool_call")({ toolName: "bash", toolCallId: "deploy", input: { command: "deploy production" } }),
+      undefined,
+    );
+    hooks.get("tool_execution_end")({ toolCallId: "deploy", toolName: "bash", isError: false });
+    await finishRun(parent);
+    await hooks.get("agent_settled")({}, ctx);
+    const completionReview = latestLease();
+    assert.equal(completionReview.lifecycle.reviewKind, "completion");
+    assert.equal(completionReview.parentLease.lifecycle.phase, "authorized_execution");
+    ctx.model = models.find(
+      (model) =>
+        model.provider === completionReview.selected.provider && model.id === completionReview.selected.modelId,
+    );
+    hooks.get("agent_start")();
+    await tools.get("submit_safety_review").execute(
+      "complete",
+      {
+        reviewKind: "completion",
+        scopeFingerprint: completionReview.lifecycle.scopeFingerprint,
+        verdict: "pass",
+        summary: "The executed change matches the reviewed plan.",
+        evidence: ["Inspected the recorded mutation."],
+        findings: [],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    return { completionReview, finishRun };
+  }
+
+  it("returns a completed authorized plan from an uninterrupted completion review", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    try {
+      const { completionReview, finishRun } = await startAuthorizedCompletionReview(fixture);
+      await finishRun(completionReview);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      const restored = fixture.latestLease();
+      assert.equal(restored.taskId, fixture.parent.taskId);
+      assert.equal(restored.lifecycle.phase, "completed");
+      assert.equal(restored.lifecycle.completionReview.verdict, "pass");
+      assert.ok(restored.lifecycle.authorization, "an uninterrupted review keeps the session-bound authorization");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  for (const [interruption, timing] of [
+    {
+      name: "queued steering input",
+      apply: (hooks, ctx) =>
+        hooks.get("input")(
+          { text: "Also rotate the staging credential", source: "interactive", streamingBehavior: "steer" },
+          ctx,
+        ),
+    },
+    { name: "compaction", apply: (hooks, ctx) => hooks.get("session_compact")({ type: "session_compact" }, ctx) },
+  ].flatMap((interruption) => [
+    [interruption, "before settlement"],
+    [interruption, "during the builder model switch"],
+  ])) {
+    it(`revokes the parent's authorization when ${interruption.name} arrives during its completion review ${timing}`, async () => {
+      const fixture = await authorizationLifecycleFixture();
+      const { hooks, appended, parent, ctx, latestLease, onBuilderSwitch } = fixture;
+      try {
+        const { completionReview, finishRun } = await startAuthorizedCompletionReview(fixture);
+        const before = appended.length;
+        if (timing === "before settlement") {
+          await interruption.apply(hooks, ctx);
+        } else {
+          onBuilderSwitch(async (model) => {
+            if (model.provider !== parent.selected.provider || model.id !== parent.selected.modelId) return;
+            onBuilderSwitch(undefined);
+            await interruption.apply(hooks, ctx);
+          });
+        }
+        await finishRun(completionReview);
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = latestLease();
+        assert.equal(restored.taskId, parent.taskId, "the finished completion review hands control back");
+        assert.equal(restored.lifecycle.phase, "preflight", "the old exact-plan approval does not survive");
+        assert.equal(
+          restored.lifecycle.plan.planFingerprint,
+          completionReview.parentLease.lifecycle.plan.planFingerprint,
+        );
+        assert.equal(restored.lifecycle.lastAuthorizationReview.kind, "authorization");
+        assert.equal(restored.lifecycle.lastAuthorizationReview.verdict, undefined);
+        assert.equal(
+          appended
+            .slice(before)
+            .some(
+              ({ customType, data }) =>
+                customType === "model-router-state" &&
+                (data.active?.lifecycle.phase === "authorized_execution" ||
+                  (data.active?.lifecycle.phase === "completed" && data.active.lifecycle.authorization)),
+            ),
+          false,
+          "no state after the interruption may carry the revoked authorization",
+        );
+        assert.match(
+          hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
+          /preflight/,
+        );
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    });
+  }
+
   it("keeps a compaction boundary pending across a same-task repair so the next input re-routes", async () => {
     const { hooks, sent, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
     try {

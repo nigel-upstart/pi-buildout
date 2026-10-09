@@ -73,18 +73,19 @@ ships the union of both runtime manifests. XState v6 alpha is intentionally excl
 
 The lease actor owns enablement, boundaries, review/authorization phases, and every installed lease. Synchronous
 transitions validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger
-append. An authorization review is bound to the epoch in which it started: after new input, compaction, a reload, or a
-mode or override change, its settlement still restores the parent, but without any discovery grant or plan authorization
-and without a pending hard boundary being consumed. More generally, only the routing transition that installs a freshly
-selected lease consumes a pending hard boundary; evidence, fallback, repair, preparation, and review transitions on the
-same task family leave it pending. Low-confidence secondary work is a cancellable promise actor under the parent task
-family, surviving temporary review children. Reconciliation drains before settlement lifecycle changes and after parent
-restoration; lifecycle progress alone does not invalidate a secondary answer. Input/registry mismatch, overrides, and
-revoked task families still invalidate it. An unanswered safety question remains latched after failure or cancellation.
-Ledger writes remain awaited and telemetry failure still switches routing to shadow. Persistence stores the validated
-version-2 lease shape, never an XState snapshot. The persisted state also records an unresolved secondary safety latch.
-Malformed leases and legacy low-confidence leases without a resolved/pending marker are discarded instead of silently
-dropping the latch.
+append. Every generated review is bound to the epoch in which it started: after new input, compaction, a reload, or a
+mode or override change, its settlement still restores the parent, but never with authority, whether a discovery grant
+or plan authorization the review would grant or an earlier authorization a completion review would return; the parent
+resumes in preflight with its plan, and a pending hard boundary is not consumed. More generally, only the routing
+transition that installs a freshly selected lease consumes a pending hard boundary; evidence, fallback, repair,
+preparation, and review transitions on the same task family leave it pending. Low-confidence secondary work is a
+cancellable promise actor under the parent task family, surviving temporary review children. Reconciliation drains
+before settlement lifecycle changes and after parent restoration; lifecycle progress alone does not invalidate a
+secondary answer. Input/registry mismatch, overrides, and revoked task families still invalidate it. An unanswered
+safety question remains latched after failure or cancellation. Ledger writes remain awaited and telemetry failure still
+switches routing to shadow. Persistence stores the validated version-2 lease shape, never an XState snapshot. The
+persisted state also records an unresolved secondary safety latch. Malformed leases and legacy low-confidence leases
+without a resolved/pending marker are discarded instead of silently dropping the latch.
 
 Scope-specific fast-check properties and scheduled handler races run in `npm test`, pre-push, and CI. The default is 50
 runs with fixed seed 730100; CI runs 500. `FC_NUM_RUNS`, `FC_SEED`, and `FC_PATH` control the budget and failure replay.

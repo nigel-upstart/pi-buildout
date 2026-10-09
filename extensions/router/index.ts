@@ -19,6 +19,7 @@ import {
 import type { BoundaryGateResult, LeaseState, RouterMode, TaskLease } from "./core/lease.ts";
 import {
   createLeaseOwner,
+  grantsAuthority,
   holdsDiscovery,
   invalidateAuthorization,
   leaseFamily,
@@ -1898,9 +1899,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // the new input or boundary decides what runs next.
     const settleEpoch = leaseOwner.epoch;
     if (settleEpoch !== leaseEpoch) triggerContinuation = false;
-    const grants = lifecycle.phase === "discovery_ready" || lifecycle.phase === "authorized_execution";
+    const grants = grantsAuthority(lifecycle);
     // New input, compaction, a reload, or a routing change after the review started revokes its
-    // authority. The parent is still restored, without the grant, so the task is not left holding a
+    // authority, whether it would grant new authority or return an earlier authorization through a
+    // completion review. The parent is still restored, without it, so the task is not left holding a
     // finished review it can never settle.
     const bindingStale = grants && !leaseOwner.reviewBindingCurrent;
     // An approval is usable only by the builder it was granted to. If the builder model cannot be
@@ -1911,9 +1913,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         phase: "preflight",
         policy: "authorization_then_completion_review",
         taskFingerprint: original.lifecycle.taskFingerprint,
-        ...(lifecycle.phase === "authorized_execution" ? { plan: lifecycle.plan } : {}),
+        ...((lifecycle.phase === "authorized_execution" || lifecycle.phase === "completed") && lifecycle.plan
+          ? { plan: lifecycle.plan }
+          : {}),
+        // Record the withheld authority as an authorization outcome with no verdict: no approval stands, and a
+        // completion review's verdict is not a valid authorization verdict.
         lastAuthorizationReview: {
-          ...reviewOutcome,
+          kind: "authorization",
+          ...(reviewOutcome.reviewTaskId ? { reviewTaskId: reviewOutcome.reviewTaskId } : {}),
+          completedAt: reviewOutcome.completedAt,
           summary: bindingStale
             ? "Approval withheld: new input or a routing boundary arrived before the independent review settled; resubmit for a fresh review."
             : "Approval withheld: the builder model could not be restored after the independent review.",

@@ -433,9 +433,11 @@ stateDiagram-v2
 ```
 
 Approval requires a reviewer from a different vendor than the builder, an exact scope fingerprint, a restored builder
-model, and an authorization review bound to the epoch in which it started. New input, compaction, a manual override, or
-a session change invalidates an authorization. A resumed authorized task regains `authorized_execution` only in the
-session that obtained the approval; elsewhere it returns to `preflight`.
+model, and an authorization review bound to the epoch in which it started. Completion reviews are bound the same way:
+one that crosses new input or a boundary returns its parent to `preflight` instead of `completed` with the old
+authorization. New input, compaction, a manual override, or a session change invalidates an authorization. A resumed
+authorized task regains `authorized_execution` only in the session that obtained the approval; elsewhere it returns to
+`preflight`.
 
 The `completion_review` and `advisory_then_completion_review` policies govern high-risk reversible work. An advisory
 review's verdict is advice, never authorization:
