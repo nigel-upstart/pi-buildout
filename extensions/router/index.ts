@@ -524,6 +524,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
+  // The routing epoch when the latest run ended; agent_settled uses it to detect a superseded run.
+  let runEndEpoch: number | undefined;
   // Inactive modes hide the always-registered planning validator. Remembering that the router hid it lets
   // re-enabling restore the tool without overriding an operator who removed it deliberately.
   let planningValidatorHiddenWhileInactive = false;
@@ -1764,9 +1766,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     ctx: ExtensionContext,
     child: TaskLease,
     outcome: "completed" | "skipped",
-    // While routing is off or in shadow, the router must not switch models or start turns. The parent is still
-    // restored so re-enabling finds it rather than a finished review, and any authority stays withheld.
-    options: { inactive?: boolean } = {},
+    // A passive hand-back runs while routing is off or in shadow, or after a manual model/effort override: the
+    // router must not switch models or start turns, and an override stays in force on the restored parent. The
+    // parent is still restored rather than leaving a finished review installed, and any authority stays withheld.
+    options: { passive?: boolean; manualOverride?: boolean } = {},
   ): Promise<void> {
     const leaseEpoch = leaseOwner.epoch;
     if (!child.parentLease || child.lifecycle.phase !== "review") return;
@@ -1890,8 +1893,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       };
     }
 
-    const restored = options.inactive ? false : await applyChoice(ctx, original.selected);
-    if (options.inactive) triggerContinuation = false;
+    const restored = options.passive ? false : await applyChoice(ctx, original.selected);
+    if (options.passive) triggerContinuation = false;
     if (leaseOwner.state.active !== owner) {
       // Another lease replaced the review during the model switch; it owns what happens next.
       reviewParentAttemptMetrics = undefined;
@@ -1938,7 +1941,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         ctx.ui.notify("Approval withheld: the builder model could not be restored after review", "error");
       }
     }
-    const parent = { ...original, updatedAt: now, lifecycle };
+    const parent = {
+      ...original,
+      updatedAt: now,
+      lifecycle,
+      ...(options.manualOverride ? { manualOverride: true } : {}),
+    };
     if (!leaseOwner.advance("REVIEW_FINISHED", parent, owner, settleEpoch)) return;
     const installed = leaseOwner.state.active;
     const reviewMetrics = lastAttemptMetrics;
@@ -3180,6 +3188,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("agent_start", () => {
     // Run-phase bookkeeping tracks Pi itself, so it stays accurate while off for use after re-enable.
     agentRunPhase = "active";
+    runEndEpoch = undefined;
     insideProviderTurn = false;
     activeToolExecutions = 0;
     if (leaseOwner.state.mode === "off") return;
@@ -3338,6 +3347,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("agent_end", async (event, ctx) => {
     const leaseEpoch = leaseOwner.epoch;
+    // Settlement compares against this, so input arriving after the run ended supersedes its lifecycle work.
+    runEndEpoch = leaseEpoch;
     if (leaseOwner.state.mode === "off") return;
     const active = leaseOwner.state.active;
     if (!active || active.executionFailed) return;
@@ -3494,20 +3505,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
-    // The settled run is bound to the epoch before the drain. Same-epoch secondary reconciliation still
-    // applies, but input, a boundary, or a mode change during the drain supersedes the run.
-    const runEpoch = leaseOwner.epoch;
+    // The settled run is bound to the epoch at its agent_end (or, without one, before the drain). Same-epoch
+    // secondary reconciliation still applies, but input, a boundary, or a mode change since then supersedes it.
+    const runEpoch = runEndEpoch ?? leaseOwner.epoch;
+    runEndEpoch = undefined;
     await drainSecondaryReconciliation(ctx, { kind: "agent_settled", promptRefreshAllowed: false, continuing: false });
     const leaseEpoch = leaseOwner.epoch;
     try {
       const active = leaseOwner.state.active;
       if (!active || active.executionFailed) return;
-      if (active.lifecycle.phase === "review" && leaseOwner.state.mode !== "active") {
-        // `/route off` or `shadow` between the review's verdict and settlement must not strand the finished
-        // review: re-enabling does not replay this event, so the next user turn would run under it. agent_end
-        // records no disposition while off, so hand back on the submitted verdict alone, and skip otherwise.
+      const manualOverride = leaseOwner.state.manualOverride || active.manualOverride;
+      if (active.lifecycle.phase === "review" && (leaseOwner.state.mode !== "active" || manualOverride)) {
+        // `/route off` or `shadow`, or a manual model/effort override, between the review's verdict and
+        // settlement must not strand the finished review: re-enabling does not replay this event, so the next
+        // user turn would run under it. Neither records a usable disposition (agent_end skips while off, and an
+        // override makes the run incomplete), so hand back on the submitted verdict alone, and skip otherwise.
         await restoreParentAfterReview(ctx, active, active.lifecycle.submission ? "completed" : "skipped", {
-          inactive: true,
+          passive: true,
+          manualOverride,
         });
         return;
       }

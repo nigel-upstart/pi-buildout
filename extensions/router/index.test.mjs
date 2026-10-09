@@ -2289,6 +2289,49 @@ describe("routerExtension", () => {
     });
   }
 
+  it("skips settlement lifecycle work when input arrives after the run ends but before settlement", async () => {
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.95, risk: "high" }),
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one high-risk bounded repository change",
+      sessionId: "input-before-settlement",
+    });
+    const lease = () => result.appended.findLast(({ customType }) => customType === "model-router-state")?.data.active;
+    assert.equal(lease().lifecycle.phase, "building");
+    startAgentRun(result);
+    await endAgentTurn(result);
+    const active = lease();
+    result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+    await result.hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: active.selected.provider,
+            model: active.selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      result.ctx,
+    );
+    const messages = result.sentMessages.length;
+    // The user's follow-up lands after the run ended but before Pi delivers agent_settled.
+    await result.hooks.get("input")(
+      { text: "Actually, explain the plan first", source: "interactive", streamingBehavior: "followUp" },
+      result.ctx,
+    );
+    await result.hooks.get("agent_settled")({}, result.ctx);
+    assert.deepEqual(
+      result.sentMessages.slice(messages).filter(({ message }) => message.details?.repairReason),
+      [],
+      "a superseded run starts no router-generated repair turn",
+    );
+    assert.equal(lease().lifecycle.evidenceRepairAttempted, undefined);
+  });
+
   it("keeps a secondary result that settles before agent_start queued until a run boundary", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
@@ -5107,6 +5150,86 @@ describe("routerExtension", () => {
       restoreEnvironment();
     }
   });
+
+  for (const when of ["before the review run ends", "after the review run ends"]) {
+    it(`hands a review back without switching models when the operator overrides the model ${when}`, async () => {
+      const fixture = await authorizationLifecycleFixture();
+      const { hooks, tools, models, parent, ctx, appended, selectedModels, sent, restoreEnvironment } = fixture;
+      const lastState = () => appended.filter(({ customType }) => customType === "model-router-state").at(-1)?.data;
+      try {
+        await hooks.get("session_start")({ reason: "reload" }, ctx);
+        await hooks.get("before_agent_start")(
+          { prompt: "Inspect and plan the production change", systemPrompt: "base" },
+          ctx,
+        );
+        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+        await hooks.get("agent_settled")({}, ctx);
+        const review = lastState().active;
+        ctx.model = models.find(
+          (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
+        );
+        hooks.get("agent_start")();
+        await tools.get("submit_safety_review").execute(
+          "approve",
+          {
+            reviewKind: "authorization",
+            scopeFingerprint: review.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "The exact plan is bounded.",
+            evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          ctx,
+        );
+        // The operator picks a third model mid-review.
+        const chosen = models[2];
+        const override = async () => {
+          ctx.model = chosen;
+          await hooks.get("model_select")({ model: chosen, source: "set" }, ctx);
+        };
+        const endRun = () =>
+          hooks.get("agent_end")(
+            {
+              messages: [
+                {
+                  role: "assistant",
+                  provider: review.selected.provider,
+                  model: review.selected.modelId,
+                  stopReason: "stop",
+                  usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+                },
+              ],
+            },
+            ctx,
+          );
+        if (when === "before the review run ends") {
+          await override();
+          await endRun();
+        } else {
+          await endRun();
+          await override();
+        }
+        const switches = selectedModels.length;
+        const messages = sent.length;
+        await hooks.get("agent_settled")({}, ctx);
+
+        const restored = lastState().active;
+        assert.equal(restored.taskId, parent.taskId, "the finished review must not stay installed");
+        assert.equal(restored.lifecycle.phase, "preflight", "the override revokes the review's authority");
+        assert.equal(restored.manualOverride, true, "the operator's override stays in force");
+        assert.equal(selectedModels.length, switches, "the router does not switch away from the operator's model");
+        assert.equal(sent.length, messages, "no automatic continuation follows an override");
+
+        await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
+        await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
+        assert.equal(selectedModels.length, switches, "the next user turn keeps the operator's model");
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
 
   it("keeps a compaction boundary pending across a same-task repair so the next input re-routes", async () => {
     const { hooks, sent, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
