@@ -537,11 +537,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    * reviewer model keeps running until that run settles, so preflight submissions stay blocked until the builder is restored.
    */
   let revokedReviewStillRunning = false;
+  /** The revoked review's own run is still in progress, as opposed to a later turn awaiting the builder's restoration. */
+  let revokedReviewRunActive = false;
 
   /** Explains why a submission is blocked: the revoked reviewer is still running, or its builder was never restored. */
   function revokedReviewSubmissionError(): Error {
     return new Error(
-      agentRunPhase === "active"
+      revokedReviewRunActive
         ? "A revoked independent review is still running; submit after this run ends and the builder model is restored"
         : "The builder model was not restored after a revoked independent review; submit on a later turn once the router restores it",
     );
@@ -570,6 +572,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const active = leaseOwner.state.active;
     if (active && holdsDiscovery(active) && active.lifecycle.phase === "review" && agentRunPhase === "active") {
       revokedReviewStillRunning = true;
+      revokedReviewRunActive = true;
     }
     leaseOwner.send({ type: "INVALIDATE", reason, discoveryOnly });
   }
@@ -2659,6 +2662,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     await abortSecondaryWork(ctx, "session_start", { retainSafetyLatch: true });
     attemptDisposition = "unknown";
     revokedReviewStillRunning = false;
+    revokedReviewRunActive = false;
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
     scope = await readRouterScope(ctx.cwd);
     const branch = ctx.sessionManager.getBranch();
@@ -3694,6 +3698,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const settled: ReconciliationBoundary = { kind: "agent_settled", promptRefreshAllowed: false, continuing: false };
       await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
+      revokedReviewRunActive = false;
       // A failed restore keeps submissions blocked until a later turn preparation restores the builder.
       if (
         revokedReviewRestored ||

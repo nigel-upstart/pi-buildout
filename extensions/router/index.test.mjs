@@ -6216,6 +6216,14 @@ describe("routerExtension", () => {
     assert.equal(latest().lifecycle.grant, undefined, "a revoked review's verdict grants nothing");
     assert.equal(repairs(), repairsBefore, "the revoked review's outcome must not start a repair turn");
     await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+    // A later run whose preparation also fails to restore the builder (no candidate can be selected) is not the
+    // revoked review's run, so it must not be reported as one.
+    const revokedRunModel = ctx.model;
+    ctx.model = { provider: "unlisted", id: "unlisted-model" };
+    await hooks.get("before_agent_start")({ prompt: "Continue the task", systemPrompt: "base", images: [] }, ctx);
+    hooks.get("agent_start")({}, ctx);
+    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+    ctx.model = revokedRunModel;
     setModelResult = true;
     await hooks.get("before_agent_start")({ prompt: "Continue the task", systemPrompt: "base", images: [] }, ctx);
     assert.equal(ctx.model.id, builder.modelId, "a later ordinary turn can restore the builder");
