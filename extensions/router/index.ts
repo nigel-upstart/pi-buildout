@@ -3699,10 +3699,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
       revokedReviewRunActive = false;
-      // A failed restore keeps submissions blocked until a later turn preparation restores the builder.
+      // A failed restore keeps submissions blocked until a later turn preparation restores the builder. So does
+      // an inactive mode, which switches no models: `/route active` restores the safety tools before any turn.
       if (
         revokedReviewRestored ||
-        leaseOwner.state.mode !== "active" ||
         leaseOwner.state.manualOverride ||
         leaseOwner.state.active?.manualOverride ||
         !leaseOwner.state.active
