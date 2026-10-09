@@ -444,6 +444,30 @@ describe("task boundary gate", () => {
       cache,
     );
     assert.equal(sameFamily.action, "continue");
+
+    // Leaving code work for high-risk reversible non-code work adds the advisory phase's pre-action gate.
+    const codeFeatures = {
+      ...lease().features,
+      intent: "implement",
+      workflowType: "coding_implementation",
+      actionMode: "reversible_mutation",
+      risk: "high",
+    };
+    const nonCodeFeatures = { ...codeFeatures, intent: "operate", workflowType: "incident_or_operations" };
+    const completion = {
+      ...lease(),
+      features: codeFeatures,
+      lifecycle: { phase: "building", policy: "completion_review", taskFingerprint: "task" },
+    };
+    const advisory = resolveContinuity(completion, { ...nonCodeFeatures, taskContinuity: "clear_continuation" }, cache);
+    assert.equal(advisory.action, "new_task", "completion review alone does not satisfy the advisory gate");
+    const advising = {
+      ...completion,
+      features: nonCodeFeatures,
+      lifecycle: { phase: "advisory_pending", policy: "advisory_then_completion_review", taskFingerprint: "task" },
+    };
+    const backToCode = resolveContinuity(advising, { ...codeFeatures, taskContinuity: "clear_continuation" }, cache);
+    assert.equal(backToCode.action, "continue", "the stricter advisory lease is kept");
   });
 
   it("starts a fresh lease when an information-only continuation leaves either planning route", () => {

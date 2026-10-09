@@ -151,13 +151,13 @@ const ACTION_MODE_RANK: Record<TaskFeatures["actionMode"], number> = {
   destructive: 4,
 };
 
-// Safety policies ordered by the gates they impose. Both completion-review policies require a completion review of
-// reversible mutation; only authorization adds a non-mutating preflight and an independently approved plan.
+// Safety policies ordered by the gates they impose. Each adds to the one before it: a completion review after
+// mutation, then a non-mutating advisory phase before it, then a preflight that needs an independently approved plan.
 const SAFETY_POLICY_RANK: Record<SafetyPolicy, number> = {
   ordinary: 0,
   completion_review: 1,
-  advisory_then_completion_review: 1,
-  authorization_then_completion_review: 2,
+  advisory_then_completion_review: 2,
+  authorization_then_completion_review: 3,
 };
 
 function isPlanningArchetype(archetype: Archetype): boolean {
