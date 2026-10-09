@@ -285,11 +285,13 @@ cannot recursively trigger completion review.
 The irreversible preflight tool allowlist is deterministic. Unknown tools and shell composition are denied; after
 approval, mutating tool names are limited to those in the reviewed plan. The plan and verdict schemas, canonical
 fingerprints, lifecycle validation, and boundary invalidation are implemented locally. Issue #108 supersedes the earlier
-decisions in issues #91 and #104 to declare all three safety validators throughout active mode. Exposure now matches
-valid lifecycle phases, synchronized at state persistence before generated messages are queued, including one-shot
-verdict removal and revoked-review suppression. Execution guards still protect against stale calls and invalid
-fingerprints. The implementation-plan validator accepts any active-mode call without requiring a planning archetype; its
-pure validation neither changes the lease nor grants execution permissions. Shadow and off hide router tools.
+decisions in issues #91 and #104, which declared all three safety validators throughout active mode. Each validator is
+now exposed only in the phase that accepts it: the plan and discovery validators in preflight, and the verdict validator
+in a generated review until its one verdict is recorded. Exposure is synchronized at state persistence before generated
+messages are queued, and whenever the builder-restore latch changes, so a revoked review's pending restore also
+withholds the preflight validators. Execution guards still protect against stale calls and invalid fingerprints. The
+implementation-plan validator accepts any active-mode call without requiring a planning archetype; its pure validation
+neither changes the lease nor grants execution permissions. Shadow and off hide router tools.
 
 Checkpoint B: an in-memory provider-request experiment exercises Pi's actual active-tool selection, generated-message
 path, and Agent tool dispatch on published 0.87.1 and 1.1.0. The generated request declares and executes the refreshed
