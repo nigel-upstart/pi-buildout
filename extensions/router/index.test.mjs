@@ -6336,87 +6336,90 @@ describe("routerExtension", () => {
     );
   });
 
-  it("keeps preflight blocked when /route off revokes a running review until the builder is restored", async () => {
-    const result = await runAdapterTurn({
-      classifyTask: successfulClassifier(1, {
-        confidence: 0.95,
-        risk: "critical",
-        actionMode: "destructive",
-        intent: "operate",
-        workflowType: "incident_or_operations",
-      }),
-      models: [
-        ...standardRoutingModels(),
-        routingModel("google-vertex", "gemini-3.6-flash"),
-        routingModel("openai-codex", "gpt-6-astra"),
-      ],
-      mode: "active",
-      prompt: "Discover owner before production deletion",
-      sessionId: "route-off-revocation",
-    });
-    result.pi.setModel = async (model) => {
-      result.ctx.model = model;
-      return true;
-    };
-    const latest = () => result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
-    const request = {
-      purpose: "discovery",
-      objective: "Find owner",
-      target: "inventory",
-      expectedEffects: ["Return owner"],
-      preconditions: ["Bounded query"],
-      verification: ["Compare identifiers"],
-      abortConditions: ["Unexpected effects"],
-      toolName: "bash",
-      input: { command: "glean search owner --limit 5" },
-    };
-    const submit = () =>
-      result.tools.get("submit_discovery_request").execute("request", request, undefined, undefined, result.ctx);
-    startAgentRun(result);
-    await submit();
-    const builder = latest().selected;
-    await settleAgentRun(result);
-    const review = latest();
-    assert.equal(review.lifecycle.phase, "review");
-    assert.notEqual(review.selected.modelId, builder.modelId, "the review runs on a separate model");
-
-    // /route off revokes the running review; its settlement while inactive switches no models.
-    result.ctx.model = result.ctx.modelRegistry.find(review.selected.provider, review.selected.modelId);
-    startAgentRun(result);
-    await result.commands.get("route").handler("off", result.ctx);
-    await endAgentTurn(result);
-    await result.hooks.get("agent_end")(
-      {
-        messages: [
-          {
-            role: "assistant",
-            provider: review.selected.provider,
-            model: review.selected.modelId,
-            stopReason: "stop",
-            usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
-          },
+  for (const inactiveMode of ["off", "shadow"]) {
+    it(`keeps preflight blocked when /route ${inactiveMode} hands back a running review until the builder is restored`, async () => {
+      const result = await runAdapterTurn({
+        classifyTask: successfulClassifier(1, {
+          confidence: 0.95,
+          risk: "critical",
+          actionMode: "destructive",
+          intent: "operate",
+          workflowType: "incident_or_operations",
+        }),
+        models: [
+          ...standardRoutingModels(),
+          routingModel("google-vertex", "gemini-3.6-flash"),
+          routingModel("openai-codex", "gpt-6-astra"),
         ],
-      },
-      result.ctx,
-    );
-    await result.hooks.get("agent_settled")({}, result.ctx);
-    assert.equal(latest().lifecycle.phase, "preflight");
-    assert.equal(result.ctx.model.id, review.selected.modelId, "the reviewer model is still selected");
+        mode: "active",
+        prompt: "Discover owner before production deletion",
+        sessionId: `route-${inactiveMode}-hand-back`,
+      });
+      result.pi.setModel = async (model) => {
+        result.ctx.model = model;
+        return true;
+      };
+      const latest = () => result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+      const request = {
+        purpose: "discovery",
+        objective: "Find owner",
+        target: "inventory",
+        expectedEffects: ["Return owner"],
+        preconditions: ["Bounded query"],
+        verification: ["Compare identifiers"],
+        abortConditions: ["Unexpected effects"],
+        toolName: "bash",
+        input: { command: "glean search owner --limit 5" },
+      };
+      const submit = () =>
+        result.tools.get("submit_discovery_request").execute("request", request, undefined, undefined, result.ctx);
+      startAgentRun(result);
+      await submit();
+      const builder = latest().selected;
+      await settleAgentRun(result);
+      const review = latest();
+      assert.equal(review.lifecycle.phase, "review");
+      assert.notEqual(review.selected.modelId, builder.modelId, "the review runs on a separate model");
 
-    // Re-enabling restores the safety tools at once, before any turn could restore the builder, so an
-    // extension-generated turn must not submit under the reviewer model.
-    await result.commands.get("route").handler("active", result.ctx);
-    await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+      // /route off revokes the running review and shadow leaves it installed; either way, settlement while inactive
+      // hands it back passively and switches no models.
+      result.ctx.model = result.ctx.modelRegistry.find(review.selected.provider, review.selected.modelId);
+      startAgentRun(result);
+      await result.commands.get("route").handler(inactiveMode, result.ctx);
+      await endAgentTurn(result);
+      await result.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: review.selected.provider,
+              model: review.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        result.ctx,
+      );
+      await result.hooks.get("agent_settled")({}, result.ctx);
+      assert.equal(latest().lifecycle.phase, "preflight");
+      assert.equal(result.ctx.model.id, review.selected.modelId, "the reviewer model is still selected");
 
-    await result.hooks.get("before_agent_start")(
-      { prompt: "Continue the task", systemPrompt: "base", images: [] },
-      result.ctx,
-    );
-    assert.equal(result.ctx.model.id, builder.modelId, "turn preparation restores the builder");
-    startAgentRun(result);
-    await submit();
-    assert.ok(latest().lifecycle.discovery, "submissions reopen once the builder is restored");
-  });
+      // Re-enabling restores the safety tools at once, before any turn could restore the builder, so an
+      // extension-generated turn must not submit under the reviewer model.
+      await result.commands.get("route").handler("active", result.ctx);
+      await assert.rejects(submit(), /builder model was not restored after a revoked independent review/);
+
+      await result.hooks.get("before_agent_start")(
+        { prompt: "Continue the task", systemPrompt: "base", images: [] },
+        result.ctx,
+      );
+      assert.equal(result.ctx.model.id, builder.modelId, "turn preparation restores the builder");
+      startAgentRun(result);
+      await submit();
+      assert.ok(latest().lifecycle.discovery, "submissions reopen once the builder is restored");
+    });
+  }
 
   it("reconciles secondary before settlement advances the lease revision (#73)", async () => {
     const secondary = deferred();

@@ -3536,6 +3536,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           passive: true,
           manualOverride,
         });
+        // An inactive hand-back leaves the reviewer selected, and `/route active` restores the submission tools at
+        // once, so submissions wait for the builder (judged after the drains below). An override keeps the
+        // operator's model.
+        if (!manualOverride) revokedReviewStillRunning = true;
         return;
       }
       if (leaseOwner.state.mode !== "active") return;
