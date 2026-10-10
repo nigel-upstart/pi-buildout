@@ -11,8 +11,8 @@ derived from the published `@earendil-works/pi-coding-agent@0.85.1` package.
 ## Regenerating
 
 ```bash
-npm run patches:build            # rewrite the artifacts below
-npm run patches:check            # fail if the committed artifacts are stale
+node scripts/build-pi-patch.mjs --version 0.85.1          # rewrite the artifacts below
+node scripts/build-pi-patch.mjs --version 0.85.1 --check  # fail if the committed artifacts are stale
 ```
 
 The pipeline fetches the pinned upstream source archive and npm tarball, verifies both against checksums in
@@ -39,7 +39,7 @@ Four recognized already-patched states, each with a migration onto the current p
 
 ### Regenerating the upgrade states
 
-`npm run patches:build` regenerates the four artifacts above but **not** these migrations, because a state is
+`node scripts/build-pi-patch.mjs --version 0.85.1` regenerates the four artifacts above but **not** these migrations, because a state is
 defined by the bytes of a real tree and cannot be rebuilt from checksums alone. After the main patch changes,
 rebuild each migration against the new patched tree:
 

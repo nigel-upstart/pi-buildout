@@ -81,7 +81,8 @@ test("the resource loader asks the shared module for active skills and keeps no 
 });
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const packageRoot = join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent");
+// The repository develops against a newer Pi; the 0.85.1 baseline is installed under a pinned npm alias.
+const packageRoot = join(repositoryRoot, "node_modules", "pi-coding-agent-0.85.1");
 
 async function exists(path) {
   try {
@@ -127,7 +128,7 @@ async function applyPatchTo(target) {
  */
 test("the applied patch leaves no relocated implementation behind", async (t) => {
   if (!(await exists(join(packageRoot, "package.json")))) {
-    t.skip("the installed @earendil-works/pi-coding-agent package is unavailable");
+    t.skip("the pinned pi-coding-agent-0.85.1 baseline package is unavailable");
     return;
   }
 
