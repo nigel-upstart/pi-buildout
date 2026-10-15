@@ -83,11 +83,11 @@ Pi ever exposes the resource loader to extensions.
 
 Per version, `versions/<version>/upstream.json` pins the inputs. Two properties make this reproducible:
 
-- **The exact upstream commit is published.** The npm registry records `gitHead` for every release, and it matches the
-  revisions in `ATTRIBUTION.md` exactly (`1.0.3` → `d78dc83d633229d12f8b79631384c4c2717c399f`, `1.0.4` →
-  `7c10bd4337495ee613f2224843ecdf349b80d1df`, `1.1.0` → `abe508e1b89912adde45528136c3221eb69acdd7`). The registry
-  publishes no `gitHead` for 1.3.0, so its pinned revision (`71023aec1546d6d677a65669c5665c0927ce0dd0`) is the commit
-  the `v1.3.0` release tag points to.
+- **The exact upstream commit is published.** Each pinned revision matches `ATTRIBUTION.md` exactly. For 1.0.3 and
+  1.0.4, it is the npm registry's `gitHead` (`1.0.3` → `d78dc83d633229d12f8b79631384c4c2717c399f`, `1.0.4` →
+  `7c10bd4337495ee613f2224843ecdf349b80d1df`). The registry publishes no `gitHead` for 1.1.0 or 1.3.0, so their
+  revisions are the commits the release tags point to (`1.1.0` → `abe508e1b89912adde45528136c3221eb69acdd7`, `1.3.0` →
+  `71023aec1546d6d677a65669c5665c0927ce0dd0`).
 - **Upstream ships a deterministic source archive.** Each GitHub release carries `pi-<version>-source.tar.gz` (built by
   upstream's `scripts/create-source-archive.sh`) alongside a `SHA256SUMS`. GitHub's _auto-generated_ tag tarballs are
   not byte-stable and are deliberately not used.
