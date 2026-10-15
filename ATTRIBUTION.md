@@ -106,6 +106,20 @@ discovery grant in its `tool_call` handler, not at `tool_execution_end`.
 
 No Pi code, issue prose, or documentation prose was copied or modified.
 
+### Pi model catalog: GPT-6.1 Sol pricing
+
+- Source: bundled `@earendil-works/pi-ai` provider catalog shipped with `@earendil-works/pi-coding-agent`
+  (`dist/providers/data/openai-codex.json`, model `gpt-6.1-sol`)
+- Canonical repository: <https://github.com/earendil-works/pi>
+- Revision reviewed: published `1.1.0`, read 2026-10-13; no Git commit was pinned
+- License declared by the package: MIT
+
+Use: the router's `gpt-6.1-sol` generation proxy (`extensions/router/core/evidence.ts` and
+`specs/routing-layer/generation-evidence-2026-09-22.json`) takes its list rates from that catalog entry (input 2, cache
+read 0.1, output 10 USD per million tokens). Only those numeric facts were used; no catalog file or Pi code was copied.
+The behavioral prior is intentionally not taken from Pi: it remains a temporary proxy from the router's existing
+measured GPT-5.6/6.0 Sol evidence until GPT-6.1 Sol has rollout evidence of its own.
+
 ### `maximhq/bifrost`
 
 - Repository: <https://github.com/maximhq/bifrost>

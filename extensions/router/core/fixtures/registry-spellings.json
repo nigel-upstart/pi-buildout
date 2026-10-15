@@ -298,5 +298,9 @@
   {
     "provider": "openai-codex",
     "modelId": "gpt-6-sol"
+  },
+  {
+    "provider": "openai-codex",
+    "modelId": "gpt-6.1-sol"
   }
 ]

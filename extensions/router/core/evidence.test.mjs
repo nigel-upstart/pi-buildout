@@ -117,6 +117,7 @@ describe("evidence data agrees with the checked-in spec artifact", () => {
     const expected = {
       "gpt-6-luna": ["gpt-5.6-luna", { low: 0.4784, medium: 0.4811, high: 0.4834, xhigh: 0.485, max: 0.4863 }],
       "gpt-6-sol": ["gpt-5.6-sol", { low: 0.5, medium: 0.5, high: 0.5, xhigh: 0.5, max: 0.5 }],
+      "gpt-6.1-sol": ["gpt-5.6-sol", { low: 0.4264, medium: 0.4021, high: 0.4084, xhigh: 0.3888, max: 0.3789 }],
       "claude-opus-5-5": ["claude-opus-5", { low: 0.6101, medium: 0.5799, high: 0.5593, xhigh: 0.5486, max: 0.5439 }],
     };
     for (const [current, [source, ratios]] of Object.entries(expected)) {
@@ -221,6 +222,9 @@ describe("ability bands", () => {
     assert.equal(evidenceAbility("claude-opus-5-5", "high"), 4);
     assert.equal(evidenceAbility("claude-opus-5-5", "medium"), 3);
     assert.equal(evidenceAbility("claude-opus-5-5", "low"), 2);
+    assert.equal(evidenceAbility("gpt-6.1-sol", "max"), 4);
+    assert.equal(evidenceAbility("gpt-6.1-sol", "high"), 3);
+    assert.equal(evidenceAbility("gpt-6.1-sol", "medium"), 2);
     assert.equal(evidenceAbility("gpt-6-sol", "max"), 4);
     assert.equal(evidenceAbility("gpt-6-sol", "high"), 3);
     assert.equal(evidenceAbility("gpt-6-sol", "medium"), 2);

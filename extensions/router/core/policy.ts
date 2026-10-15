@@ -5,7 +5,7 @@ import { MODEL_VENDORS } from "./profiles.ts";
 import { canonicalModelId } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
-export const POLICY_VERSION = "router-policy-v9";
+export const POLICY_VERSION = "router-policy-v10";
 
 /**
  * Backward-compatible endpoint classification retained for lease validation and diagnostics. Tiers
@@ -57,6 +57,7 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "gpt-6-astra": "openai",
   "gpt-5.6-terra": "openai",
   "gpt-6-sol": "openai",
+  "gpt-6.1-sol": "openai",
   "gpt-oss-120b": "openai",
   "claude-opus-5-5": "anthropic",
   "claude-opus-4-6": "anthropic",
@@ -112,10 +113,17 @@ const TERRA_MEDIUM = candidates("gpt-5.6-terra", "medium");
 const TERRA_HIGH = candidates("gpt-5.6-terra", "high");
 const TERRA_MAX = candidates("gpt-5.6-terra", "max");
 const GPT_OSS_HIGH = candidates("gpt-oss-120b", "high");
-const SOL_LOW = candidates("gpt-6-sol", "low");
-const SOL_MEDIUM = candidates("gpt-6-sol", "medium");
-const SOL_HIGH = candidates("gpt-6-sol", "high");
-const SOL_MAX = candidates("gpt-6-sol", "max");
+// GPT-6.1 Sol supersedes 6.0 Sol. Until direct 6.1 rollout evidence is available, its behavioral
+// prior is explicitly proxied from the measured 6.0/5.6 lineage in core/evidence.ts; 6.0 remains an
+// availability fallback rather than silently disappearing from a scoped registry.
+const SOL_61_LOW = candidates("gpt-6.1-sol", "low");
+const SOL_61_MEDIUM = candidates("gpt-6.1-sol", "medium");
+const SOL_61_HIGH = candidates("gpt-6.1-sol", "high");
+const SOL_61_MAX = candidates("gpt-6.1-sol", "max");
+const SOL_LOW = [...SOL_61_LOW, ...candidates("gpt-6-sol", "low")];
+const SOL_MEDIUM = [...SOL_61_MEDIUM, ...candidates("gpt-6-sol", "medium")];
+const SOL_HIGH = [...SOL_61_HIGH, ...candidates("gpt-6-sol", "high")];
+const SOL_MAX = [...SOL_61_MAX, ...candidates("gpt-6-sol", "max")];
 const ASTRA_HIGH = candidates("gpt-6-astra", "high");
 const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
 /**
