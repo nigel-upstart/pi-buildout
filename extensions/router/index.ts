@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartUserEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
 import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
 import { compilePrompt, escapeXml } from "./core/compiler.ts";
@@ -2867,7 +2867,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return { action: "continue" as const };
   });
 
-  pi.on("before_agent_start", async (event, ctx) => {
+  // Pi 1.1.0 fired this hook only for user prompts. Pi 1.3.0 also fires it for idle custom runs
+  // (`triggerTurn`, including the router's own generated follow-ups), which carry no prompt. Those runs
+  // are handled by the lifecycle code that queues them, so the router skips them to keep the 1.1.0 behavior.
+  const handleUserPrompt = async (event: BeforeAgentStartUserEvent, ctx: ExtensionContext) => {
     agentRunPhase = "before_start";
     if (leaseOwner.state.mode === "off") {
       syncRouterTools();
@@ -3162,6 +3165,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       syncRouterTools();
       ctx.ui.setWorkingMessage();
     }
+  };
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    // Pi 1.1.0 events have no messageType and always take the user path.
+    if (event.messageType === "custom") return;
+    return handleUserPrompt(event, ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
