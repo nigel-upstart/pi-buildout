@@ -110,7 +110,7 @@ describe("prompt profile eligibility is declared in canonical logical model IDs"
       if (!resolvable) unroutable.push(`${endpoint.provider}/${endpoint.modelId}`);
     }
     // The fixture grows with every observed provider spelling; every policy-named row must resolve.
-    assert.equal(named.length, 62, "the registry fixture no longer describes the surveyed policy endpoint set");
+    assert.equal(named.length, 63, "the registry fixture no longer describes the surveyed policy endpoint set");
     assert.deepEqual(unroutable, [], "policy-named endpoints resolve no profile and would be excluded");
   });
 

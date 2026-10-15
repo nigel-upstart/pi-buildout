@@ -160,6 +160,21 @@ const GENERATION_PROXIES: Readonly<Record<string, GenerationProxy>> = {
       max: { uncachedInput: 220_238_625, cacheRead: 3_344_424_960, output: 27_133_255 },
     },
   },
+  // GPT-6.1 Sol has the published current list rate but no rollout corpus of its own. Its behavioral
+  // fields therefore remain a temporary proxy from the same measured GPT-5.6 Sol lineage as 6.0; the
+  // cache-read rate intentionally uses the 6.1 catalog value rather than pretending its price is 6.0's.
+  "gpt-6.1-sol": {
+    sourceModelId: "gpt-5.6-sol",
+    sourceRates: { input: 4, cacheRead: 0.4, output: 20 },
+    rates: { input: 2, cacheRead: 0.1, output: 10 },
+    sourceTokenMix: {
+      low: { uncachedInput: 41_098_029, cacheRead: 271_158_784, output: 4_781_772 },
+      medium: { uncachedInput: 55_519_604, cacheRead: 625_099_264, output: 8_328_198 },
+      high: { uncachedInput: 125_717_478, cacheRead: 1_099_147_776, output: 12_862_722 },
+      xhigh: { uncachedInput: 132_042_077, cacheRead: 1_795_639_296, output: 18_428_674 },
+      max: { uncachedInput: 220_238_625, cacheRead: 3_344_424_960, output: 27_133_255 },
+    },
+  },
   "claude-opus-5-5": {
     sourceModelId: "claude-opus-5",
     sourceRates: { input: 5, cacheRead: 0.5, output: 25 },
@@ -434,6 +449,12 @@ export const EFFORT_POLICIES: readonly EffortPolicy[] = [
     saturationReason: "pass 72.3 high, 72.5 xhigh, 72.8 max for 49% and 93% more cost per pass",
     languageCeilings: { typescript: "high" },
     languageCeilingReason: "on TypeScript pass degrades above high: 64.3 high, 60.7 xhigh, 63.3 max",
+  },
+  {
+    modelId: "gpt-6.1-sol",
+    saturationEffort: "high",
+    saturationReason:
+      "temporary GPT-6.0 Sol proxy: pass 69.2 high, 70.6 xhigh, 72.3 max; high holds 74% of max quality at 43% of its cost per pass",
   },
   {
     modelId: "gpt-6-sol",
