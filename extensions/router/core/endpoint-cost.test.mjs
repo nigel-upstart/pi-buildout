@@ -201,11 +201,11 @@ describe("cache-write classification", () => {
     assert.equal(cloudflare.cost.cacheWrite / cloudflare.cost.input, 1.25);
   });
 
-  it("pins the 1.1.0 registry boundary and its Opus 5 observation", async () => {
+  it("pins the 1.3.0 registry boundary and its Opus 5 observation", async () => {
     const packageJson = JSON.parse(
       await readFile(new URL("../../../node_modules/@earendil-works/pi-ai/package.json", import.meta.url), "utf8"),
     );
-    assert.equal(packageJson.version, "1.1.0");
+    assert.equal(packageJson.version, "1.3.0");
     assert.ok(getModel("anthropic", "claude-opus-5"));
   });
 });
