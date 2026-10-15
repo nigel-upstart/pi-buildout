@@ -44,8 +44,9 @@ jobs:
           node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
+      # Same .npmrc cooldown bypass as check.yml: the pinned pi 1.3.0 packages are newer than min-release-age=5.
       - name: Install pinned dependencies
-        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+        run: npm ci --ignore-scripts --min-release-age=0 --registry=https://registry.npmjs.org/
       # Regeneration needs npm and github.com. If either is unreachable the pipeline throws, which fails the
       # job: an unverifiable patch must never look the same as a verified one.
       # `patches:check` passes `--all`, so every version under pi-overlay/versions/ is regenerated, not only the
