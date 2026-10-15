@@ -433,24 +433,47 @@ loading or its skill implementation. The original `cli-runtime.js` wrapper reuse
 `rpc-entry.js` wrapper also preserves Pi 1.1.0's process markers and HTTP-dispatcher setup. The published
 `dist/bundle/cli.js` loader remains unchanged and checksum-pinned. No complete Pi source checkout is committed.
 
+## Pi 1.3.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.3.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`), the commit the lightweight release
+  tag points to; the npm registry publishes no `gitHead` for this release, and the commit is unsigned
+- Source archive: `pi-1.3.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.3.0.tgz`, pinned by SHA-256 and registry integrity
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.3.0/integration.patch`](pi-overlay/versions/1.3.0/integration.patch) is the 1.1.0 seam rebased
+onto Pi 1.3.0's MIT-licensed TypeScript sources and documentation: the added and removed lines are unchanged, and only
+hunk positions and blob indexes differ. The generated [`skills.patch`](patches/pi-1.3.0/skills.patch) modifies the
+published resource loader, slash-command list, CLI and interactive entry points, and skill documentation, within the
+same 48-line seam budget. It adds this repository's original skill-management modules, which compile byte-identically to
+the 1.1.0 output, and reuses Pi's package/resource discovery, project-trust, and `proper-lockfile` APIs. It keeps
+catalog skills inactive until explicitly enabled, preserves explicit `--skill` paths with `--no-skills`, and does not
+copy Pi's automatic skill loading or its skill implementation. The original `cli-runtime.js` and `rpc-entry.js` wrappers
+are reused byte-for-byte from 1.1.0 because Pi 1.3.0's `src/cli.ts`, `src/rpc-entry.ts`, and `src/cli/setup.ts` are
+unchanged. The published `dist/bundle/cli.js` loader remains unchanged and checksum-pinned. Upstream changes elsewhere
+in 1.3.0, including those near the seams, were not adopted. No complete Pi source checkout is committed.
+
 ## Pi `/skills` TypeScript overlay
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`,
-  `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`, and
-  `@earendil-works/pi-coding-agent@1.1.0`
+  `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`,
+  `@earendil-works/pi-coding-agent@1.1.0`, and `@earendil-works/pi-coding-agent@1.3.0`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
   `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`),
   `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), and `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`),
-  taken from the corresponding signed release tag
+  taken from the corresponding signed release tag, and `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`), taken from
+  its lightweight, unsigned release tag
 - Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
-  `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, and `pi-1.1.0-source.tar.gz`, each verified against upstream's
-  published `SHA256SUMS` for that release
+  `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, `pi-1.1.0-source.tar.gz`, and `pi-1.3.0-source.tar.gz`, each
+  verified against upstream's published `SHA256SUMS` for that release
 - License declared by the package: MIT
 
 [`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
-`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, and `patches/pi-1.1.0/` are
-generated from it.
+`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, `patches/pi-1.1.0/`, and
+`patches/pi-1.3.0/` are generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,

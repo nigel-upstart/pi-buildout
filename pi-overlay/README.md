@@ -39,13 +39,13 @@ New logic goes in `skill-management*.ts`. Upstream files get imports and a call 
 
 Measured against each clean package, edits to pre-existing upstream files:
 
-| Pre-existing upstream file                   | 1.0.3  | 1.0.4  | 1.1.0  |
-| -------------------------------------------- | ------ | ------ | ------ |
-| `dist/core/resource-loader.js`               | 16     | 16     | 16     |
-| `dist/core/slash-commands.js`                | 1      | 1      | 1      |
-| `dist/main.js`                               | 5      | 5      | 5      |
-| `dist/modes/interactive/interactive-mode.js` | 26     | 26     | 26     |
-| **Total**                                    | **48** | **48** | **48** |
+| Pre-existing upstream file                   | 1.0.3  | 1.0.4  | 1.1.0  | 1.3.0  |
+| -------------------------------------------- | ------ | ------ | ------ | ------ |
+| `dist/core/resource-loader.js`               | 16     | 16     | 16     | 16     |
+| `dist/core/slash-commands.js`                | 1      | 1      | 1      | 1      |
+| `dist/main.js`                               | 5      | 5      | 5      | 5      |
+| `dist/modes/interactive/interactive-mode.js` | 26     | 26     | 26     | 26     |
+| **Total**                                    | **48** | **48** | **48** | **48** |
 
 The supported seams make the same calls and compile the shared `skill-management-core.ts` and `skill-management.ts` to
 byte-identical `dist/core/skill-management*.js`.
@@ -85,7 +85,9 @@ Per version, `versions/<version>/upstream.json` pins the inputs. Two properties 
 
 - **The exact upstream commit is published.** The npm registry records `gitHead` for every release, and it matches the
   revisions in `ATTRIBUTION.md` exactly (`1.0.3` → `d78dc83d633229d12f8b79631384c4c2717c399f`, `1.0.4` →
-  `7c10bd4337495ee613f2224843ecdf349b80d1df`, `1.1.0` → `abe508e1b89912adde45528136c3221eb69acdd7`).
+  `7c10bd4337495ee613f2224843ecdf349b80d1df`, `1.1.0` → `abe508e1b89912adde45528136c3221eb69acdd7`). The registry
+  publishes no `gitHead` for 1.3.0, so its pinned revision (`71023aec1546d6d677a65669c5665c0927ce0dd0`) is the commit
+  the `v1.3.0` release tag points to.
 - **Upstream ships a deterministic source archive.** Each GitHub release carries `pi-<version>-source.tar.gz` (built by
   upstream's `scripts/create-source-archive.sh`) alongside a `SHA256SUMS`. GitHub's _auto-generated_ tag tarballs are
   not byte-stable and are deliberately not used.
@@ -96,22 +98,25 @@ no upstream source.
 
 ## Reproducibility
 
-For 1.0.3, 1.0.4, and 1.1.0, the clean build reproduces all four pre-existing runtime files tracked by each patch
+For 1.0.3, 1.0.4, 1.1.0, and 1.3.0, the clean build reproduces all four pre-existing runtime files tracked by each patch
 byte-for-byte before the overlay is applied. No normalization is applied. If that ever stops holding, generation fails
 rather than emitting a patch carrying toolchain noise.
 
 The pipeline never rebuilds `dist/bundle/` or its content-hashed chunks. It replaces `cli-runtime.js` and `rpc-entry.js`
 with the small wrappers in `replacements/`; baseline hashes come from the npm tarball. The published
 `dist/bundle/cli.js` loader keeps Node's compile cache and `require()` dispatch. It is declared with
-`"source": "unchanged"`: both checksum manifests pin it, so a loader that bypasses the replaced runtime is rejected. Pi
-1.1.0's RPC wrapper preserves upstream's process markers and HTTP-dispatcher setup.
+`"source": "unchanged"`: both checksum manifests pin it, so a loader that bypasses the replaced runtime is rejected. The
+Pi 1.1.0 and 1.3.0 RPC wrapper preserves upstream's process markers and HTTP-dispatcher setup; 1.3.0 reuses the 1.1.0
+wrappers byte-for-byte because upstream's entrypoint sources and loader are unchanged.
 
 `workspaceBuildOrder` follows upstream's root build script. Pi 1.0.3 builds `packages/codemode`, `packages/mcp`, and
-`packages/durable` before the agent package. Pi 1.0.4 and 1.1.0 also build `packages/env` before `packages/agent`.
+`packages/durable` before the agent package. Pi 1.0.4 and 1.1.0 also build `packages/env` before `packages/agent`. Pi
+1.3.0 keeps that order but no longer builds `packages/protocol`, `packages/client`, or `packages/server`, which its
+source archive no longer contains.
 
 `npm run patches:build` and `npm run patches:check` pass `--all`, so every version under `versions/` is regenerated and
 checked, not only the one the development dependencies pin. Use `node scripts/build-pi-patch.mjs --version <version>`
 for a single version.
 
-Pi 1.0.3, 1.0.4, and 1.1.0 build with the released `typescript` `7.0.2` (`tsc`). If a pinned compiler is withdrawn or
-its emit changes, reproducibility breaks; the scheduled drift job is the detector.
+Pi 1.0.3, 1.0.4, 1.1.0, and 1.3.0 build with the released `typescript` `7.0.2` (`tsc`). If a pinned compiler is
+withdrawn or its emit changes, reproducibility breaks; the scheduled drift job is the detector.

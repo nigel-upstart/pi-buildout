@@ -11,7 +11,7 @@ Local pi customizations and supporting notes used to make pi the desired coding-
 | `extensions/subagents`                 | Natural-language creation and control of isolated, recursively nestable Pi subagents        | [`extensions/subagents/README.md`](extensions/subagents/README.md)                   |
 | `extensions/otel`                      | Vendored OpenTelemetry fork: GenAI spans, metrics, and logs over OTLP (opt-out)             | [`extensions/otel/README.md`](extensions/otel/README.md)                             |
 | `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior                                  | [skill README](.agents/skills/installed-pi-patching/README.md)                       |
-| `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-1.1.0/README.md`](patches/pi-1.1.0/README.md)                           |
+| `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-1.3.0/README.md`](patches/pi-1.3.0/README.md)                           |
 | `pi-overlay`                           | Authored TypeScript the generated `/skills` patches come from                               | [`pi-overlay/README.md`](pi-overlay/README.md)                                       |
 
 ## Installation
@@ -59,7 +59,7 @@ checkpoints, and the exact publish commands. Nothing is published by the reposit
 ### Where the `/skills` patch comes from
 
 The patch is **generated, not hand-authored**. Reviewed TypeScript in [`pi-overlay`](pi-overlay) is the source of truth,
-and `patches/pi-1.0.3/*`, `patches/pi-1.0.4/*`, and `patches/pi-1.1.0/*` are produced from it:
+and `patches/pi-1.0.3/*`, `patches/pi-1.0.4/*`, `patches/pi-1.1.0/*`, and `patches/pi-1.3.0/*` are produced from it:
 
 ```bash
 npm run patches:build                                   # regenerate every version's patch and checksum manifests
@@ -67,6 +67,7 @@ npm run patches:check                                   # fail if any version's 
 node scripts/build-pi-patch.mjs --version 1.0.3 --check # check the 1.0.3 patch
 node scripts/build-pi-patch.mjs --version 1.0.4 --check # check the 1.0.4 patch
 node scripts/build-pi-patch.mjs --version 1.1.0 --check # check the 1.1.0 patch
+node scripts/build-pi-patch.mjs --version 1.3.0 --check # check the 1.3.0 patch
 ```
 
 The pipeline fetches the pinned upstream release source archive and npm tarball, verifies both against checksums
@@ -81,10 +82,10 @@ Use Node.js 22.19 or newer and Pi **1.0.1 or newer**. The authored extensions an
 development packages, including the vendored OTel extension, and the router's cost tests pin that model registry. The
 installer rejects older Pi versions even with `--skip-skill-loading-patch`. It discovers managed installs through the
 launcher's `install/current-version` file, as well as npm bins, Homebrew wrappers, and npm-backed shims. Only the exact
-Pi versions `1.0.3`, `1.0.4`, and `1.1.0` have checksum-verified `/skills` patches; for other supported versions, use
-`--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every supported pi version; for a
-version other than the pinned or aliased one, the tests that apply the patch to a real package skip unless
-`PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
+Pi versions `1.0.3`, `1.0.4`, `1.1.0`, and `1.3.0` have checksum-verified `/skills` patches; for other supported
+versions, use `--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every supported pi
+version; for a version other than the pinned or aliased one, the tests that apply the patch to a real package skip
+unless `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
 [`patches/pi-1.0.4/README.md`](patches/pi-1.0.4/README.md#runtime-behavior-tests)). Install
 [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
 hooks:
