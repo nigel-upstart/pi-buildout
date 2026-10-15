@@ -189,7 +189,10 @@ Deterministic, not LLM-assisted:
   candidate from every reviewer-ladder vendor other than the builder's vendor, require at least two, and prefer the
   closest reviewer at or above the builder's effective ability. If a vendor has no model at that level, select its
   strongest eligible model and record the ceiling mismatch. Google's availability rung leads with Gemini 3.8 Flash at
-  high effort and degrades to older Gemini generations when 3.8 is unavailable.
+  high effort and degrades to older Gemini generations when 3.8 is unavailable. When fewer than two non-builder vendors
+  qualify, the operator notice reports the required count, eligible vendors, and evaluated exclusions grouped by vendor
+  (including failed fallbacks from an eligible vendor), with scope and recovery hints. The notice is bounded; the
+  complete exclusions remain in `unroutable_review` telemetry, whose vendor summary fields are additive.
 - Ordinary routes should keep a different-vendor candidate in the chain wherever one is eligible. This is a property of
   the candidate pools rather than an enforced filter: ordering is driven by measured cost-to-done, so the router does
   not reject an all-one-vendor chain when that is what eligibility leaves. Direct `google` endpoints are reserved for

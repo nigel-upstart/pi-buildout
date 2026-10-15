@@ -59,6 +59,7 @@ import {
 import type { SecondaryGraceDecision, SecondaryGracePolicy } from "./core/reconciliation.ts";
 import {
   bedrockLongContextPricingUnavailable,
+  describeUnroutableReview,
   deriveRoutingContext,
   isStandaloneReviewRequest,
   registrySnapshotId,
@@ -2171,6 +2172,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           kind: "unroutable_review",
           reason: decision.kind === "unroutable" ? decision.reason : "review selector returned an ordinary route",
           exclusions: decision.exclusions,
+          ...(decision.kind === "unroutable" && decision.review
+            ? {
+                requiredVendors: decision.review.requiredVendors,
+                builderVendor: decision.review.builderVendor,
+                eligibleVendors: decision.review.eligibleVendors,
+                candidatesByVendor: decision.review.candidatesByVendor,
+              }
+            : {}),
         },
         {
           taskId: parent.taskId,
@@ -2180,7 +2189,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           modelSnapshotId: registrySnapshotId(registry),
         },
       );
-      ctx.ui.notify("Required independent review is unroutable; inspect router telemetry before continuing", "error");
+      ctx.ui.notify(describeUnroutableReview(decision), "error");
       return;
     }
     reviewParentAttemptMetrics = lastAttemptMetrics;

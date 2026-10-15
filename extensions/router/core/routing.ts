@@ -173,12 +173,21 @@ type ReviewRouteDecision = {
   ceilingMismatchVendors: ModelVendor[];
 };
 
+type ReviewRoutability = {
+  requiredVendors: number;
+  builderVendor: ModelVendor;
+  eligibleVendors: ModelVendor[];
+  /** Exclusions from every non-builder vendor, including failed fallbacks of an eligible vendor. */
+  candidatesByVendor: { vendor: ModelVendor; exclusions: CandidateExclusion[] }[];
+};
+
 type UnroutableDecision = {
   kind: "unroutable";
   policyVersion: string;
   archetype: Archetype;
   reason: string;
   exclusions: CandidateExclusion[];
+  review?: ReviewRoutability;
 };
 
 export type RouteDecision = OrdinaryRouteDecision | ReviewRouteDecision | UnroutableDecision;
@@ -954,17 +963,22 @@ export function selectReviewRoute(
   const vendors = reviewerVendors().filter((vendor) => vendor !== builder.vendor);
   const ceilingMismatchVendors: ModelVendor[] = [];
   const choices: RouteChoice[] = [];
+  const candidatesByVendor: ReviewRoutability["candidatesByVendor"] = [];
 
   for (const vendor of vendors) {
     const refsForVendor = reviewerRefs(vendor, builderAbility);
+    const vendorExclusions: CandidateExclusion[] = [];
     const eligible = refsForVendor
-      .flatMap((ref) => evaluateCandidate(ref, registry, "code_review", requirements, exclusions, REVIEW_CONTEXT))
+      .flatMap((ref) => evaluateCandidate(ref, registry, "code_review", requirements, vendorExclusions, REVIEW_CONTEXT))
       .at(0);
+    exclusions.push(...vendorExclusions);
+    candidatesByVendor.push({ vendor, exclusions: vendorExclusions });
     if (eligible) {
       if (eligible.ability < builderAbility) ceilingMismatchVendors.push(vendor);
       choices.push({ ...eligible, rankReason: "review_ability" });
     }
   }
+  const eligibleVendors = choices.map((choice) => choice.vendor);
 
   choices.sort((left, right) => {
     const leftDistance = Math.abs(left.ability - builderAbility);
@@ -981,6 +995,12 @@ export function selectReviewRoute(
       archetype: "code_review",
       reason: `tracked-work review requires at least ${String(MINIMUM_INDEPENDENT_REVIEWERS)} eligible non-builder vendors; ${String(choices.length)} eligible`,
       exclusions,
+      review: {
+        requiredVendors: MINIMUM_INDEPENDENT_REVIEWERS,
+        builderVendor: builder.vendor,
+        eligibleVendors,
+        candidatesByVendor,
+      },
     };
   }
   return {
@@ -993,6 +1013,58 @@ export function selectReviewRoute(
     telemetryMature: false,
     ceilingMismatchVendors,
   };
+}
+
+const EXCLUSION_LABELS: Readonly<Record<ExclusionCode, string>> = {
+  not_in_registry: "not in registry",
+  not_in_scope: "not in scope",
+  endpoint_unhealthy: "endpoint unhealthy",
+  endpoint_pricing_invalid: "invalid price",
+  unavailable: "unavailable",
+  context_headroom: "insufficient context",
+  context_headroom_prior: "insufficient context",
+  long_context_pricing_unavailable: "long-context price missing",
+  image_unsupported: "images unsupported",
+  tools_unsupported: "tools unsupported",
+  effort_unsupported: "effort unsupported",
+  effort_unauthorized: "effort unauthorized",
+  thrash_guard: "context thrash guard",
+  scope_unmet: "scope unmet",
+  escalation_without_primary: "escalation only",
+  profile_missing: "profile missing",
+  provider_restricted: "provider restricted",
+  duplicate_model: "duplicate model",
+};
+
+export const UNROUTABLE_REVIEW_NOTICE_MAX_LENGTH = 1200;
+const REVIEW_HINT =
+  "Check `/route scope`; scope a listed model or restore its provider, then retry. `/route off` bypasses routing.";
+
+/** Display the evaluated candidates (including failed fallbacks of eligible vendors), not just the
+ * final vendor count. Full exclusions remain in additive telemetry when the UI notice is truncated. */
+export function describeUnroutableReview(decision: RouteDecision): string {
+  const review = decision.kind === "unroutable" ? decision.review : undefined;
+  if (!review) return boundReviewNotice("Independent review unroutable; inspect router telemetry.");
+  const eligible = review.eligibleVendors.length ? review.eligibleVendors.join(", ") : "none";
+  const diagnostics = review.candidatesByVendor.map(({ vendor, exclusions }) => {
+    const unique = [...new Map(exclusions.map((entry) => [`${entry.candidate}|${entry.code}`, entry])).values()];
+    const candidates = unique.length
+      ? unique.map(({ candidate, code }) => `${candidate} (${EXCLUSION_LABELS[code]})`).join(", ")
+      : "no excluded candidates";
+    return `${vendor}: ${candidates}`;
+  });
+  return boundReviewNotice(
+    `Independent review unroutable: needs ${String(review.requiredVendors)} eligible non-builder vendors; ` +
+      `found ${String(review.eligibleVendors.length)} (${eligible}); builder: ${review.builderVendor}. ` +
+      diagnostics.join("; ") +
+      ".",
+  );
+}
+
+function boundReviewNotice(body: string): string {
+  const budget = UNROUTABLE_REVIEW_NOTICE_MAX_LENGTH - REVIEW_HINT.length - 1;
+  const clipped = body.length > budget ? `${body.slice(0, budget - 1).trimEnd()}…` : body;
+  return `${clipped} ${REVIEW_HINT}`;
 }
 
 export function registrySnapshotId(models: readonly RegistryModelSnapshot[]): string {
