@@ -8,6 +8,8 @@ import {
   bedrockLongContextPricingUnavailable,
   canonicalVendor,
   deriveRoutingContext,
+  describeUnroutableReview,
+  UNROUTABLE_REVIEW_NOTICE_MAX_LENGTH,
   isControlledHoldout,
   isStandaloneReviewRequest,
   registrySnapshotId,
@@ -1001,6 +1003,48 @@ describe("review route selection", () => {
     const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
     assert.equal(decision.kind, "unroutable", "one independent reviewer must not satisfy tracked review");
     assert.match(decision.reason, /at least 2 eligible non-builder vendors/);
+  });
+
+  it("explains the incident scope when GPT-6.1 Sol is absent without relaxing vendor independence", () => {
+    // The original v9 incident had no OpenAI reviewer in scope, an unavailable Copilot Gemini,
+    // and Vertex Gemini 2.5 Pro as the sole eligible non-builder vendor.
+    const models = [
+      model("anthropic", "claude-opus-5-5", "anthropic"),
+      model("google-vertex", "gemini-2.5-pro", "google"),
+      { ...model("github-copilot", "gemini-3.8-flash", "google"), available: false },
+      { ...model("github-copilot", "gemini-3.6-flash", "google"), available: false },
+    ];
+    const decision = selectReviewRoute(models, REQUIREMENTS, models[0], "medium", 3);
+    assert.equal(decision.kind, "unroutable");
+    assert.equal(decision.policyVersion, "router-policy-v10");
+    assert.equal(decision.review.requiredVendors, 2);
+    assert.deepEqual(decision.review.eligibleVendors, ["google"]);
+    assert.ok(
+      decision.exclusions.some((entry) => entry.candidate === "gpt-6.1-sol@high" && entry.code === "not_in_scope"),
+    );
+    const notice = describeUnroutableReview(decision);
+    assert.match(notice, /needs 2 eligible non-builder vendors; found 1 \(google\)/);
+    assert.match(notice, /openai:.*gpt-6.1-sol@high \(not in scope\)/);
+    assert.match(notice, /google:.*github-copilot\/gemini-3.8-flash \(unavailable\)/);
+    assert.match(notice, /gemini-2.5-flash@high \(not in scope\)/);
+    assert.match(notice, /`\/route scope`.*`\/route off`/);
+    assert.ok(notice.length <= UNROUTABLE_REVIEW_NOTICE_MAX_LENGTH);
+  });
+
+  it("bounds even oversized diagnostics while preserving the actionable hint", () => {
+    const models = registry().map((candidate) => ({ ...candidate, available: false }));
+    const builder = { ...models[0], vendor: "moonshot" };
+    const decision = selectReviewRoute(models, REQUIREMENTS, builder, "high", 3);
+    assert.equal(decision.kind, "unroutable");
+    decision.review.candidatesByVendor[0].exclusions.push({
+      candidate: "oversized-".repeat(200),
+      code: "not_in_scope",
+      detail: "fixture",
+    });
+    const notice = describeUnroutableReview(decision);
+    assert.ok(notice.length <= UNROUTABLE_REVIEW_NOTICE_MAX_LENGTH);
+    assert.match(notice, /….*`\/route scope`.*`\/route off`/);
+    assert.match(notice, /needs 2 eligible non-builder vendors/);
   });
 
   it("records a ceiling mismatch per vendor without shortening the chain", () => {
