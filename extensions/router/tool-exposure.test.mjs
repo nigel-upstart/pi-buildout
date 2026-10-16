@@ -55,8 +55,14 @@ it("Pi declares and executes the refreshed tool set on a generated turn without 
   // Replace persistence/settling services only; the provider-request and tool-dispatch loop is real.
   const session = Object.assign(Object.create(AgentSession.prototype), {
     agent,
+    // Pi 1.3.0 always consults the extension runner; this fixture has no before_agent_start handlers.
+    _extensionRunner: {
+      emitBeforeAgentStart: async (_trigger, systemPromptOptions) => ({ messages: [], systemPromptOptions }),
+    },
     _toolRegistry: new Map([[reviewTool.name, reviewTool]]),
     _toolDefinitions: new Map(),
+    _hiddenDeclarations: new Set(),
+    _pendingNextTurnMessages: [],
     _pendingToolNames: new Set(),
     _toolPromptSnippets: new Map(),
     _toolPromptGuidelines: new Map(),
