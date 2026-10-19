@@ -235,7 +235,8 @@ const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
 /**
  * Advertise each safety validator only in the lifecycle phase that accepts it. Sync at every lifecycle transition,
- * including those that queue generated turns without before_agent_start.
+ * including generated turns: Pi <=1.1.0 skipped before_agent_start, and the router deliberately skips
+ * its user-prompt preparation for Pi 1.3.0 custom starts. Tool exposure must not depend on that hook.
  */
 export function activeToolsForSafetyLifecycle(
   activeTools: readonly string[],
@@ -500,6 +501,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let repoKey: string | undefined;
   let repoKeyCwd: string | undefined;
   let recordedExitMode: RouterMode | undefined;
+  // Only idle input awaiting user-run preparation belongs here. Queued steering/follow-up input
+  // stays inside the current run and must never become a later start's routing decision.
   let pendingInput: PendingInput | undefined;
   let nextParentTaskId: string | undefined;
   let lastRoute: LastRoute = {};
@@ -569,6 +572,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
+
+  function clearPendingInput(ctx: ExtensionContext): void {
+    if (!pendingInput) return;
+    pendingInput = undefined;
+    ctx.ui.setWorkingMessage();
+  }
 
   function syncRouterTools(): void {
     const current = pi.getActiveTools();
@@ -2678,7 +2687,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     },
   });
 
-  pi.on("session_shutdown", async (event) => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
     if (event.reason === "new") modeForNextSession = leaseOwner.state.mode;
     // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
@@ -2687,6 +2697,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_start", async (event, ctx) => {
+    clearPendingInput(ctx);
     // The persisted snapshot is an async restore proposal. Keep the safety question closed while
     // settings load, and let newer input/overrides win rather than restoring over their state.
     invalidateLease("session startup");
@@ -2815,8 +2826,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("input", (event, ctx) => {
-    // Generated turns bypass this hook, so retain both validators throughout active routing.
-    // In shadow and off modes, neither validator is declared.
+    // Custom continuations bypass input (even on Pi 1.3.0), so lifecycle transitions synchronize
+    // the phase-valid validators themselves. In shadow and off modes, neither is declared.
     syncRouterTools();
     if (leaseOwner.state.mode === "off") return { action: "continue" as const };
     leaseOwner.send({ type: "INTENT" });
@@ -2834,11 +2845,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       invalidateLease("new user input", false);
       persistState();
     }
+    // Busy input is queued into the current run (or rejected by Pi if delivery was omitted), not
+    // followed by a new before_agent_start. It still invalidates authority above, but must neither
+    // stage a future start nor overwrite idle input waiting through pre-run compaction/preparation.
+    if (event.streamingBehavior || !ctx.isIdle()) return { action: "continue" as const };
     const cache = cacheEstimate(ctx.sessionManager.getBranch());
     let gate = deterministicBoundaryGate(leaseOwner.state, {
       isUserInput: true,
       source: event.source,
-      ...(event.streamingBehavior ? { streamingBehavior: event.streamingBehavior } : {}),
       prompt: event.text,
       cachedTokens: cache.cachedTokens,
       expectedReuseRatio: cache.expectedReuseRatio,
@@ -3407,6 +3421,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_end", async (event, ctx) => {
+    // Clear before the first await and before early returns (including off/failed leases). Never
+    // clear in a finally: newer input may arrive while attempt telemetry is being recorded.
+    clearPendingInput(ctx);
     const leaseEpoch = leaseOwner.epoch;
     // Settlement compares against this, so input arriving after the run ended supersedes its lifecycle work.
     runEndEpoch = leaseEpoch;
@@ -3593,8 +3610,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
       if (leaseOwner.state.mode !== "active") return;
       if (revokedReviewStillRunning && !manualOverride) {
-        // Generated follow-ups skip before_agent_start, so restore the builder before settlement queues one,
-        // keeping preflight submissions blocked through the asynchronous switch and after a failed switch.
+        // Restore before queuing a follow-up: Pi <=1.1.0 skipped before_agent_start, and on Pi 1.3.0
+        // the router skips user-prompt preparation for custom starts. Keep submissions blocked through
+        // the asynchronous switch and after a failed switch.
         const revokedReviewRestored = await applyChoice(ctx, active.selected);
         if (!leaseOwner.owns(active, leaseEpoch)) return;
         if (!revokedReviewRestored) {
@@ -3819,8 +3837,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
           // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
           // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
-          if (pendingInput) ctx.ui.setWorkingMessage();
-          pendingInput = undefined;
+          clearPendingInput(ctx);
 
           // Mode is already off, so this records nothing. Keep the safety latch so a re-enabled lease
           // still treats an unreconciled low-confidence primary conservatively.
