@@ -22,12 +22,12 @@ const ALLOWLIST = [
       globby: { nodePaths: ["node_modules/globby"], sources: ["fast-glob"] },
       "markdownlint-cli2": {
         nodePaths: ["node_modules/markdownlint-cli2"],
-        sources: ["globby", "js-yaml", "markdown-it", "markdownlint", "micromatch"],
+        sources: ["globby", "js-yaml", "markdownlint", "micromatch"],
       },
     },
     recordedAt: "2026-10-05",
     reason:
-      "No patched braces release is published. The remaining high findings in micromatch, fast-glob, globby, and markdownlint-cli2 are derived from this exact development-tool dependency path; markdownlint's separate low-severity finding is also a source of the cli2 aggregate.",
+      "No patched braces release is published. The remaining high findings in micromatch, fast-glob, globby, and markdownlint-cli2 are derived from this exact development-tool dependency path; markdownlint's separate low-severity finding is also a source of the cli2 aggregate. The markdown-it finding was removed by the scoped 14.3.2 override.",
   },
   ...["https://github.com/advisories/GHSA-qhr7-859c-m2p7", "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p"].map(
     (advisoryUrl) => ({
