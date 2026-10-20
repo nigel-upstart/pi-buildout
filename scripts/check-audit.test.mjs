@@ -7,7 +7,7 @@ const bracesNodes = ["node_modules/braces"];
 
 function auditReport() {
   return {
-    metadata: { vulnerabilities: { info: 0, low: 1, moderate: 2, high: 5, critical: 0, total: 8 } },
+    metadata: { vulnerabilities: { info: 0, low: 1, moderate: 1, high: 5, critical: 0, total: 7 } },
     vulnerabilities: {
       braces: {
         name: "braces",
@@ -37,19 +37,13 @@ function auditReport() {
         name: "markdownlint-cli2",
         severity: "high",
         nodes: ["node_modules/markdownlint-cli2"],
-        via: ["globby", "js-yaml", "markdown-it", "markdownlint", "micromatch"],
+        via: ["globby", "js-yaml", "markdownlint", "micromatch"],
       },
       "js-yaml": {
         name: "js-yaml",
         severity: "moderate",
         nodes: ["node_modules/js-yaml"],
         via: [{ severity: "moderate", url: "https://github.com/advisories/GHSA-r3ph-w7gj-g6xm" }],
-      },
-      "markdown-it": {
-        name: "markdown-it",
-        severity: "moderate",
-        nodes: ["node_modules/markdown-it"],
-        via: [{ severity: "moderate", url: "https://github.com/advisories/GHSA-253c-mchw-3w2r" }],
       },
       markdownlint: {
         name: "markdownlint",
@@ -147,8 +141,8 @@ describe("evaluateAudit", () => {
 
   it("fails closed when a derived source name is missing from the audit report", () => {
     const report = auditReport();
-    delete report.vulnerabilities["markdown-it"];
-    report.metadata.vulnerabilities.moderate = 1;
+    delete report.vulnerabilities["js-yaml"];
+    report.metadata.vulnerabilities.moderate = 0;
     report.metadata.vulnerabilities.total -= 1;
 
     assert.deepEqual(
