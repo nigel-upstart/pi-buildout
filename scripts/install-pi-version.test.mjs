@@ -78,7 +78,24 @@ test("installer rejects malformed versions and an explicit unrelated package", a
   );
 });
 
-test("installer accepts the 1.0.1 boundary and newer versions before checking patch availability", async (context) => {
+test("router installation rejects Pi releases before 1.2.0 without changing installed extensions", async (context) => {
+  for (const version of ["1.0.1", "1.1.0", "1.2.0-rc.1"]) {
+    const layout = await fixture(context, version);
+    const installed = join(layout.agent, "extensions", "router", "index.ts");
+    await mkdir(dirname(installed), { recursive: true });
+    await writeFile(installed, "old router\n");
+    for (const args of [[], ["--skip-skill-loading-patch"]]) {
+      const result = run(layout, args);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /installing extensions requires Pi >=1\.2\.0/u);
+      assert.equal(await readFile(installed, "utf8"), "old router\n");
+    }
+    const patchOnly = run(layout, ["--skip-extensions"]);
+    assert.doesNotMatch(patchOnly.stderr, /installing extensions requires Pi/u);
+  }
+});
+
+test("installer accepts the 1.0.1 patch-only boundary and newer versions before checking patch availability", async (context) => {
   for (const version of ["1.0.1", "1.0.1+build.1", "1.0.2", "1.1.0-rc.1", "1.1.0+01", "2.0.0"]) {
     const layout = await fixture(context, version);
     const result = run(layout);

@@ -92,6 +92,9 @@ of first resort.
   was pinned
 - Issue #108 follow-up: published `0.87.1` and `1.1.0` `AgentSession.setActiveToolsByName`, `sendCustomMessage`, and
   `Agent` provider-request/tool-dispatch behavior, verified with an in-memory provider experiment
+- Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
+  custom-start preparation and busy-start semantics; published `1.3.0` `VERSION` export provides a load-time guard.
+  Older `/skills` patches remain patch-only and do not imply router compatibility.
 - Pending-input follow-up: published `1.3.0` `AgentSession.prompt`, `_queueUserInput`, `_prepareRun`, and
   `sendCustomMessage`, plus the `InputEvent` and `BeforeAgentStartEvent` declarations. The two hooks share no input/run
   identity, input text can be transformed/expanded between them, and queued steering/follow-up input does not get a

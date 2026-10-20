@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import type { BeforeAgentStartUserEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
 import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
@@ -466,7 +466,20 @@ type RouterExtensionOptions = {
   secondaryGracePolicy?: SecondaryGracePolicy;
 };
 
+export function supportsRouterPiVersion(version: string): boolean {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(version);
+  if (!match) return false;
+  const [, major = "0", minor = "0", patch = "0", prerelease] = match;
+  return (
+    BigInt(major) > 1n ||
+    (BigInt(major) === 1n && (BigInt(minor) > 2n || (BigInt(minor) === 2n && (BigInt(patch) > 0n || !prerelease))))
+  );
+}
+
 export default function routerExtension(pi: ExtensionAPI, options: RouterExtensionOptions = {}): void {
+  if (!supportsRouterPiVersion(VERSION)) {
+    throw new Error(`The model-aware router requires Pi >=1.2.0 (found ${VERSION})`);
+  }
   /**
    * The operator's model scope and last probe results, read once per session. Routing derives its
    * candidate endpoints from this rather than from a table in the repository, so enabling or disabling

@@ -32,6 +32,7 @@ import routerExtensionImpl, {
   routerReenabledNotice,
   safetyToolBlockReason,
   stageDeadlineDescription,
+  supportsRouterPiVersion,
 } from "./index.ts";
 
 // Lightweight Pi stubs in unrelated tests do not model the tool loadout. Supply that part of the
@@ -1132,6 +1133,15 @@ describe("safetyToolBlockReason", () => {
 });
 
 describe("routerExtension", () => {
+  it("requires the Pi release with custom-start preparation and busy-start semantics", () => {
+    for (const version of ["1.0.1", "1.1.0", "1.2.0-rc.1", "1.2.0-beta.2", "broken"]) {
+      assert.equal(supportsRouterPiVersion(version), false, version);
+    }
+    for (const version of ["1.2.0", "1.2.0+build.1", "1.2.1", "1.3.0", "2.0.0"]) {
+      assert.equal(supportsRouterPiVersion(version), true, version);
+    }
+  });
+
   describe("pending start input", () => {
     const setup = (options = {}) =>
       runAdapterTurn({
