@@ -82,23 +82,40 @@ of first resort.
 
 ### Pi extension event semantics
 
-- Sources: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581); the `ToolExecutionMode`
-  declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and concurrency" section of
-  `@earendil-works/pi-coding-agent` `docs/extensions.md`
+- Sources: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581), including
+  [our reproduction comment](https://github.com/earendil-works/pi/issues/5581#issuecomment-6009314962), and its fix
+  [PR #10739](https://github.com/earendil-works/pi/pull/10739) (merge `a447ba11f3e7760fcff91e924bda8c20033953ea`); the
+  `ToolExecutionMode` declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and
+  concurrency" section of `@earendil-works/pi-coding-agent` `docs/extensions.md`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/agent-core`)
 - Revisions reviewed: published `1.0.3` for the issue behavior and `1.0.4` for tool-execution ordering; no Git commit
   was pinned
 - Issue #108 follow-up: published `0.87.1` and `1.1.0` `AgentSession.setActiveToolsByName`, `sendCustomMessage`, and
   `Agent` provider-request/tool-dispatch behavior, verified with an in-memory provider experiment
+- Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
+  custom-start preparation and busy-start semantics; published `1.3.0` `VERSION` export provides a load-time guard.
+  Older `/skills` patches remain patch-only and do not imply router compatibility.
+- Pending-input follow-up: published `1.3.0` `AgentSession.prompt`, `_queueUserInput`, `_prepareRun`, and
+  `sendCustomMessage`, plus the `InputEvent` and `BeforeAgentStartEvent` declarations. The two hooks share no input/run
+  identity, input text can be transformed/expanded between them, and queued steering/follow-up input does not get a
+  separate run-preparation hook.
 - License declared by the packages: MIT
 
-Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start`. The router uses Pi's
-active-tool selection API at persisted lifecycle transitions before queuing those turns, so only phase-valid safety
-validators are declared. The pure implementation-plan validator remains callable throughout active mode regardless of
-the lease's archetype. Execution guards still check mode, phase, one-shot verdicts, and review fingerprints for stale
-calls. These are local API integration patterns and behavioral tests; no upstream implementation code was copied or
-modified. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages, prose-only safety
-verdicts, or permanent tool exposure when routing is disabled. Shadow and off hide router tools.
+Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skipped `before_agent_start` in the reviewed
+0.87.1 and 1.1.0 releases. Pi 1.3.0 prepares those starts with `messageType: "custom"` and no user prompt; the router
+currently skips its user-prompt handler for those events. The router uses Pi's active-tool selection API at persisted
+lifecycle transitions before queuing those turns, so only phase-valid safety validators are declared. The pure
+implementation-plan validator remains callable throughout active mode regardless of the lease's archetype. Execution
+guards still check mode, phase, one-shot verdicts, and review fingerprints for stale calls. These are local API
+integration patterns and behavioral tests; no upstream implementation code was copied or modified. We did not adopt the
+upstream proposed shared turn-preflight patch, fake user messages, prose-only safety verdicts, or permanent tool
+exposure when routing is disabled. Shadow and off hide router tools.
+
+Use, pending input: the router stages only idle user input for its next user-run preparation. Busy input still
+invalidates safety authority but cannot overwrite that slot. Run-end and session-boundary cleanup happens before
+awaiting other work, so a late cleanup cannot erase newer input. We did not invent a prompt hash or local UUID to
+simulate a shared upstream identity, or copy Pi's queue/run implementation. This is an original integration fix, not a
+general multi-run correlation protocol.
 
 Use, tool-execution ordering: in the default `parallel` mode, Pi runs the `tool_call` hooks for every call in one
 assistant message sequentially, then executes the allowed calls concurrently. The router therefore spends a single-use

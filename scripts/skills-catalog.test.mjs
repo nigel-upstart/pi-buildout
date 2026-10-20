@@ -136,7 +136,8 @@ async function copyPackage(packageRoot, target, patchDirectory, { patched = true
 
 async function runInstaller(packageDirectory, agentDirectory) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("bash", [join(repositoryRoot, "scripts", "install-extensions.sh")], {
+    // This suite exercises the versioned /skills patch, not router extension compatibility.
+    const child = spawn("bash", [join(repositoryRoot, "scripts", "install-extensions.sh"), "--skip-extensions"], {
       env: testEnvironment({ HOME: installerHome, PI_AGENT_DIR: agentDirectory, PI_PACKAGE_DIR: packageDirectory }),
       stdio: ["ignore", "pipe", "pipe"],
     });

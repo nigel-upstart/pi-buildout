@@ -78,7 +78,24 @@ test("installer rejects malformed versions and an explicit unrelated package", a
   );
 });
 
-test("installer accepts the 1.0.1 boundary and newer versions before checking patch availability", async (context) => {
+test("router installation rejects Pi releases before 1.2.0 without changing installed extensions", async (context) => {
+  for (const version of ["1.0.1", "1.1.0", "1.2.0-rc.1"]) {
+    const layout = await fixture(context, version);
+    const installed = join(layout.agent, "extensions", "router", "index.ts");
+    await mkdir(dirname(installed), { recursive: true });
+    await writeFile(installed, "old router\n");
+    for (const args of [[], ["--skip-skill-loading-patch"]]) {
+      const result = run(layout, args);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /installing extensions requires Pi >=1\.2\.0/u);
+      assert.equal(await readFile(installed, "utf8"), "old router\n");
+    }
+    const patchOnly = run(layout, ["--skip-extensions"]);
+    assert.doesNotMatch(patchOnly.stderr, /installing extensions requires Pi/u);
+  }
+});
+
+test("installer accepts the 1.0.1 patch-only boundary and newer versions before checking patch availability", async (context) => {
   for (const version of ["1.0.1", "1.0.1+build.1", "1.0.2", "1.1.0-rc.1", "1.1.0+01", "2.0.0"]) {
     const layout = await fixture(context, version);
     const result = run(layout);
@@ -88,10 +105,12 @@ test("installer accepts the 1.0.1 boundary and newer versions before checking pa
   }
 });
 
-test("installer finds and patches managed Pi 1.1.0 through a launcher symlink without PI_PACKAGE_DIR", async (context) => {
+test("installer finds and patches managed Pi through a launcher symlink without PI_PACKAGE_DIR", async (context) => {
   const layout = await fixture(context);
   const source = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
-  const patchDir = join(root, "patches", "pi-1.1.0");
+  // The dev dependency is the version the patch was built for; the test must follow the pin, not hard-code it.
+  const { version } = JSON.parse(await readFile(join(source, "package.json"), "utf8"));
+  const patchDir = join(root, "patches", `pi-${version}`);
   const baseline = await readFile(join(patchDir, "baseline.sha256"), "utf8");
   await copyFile(join(source, "package.json"), join(layout.packageRoot, "package.json"));
   for (const line of baseline.trim().split("\n")) {
@@ -104,7 +123,7 @@ test("installer finds and patches managed Pi 1.1.0 through a launcher symlink wi
   await symlink(join(layout.bin, "pi"), join(linkedBin, "pi"));
   const result = run(layout, ["--skip-extensions"], { PATH: `${linkedBin}:${layout.bin}:${process.env.PATH}` });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Applied \/skills patch for pi 1\.1\.0/u);
+  assert.ok(result.stdout.includes(`Applied /skills patch for pi ${version}\n`), result.stdout);
   assert.match(run(layout).stdout, /already applied/u);
   // Exercise normal extension installation through the managed launcher too, using real npm.
   const completeInstall = run(layout, [], { PATH: `${linkedBin}:${process.env.PATH}` });

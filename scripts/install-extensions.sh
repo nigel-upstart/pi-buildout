@@ -249,6 +249,20 @@ PI_VERSION=$(node -e '
   process.stdout.write(version);
 ' "$PI_PACKAGE_DIR/package.json")
 
+# The router requires the custom-run preparation and busy-start semantics introduced in Pi 1.2.0.
+# Keep patch-only mode usable on older releases; fail before touching any installed extensions.
+if ((INSTALL_EXTENSIONS)); then
+  # shellcheck disable=SC2016
+  node -e '
+    const version = process.argv[1];
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?/.exec(version);
+    if (BigInt(match[1]) < 1n || (BigInt(match[1]) === 1n && (BigInt(match[2]) < 2n || (BigInt(match[2]) === 2n && BigInt(match[3]) === 0n && match[4])))) {
+      console.error(`Unsupported Pi version ${version}; installing extensions requires Pi >=1.2.0. Upgrade Pi before installing.`);
+      process.exit(1);
+    }
+  ' "$PI_VERSION"
+fi
+
 if ((INSTALL_EXTENSIONS)) && [[ -e "$EXTENSION_DIR/otel" || -L "$EXTENSION_DIR/otel" ]]; then
   # Never replace or remove an unrelated Pi extension occupying the managed name.
   if [[ -L "$EXTENSION_DIR/otel" || ! -f "$EXTENSION_DIR/otel/package.json" ]] \
