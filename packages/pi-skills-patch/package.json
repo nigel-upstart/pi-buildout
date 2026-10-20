@@ -1,6 +1,6 @@
 {
   "name": "@upstart/pi-skills-patch",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.2",
   "type": "module",
   "description": "Version-checked /skills runtime patch for supported Pi installations",
   "license": "SEE LICENSE IN dist/LICENSE",
