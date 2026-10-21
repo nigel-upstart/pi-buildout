@@ -128,7 +128,7 @@ contract and its Bedrock model-path naming, documented in
 - Revision reviewed: live documentation on 2026-08-11
 - License: no documentation license was identified; no source code or documentation text was copied
 
-Use: published per-token input and output list rates now drive cost-first endpoint ordering. 
+Use: published per-token input and output list rates now drive cost-first endpoint ordering.
 
 ### Amazon Bedrock Converse tool choice and extended thinking
 
