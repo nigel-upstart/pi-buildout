@@ -10,6 +10,12 @@ selection and host access through a container or sandbox, rather than a second r
 script-text policy that cannot represent every concrete nested effect. Secondary reconciliation remains unchanged in
 this PR except that its pending state no longer blocks calls; the next stacked PR removes that latch machinery.
 
+This supersedes the execution-permission and tool-enforcement claims in
+[explicit review kinds and irreversible-action authorization](#decision-explicit-review-kinds-and-irreversible-action-authorization)
+and [bounded discovery authorization inside preflight](#decision-bounded-discovery-authorization-inside-preflight):
+read-only gates, unknown-tool/shell denial, reviewed-plan mutation limits, and execution/discovery grants no longer
+control dispatch. Their lifecycle schemas, review independence, and phase-based validator visibility remain.
+
 Companion to [`SPEC.md`](SPEC.md) (the functional spec), [`eval.md`](eval.md) (the evaluation harness), and
 [`source-basis.md`](source-basis.md) (design provenance and public references). This document records _how_ it will be
 built and why — language, framework, tooling — plus the implementation-time findings that resolve the original open
@@ -77,9 +83,10 @@ pi's bundled packages already cover nearly the entire runtime surface. Reuse the
 
 Runtime dependencies may be added when they are popular, maintained, have small dependency trees, and have a tested
 installation and release path. The router uses exact-pinned XState v5 (5.33.2, no runtime dependencies) for lease
-ownership and task-family secondary actors, plus the shell tokenizers recorded in ATTRIBUTION.md. The installer already
-installs each extension's runtime manifest in its staged tree before the atomic swap; the router/OTel release package
-ships the union of both runtime manifests. XState v6 alpha is intentionally excluded.
+ownership and task-family secondary actors. The advisory-only decision removes the former shell tokenizer dependencies
+and their attribution. The installer already installs each extension's runtime manifest in its staged tree before the
+atomic swap; the router/OTel release package ships the union of both runtime manifests. XState v6 alpha is intentionally
+excluded.
 
 The lease actor owns enablement, boundaries, review/authorization phases, and every installed lease. Synchronous
 transitions validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger

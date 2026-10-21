@@ -613,6 +613,7 @@ under another model family's prompt profile.
 - Unit tests for the deterministic core against the invariants in this spec: lease semantics, boundary-only
   reevaluation, headroom feasibility, secondary-provider rule, planning-horizon routing, cache-preservation thresholds.
 - Advisory-safety regression checks: no phase, verdict, discovery mismatch, stale state, or secondary failure blocks
+  tool dispatch.
 - Golden-corpus regression suite (fixtures authored from the archetype table above with expected route decisions).
 - Shadow-mode run inside a real pi session: install, drive real sessions, confirm logged decisions are sane before
   enabling live routing.
