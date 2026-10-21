@@ -440,10 +440,11 @@ Valid verdicts are delivered as custom follow-up context plus a UI notification.
 findings are queued as follow-up context without manufacturing a new turn. Invalid output, timeout, and failure warn the
 human and record telemetry, but deliver no advice. A session whose assistant ends with stop reason `error` or `aborted`
 is a failure even after a valid submission. New input, boundaries, overrides, off/shadow mode, reset, exhausted builder
-fallback, and shutdown cancel the session with `abort()`; owner/epoch checks drop late results. The same unchanged
-evidence is scheduled at most once per attempt, so consuming completion advice cannot create an unbounded rereview loop.
-Ordinary task/model routing remains available if the router is loaded in some other reviewer child, but review work
-never schedules review-of-review.
+fallback, and shutdown cancel the session with `abort()`; cancellation and timeout wait up to one second for the aborted
+request's final usage before settling, and owner/epoch checks drop late results. The same unchanged evidence is
+scheduled at most once per attempt, so consuming completion advice cannot create an unbounded rereview loop. Ordinary
+task/model routing remains available if the router is loaded in some other reviewer child, but review work never
+schedules review-of-review.
 
 `ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. A later adapter may resolve that
 promise from external event observation. No delegation adapter or manager protocol is implemented, and the router never

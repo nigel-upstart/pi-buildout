@@ -11,6 +11,9 @@ import { SafetyReviewSchema, validateSafetyReview } from "./core/safety.ts";
 import type { SafetyReviewKind } from "./core/safety.ts";
 import type { EffortLevel } from "./core/profiles.ts";
 
+/** Bounded wait for an aborted request to report its final usage before a terminal result settles. */
+const ABORT_USAGE_GRACE_MS = 1_000;
+
 type ReviewRequest = {
   cwd: string;
   registry: ExtensionContext["modelRegistry"];
@@ -76,14 +79,31 @@ export const inProcessReviewRunner: ReviewRunner = {
       state.done = true;
       terminal = status;
       clearTimeout(timer);
-      resolveResult({ status, ...(status === "completed" ? { verdict } : {}), usage: { ...usage } });
-      if (session)
-        void session
-          .abort()
-          .catch(() => {
-            /* Best-effort cleanup after terminal settlement. */
-          })
-          .finally(() => session?.dispose());
+      const settle = () => {
+        resolveResult({ status, ...(status === "completed" ? { verdict } : {}), usage: { ...usage } });
+      };
+      const current = session;
+      if (!current) {
+        settle();
+        return;
+      }
+      // Abort immediately, but let the in-flight request report its final usage (bounded) before settling.
+      const aborted = current.abort().catch(() => {
+        /* Best-effort cleanup after terminal settlement. */
+      });
+      void aborted.finally(() => {
+        current.dispose();
+      });
+      let grace: ReturnType<typeof setTimeout> | undefined;
+      void Promise.race([
+        aborted,
+        new Promise<void>((resolve) => {
+          grace = setTimeout(resolve, ABORT_USAGE_GRACE_MS);
+        }),
+      ]).then(() => {
+        clearTimeout(grace);
+        settle();
+      });
     };
     const timer = setTimeout(
       () => {
