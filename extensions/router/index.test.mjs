@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
 // than reading whatever the developer happens to have enabled.
@@ -279,6 +280,7 @@ async function authorizationLifecycleFixture(options = {}) {
     registerTool: (tool) => tools.set(tool.name, tool),
     appendEntry: (customType, data) => appended.push({ customType, data }),
     sendMessage: (message, options) => sent.push({ message, options }),
+    ...(options.events ? { events: options.events } : {}),
     setModel: async (model) => {
       selectedModels.push(model);
       // The interruption can land while settlement awaits the switch back to the builder.
@@ -5562,13 +5564,15 @@ describe("routerExtension", () => {
     evidence: ["Inspected evidence"],
     findings: ["Verify rollback"],
   });
-  async function launchReview(fixture) {
+  async function launchReview(fixture, runner) {
     await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
     await fixture.tools
       .get("submit_action_plan")
       .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
     await fixture.hooks.get("agent_settled")({}, fixture.ctx);
     await flushMicrotasks();
+    // Parent-side child selection is asynchronous; wait until a runner actually starts.
+    if (runner) await waitForReview(() => runner.calls.length > 0);
   }
   it("delivers out-of-band plan advice without changing builder model or effort", async () => {
     const runner = controlledRunner();
@@ -5576,7 +5580,7 @@ describe("routerExtension", () => {
     const { ctx, selectedModels, latestLease, sent, restoreEnvironment } = fixture;
     const model = ctx.model;
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       assert.equal(runner.calls.length, 1);
       assert.equal(ctx.model, model);
       assert.equal(selectedModels.length, 0, "review transport never calls builder setModel");
@@ -5603,7 +5607,7 @@ describe("routerExtension", () => {
       const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
       const { hooks, commands, ctx, sent, latestLease, restoreEnvironment } = fixture;
       try {
-        await launchReview(fixture);
+        await launchReview(fixture, runner);
         const call = runner.calls[0];
         if (boundary === "input")
           await hooks.get("input")(
@@ -5633,7 +5637,7 @@ describe("routerExtension", () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       await fixture.commands.get("route").handler("active", fixture.ctx);
       assert.equal(runner.calls[0].cancelled, false);
       await fixture.commands.get("route").handler("shadow", fixture.ctx);
@@ -5656,7 +5660,7 @@ describe("routerExtension", () => {
       },
     });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       fail = true;
       fixture.hooks.get("agent_start")();
       await fixture.hooks.get("agent_end")(
@@ -5683,7 +5687,7 @@ describe("routerExtension", () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       fixture.onBuilderSwitch(() => {
         assert.equal(runner.calls[0].cancelled, true);
       });
@@ -5698,7 +5702,7 @@ describe("routerExtension", () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       const before = fixture.latestLease();
       const fallback = fixture.commands.get("route").handler("fail availability", fixture.ctx);
       // Still inside fallback's first await (its telemetry write): the obsolete review is already cancelled.
@@ -5729,7 +5733,7 @@ describe("routerExtension", () => {
     // Keep the selection identical so only the changed attempt index distinguishes the new review.
     fixture.parent.fallbacks = [{ ...fixture.parent.selected }];
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       const first = runner.calls[0];
       await fixture.commands.get("route").handler("fail availability", fixture.ctx);
       assert.equal(first.cancelled, true);
@@ -5804,7 +5808,7 @@ describe("routerExtension", () => {
     // Last rung: no untried fallback and no previous selection, so exhaustion keeps the same selection.
     fixture.parent.attemptIndex = fixture.parent.fallbacks.length;
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       const call = runner.calls[0];
       await fixture.commands.get("route").handler("fail quality", fixture.ctx);
       assert.equal(fixture.latestLease().executionFailed, true);
@@ -5828,7 +5832,7 @@ describe("routerExtension", () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       await fixture.commands.get("route").handler("reset", fixture.ctx);
       assert.equal(runner.calls[0].cancelled, true);
     } finally {
@@ -5982,7 +5986,7 @@ describe("routerExtension", () => {
     const notes = [];
     fixture.ctx.ui.notify = (message, level) => notes.push({ message, level });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       runner.calls[0].resolve({ status: "runtime_unavailable", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } });
       await waitForReview(() => notes.some((n) => /runtime unavailable/.test(n.message)));
       assert.equal(
@@ -5996,15 +6000,21 @@ describe("routerExtension", () => {
     }
   });
 
-  it("cancels obsolete plan review on resubmission and accepts a fresh attempt", async () => {
+  it("cancels obsolete plan review on a changed resubmission and accepts a fresh attempt", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       const first = runner.calls[0];
       await fixture.tools
         .get("submit_action_plan")
-        .execute("new-plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+        .execute(
+          "new-plan",
+          { ...irreversibleActionPlan(), objective: "Rotate the credential with a longer overlap." },
+          undefined,
+          undefined,
+          fixture.ctx,
+        );
       assert.equal(first.cancelled, true);
       first.resolve({
         status: "completed",
@@ -6022,23 +6032,60 @@ describe("routerExtension", () => {
     }
   });
 
+  it("never reopens a consumed review stage for unchanged scope, even after reload", async () => {
+    const runner = controlledRunner();
+    const first = await authorizationLifecycleFixture({ reviewRunner: runner });
+    let slots = [];
+    try {
+      await launchReview(first, runner);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: { ...validAdvice(runner.calls[0].request), verdict: "reject" },
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => first.sent.some((s) => /Independent review advice/.test(s.message.content)));
+      // The advice-triggered continuation resubmits the identical plan; it cannot schedule a rereview.
+      await first.tools
+        .get("submit_action_plan")
+        .execute("again", irreversibleActionPlan(), undefined, undefined, first.ctx);
+      await first.hooks.get("agent_settled")({}, first.ctx);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(runner.calls.length, 1);
+      slots = first.appended.filter((entry) => entry.customType === "model-router-review-slot");
+      assert.equal(slots.length, 1);
+    } finally {
+      first.restoreEnvironment();
+    }
+    const reloaded = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const branch = reloaded.ctx.sessionManager.getBranch;
+    reloaded.ctx.sessionManager.getBranch = () => [
+      ...branch(),
+      ...slots.map((entry) => ({ type: "custom", customType: entry.customType, data: entry.data })),
+    ];
+    try {
+      await launchReview(reloaded);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(runner.calls.length, 1, "a reloaded instance reads the consumed slot from the branch");
+    } finally {
+      reloaded.restoreEnvironment();
+    }
+  });
+
   it("rejects invalid runner verdicts with warnings and telemetry, never advice", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
     const notes = [];
     fixture.ctx.ui.notify = (message, level) => notes.push({ message, level });
     try {
-      await launchReview(fixture);
-      for (let i = 0; i < 2; i++) {
-        runner.calls[i].resolve({
-          status: "completed",
-          verdict: { ...validAdvice(runner.calls[i].request), scopeFingerprint: "b".repeat(64) },
-          usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
-        });
-        await waitForReview(() =>
-          i === 0 ? runner.calls.length > 1 : notes.some((n) => /valid advice/.test(n.message)),
-        );
-      }
+      await launchReview(fixture, runner);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: { ...validAdvice(runner.calls[0].request), scopeFingerprint: "b".repeat(64) },
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => notes.some((n) => /valid advice/.test(n.message)));
+      // The pair is frozen: no model-ladder retry after the last mechanism.
+      assert.equal(runner.calls.length, 1);
       assert.equal(
         fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
         false,
@@ -6049,6 +6096,189 @@ describe("routerExtension", () => {
     } finally {
       fixture.restoreEnvironment();
     }
+  });
+
+  /** Released tintinweb protocol-2 shapes: microtask replies and `buildEventData` terminal payloads. */
+  function signalingManager(bus, { terminal = "completed", spawn = "accept" } = {}) {
+    const seen = { spawns: [], consumed: [] };
+    const reply = (method, raw, value) => bus.emit(`subagents:rpc:${method}:reply:${raw.requestId}`, value);
+    bus.on("subagents:rpc:ping", async (raw) => {
+      await undefined;
+      reply("ping", raw, { success: true, data: { version: 2 } });
+    });
+    bus.on("subagents:rpc:consume", async (raw) => {
+      seen.consumed.push(raw.agentId);
+      await undefined;
+      reply("consume", raw, { success: true });
+    });
+    bus.on("subagents:rpc:spawn", async (raw) => {
+      seen.spawns.push(raw);
+      await undefined;
+      if (spawn === "malformed") return reply("spawn", raw, { success: true });
+      reply("spawn", raw, { success: true, data: { id: "tw-1" } });
+      const nonce = /nonce="([a-f0-9]{32})"/.exec(raw.prompt)?.[1];
+      const scopeFingerprint = /scopeFingerprint "([a-f0-9]{64})"/.exec(raw.prompt)?.[1];
+      const advice = {
+        reviewKind: "plan",
+        scopeFingerprint,
+        verdict: "approve",
+        summary: "Signaled advice",
+        evidence: ["Read the plan"],
+        findings: ["Signaled finding"],
+      };
+      const completed = terminal === "completed";
+      queueMicrotask(() =>
+        bus.emit(completed ? "subagents:completed" : "subagents:failed", {
+          id: "tw-1",
+          type: "general-purpose",
+          description: raw.options.description,
+          status: completed ? "completed" : "error",
+          result: completed ? `<router-result nonce="${nonce}">${JSON.stringify(advice)}</router-result>` : "",
+          ...(completed ? {} : { error: "provider failed" }),
+        }),
+      );
+    });
+    return seen;
+  }
+  const childClassifier =
+    (prompts, overrides = {}) =>
+    async ({ prompt }) => {
+      prompts.push(prompt);
+      return primaryClassificationResult({ confidence: 0.9, ...overrides });
+    };
+
+  it("delegates first to shared signaling with a parent-selected pair and leaves the builder untouched", async () => {
+    const events = createEventBus();
+    const seen = signalingManager(events);
+    const runner = controlledRunner();
+    const prompts = [];
+    const fixture = await authorizationLifecycleFixture({
+      events,
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier(prompts),
+    });
+    const model = fixture.ctx.model;
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => fixture.sent.some((s) => /Signaled finding/.test(s.message.content)));
+      assert.equal(runner.calls.length, 0, "the SDK fallback is unused when signaling succeeds");
+      assert.match(prompts[0], /Give plan review advice/, "the actual child task was classified");
+      const [spawn] = seen.spawns;
+      assert.equal(spawn.type, "general-purpose");
+      assert.equal(spawn.options.isolated, true);
+      assert.equal(spawn.options.inheritContext, false);
+      assert.doesNotMatch(spawn.options.model, /^openai-codex\//, "the reviewer is not the builder's vendor");
+      assert.ok(spawn.options.thinkingLevel);
+      assert.deepEqual(seen.consumed, ["tw-1"]);
+      assert.equal(fixture.selectedModels.length, 0, "no builder setModel");
+      assert.equal(fixture.ctx.model, model);
+      // The advice-triggered continuation settles again; the consumed slot cannot spawn a rereview.
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(seen.spawns.length, 1);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("falls forward to the SDK with the same frozen pair after a confirmed signaling failure", async () => {
+    const events = createEventBus();
+    const seen = signalingManager(events, { terminal: "failed" });
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      events,
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+    });
+    try {
+      await launchReview(fixture, runner);
+      const { request } = runner.calls[0];
+      assert.equal(`${request.model.provider}/${request.model.id}`, seen.spawns[0].options.model);
+      assert.equal(request.effort, seen.spawns[0].options.thinkingLevel);
+      assert.ok(request.timeoutMs <= 4 * 60 * 60_000, "fallback shares the remaining logical deadline");
+      assert.deepEqual(seen.consumed, ["tw-1"]);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("never launches a replacement when signaling acceptance is uncertain", async () => {
+    const events = createEventBus();
+    const seen = signalingManager(events, { spawn: "malformed" });
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      events,
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+    });
+    const notes = [];
+    fixture.ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => notes.some((n) => /ownership is uncertain/.test(n.message)));
+      assert.equal(runner.calls.length, 0);
+      assert.equal(seen.spawns.length, 1);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("launches nothing when the review is cancelled during parent-side child selection", async () => {
+    const events = createEventBus();
+    const seen = signalingManager(events);
+    const runner = controlledRunner();
+    const gate = deferred();
+    let classifying = false;
+    const fixture = await authorizationLifecycleFixture({
+      events,
+      reviewRunner: runner,
+      classifyPrimaryTask: async () => {
+        classifying = true;
+        await gate.promise;
+        return primaryClassificationResult({ confidence: 0.9 });
+      },
+    });
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => classifying);
+      await fixture.commands.get("route").handler("off", fixture.ctx);
+      gate.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(seen.spawns.length, 0);
+      assert.equal(runner.calls.length, 0);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("lets the child task, not the builder profile, determine the reviewer pair", async () => {
+    const pairs = [];
+    for (const expectedToolOutputTokens of [1_000, 400_000]) {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        classifyPrimaryTask: childClassifier([], { expectedToolOutputTokens }),
+      });
+      // Same builder and registry for both tasks: a smaller-window reviewer and a larger-window rung.
+      const opus = fixture.models.find((entry) => entry.id === "claude-opus-5-5");
+      fixture.models.push({
+        ...opus,
+        id: "claude-fable-5",
+        name: "claude-fable-5",
+        thinkingLevelMap: { xhigh: "xhigh" },
+      });
+      opus.contextWindow = 400_000;
+      try {
+        await launchReview(fixture, runner);
+        const { request } = runner.calls[0];
+        pairs.push(`${request.model.provider}/${request.model.id}@${request.effort}`);
+        assert.equal(fixture.selectedModels.length, 0);
+        assert.equal(fixture.latestLease().selected.modelId, "gpt-6-sol");
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    }
+    assert.deepEqual(pairs, ["anthropic/claude-opus-5-5@high", "anthropic/claude-fable-5@xhigh"]);
   });
 
   it("notes a missing advisory action plan once per lease without a model reminder", async () => {
@@ -6517,6 +6747,7 @@ describe("routerExtension", () => {
       await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
       await fixture.hooks.get("agent_settled")({}, fixture.ctx);
       await flushMicrotasks();
+      await waitForReview(() => runner.calls.length > 0);
       const call = runner.calls[0];
       fixture.hooks.get("tool_call")(
         { toolCallId: "new-mutation", toolName: "write", input: { path: "changed" } },
@@ -6554,7 +6785,7 @@ describe("routerExtension", () => {
     try {
       await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
       await fixture.hooks.get("agent_settled")({}, fixture.ctx);
-      await flushMicrotasks();
+      await waitForReview(() => runner.calls.length > 0);
       const call = runner.calls[0];
       assert.equal(call.request.kind, "completion");
       call.resolve({
@@ -6569,7 +6800,7 @@ describe("routerExtension", () => {
       assert.equal(fixture.selectedModels.length, 0);
       await fixture.hooks.get("before_agent_start")({ prompt: "Continue", systemPrompt: "BUILDER_BASE" }, fixture.ctx);
       await fixture.hooks.get("agent_settled")({}, fixture.ctx);
-      await flushMicrotasks();
+      await new Promise((resolve) => setTimeout(resolve, 30));
       assert.equal(runner.calls.length, 1, "unchanged completion evidence must not schedule another review");
     } finally {
       fixture.restoreEnvironment();
@@ -6585,7 +6816,7 @@ describe("routerExtension", () => {
     });
     const { hooks, ctx, sent, restoreEnvironment } = fixture;
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       const call = runner.calls[0];
       await hooks.get("session_shutdown")({ reason: "reload" }, ctx);
       assert.equal(call.cancelled, true);
@@ -6635,7 +6866,7 @@ describe("routerExtension", () => {
     const notes = [];
     ctx.ui.notify = (message, level) => notes.push({ message, level });
     try {
-      await launchReview(fixture);
+      await launchReview(fixture, runner);
       const call = runner.calls[0];
       await hooks.get("input")({ text: "Inspect instead", source: "interactive", streamingBehavior: "followUp" }, ctx);
       assert.equal(call.cancelled, true);
@@ -6666,7 +6897,7 @@ describe("routerExtension", () => {
         return undefined;
       });
       try {
-        await launchReview(fixture);
+        await launchReview(fixture, runner);
         assert.equal(runner.calls.length, 1);
         // Untracked scope is unmeasured, so the reviewer gets the four-hour cap rather than the five-minute floor.
         assert.ok(runner.calls[0].request.timeoutMs > 60 * 60_000, `timeout ${runner.calls[0].request.timeoutMs}`);
