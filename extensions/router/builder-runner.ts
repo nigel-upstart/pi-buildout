@@ -42,21 +42,29 @@ export function createBuilderReviewRunner(deps: {
   const runner: ReviewRunner = {
     start(request) {
       if (open) return unavailable();
-      const plan = deps.observe()?.plan;
-      if (!plan) return unavailable();
       const nonce = newReviewNonce();
-      const tools = deps.tools();
-      // A published observation is not permission: recheck reachability, schema, and isolation now.
-      const call = bindPlan(plan, tools, {
-        task: [
-          request.systemPrompt,
-          request.prompt,
-          reviewOutputContract(nonce, request.kind, request.scopeFingerprint),
-        ].join("\n\n"),
-        model: `${request.model.provider}/${request.model.id}`,
-        effort: request.effort,
-      });
-      if (!call || deps.blocked(call, tools)) return unavailable();
+      let call: BoundCall | undefined;
+      try {
+        const plan = deps.observe()?.plan;
+        const tools = deps.tools();
+        // A published observation is not permission: recheck reachability, schema, and isolation now.
+        call = plan
+          ? bindPlan(plan, tools, {
+              task: [
+                request.systemPrompt,
+                request.prompt,
+                reviewOutputContract(nonce, request.kind, request.scopeFingerprint),
+              ].join("\n\n"),
+              model: `${request.model.provider}/${request.model.id}`,
+              effort: request.effort,
+            })
+          : undefined;
+        if (call && deps.blocked(call, tools)) call = undefined;
+      } catch {
+        // Best-effort: any inventory/binding failure leaves this mechanism unavailable, never blocks the SDK.
+        call = undefined;
+      }
+      if (!call) return unavailable();
       let resolveResult!: (result: ReviewResult) => void;
       const result = new Promise<ReviewResult>((resolve) => {
         resolveResult = resolve;
