@@ -6427,6 +6427,14 @@ describe("routerExtension", () => {
       await waitForReview(() => fixture.sent.some((s) => /Signaled finding/.test(s.message.content)));
       assert.equal(runner.calls.length, 0, "the SDK fallback is unused when signaling succeeds");
       assert.match(prompts[0], /Give plan review advice/, "the actual child task was classified");
+      const recorded = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map(JSON.parse);
+      assert.ok(
+        recorded.some((e) => e.kind === "classifier_invocation" && e.data.purpose === "review_child"),
+        "child selection is counted as its own classifier purpose",
+      );
       const [spawn] = seen.spawns;
       assert.equal(spawn.type, "general-purpose");
       assert.equal(spawn.options.isolated, true);
@@ -6493,11 +6501,13 @@ describe("routerExtension", () => {
     const runner = controlledRunner();
     const gate = deferred();
     let classifying = false;
+    let classifierSignal;
     const fixture = await authorizationLifecycleFixture({
       events,
       reviewRunner: runner,
-      classifyPrimaryTask: async () => {
+      classifyPrimaryTask: async ({ signal }) => {
         classifying = true;
+        classifierSignal = signal;
         await gate.promise;
         return primaryClassificationResult({ confidence: 0.9 });
       },
@@ -6506,6 +6516,7 @@ describe("routerExtension", () => {
       await launchReview(fixture);
       await waitForReview(() => classifying);
       await fixture.commands.get("route").handler("off", fixture.ctx);
+      assert.equal(classifierSignal.aborted, true, "cancellation aborts the selection classifier");
       gate.resolve();
       await new Promise((resolve) => setTimeout(resolve, 30));
       assert.equal(seen.spawns.length, 0);
