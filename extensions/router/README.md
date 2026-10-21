@@ -416,11 +416,45 @@ These references describe Pi 1.3.0; check the installed host's help when using a
 
 ### Independent reviewer sessions
 
-The only runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an empty
-`ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget. It
-loads no extensions (including router/subagents), skills, templates, context files, or MCP servers. Its explicit native
-tool allowlist is read/grep/find/ls plus its private `submit_safety_review` tool. The builder's `submit_safety_review`
-registration is hidden and cannot accept reviewer verdicts.
+Each eligible review resolves its reviewer in the parent first, then tries runners in a fixed order: shared signaling,
+then the in-process SDK session. The router builds the actual reviewer task and classifies that text with the normal
+primary classifier transport (the builder's profile is not a proxy). The generated-review selector then picks one
+non-builder `{model, effort}` pair under existing policy. The pair is frozen before any launch and reused by the SDK
+fallback. Selection never calls `setModel`/`setThinkingLevel` and never changes the builder's profile, tools, prompt, or
+cache prefix. A failed classification uses conservative features. Automatic reviews have no caller-supplied
+model/effort. Both fields go to the manager explicitly, so the subagents manager skips its own classifier.
+
+**Shared signaling** uses the documented `tintinweb/pi-subagents` protocol-2 subset on `pi.events` (verified against
+release 0.22.0); this repository's subagents extension answers the same subset. Every request has a fresh `requestId`
+whose reply channel is subscribed before emit and released on settlement. The ping reply is awaited as a microtask, and
+only the first reply counts. Terminal listeners are installed before `subagents:rpc:spawn`. Spawn sends top-level
+`type: "general-purpose"` and `prompt`, plus `options.description`, `model` (`provider/id`), `thinkingLevel`,
+`isolated: true`, `inheritContext: false`, and the attempt's `signal`. The description carries a unique token, so
+completion before acceptance still correlates. The matching `subagents:completed`/`failed` handler sends
+`subagents:rpc:consume` synchronously, before any await. Stale and invalid results are consumed too, which suppresses
+the manager's parent notification. Only the final result text returns privately to the router. It must carry one
+`<router-result nonce="…">` JSON block for a 128-bit per-attempt nonce, and the router validates it. No child transcript
+reaches builder context.
+
+Acceptance is not completion. A manager error envelope means nothing launched, so the SDK may run. A confirmed failed or
+invalid terminal result also falls forward with the remaining budget. A lost or malformed acceptance reply is
+**uncertain**: the router aborts the signal, keeps listening only to consume, and starts no replacement for that review.
+On cancellation or deadline expiry, the result is marked stale before the signal is aborted and `subagents:rpc:stop` is
+sent. A stop acknowledgement is not proof of exit. A ping with no reply, or a reply naming another protocol version, is
+verified absence/incompatibility. That negative result is cached for the extension instance only, and reload resets it.
+Error envelopes, spawn/provider errors, failed reviews, bad reviewer JSON, and cancellation never disable signaling; the
+next review probes again. There is no provider election or multi-manager support.
+
+Isolation is the manager's responsibility. Tintinweb agent frontmatter can override `isolated` to false for the generic
+type. Such a deployment is unsuitable for automatic reviews, and the router cannot detect or fix it. The router
+restricts no builder tool, and ordinary user delegation is unaffected. A general-purpose child keeps the manager's
+built-in tools; the reviewer prompt asks for read-only inspection but is not a permission boundary.
+
+The **SDK** runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an
+empty `ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget.
+It loads no extensions (including router/subagents), skills, templates, context files, or MCP servers. Its explicit
+native tool allowlist is read/grep/find/ls plus its private `submit_safety_review` tool. The builder's
+`submit_safety_review` registration is hidden and cannot accept reviewer verdicts.
 
 The SDK takes a `ModelRuntime`, while extensions expose a `ModelRegistry`. With operator approval, a guarded read of
 that registry's private `runtime` field reuses the parent's actual model/auth runtime. If the field is missing or has an
@@ -435,10 +469,12 @@ no third-party tool-result content is trimmed or replaced. Each review has a del
 one second per changed line, capped at four hours. Unknown, binary, or unmeasurable scope receives four hours. The
 provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each session also has at most eight
 model requests and 4,096 output tokens per request. A measured $1 cost threshold stops subsequent calls; it is not a
-provider-side billing limit and can overshoot by the final bounded request. Fallback sessions share the wall deadline
-and remaining measured cost budget. Usage/cost/status and `reviewRunner: "in_process"` are recorded in telemetry. Each
-review attempt's cost is also added to its owning task's total and labeled `modelAndToolCost`; reviewer token counts
-stay out of builder cache metrics. No raw reviewer errors are logged.
+provider-side billing limit and can overshoot by the final bounded request. One logical deadline is computed before
+child selection. Selection and every runner share it and the remaining measured cost budget; fallback gets no fresh
+allocation. Usage/cost/status, `reviewRunner` (`signaling` or `in_process`), `reviewSelection`, `reviewEffort`, and any
+`signalingNegative` reason are recorded in telemetry. Each review attempt's cost is also added to its owning task's
+total and labeled `modelAndToolCost`; reviewer token counts stay out of builder cache metrics. No raw reviewer errors
+are logged.
 
 Valid verdicts are delivered as custom follow-up context plus a UI notification. Plan advice triggers a turn; completion
 findings are queued as follow-up context without manufacturing a new turn. Invalid output, timeout, and failure warn the
@@ -455,9 +491,8 @@ but work executed afterwards (including work that settled while it ran) still re
 applies during an in-flight custom-start preparation. Ordinary task/model routing remains available if the router is
 loaded in some other reviewer child, but review work never schedules review-of-review.
 
-`ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. A later adapter may resolve that
-promise from external event observation. No delegation adapter or manager protocol is implemented, and the router never
-depends on the separately packaged subagents extension.
+`ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. Both runners implement it. The
+router never imports the separately packaged subagents extension; it speaks only the bus subset.
 
 ### Lease lifecycle state machine
 

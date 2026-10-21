@@ -26,7 +26,7 @@ const REVIEW_VERDICTS = [
 ] as const;
 type SafetyReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 
-const VERDICTS_BY_KIND: Readonly<Record<SafetyReviewKind, readonly SafetyReviewVerdict[]>> = {
+export const VERDICTS_BY_KIND: Readonly<Record<SafetyReviewKind, readonly SafetyReviewVerdict[]>> = {
   plan: ["approve", "reject", "proceed", "caution", "do_not_proceed"],
   completion: ["pass", "changes_requested"],
 };
