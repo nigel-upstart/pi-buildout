@@ -5862,6 +5862,52 @@ describe("routerExtension", () => {
     }
   });
 
+  it("reopens a completed lifecycle when a mutation finishes after completion advice", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      // A custom continuation is running (no input epoch change); its mutation starts before advice lands.
+      fixture.hooks.get("tool_call")(
+        { toolCallId: "late-mutation", toolName: "write", input: { path: "changed" } },
+        fixture.ctx,
+      );
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "completed");
+      fixture.hooks.get("tool_execution_end")({ toolCallId: "late-mutation", isError: false }, fixture.ctx);
+      assert.equal(fixture.latestLease().lifecycle.phase, "executing", "newer work reopens completion review");
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 2);
+      assert.notEqual(runner.calls[1].request.scopeFingerprint, runner.calls[0].request.scopeFingerprint);
+      // Unchanged evidence after the reopened review is still scheduled at most once.
+      runner.calls[1].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[1].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "completed");
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await flushMicrotasks();
+      assert.equal(runner.calls.length, 2);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("skips unavailable Pi runtimes with a human note and telemetry", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
