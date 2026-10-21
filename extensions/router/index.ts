@@ -228,7 +228,7 @@ export function routerReenabledNotice(phase: AdvisoryPhase): string {
 }
 
 export function routerOffNotice(phase: AdvisoryPhase): string {
-  return `The operator turned the model router off. Advisory ${phase} guidance is paused, and submit_action_plan, submit_discovery_request, and submit_safety_review are unavailable. The router does not block tools in any mode; follow the user's instructions and approvals.`;
+  return `The operator turned the model router off. Advisory ${phase} guidance is paused, and submit_action_plan, submit_discovery_request, and submit_safety_review are unavailable. Continue without these.`;
 }
 const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
@@ -2030,9 +2030,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           customType: CONTEXT_MESSAGE,
           content:
             lifecycle.phase === "authorized_execution"
-              ? "Independent review approved the exact action plan for this task and session. Recommended next step: follow the reviewed plan and reassess if its preconditions, targets, or steps change. The router does not block tools; follow the user's instructions and approvals."
+              ? "Independent review approved the exact action plan for this task and session. Recommended next step: follow the reviewed plan and reassess if its preconditions, targets, or steps change."
               : lifecycle.phase === "discovery_ready"
-                ? "Independent review approved one exact discovery call. Recommended next step: perform that discovery, then submit_action_plan for separate review of the final action. The router does not block tools; follow the user's instructions and approvals."
+                ? "Independent review approved one exact discovery call. Recommended next step: perform that discovery, then submit_action_plan for separate review of the final action."
                 : `The pre-action advisor reported: ${reviewOutcome.summary}\nProceed only within the original task scope and account for the advice.`,
           display: true,
           details: { parentTaskId: parent.taskId, reviewTaskId: child.taskId, reviewKind: child.lifecycle.reviewKind },
@@ -2188,7 +2188,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         },
       );
       ctx.ui.notify(
-        "Recommended independent review is unroutable; consider inspecting router telemetry. Tools are not blocked.",
+        "An issue was encountered causing the recommended independent review for the agent's work to be unroutable. Tools are not blocked.",
         "warning",
       );
       return;
@@ -2289,7 +2289,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           `Perform the ${reviewKind} independent review for tracked parent task ${parent.taskId}.`,
           `Review scope fingerprint: ${scopeFingerprint}`,
           evidenceInstructions,
-          "Recommended review approach: inspect evidence without editing files or mutating repository, runtime, or external state. The router does not block tools; follow the user's instructions and approvals.",
+          "Recommended review approach: inspect evidence without editing files or mutating repository, runtime, or external state.",
           `Call submit_safety_review exactly once with reviewKind=${reviewKind} and the exact scope fingerprint. A prose-only response is not a valid review.`,
         ].join("\n"),
         display: true,
@@ -2444,13 +2444,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     name: "submit_action_plan",
     label: "Validate irreversible-action plan",
     description:
-      "Submit a concrete irreversible-action plan during router preflight for independent review of its exact task/plan fingerprint. Recommended before irreversible steps; router approval is not required to proceed and the router does not block tools. Follow the user's instructions and approvals.",
+      "Submit a concrete irreversible-action plan during router preflight for independent review of its exact task/plan fingerprint. Required before irreversible steps.",
     parameters: ActionPlanSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = leaseOwner.state.active;
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error(
-          "submit_action_plan accepts submissions during active irreversible-action preflight. Recommended next step: inspect targets or start the relevant task before submitting. Other tools are not blocked.",
+          "submit_action_plan accepts submissions during active irreversible-action preflight. Required next step: inspect targets or start the relevant task before submitting.",
         );
       }
       if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
@@ -2500,7 +2500,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         content: [
           {
             type: "text",
-            text: `Validated irreversible-action plan ${validation.fingerprint}. Recommended next step: independent authorization review of this plan. The router does not block tools; follow the user's instructions and approvals.`,
+            text: `Validated irreversible-action plan ${validation.fingerprint}. Required next step: independent authorization review of this plan.`,
           },
         ],
         details: { planFingerprint: validation.fingerprint, taskFingerprint: active.lifecycle.taskFingerprint },
@@ -2512,13 +2512,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     name: "submit_discovery_request",
     label: "Request bounded discovery approval",
     description:
-      "Submit one exact potentially mutating discovery call in preflight when inspection cannot establish the facts needed for an irreversible-action plan. Recommended next step: independent review of that discovery scope, then separate review of the final plan. The router does not block tools or require approval to proceed.",
+      "Submit one exact potentially mutating discovery call in preflight when inspection cannot establish the facts needed for an irreversible-action plan. Required next step: independent review of that discovery scope, then separate review of the final plan.",
     parameters: DiscoveryRequestSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const active = leaseOwner.state.active;
       if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error(
-          "submit_discovery_request accepts submissions during active irreversible-action preflight. Recommended next step: inspect targets or start the relevant task before submitting. Other tools are not blocked.",
+          "submit_discovery_request accepts submissions during active irreversible-action preflight. Required next step: inspect targets or start the relevant task before submitting.",
         );
       }
       if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
@@ -2574,7 +2574,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         content: [
           {
             type: "text",
-            text: `Validated bounded discovery request ${scopeFingerprint}. Recommended next step: independent review of this discovery scope. The router does not block tools; follow the user's instructions and approvals.`,
+            text: `Validated bounded discovery request ${scopeFingerprint}. Required next step: independent review of this discovery scope.`,
           },
         ],
         details: { scopeFingerprint, requestFingerprint: validation.fingerprint },
@@ -3705,7 +3705,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           );
         } else {
           ctx.ui.notify(
-            "Independent plan review is unavailable: consider submit_action_plan before irreversible steps. Tools are not blocked.",
+            "Independent plan review is unavailable: consider submit_action_plan before irreversible steps.",
             "warning",
           );
         }
@@ -3766,7 +3766,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           );
         } else {
           ctx.ui.notify(
-            `Recommended completion review is unavailable: ${collected.reason ?? "evidence missing"}. Tools are not blocked.`,
+            `Recommended completion review is unavailable: ${collected.reason ?? "evidence missing"}.`,
             "warning",
           );
         }
