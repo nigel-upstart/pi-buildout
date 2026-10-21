@@ -522,7 +522,7 @@ arguments actually published by that tool:
 | ------------------------- | ---------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------- |
 | This repository (after D) | `contextMode: "none"`                                | `model`, `effort` (both set, which skips the classifier) | `create` then final-only `wait` after P1 | `status`, which returns transcript tail                       |
 | tintinweb `Agent`         | `inherit_context: false` (default); `isolated: true` | `model`, `thinking`                                      | `run_in_background: false`               | `get_subagent_result verbose: true`; background notifications |
-| nicobailon `subagent`     | `context: "fresh"`                                   | `model: "provider/id:effort"`                            | `async: false`                           | `status` with `view: "transcript"`                            |
+| nicobailon `subagent`     | `options: { context: "fresh" }`                      | `model: "provider/id:effort"`                            | `async: false`                           | `status` with `options: { view: "transcript" }`               |
 
 The router task asks for exactly one final block, `<router-result nonce="N">{…json…}</router-result>`, where `N` is a
 128-bit random value per attempt.
@@ -866,11 +866,12 @@ P0 + D ────────► P2 our compatible isolated signaling
 C2 + A/B/C1 + P0 ► P3 router shared signaling adapter
 P3 + P1 ───────► P4 SWR discovery + isolation-checked builder fallback
 C2 + P0 ───────► P5 runtime guard + contract canary
-P2 + P4 + P5 ──► P6 parent child-task selection / lifecycle / shared budget
+P3 + P4 ⊇ P6 scope: parent child-task selection / lifecycle / shared budget (not a separate PR)
 ```
 
-P3 can be reviewed against tintinweb fixtures before P2. P6 waits for both. D controls inbound history; P1 controls
-outbound output, so they stay independent. No child-lineage or opaque-startup API PR is needed.
+P3 can be reviewed against tintinweb fixtures before P2. The P6 scope is not a later layer: its selection, lifecycle
+guards, and shared budget land in P3/P4 and must be in place before either enables delegation. D controls inbound
+history; P1 controls outbound output, so they stay independent. No child-lineage or opaque-startup API PR is needed.
 
 | PR                                            | Scope and acceptance                                                                                                                                                                                                                                                                                                                            |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -880,7 +881,7 @@ outbound output, so they stay independent. No child-lineage or opaque-startup AP
 | P3 `router/shared-signaling`                  | Existing per-review probe except valid negative discovery cache; first reply, verified protocol/isolation, explicit pair, consume, cancellation/stale/ownership handling. Operational signaling errors never open a breaker. No builder state changes or extra turns.                                                                           |
 | P4 `router/swr-builder-fallback`              | Closure SWR/60-second deadline/access-only retry. Schema-grounded declarative call plans with parent-bound values; existing builder/Pi dispatch only. Documented isolation plus candidate-specific execution quarantine; exclude disproven contracts while preserving SWR. No generated adapter code or result rewrites.                        |
 | P5 `router/runtime-guard-and-pi-canary`       | Accepted private-field guard and isolated SDK fixture, no inline router or lineage bootstrap. Offline API canary; daily/manual floor+latest released installs, normal CI pin.                                                                                                                                                                   |
-| P6 `router/parent-selected-review-lifecycle`  | Classify the actual child task under normal routing policy; atomically fix model+effort with existing overrides before creation. Generation-owned selection/cancellation, unchanged builder model/profile/cache prefix. Bounded parent stages/attempts and shared delta-scaled budget; no overlapping replacement after uncertain cancellation. |
+| P6 scope (delivered in P3/P4; no own PR)      | Classify the actual child task under normal routing policy; atomically fix model+effort with existing overrides before creation. Generation-owned selection/cancellation, unchanged builder model/profile/cache prefix. Bounded parent stages/attempts and shared delta-scaled budget; no overlapping replacement after uncertain cancellation. |
 
 ### Acceptance tests
 
@@ -926,15 +927,17 @@ configuration is not history; explicit model choice is an application concern. N
 
 ### Deployment, rollback, and net simplification
 
-P1 documents that transcript diagnostics require status. P6 changes default selection to manager-first for **suitable
-isolated** runners, not every tool called “subagent.” Ordinary user delegation and default manager model selection for
-omitted fields are unchanged. Deploy P2 before P6 when using our manager; tintinweb needs no changes.
+P1 documents that transcript diagnostics require status. P3/P4, carrying the P6 scope, change default selection to
+manager-first for **suitable isolated** runners, not every tool called “subagent.” Ordinary user delegation and default
+manager model selection for omitted fields are unchanged. Deploy P2 before enabling P3 delegation when using our
+manager; tintinweb needs no changes.
 
 Reuse parent session review-lifecycle entries for consumed stages on reload; add no child metadata migration. Test
 one-manager/no-manager installations, pair propagation, builder state invariance, isolation, consumption, and cleanup.
-Rollback P6 to the prior SDK-only path while retaining the bounded parent guard; P1 and scheduled canary can roll back
-independently. There is no child lineage to migrate or reseed. Negative signaling discovery and candidate quarantine are
-closure-local observations, reset at lifecycle replacement, with no persisted failure-counter migration.
+Rollback P3/P4 delegation (with its P6 scope) to the prior SDK-only path while retaining the bounded parent guard; P1
+and scheduled canary can roll back independently. There is no child lineage to migrate or reseed. Negative signaling
+discovery and candidate quarantine are closure-local observations, reset at lifecycle replacement, with no persisted
+failure-counter migration.
 
 The existing RPC framework remains the working baseline, not a prohibition on simplification: independent RPC and
 thinking-level-helper investigations will determine any reuse/removal follow-ups. The separately delegated
@@ -1081,7 +1084,7 @@ Pi (MIT): v1.2.0 `06a466935536f8c9bcacb2d5efc0fc021be1bdff`, v1.3.0 `71023aec154
   https://github.com/tintinweb/pi-subagents/blob/ca93a5247e72e7053fcd10bea7125d6c4205f949/src/index.ts#L584-L597
 [tw-rpc]: https://github.com/tintinweb/pi-subagents/blob/ca93a5247e72e7053fcd10bea7125d6c4205f949/docs/rpc.md
 [nb-schema]:
-  https://github.com/nicobailon/pi-subagents/blob/d48d580954086a426d31f1c7b8d793a1d26ad184/src/extension/schemas.ts#L236-L268
+  https://github.com/nicobailon/pi-subagents/blob/d48d580954086a426d31f1c7b8d793a1d26ad184/src/extension/schemas.ts#L236-L299
 [nb-async]:
   https://github.com/nicobailon/pi-subagents/blob/d48d580954086a426d31f1c7b8d793a1d26ad184/src/extension/config.ts#L250-L251
 [nb-fork]:
