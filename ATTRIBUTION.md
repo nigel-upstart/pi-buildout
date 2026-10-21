@@ -83,6 +83,15 @@ worktrees, proactive parent notifications, or protocol dialect shims. Pi 1.2.0 s
 `06a466935536f8c9bcacb2d5efc0fc021be1bdff` and installed 1.3.0 CLI resource suppression flags establish the isolated
 launch behavior; no Pi code was copied.
 
+The router's caller side, `extensions/router/signaling-runner.ts`, is also original code written against the same
+tintinweb sources. It was checked against release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`, MIT):
+`src/cross-extension-rpc.ts` (`handleRpc` microtask replies, omitted void `data`, error envelopes), `src/index.ts`
+(`buildEventData` terminal payloads and emit-before-notify consumption), `src/usage.ts` (`toReportedUsage`), and
+`docs/rpc.md`. Used: per-request reply channels, ping protocol 2, generic `general-purpose` spawn fields, description
+correlation, synchronous consume, and stop. Test fixtures reproduce those released envelope shapes; no tintinweb code
+was copied. Not adopted: steer, `subagents:ready`, the `Symbol.for` registry, compiled `structuredOutput`, workflows,
+scheduling, worktrees, resume, or any multi-manager election.
+
 ## Routing layer (`extensions/router`)
 
 Full design provenance, including the historical conversation export the router's spec derives from and the public
