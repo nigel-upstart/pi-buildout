@@ -440,8 +440,10 @@ retry timer.
 Fingerprint the current tool inventory and active/callable membership from `pi.getAllTools()` and `pi.getActiveTools()`,
 including schema, name, description, exposure, source, and guidelines. On a detected fingerprint change, abort the
 previous flight (including a retry), increment generation, mark DIRTY, and begin one background classification for the
-new inventory. If abort is ignored by the provider, its old promise is still ineligible to publish. An accessor detects
-changes even when no previous flight exists.
+new inventory. If abort is ignored by the provider, its old promise is still ineligible to publish. An aborted flight
+whose promise has not settled still counts against the one-flight bound: no new flight starts until it settles, and
+resolution meanwhile uses the retained publication or SDK. An accessor detects changes even when no previous flight
+exists.
 
 Each field access returns the existing publication immediately. If DIRTY and no eligible flight exists, it starts
 **exactly one** background refresh; concurrent accesses share that flight. With no publication yet, discovery is
