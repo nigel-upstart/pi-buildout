@@ -91,6 +91,13 @@ of first resort.
 - Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
   custom-start preparation and busy-start semantics.
 
+Published Pi `1.3.0` (MIT; canonical repository above) was also inspected for async router correction boundaries:
+`dist/core/agent-session.js` tool hooks, next-turn refresh, forced-prompt projection, run preparation, and model/effort
+setters; and `docs/extensions.md` event and prompt/tool-delta contracts. This conceptual inspection established that
+model/effort can refresh between requests but the router's forced prompt has no public mid-run setter. The original
+router implementation therefore defers the whole tuple until idle or a new run start. Private setters, mutation of
+retained prompt event objects, abort/resume handoffs, and secondary safety latches were not adopted.
+
 No Pi code, issue prose, or documentation prose was copied or modified.
 
 ### Pi model catalog: GPT-6.1 Sol pricing

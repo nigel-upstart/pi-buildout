@@ -4,25 +4,15 @@ import { changeEffortWithinLease, installLease, markManualOverride, setHardBound
 import type { HardBoundary, LeaseState, RouterMode, TaskLease } from "./lease.ts";
 import type { EffortLevel } from "./profiles.ts";
 
-type SecondaryInput = { key: object; gated: boolean; work: (signal: AbortSignal) => Promise<void> };
-
-function unresolvedSecondary(): SecondaryInput {
-  return {
-    key: {},
-    gated: true,
-    work: async () => {
-      // A restored or reserved latch waits for fresh classification; it does not invoke a provider.
-    },
-  };
-}
+type SecondaryInput = { work: (signal: AbortSignal) => Promise<void> };
 
 // The classifier is a child of the task family, not the temporary reviewer. Exiting running
-// aborts its promise actor; an unanswered safety question survives cancellation when requested.
+// or stopping the child aborts its background work.
 const secondaryMachine = setup({
   types: {
     context: {} as SecondaryInput,
     input: {} as SecondaryInput,
-    events: {} as { type: "RESOLVE" } | { type: "RETAIN" } | { type: "ABORT"; retain: boolean },
+    events: {} as { type: "ABORT" },
   },
   actors: {
     classify: fromPromise(async ({ input, signal }: { input: SecondaryInput; signal: AbortSignal }) => {
@@ -32,17 +22,13 @@ const secondaryMachine = setup({
 }).createMachine({
   context: ({ input }) => input,
   initial: "running",
-  on: {
-    RESOLVE: { actions: assign({ gated: false }) },
-    RETAIN: {},
-    ABORT: { target: ".stopped", actions: assign({ gated: ({ context, event }) => event.retain && context.gated }) },
-  },
+  on: { ABORT: { target: ".stopped" } },
   states: {
     running: {
-      invoke: { src: "classify", input: ({ context }) => context, onDone: "queued", onError: "stopped" },
+      invoke: { src: "classify", input: ({ context }) => context, onDone: "done", onError: "stopped" },
     },
-    queued: {},
-    stopped: {},
+    done: { type: "final" },
+    stopped: { type: "final" },
   },
 });
 
@@ -65,7 +51,6 @@ type LeaseAdvance = {
   lease: TaskLease;
   owner: TaskLease | undefined;
   epoch: number;
-  secondarySafetyPending: boolean;
 };
 
 function isAdvance(event: LeaseEvent): event is LeaseAdvance {
@@ -110,7 +95,7 @@ type LeaseEvent =
   | { type: "OVERRIDE"; effort?: EffortLevel }
   | { type: "RESET" }
   | { type: "START_SECONDARY"; owner: TaskLease; input: SecondaryInput }
-  | { type: "ABORT_SECONDARY"; retain: boolean };
+  | { type: "ABORT_SECONDARY" };
 
 type LeaseContext = {
   state: LeaseState;
@@ -235,14 +220,6 @@ const leaseMachine = setup({
         if (context.secondary) enqueue.stopChild(context.secondary);
         enqueue.assign({ secondary: undefined });
       }
-      if (event.type === "ROUTE" && event.secondarySafetyPending) {
-        enqueue.assign({
-          secondary: ({ spawn }) =>
-            spawn("secondary", {
-              input: unresolvedSecondary(),
-            }),
-        });
-      }
       const installed = installLease(context.state, event.lease);
       const pendingHardBoundary = context.state.pendingHardBoundary;
       enqueue.assign({
@@ -265,12 +242,11 @@ const leaseMachine = setup({
   },
 }).createMachine({
   id: "routerLease",
-  context: ({ input, spawn }) => ({
+  context: ({ input }) => ({
     state: freezeState(input),
     epoch: 0,
     reviewEpoch: undefined,
-    secondary:
-      input.active && input.secondarySafetyPending ? spawn("secondary", { input: unresolvedSecondary() }) : undefined,
+    secondary: undefined,
   }),
   initial: "selecting",
   on: {
@@ -293,10 +269,6 @@ const leaseMachine = setup({
         "discardSecondary",
         assign({
           state: ({ event }) => freezeState(event.state),
-          secondary: ({ event, spawn }) =>
-            event.state.active && event.state.secondarySafetyPending
-              ? spawn("secondary", { input: unresolvedSecondary() })
-              : undefined,
           epoch: ({ context }) => context.epoch + 1,
           reviewEpoch: undefined,
         }),
@@ -390,7 +362,7 @@ const leaseMachine = setup({
       ],
     },
     ABORT_SECONDARY: {
-      actions: ({ context, event }) => context.secondary?.send({ type: "ABORT", retain: event.retain }),
+      actions: ({ context }) => context.secondary?.send({ type: "ABORT" }),
     },
   },
   states: {
@@ -433,28 +405,14 @@ export function createLeaseOwner(initial: LeaseState) {
       const current = actor.getSnapshot().context;
       return current.state.active === lease && current.epoch === epoch;
     },
-    get secondaryGated(): boolean {
-      return actor.getSnapshot().context.secondary?.getSnapshot().context.gated ?? false;
-    },
     send(event: Exclude<LeaseEvent, LeaseAdvance>): void {
       actor.send(event);
     },
-    advance(
-      type: LeaseTransition,
-      lease: TaskLease,
-      owner: TaskLease | undefined,
-      epoch: number,
-      secondarySafetyPending = false,
-    ): boolean {
+    advance(type: LeaseTransition, lease: TaskLease, owner: TaskLease | undefined, epoch: number): boolean {
       const before = actor.getSnapshot().context.state;
-      actor.send({ type, lease, owner, epoch, secondarySafetyPending });
+      actor.send({ type, lease, owner, epoch });
       const after = actor.getSnapshot().context.state;
       return after !== before && after.active === lease;
-    },
-    settleSecondary(key: object, resolved: boolean): void {
-      const secondary = actor.getSnapshot().context.secondary;
-      if (secondary?.getSnapshot().context.key !== key) return;
-      secondary.send({ type: resolved ? "RESOLVE" : "RETAIN" });
     },
   };
 }

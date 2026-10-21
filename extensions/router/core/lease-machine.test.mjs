@@ -50,6 +50,7 @@ describe("XState lease owner", () => {
         },
       };
       assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
+      assert.equal(owner.advance("RECONCILE", { ...child }, child, owner.epoch), false);
       const verdict = { ...child, lifecycle: { ...child.lifecycle, submission: { verdict: "approve" } } };
       assert.equal(owner.advance("SUBMIT_REVIEW", verdict, child, owner.epoch), true);
       assert.equal(owner.reviewBindingCurrent, true);
@@ -270,14 +271,15 @@ describe("XState lease owner", () => {
       fc.asyncProperty(
         fc.scheduler(),
         fc.constantFrom("INTENT", "RESET", "MODE", "BOUNDARY", "OVERRIDE"),
-        async (scheduler, kind) => {
+        fc.constantFrom("FALLBACK", "RECONCILE"),
+        async (scheduler, kind, type) => {
           const original = lease();
           const owner = createLeaseOwner({ mode: "active", active: original, manualOverride: false });
           const epoch = owner.epoch;
           const candidate = { ...original, attemptIndex: 1 };
           let revoked = false;
           const pending = scheduler.schedule(Promise.resolve(), "ledger/model completion").then(() => {
-            const accepted = owner.advance("FALLBACK", candidate, original, epoch);
+            const accepted = owner.advance(type, candidate, original, epoch);
             assert.equal(accepted, !revoked);
           });
           const revocation = scheduler.schedule(Promise.resolve(), "revocation").then(() => {
@@ -292,7 +294,7 @@ describe("XState lease owner", () => {
           });
           await scheduler.waitAll();
           await Promise.all([pending, revocation]);
-          assert.equal(owner.advance("FALLBACK", candidate, original, epoch), false);
+          assert.equal(owner.advance(type, candidate, original, epoch), false);
           const revokedState = owner.state;
           owner.send({
             type: "RESTORE",
@@ -307,20 +309,43 @@ describe("XState lease owner", () => {
     );
   });
 
-  it("keeps a cancellable secondary and its latch across review-family lifecycle progress", async () => {
+  it("rejects stale RECONCILE and FALLBACK candidates racing to replace the same owner", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.scheduler(), async (scheduler) => {
+        const original = lease();
+        const owner = createLeaseOwner({ mode: "active", active: original, manualOverride: false });
+        const epoch = owner.epoch;
+        let installed;
+        const pending = ["RECONCILE", "FALLBACK"].map((type) => {
+          const candidate = { ...original, attemptIndex: type === "FALLBACK" ? 1 : 0 };
+          return scheduler.schedule(Promise.resolve(), type).then(() => {
+            const before = owner.state;
+            const accepted = owner.advance(type, candidate, original, epoch);
+            assert.equal(accepted, installed === undefined);
+            if (accepted) installed = candidate;
+            else assert.equal(owner.state, before, "a stale candidate must not overwrite the winning lease");
+          });
+        });
+        await scheduler.waitAll();
+        await Promise.all(pending);
+        assert.equal(owner.state.active, installed);
+        assert.equal(owner.epoch, epoch, "owner identity rejects the loser even without an epoch change");
+      }),
+      fastCheckOptions,
+    );
+  });
+
+  it("keeps a cancellable secondary across review-family lifecycle progress", async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.array(fc.constantFrom("review", "repair", "fallback"), { maxLength: 20 }),
         async (changes) => {
           const owner = createLeaseOwner({ mode: "active", active: lease(), manualOverride: false });
-          const key = {};
           let signal;
           owner.send({
             type: "START_SECONDARY",
             owner: owner.state.active,
             input: {
-              key,
-              gated: true,
               work: async (abortSignal) => {
                 signal = abortSignal;
                 await new Promise((resolve) => abortSignal.addEventListener("abort", resolve, { once: true }));
@@ -344,7 +369,6 @@ describe("XState lease owner", () => {
                 },
               };
               assert.equal(owner.advance("REVIEW_STARTED", child, active, owner.epoch), true);
-              owner.settleSecondary(key, false);
               assert.equal(owner.advance("REVIEW_FINISHED", { ...active }, child, owner.epoch), true);
             } else {
               assert.equal(
@@ -357,15 +381,11 @@ describe("XState lease owner", () => {
                 true,
               );
             }
-            assert.equal(owner.secondaryGated, true);
             assert.equal(signal.aborted, false);
           }
-          owner.send({ type: "ABORT_SECONDARY", retain: true });
+          owner.send({ type: "ABORT_SECONDARY" });
           assert.equal(signal.aborted, true);
-          assert.equal(owner.secondaryGated, true);
           owner.send({ type: "RESET" });
-          assert.equal(owner.secondaryGated, false);
-          owner.settleSecondary(key, true);
           assert.equal(owner.state.active, undefined);
         },
       ),
@@ -373,26 +393,68 @@ describe("XState lease owner", () => {
     );
   });
 
-  it("restores an unresolved safety question and ignores late settlements from replaced actors", () => {
-    const owner = createLeaseOwner({
-      mode: "active",
-      active: lease(),
-      manualOverride: false,
-      secondarySafetyPending: true,
-    });
-    assert.equal(owner.secondaryGated, true);
-    owner.send({ type: "ABORT_SECONDARY", retain: true });
-    assert.equal(owner.secondaryGated, true);
-    const key = {};
+  it("cancels background work when its child or task family is replaced", () => {
+    for (const change of ["START_SECONDARY", "ROUTE", "RESTORE", "RESET", "OVERRIDE"]) {
+      const active = lease();
+      const owner = createLeaseOwner({ mode: "active", active, manualOverride: false });
+      let signal;
+      owner.send({
+        type: "START_SECONDARY",
+        owner: active,
+        input: {
+          work: async (abortSignal) => {
+            signal = abortSignal;
+            await new Promise((resolve) => abortSignal.addEventListener("abort", resolve, { once: true }));
+          },
+        },
+      });
+      assert.equal(signal.aborted, false);
+      if (change === "START_SECONDARY") {
+        owner.send({ type: change, owner: active, input: { work: async () => {} } });
+      } else if (change === "ROUTE") {
+        assert.equal(owner.advance(change, lease("new-task"), active, owner.epoch), true);
+      } else if (change === "RESTORE") {
+        owner.send({
+          type: change,
+          state: { mode: "active", active: lease("restored"), manualOverride: false },
+          owner: active,
+          epoch: owner.epoch,
+        });
+      } else {
+        owner.send({ type: change });
+      }
+      assert.equal(signal.aborted, true, change);
+    }
+  });
+
+  it("rejects background work from a stale owner without cancelling the current child", () => {
+    const active = lease();
+    const owner = createLeaseOwner({ mode: "active", active, manualOverride: false });
+    let signal;
     owner.send({
       type: "START_SECONDARY",
-      owner: owner.state.active,
-      input: { key, gated: true, work: async () => {} },
+      owner: active,
+      input: {
+        work: async (abortSignal) => {
+          signal = abortSignal;
+          await new Promise((resolve) => abortSignal.addEventListener("abort", resolve, { once: true }));
+        },
+      },
     });
-    owner.settleSecondary({}, true);
-    assert.equal(owner.secondaryGated, true);
-    owner.settleSecondary(key, true);
-    assert.equal(owner.secondaryGated, false);
+    let staleStarted = false;
+    owner.send({
+      type: "START_SECONDARY",
+      owner: { ...active },
+      input: {
+        work: async () => {
+          staleStarted = true;
+        },
+      },
+    });
+    assert.equal(staleStarted, false);
+    assert.equal(signal.aborted, false);
+    owner.send({ type: "ABORT_SECONDARY" });
+    assert.equal(signal.aborted, true);
   });
 
   it("keeps a discovery reviewer's newer evidence when an interruption revokes the discovery", () => {
