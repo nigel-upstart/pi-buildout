@@ -166,7 +166,6 @@ type SecondaryReconciliationTask = {
   languageBuckets: readonly string[];
   contextBucket: string;
   explorationKey: string;
-  cache: { cachedTokens: number; expectedReuseRatio: number };
   owner: TaskLease;
   epoch: number;
   primaryCompletedAtMs: number;
@@ -511,6 +510,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let applyingSelection = false;
   let applyingEffort = false;
   let synchronousEffortEchoes = 0;
+  let modelSwitchEffortEchoes = 0;
   // Pi emits thinking_level_select without awaiting it, after every earlier handler, so a router
   // effort change can reach this handler after the setter returned. Each expected echo is consumed
   // by its matching event instead of relying on a synchronous flag window.
@@ -1037,7 +1037,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     languageBuckets: readonly string[];
     contextBucket: string;
     explorationKey: string;
-    cache: { cachedTokens: number; expectedReuseRatio: number };
     primaryCompletedAtMs: number;
   }): SecondaryReconciliationTask | undefined {
     if (
@@ -1067,7 +1066,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       languageBuckets: input.languageBuckets,
       contextBucket: input.contextBucket,
       explorationKey: input.explorationKey,
-      cache: input.cache,
       owner: input.lease,
       epoch: leaseOwner.epoch,
       primaryCompletedAtMs: input.primaryCompletedAtMs,
@@ -1244,8 +1242,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       routed.decision.primary,
       { incumbent: active.archetype, corrected: routed.decision.archetype },
     );
+    // The correction waits for idle or the next run, so price the switch against the cache the
+    // incumbent has accumulated since routing rather than the pre-run snapshot.
     const estimatedCachePenaltyUsd = estimateCacheSwitchPenaltyUsd(
-      queued.task.cache,
+      cacheEstimate(ctx.sessionManager.getBranch()),
       active.selected,
       routed.decision.primary,
       queued.task.registry,
@@ -1696,8 +1696,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
       const model = ctx.modelRegistry.find(choice.provider, choice.modelId);
       if (!model) return false;
+      const levelBefore = pi.getThinkingLevel();
+      const switchEchoesBefore = modelSwitchEffortEchoes;
       const selected = await pi.setModel(model);
       if (!selected) return false;
+      // The switch applied the target's default effort. Unless its echo already arrived while the
+      // selection was in flight, expect it later like an explicit effort change.
+      const switchedLevel = pi.getThinkingLevel();
+      if (modelSwitchEffortEchoes === switchEchoesBefore && switchedLevel !== levelBefore)
+        expectedEffortEchoes.push({ level: switchedLevel, previousLevel: levelBefore });
       if (leaseOwner.epoch !== epoch) return false;
       applyEffort(choice.effort);
       return true;
@@ -3086,7 +3093,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           languageBuckets: repository.languageBuckets,
           contextBucket,
           explorationKey: promptFingerprint(event.prompt),
-          cache: pending?.cache ?? { cachedTokens: 0, expectedReuseRatio: 0 },
           primaryCompletedAtMs,
         };
         await record(
@@ -3255,8 +3261,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       applyingSelection &&
       ctx.model?.provider === programmaticSelection?.provider &&
       ctx.model?.id === programmaticSelection?.modelId
-    )
+    ) {
+      modelSwitchEffortEchoes++;
       return;
+    }
     if (ctx.model) {
       operatorSelection = { provider: ctx.model.provider, modelId: ctx.model.id, effort: event.level };
       operatorSelectionRevision++;
