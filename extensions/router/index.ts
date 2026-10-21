@@ -500,6 +500,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   const potentiallyMutatingCalls = new Map<string, { toolName: string; inputFingerprint: string }>();
   const validatedPlanAttempts = new Set<string>();
   let lastAttemptMetrics: AttemptMetrics | undefined;
+  // The task that produced lastAttemptMetrics, so out-of-band review spending is labeled only on its owner.
+  let lastAttemptMetricsTaskId: string | undefined;
   const accumulatedTaskCosts = new Map<string, number>();
   const taskStartedAt = new Map<string, number>();
   /**
@@ -553,6 +555,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       leaseOwner.epoch === review.epoch &&
       leaseOwner.state.mode === "active" &&
       active?.taskId === review.taskId &&
+      !active.executionFailed &&
       active.attemptIndex === review.attemptIndex &&
       sameRouteChoice(active.selected, review.selected) &&
       (review.kind !== "completion" || active.safetyEvidence === review.evidence)
@@ -2070,7 +2073,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           maxCost: 1 - spent,
         });
         const result = await review.handle.result;
-        spent += Math.max(0, Number.isFinite(result.usage.cost) ? result.usage.cost : 0);
+        const attemptCost = Math.max(0, Number.isFinite(result.usage.cost) ? result.usage.cost : 0);
+        spent += attemptCost;
+        // Review spending is a task-level cost even when its result is stale. Token counts stay with the
+        // review event so reviewer endpoints never skew builder cache metrics.
+        accumulatedTaskCosts.set(parent.taskId, (accumulatedTaskCosts.get(parent.taskId) ?? 0) + attemptCost);
+        if (lastAttemptMetrics && lastAttemptMetricsTaskId === parent.taskId)
+          lastAttemptMetrics = {
+            ...lastAttemptMetrics,
+            modelAndToolCost: lastAttemptMetrics.modelAndToolCost + attemptCost,
+          };
         const stale = !reviewCurrent(review);
         const checked =
           result.status === "completed"
@@ -3189,6 +3201,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           cacheWriteTokens,
         }
       : undefined;
+    lastAttemptMetricsTaskId = isActiveAttempt ? active.taskId : undefined;
     await record(
       ctx,
       "attempt_completed",
