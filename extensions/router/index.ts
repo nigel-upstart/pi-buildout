@@ -510,6 +510,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let lastUpstream: string | undefined;
   let applyingSelection = false;
   let applyingEffort = false;
+  let synchronousEffortEchoes = 0;
+  // Pi emits thinking_level_select without awaiting it, after every earlier handler, so a router
+  // effort change can reach this handler after the setter returned. Each expected echo is consumed
+  // by its matching event instead of relying on a synchronous flag window.
+  const expectedEffortEchoes: { level: string; previousLevel: string }[] = [];
   // Provider selection is asynchronous. Serialize router-owned switches so a stale
   // correction cannot finish after a newer fallback's selection.
   let selectionTail: Promise<unknown> = Promise.resolve();
@@ -1662,12 +1667,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   function applyEffort(effort: EffortLevel): void {
+    const previousLevel = pi.getThinkingLevel();
+    const synchronousEchoesBefore = synchronousEffortEchoes;
     applyingEffort = true;
     try {
       pi.setThinkingLevel(effort);
     } finally {
       applyingEffort = false;
     }
+    const level = pi.getThinkingLevel();
+    if (synchronousEffortEchoes === synchronousEchoesBefore && level !== previousLevel)
+      expectedEffortEchoes.push({ level, previousLevel });
   }
 
   async function applyChoiceUnqueued(
@@ -3225,15 +3235,26 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("thinking_level_select", async (event, ctx) => {
-    // Explicit effort setters emit synchronously. A model switch also emits its
+    // Explicit effort setters may deliver their echo synchronously or, behind earlier handlers,
+    // later (see expectedEffortEchoes). A model switch also emits its
     // default effort after authentication, with ctx.model already set to its target.
     // Neither echo is an operator choice; changes on the still-current model while
     // authentication is pending are, and must advance the recovery revision even off.
+    if (applyingEffort) {
+      synchronousEffortEchoes++;
+      return;
+    }
+    const echo = expectedEffortEchoes.findIndex(
+      ({ level, previousLevel }) => level === event.level && previousLevel === event.previousLevel,
+    );
+    if (echo !== -1) {
+      expectedEffortEchoes.splice(echo, 1);
+      return;
+    }
     if (
-      applyingEffort ||
-      (applyingSelection &&
-        ctx.model?.provider === programmaticSelection?.provider &&
-        ctx.model?.id === programmaticSelection?.modelId)
+      applyingSelection &&
+      ctx.model?.provider === programmaticSelection?.provider &&
+      ctx.model?.id === programmaticSelection?.modelId
     )
       return;
     if (ctx.model) {
