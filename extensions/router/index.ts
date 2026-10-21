@@ -513,6 +513,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   // correction cannot finish after a newer fallback's selection.
   let selectionTail: Promise<unknown> = Promise.resolve();
   let operatorSelection: Pick<RouteChoice, "provider" | "modelId" | "effort"> | undefined;
+  let operatorSelectionRevision = 0;
   /** The exact selection an in-flight `applyChoice` is applying, so only its echo is suppressed. */
   let programmaticSelection: { provider: string; modelId: string } | undefined;
   let lastProviderFailure: FailureKind | undefined;
@@ -1620,14 +1621,38 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const owner = leaseOwner.state.active;
     const selection = selectionTail.then(async () => {
       if (!leaseOwner.owns(owner, epoch) || (ownsCorrection && !ownsCorrection())) return false;
+      const operatorRevision = operatorSelectionRevision;
+      const previous = ctx.model
+        ? { provider: ctx.model.provider, modelId: ctx.model.id, effort: pi.getThinkingLevel() }
+        : undefined;
       const applied = await applyChoiceUnqueued(ctx, choice);
       if (ownsCorrection && !ownsCorrection()) {
-        // setModel awaits auth and cannot be cancelled through Pi's public API. If
-        // ownership changed during it, restore the winning selection before releasing
-        // the queue to a new run or fallback. Never install the stale lease tuple.
-        const winner = leaseOwner.state.manualOverride ? operatorSelection : leaseOwner.state.active?.selected;
-        if (winner) await applyChoiceUnqueued(ctx, winner);
-        return false;
+        // Pi's auth wait cannot be cancelled. Recovery is another asynchronous
+        // selection, so it must follow newer operator choices even while off and
+        // revalidate its own owner, mode, epoch, and operator revision after each await.
+        for (;;) {
+          const revision = operatorSelectionRevision;
+          const recoveryOwner = leaseOwner.state.active;
+          const recoveryEpoch = leaseOwner.epoch;
+          const mode = leaseOwner.state.mode;
+          const winner =
+            revision !== operatorRevision || leaseOwner.state.manualOverride
+              ? (operatorSelection ?? previous)
+              : mode === "active"
+                ? (recoveryOwner?.selected ?? previous)
+                : previous;
+          if (!winner) return false;
+          const restored = await applyChoiceUnqueued(ctx, winner);
+          if (
+            revision !== operatorSelectionRevision ||
+            mode !== leaseOwner.state.mode ||
+            !leaseOwner.owns(recoveryOwner, recoveryEpoch)
+          )
+            continue;
+          if (!restored)
+            ctx.ui.notify("Could not restore the current selection after a stale route correction", "warning");
+          return false;
+        }
       }
       return applied;
     });
@@ -3124,8 +3149,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (leaseOwner.state.mode !== "active" || leaseOwner.state.manualOverride) return;
       const epoch = leaseOwner.epoch;
       await drainSecondaryReconciliation(ctx, { kind: "before_first_request" });
-      const active = leaseOwner.state.active;
-      if (!active || active.manualOverride || leaseOwner.epoch !== epoch) return;
+      let active = leaseOwner.state.active;
+      if (!active || active.executionFailed || active.manualOverride || leaseOwner.epoch !== epoch) return;
+      active = await prepareActiveLeaseForTurn(ctx, active, undefined);
+      if (!active || active.executionFailed || !leaseOwner.owns(active, epoch)) return;
       const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
       if (!profile) return;
       const repository = await readRepositoryMetadata(pi, ctx.cwd);
@@ -3145,7 +3172,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (leaseOwner.state.mode === "off" || event.source === "restore") return;
+    if (event.source === "restore") return;
     // Suppress only the echo of the selection the router is applying. `event.source` cannot
     // distinguish a programmatic `setModel` from a user picking a model (both report "set"), so a
     // different model arriving while the apply is in flight is a real override and must win.
@@ -3156,7 +3183,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     ) {
       return;
     }
+    // Off still bypasses routing state/telemetry. Remember only the latest choice
+    // in memory so an already-pending, uncancellable correction cannot erase it.
     operatorSelection = { provider: event.model.provider, modelId: event.model.id, effort: pi.getThinkingLevel() };
+    operatorSelectionRevision++;
+    if (leaseOwner.state.mode === "off") return;
     // Revoke discovery and mark the override before any await, so an exact discovery call cannot
     // be dispatched in the window while secondary work is being cancelled.
     if (leaseOwner.state.active) invalidateLease("manual model override", false);
@@ -3184,8 +3215,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("thinking_level_select", async (event, ctx) => {
-    if (leaseOwner.state.mode === "off" || applyingSelection) return;
-    if (ctx.model) operatorSelection = { provider: ctx.model.provider, modelId: ctx.model.id, effort: event.level };
+    if (applyingSelection) return;
+    if (ctx.model) {
+      operatorSelection = { provider: ctx.model.provider, modelId: ctx.model.id, effort: event.level };
+      operatorSelectionRevision++;
+    }
+    if (leaseOwner.state.mode === "off") return;
     // As for model overrides, all lease changes happen before the first await.
     if (leaseOwner.state.active) invalidateLease("manual effort override", false);
     const active = leaseOwner.state.active;

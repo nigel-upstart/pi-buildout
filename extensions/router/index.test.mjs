@@ -3263,6 +3263,128 @@ describe("routerExtension", () => {
     assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
   });
 
+  for (const changeAt of ["correction", "recovery"]) {
+    it(`preserves an off-mode operator selection during ${changeAt} authentication`, async () => {
+      const secondary = deferred();
+      const switching = deferred();
+      const releaseSwitch = deferred();
+      const restoring = deferred();
+      const releaseRestore = deferred();
+      const models = standardRoutingModels();
+      const result = await runAdapterTurn({
+        classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+        classifySecondaryTask: async () => secondary.promise,
+        models,
+        mode: "active",
+        prompt: "Implement one bounded repository change",
+        sessionId: `operator-choice-during-${changeAt}`,
+      });
+      const latest = () => result.appended.findLast(({ customType }) => customType === "model-router-state").data;
+      const original = latest().active;
+      startAgentRun(result);
+      await settleAgentRun(result, { stopReason: "aborted" });
+      const select = result.pi.setModel;
+      let switchCount = 0;
+      let correctionModel;
+      result.pi.setModel = async (model) => {
+        switchCount++;
+        if (switchCount === 1) {
+          correctionModel = model;
+          switching.resolve();
+          await releaseSwitch.promise;
+        } else if (switchCount === 2 && changeAt === "recovery") {
+          restoring.resolve();
+          await releaseRestore.promise;
+        }
+        return select(model);
+      };
+      secondary.resolve(
+        classificationResult(2, {
+          confidence: 0.95,
+          risk: "critical",
+          verificationStrength: "security_and_policy",
+          independenceRequirement: "different_vendor_review",
+        }),
+      );
+      await switching.promise;
+      await result.commands.get("route").handler("off", result.ctx);
+      if (changeAt === "recovery") {
+        releaseSwitch.resolve();
+        await restoring.promise;
+      }
+      const operatorModel = models.find(
+        (model) => model.id !== original.selected.modelId && model.id !== correctionModel.id,
+      );
+      assert.ok(operatorModel);
+      await select(operatorModel);
+      await result.hooks.get("model_select")({ source: "set", model: operatorModel }, result.ctx);
+      if (changeAt === "correction") releaseSwitch.resolve();
+      else releaseRestore.resolve();
+      await waitUntil(() => switchCount >= (changeAt === "recovery" ? 3 : 2));
+      await flushMicrotasks();
+      assert.equal(
+        result.ctx.model.id,
+        operatorModel.id,
+        "uncancellable recovery must not overwrite a newer off-mode choice",
+      );
+      assert.equal(result.ctx.model.provider, operatorModel.provider);
+      assert.equal(latest().mode, "off");
+      assert.equal(latest().active.selected.modelId, original.selected.modelId);
+      assert.equal(
+        result.events.some(({ kind, data }) => kind === "secondary_reconciliation" && data.accepted),
+        false,
+      );
+      assert.equal(result.abortCount, 0);
+    });
+  }
+
+  it("prepares the dormant lease before compiling a re-enabled custom run", async () => {
+    const active = adapterLease();
+    const result = await runAdapterTurn({
+      active,
+      prepareTurn: false,
+      mode: "active",
+      models: standardRoutingModels(),
+      sessionId: "custom-reenabled-profile",
+    });
+    await result.commands.get("route").handler("off", result.ctx);
+    const operatorModel = standardRoutingModels().find(({ id }) => id !== active.selected.modelId);
+    await result.pi.setModel(operatorModel);
+    await result.hooks.get("model_select")({ source: "set", model: operatorModel }, result.ctx);
+    await result.commands.get("route").handler("active", result.ctx);
+    const prepared = await result.hooks.get("before_agent_start")(
+      { messageType: "custom", systemPrompt: "system" },
+      result.ctx,
+    );
+    assert.equal(result.ctx.model.id, active.selected.modelId);
+    assert.equal(result.ctx.model.provider, active.selected.provider);
+    assert.equal(result.pi.getThinkingLevel(), active.selected.effort);
+    const profile = PROMPT_PROFILES.find(({ id }) => id === active.promptProfileId);
+    assert.ok(prepared.systemPrompt.includes(profile.guidelines[0]));
+    assert.equal(result.abortCount, 0);
+  });
+
+  it("does not force an exhausted lease's profile onto a custom run", async () => {
+    const active = { ...adapterLease(), executionFailed: true };
+    const result = await runAdapterTurn({
+      active,
+      prepareTurn: false,
+      mode: "active",
+      models: standardRoutingModels(),
+      sessionId: "custom-exhausted-profile",
+    });
+    const model = result.ctx.model;
+    const selections = result.selectedModels.length;
+    const prepared = await result.hooks.get("before_agent_start")(
+      { messageType: "custom", systemPrompt: "system" },
+      result.ctx,
+    );
+    assert.equal(prepared, undefined);
+    assert.equal(result.ctx.model, model);
+    assert.equal(result.selectedModels.length, selections);
+    assert.equal(result.abortCount, 0);
+  });
+
   it("swaps the whole route tuple while idle and compiles its profile on the next custom run", async () => {
     const secondary = deferred();
     let primaryCalls = 0;
