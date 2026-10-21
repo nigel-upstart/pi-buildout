@@ -470,10 +470,12 @@ bounded original task requirements on the lease and transfers them with the rele
 fingerprint when available and otherwise disclose the context gap. These bounds affect router-owned review context only;
 no third-party tool-result content is trimmed or replaced. Each review has a delta-scaled wall budget: five minutes plus
 one second per changed line, capped at four hours. Unknown, binary, or unmeasurable scope receives four hours. The
-provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each session also has at most eight
-model requests and 4,096 output tokens per request. A measured $1 cost threshold stops subsequent calls; it is not a
-provider-side billing limit and can overshoot by the final bounded request. One logical deadline is computed before
-child selection. Selection and every runner share it and the remaining measured cost budget; fallback gets no fresh
+provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each SDK session also has at most
+eight model requests and 4,096 output tokens per request. A measured $1 cost threshold stops its subsequent calls; it is
+not a provider-side billing limit and can overshoot by the final bounded request. These request, token, and dollar caps
+apply only to SDK sessions. A signaling child runs under its manager's own limits; the router sees its usage only at
+termination, when reported, and enforces only the shared wall deadline. One logical deadline is computed before child
+selection. Selection and every runner share it and the remaining measured cost budget; fallback gets no fresh
 allocation. Usage/cost/status, `reviewRunner` (`signaling` or `in_process`), `reviewSelection`, `reviewEffort`, and any
 `signalingNegative` reason are recorded in telemetry. Each review attempt's cost is also added to its owning task's
 total and labeled `modelAndToolCost`; reviewer token counts stay out of builder cache metrics. No raw reviewer errors
