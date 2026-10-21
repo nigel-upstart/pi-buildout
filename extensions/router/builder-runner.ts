@@ -3,6 +3,7 @@ import { bindPlan } from "./discovery.ts";
 import type { BoundCall, Observation, ToolView } from "./discovery.ts";
 import { newReviewNonce, parseReviewOutput, reviewOutputContract } from "./review-output.ts";
 import type { ReviewResult, ReviewRunner } from "./review-runner.ts";
+import { validateSafetyReview } from "./core/safety.ts";
 
 /**
  * Builder-steered review delegation: the builder runs a validated call through its ordinary tools (event
@@ -11,10 +12,20 @@ import type { ReviewResult, ReviewRunner } from "./review-runner.ts";
 type ToolCallEvent = { toolCallId: string; toolName: string; input: unknown };
 type ToolResultEvent = ToolCallEvent & { content: readonly { type: string; text?: string }[]; isError: boolean };
 
-// Deterministic rejection of a published argument by the manager itself ("Unknown parameter: isolated"), not a
-// rejected value such as "Unknown model: provider/id" and not an operational failure.
-const CONTRACT_REJECTION =
-  /\b(unknown|unsupported|unrecognized|unexpected|invalid|disallowed)\s+(argument|parameter|option|property|field|key)s?\b|\badditional propert(y|ies)\b|\b(argument|parameter|option|property|field)s?\b[^\n]{0,60}\bnot (allowed|supported)\b/i;
+// Deterministic rejection of a published argument *name* by the manager ("Unknown parameter: isolated"). Value errors
+// ("Invalid parameter model: must be ...", "Unknown model: x") never match; the extracted name must be bound by us.
+const REJECTED_ARGUMENT =
+  /\b(?:unknown|unsupported|unrecognized|unexpected|disallowed)\s+(?:argument|parameter|option|property|field|key)s?\s*[:=]?\s*["'`]?([A-Za-z0-9_.-]+)|\badditional propert(?:y|ies)\s*[:=]?\s*["'`]?([A-Za-z0-9_.-]+)/gi;
+function rejectedArguments(text: string): string[] {
+  return [...text.matchAll(REJECTED_ARGUMENT)].flatMap((match) => {
+    const name = match[1] ?? match[2];
+    return name ? [name.replace(/[.,;:]+$/, "")] : [];
+  });
+}
+const boundPaths = (value: unknown, prefix = ""): string[] =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? Object.entries(value).flatMap(([key, child]) => [`${prefix}${key}`, ...boundPaths(child, `${prefix}${key}.`)])
+    : [];
 /**
  * The builder must reproduce every argument exactly, at builder output pricing and in builder context. Larger tasks
  * make exact reproduction unreliable, and a deviation blocks every fallback, so they use the SDK instead.
@@ -33,6 +44,8 @@ export function createBuilderReviewRunner(deps: {
   type Attempt = {
     call: BoundCall;
     nonce: string;
+    /** A verdict completes only if valid for this review kind and exact scope. */
+    valid(verdict: unknown): boolean;
     spawnCalls: number;
     spawnCallId?: string;
     /** The first and only spawn matched the validated arguments exactly. */
@@ -105,6 +118,7 @@ export function createBuilderReviewRunner(deps: {
       const attempt: Attempt = {
         call,
         nonce,
+        valid: (verdict) => validateSafetyReview(verdict, request.kind, request.scopeFingerprint).success,
         spawnCalls: 0,
         exact: false,
         deviated: false,
@@ -199,6 +213,10 @@ export function createBuilderReviewRunner(deps: {
      * No spawn, or exactly one failed spawn, launched nothing of ours and allows fallback; a user abort cancels.
      * Anything else, including a successful spawn without a verdict, leaves ownership unknown.
      */
+    /** True while a dispatched delegation run is being observed. */
+    delegating(): boolean {
+      return open !== undefined;
+    },
     onSettled(aborted = false): void {
       const attempt = open;
       if (!attempt) return;
@@ -206,12 +224,14 @@ export function createBuilderReviewRunner(deps: {
       const trusted = single && attempt.exact && !attempt.deviated;
       if (aborted) attempt.finish("cancelled");
       else if (attempt.spawnCalls === 0) attempt.finish("unavailable");
-      else if (trusted && attempt.verdict !== undefined) attempt.finish("completed", attempt.verdict);
+      // An invalid or foreign verdict from a launched child proves nothing about its termination: uncertain.
+      else if (trusted && attempt.verdict !== undefined && attempt.valid(attempt.verdict))
+        attempt.finish("completed", attempt.verdict);
       else if (single && attempt.spawnFailed) {
-        // Only an exact invocation whose rejection names a bound argument disproves the advertised contract.
+        // Only an exact invocation whose error rejects one of our bound argument names disproves the contract.
         const text = attempt.rejection ?? "";
-        const named = Object.keys(attempt.call.arguments).some((key) => text.includes(key));
-        if (trusted && named && CONTRACT_REJECTION.test(text) && !OPERATIONAL.test(text))
+        const ours = new Set(boundPaths(attempt.call.arguments));
+        if (trusted && !OPERATIONAL.test(text) && rejectedArguments(text).some((name) => ours.has(name)))
           deps.quarantine(attempt.call, "argument_rejected");
         attempt.finish("failed");
       } else attempt.finish("uncertain");

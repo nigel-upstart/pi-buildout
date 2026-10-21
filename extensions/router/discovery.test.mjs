@@ -436,6 +436,8 @@ test("only an exact invocation's deterministic argument rejection quarantines th
     ["Unknown model: anthropic/claude-opus-5-5", true, []],
     ["Unsupported model: anthropic/claude-opus-5-5", true, []],
     ["Provider rate limit; isolated request unavailable", true, []],
+    ["Invalid parameter model: must be one of the configured models", true, []],
+    ["Unsupported parameter: temperature for model anthropic/claude-opus-5-5", true, []],
     ["Unknown parameter: isolated", false, []],
   ];
   for (const [message, exact, expected] of cases) {
@@ -570,6 +572,59 @@ test("decisions wait for settle: mutated execution, a later duplicate, or a user
     "a duplicate after the verdict invalidates it",
   );
   assert.equal(await run(exactCall, true), "cancelled", "Escape cancels instead of falling forward");
+  assert.equal(
+    await run((runner, args) =>
+      exactCall(runner, args, `<router-result nonce="${nonceOf(args.prompt)}">{}</router-result>`),
+    ),
+    "uncertain",
+    "an invalid verdict from a launched child cannot authorize fallback",
+  );
+  assert.equal(
+    await run((runner, args) =>
+      exactCall(
+        runner,
+        args,
+        `<router-result nonce="${nonceOf(args.prompt)}">${JSON.stringify({ ...verdict, scopeFingerprint: "b".repeat(64) })}</router-result>`,
+      ),
+    ),
+    "uncertain",
+    "a verdict for another scope is not ours",
+  );
+});
+
+test("literal grounding keeps documented case and decimals; placeholders are not value-validated at publication", () => {
+  const levelTool = (description, schema = Type.String({ description })) =>
+    agentTool({
+      parameters: Type.Object({
+        prompt: Type.String({ minLength: 40 }),
+        model: Type.String({ enum: ["anthropic/claude-opus-5-5"] }),
+        effort: Type.String(),
+        level: schema,
+      }),
+    });
+  const answer = (literal, evidence) =>
+    agentAnswer({
+      spawnArguments: [
+        { path: "prompt", bind: "task" },
+        { path: "model", bind: "model" },
+        { path: "effort", bind: "effort" },
+        { path: "level", literal },
+      ],
+      isolationArgument: "level",
+      isolationEvidence: evidence,
+    });
+  const upper = [levelTool("If NONE, the child loads no extensions.")];
+  assert.ok(
+    planFromAnswer(answer('"NONE"', "If NONE, the child loads no extensions."), upper),
+    "placeholders ignore minLength/enum",
+  );
+  assert.equal(planFromAnswer(answer('"none"', "If none, the child loads no extensions."), upper), undefined);
+  const decimal = [levelTool("", Type.Number({ description: "If -1.5, the child loads no extensions." }))];
+  assert.ok(planFromAnswer(answer("-1.5", "If -1.5, the child loads no extensions."), decimal));
+  assert.equal(planFromAnswer(answer("-1", "If -1.5, the child loads no extensions."), decimal), undefined);
+  const plan = planFromAnswer(answer('"NONE"', "If NONE, the child loads no extensions."), upper);
+  assert.equal(bindPlan(plan, upper, { ...values, task: "x".repeat(50) }).arguments.level, "NONE");
+  assert.equal(bindPlan(plan, upper, { ...values, task: "short" }), undefined, "real values are validated at dispatch");
 });
 
 test("structurally invalid answers stay DIRTY; prototype paths and imprecise literals never ground", async () => {
