@@ -11,9 +11,10 @@ import type { ReviewResult, ReviewRunner } from "./review-runner.ts";
 type ToolCallEvent = { toolCallId: string; toolName: string; input: unknown };
 type ToolResultEvent = ToolCallEvent & { content: readonly { type: string; text?: string }[]; isError: boolean };
 
-// Deterministic rejection of a published argument by the manager itself, not an operational failure.
+// Deterministic rejection of a published argument by the manager itself ("Unknown parameter: isolated"), not a
+// rejected value such as "Unknown model: provider/id" and not an operational failure.
 const CONTRACT_REJECTION =
-  /\b(unknown|unsupported|unrecognized|unexpected|not supported|not allowed|additional propert(y|ies))\b/i;
+  /\b(unknown|unsupported|unrecognized|unexpected|invalid|disallowed)\s+(argument|parameter|option|property|field|key)s?\b|\badditional propert(y|ies)\b|\b(argument|parameter|option|property|field)s?\b[^\n]{0,60}\bnot (allowed|supported)\b/i;
 const OPERATIONAL =
   /(not found|api key|auth|rate.?limit|quota|timed? ?out|timeout|unavailable|overloaded|network|validation failed for tool)/i;
 
@@ -27,10 +28,32 @@ export function createBuilderReviewRunner(deps: {
   type Attempt = {
     call: BoundCall;
     nonce: string;
+    spawnCalls: number;
     spawnCallId?: string;
+    /** The first and only spawn matched the validated arguments exactly. */
     exact: boolean;
+    /** Successful spawn output, used to correlate the companion call's child id. */
+    spawnText?: string;
+    resultCallId?: string;
+    deviated: boolean;
+    spawnFailed: boolean;
     finish(status: ReviewResult["status"], verdict?: unknown): void;
   };
+  /** The validated companion template, where "<child id>" must be a string the spawn actually returned. */
+  const matchesResult = (input: unknown, template: unknown, spawnText: string): boolean => {
+    if (template === "<child id>") return typeof input === "string" && input.length > 0 && spawnText.includes(input);
+    if (!template || typeof template !== "object" || !input || typeof input !== "object")
+      return isDeepStrictEqual(input, template);
+    const left = input as Record<string, unknown>;
+    const right = template as Record<string, unknown>;
+    const keys = Object.keys(right);
+    return (
+      Object.keys(left).length === keys.length &&
+      keys.every((key) => Object.hasOwn(left, key) && matchesResult(left[key], right[key], spawnText))
+    );
+  };
+  const textOf = (event: ToolResultEvent) =>
+    event.content.flatMap((part) => (part.type === "text" && part.text ? [part.text] : [])).join("\n");
   let open: Attempt | undefined;
   const zero = { cost: 0, inputTokens: 0, outputTokens: 0 };
   const unavailable = () => ({
@@ -72,7 +95,10 @@ export function createBuilderReviewRunner(deps: {
       const attempt: Attempt = {
         call,
         nonce,
+        spawnCalls: 0,
         exact: false,
+        deviated: false,
+        spawnFailed: false,
         finish(status, verdict) {
           if (open !== attempt) return;
           open = undefined;
@@ -119,36 +145,57 @@ export function createBuilderReviewRunner(deps: {
     ...runner,
     onToolCall(event: ToolCallEvent): void {
       const attempt = open;
-      if (attempt?.call.tool.name !== event.toolName) return;
-      // A second spawn or changed arguments is a deviation: observed, never blocked or rewritten.
-      attempt.exact = attempt.spawnCallId === undefined && isDeepStrictEqual(event.input, attempt.call.arguments);
-      attempt.spawnCallId ??= event.toolCallId;
+      if (!attempt) return;
+      const { call } = attempt;
+      // The companion call (possibly the same tool with a wait action) must match its validated template and
+      // carry a child id the spawn returned. Anything else is a deviation: observed, never blocked or rewritten.
+      if (call.result?.tool.name === event.toolName && attempt.spawnText !== undefined) {
+        if (attempt.resultCallId === undefined && matchesResult(event.input, call.result.arguments, attempt.spawnText))
+          attempt.resultCallId = event.toolCallId;
+        else attempt.deviated = true;
+        return;
+      }
+      if (call.tool.name === event.toolName) {
+        attempt.spawnCalls++;
+        attempt.spawnCallId ??= event.toolCallId;
+        attempt.exact = attempt.spawnCalls === 1 && isDeepStrictEqual(event.input, call.arguments);
+      } else if (call.result?.tool.name === event.toolName) attempt.deviated = true;
     },
     onToolResult(event: ToolResultEvent): void {
       const attempt = open;
-      const spawn = attempt?.call.tool.name === event.toolName && event.toolCallId === attempt.spawnCallId;
-      if (!attempt || (!spawn && attempt.call.result?.tool.name !== event.toolName)) return;
-      const text = event.content.flatMap((part) => (part.type === "text" && part.text ? [part.text] : [])).join("\n");
-      const verdict = attempt.exact && !event.isError ? parseReviewOutput(text, attempt.nonce) : undefined;
-      if (verdict !== undefined) {
-        attempt.finish("completed", verdict);
+      if (!attempt) return;
+      const trusted = attempt.exact && !attempt.deviated;
+      if (event.toolCallId === attempt.resultCallId) {
+        const verdict = trusted && !event.isError ? parseReviewOutput(textOf(event), attempt.nonce) : undefined;
+        if (verdict !== undefined) attempt.finish("completed", verdict);
         return;
       }
-      if (!spawn) return;
+      if (event.toolCallId !== attempt.spawnCallId) return;
+      const text = textOf(event);
       if (event.isError) {
-        // The spawn call itself failed, so nothing of ours runs. Only an exact invocation whose rejection names a
-        // bound argument is evidence the candidate's advertised contract is wrong.
+        // Only an exact invocation whose rejection names a bound argument disproves the advertised contract.
         const named = Object.keys(attempt.call.arguments).some((key) => text.includes(key));
         if (attempt.exact && named && CONTRACT_REJECTION.test(text) && !OPERATIONAL.test(text))
           deps.quarantine(attempt.call, "argument_rejected");
-        attempt.finish("failed");
-        // A successful spawn without a verdict may have started a background child: never fall forward.
-      } else if (!attempt.call.result) attempt.finish("uncertain");
+        // Decided at settle: a retried or concurrent second spawn may still run.
+        attempt.spawnFailed = true;
+        return;
+      }
+      const verdict = trusted ? parseReviewOutput(text, attempt.nonce) : undefined;
+      if (verdict !== undefined) attempt.finish("completed", verdict);
+      // A successful spawn without a verdict may have started a background child: never fall forward.
+      else if (!trusted || !attempt.call.result) attempt.finish("uncertain");
+      else attempt.spawnText = text;
     },
-    /** The delegation run settled: no spawn means nothing launched; otherwise ownership is unknown. */
+    /**
+     * The delegation run settled. No spawn means nothing launched, and exactly one failed spawn means nothing of
+     * ours runs; both allow fallback. Anything else leaves ownership unknown.
+     */
     onSettled(): void {
       const attempt = open;
-      if (attempt) attempt.finish(attempt.spawnCallId === undefined ? "unavailable" : "uncertain");
+      if (!attempt) return;
+      if (attempt.spawnCalls === 0) attempt.finish("unavailable");
+      else attempt.finish(attempt.spawnCalls === 1 && attempt.spawnFailed ? "failed" : "uncertain");
     },
   };
 }
