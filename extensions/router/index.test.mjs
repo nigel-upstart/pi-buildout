@@ -179,7 +179,7 @@ function irreversibleActionPlan() {
 
 // Mirrors the irreversible-action authorization fixture: a parent lease in authorization preflight,
 // with a builder and an independent reviewer from different vendors.
-async function authorizationLifecycleFixture() {
+async function authorizationLifecycleFixture(options = {}) {
   const hooks = new Map();
   const commands = new Map();
   const tools = new Map();
@@ -279,8 +279,7 @@ async function authorizationLifecycleFixture() {
     setModel: async (model) => {
       selectedModels.push(model);
       // The interruption can land while settlement awaits the switch back to the builder.
-      await hooksDuringSwitch.duringBuilderSwitch?.(model);
-      return true;
+      return (await hooksDuringSwitch.duringBuilderSwitch?.(model)) ?? true;
     },
     setThinkingLevel: () => {},
     getThinkingLevel: () => "high",
@@ -293,7 +292,7 @@ async function authorizationLifecycleFixture() {
       return { stdout: "", stderr: "", code: 1, killed: false };
     },
   };
-  routerExtension(pi);
+  routerExtension(pi, options);
   const ctx = {
     cwd: telemetryDirectory,
     model: models[0],
@@ -5639,6 +5638,92 @@ describe("routerExtension", () => {
       }
     });
   }
+
+  for (const interruption of ["restore_failed", "input_during_telemetry", "off_during_telemetry"]) {
+    it(`does not queue stale plan advice after ${interruption}`, async () => {
+      let fixture;
+      let armed = false;
+      fixture = await authorizationLifecycleFixture({
+        telemetry: {
+          read: async () => [],
+          append: async (event) => {
+            if (!armed || event.kind !== "outcome" || !event.data.adviceOnly) return;
+            armed = false;
+            if (interruption === "input_during_telemetry")
+              await fixture.hooks.get("input")(
+                { text: "Stop; inspect instead", source: "interactive", streamingBehavior: "followUp" },
+                fixture.ctx,
+              );
+            else if (interruption === "off_during_telemetry")
+              await fixture.commands.get("route").handler("off", fixture.ctx);
+          },
+        },
+      });
+      const { hooks, tools, models, ctx, sent, latestLease, onBuilderSwitch, restoreEnvironment } = fixture;
+      try {
+        await hooks.get("session_start")({ reason: "reload" }, ctx);
+        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+        await hooks.get("agent_settled")({}, ctx);
+        const review = latestLease();
+        ctx.model = models.find((m) => m.provider === review.selected.provider && m.id === review.selected.modelId);
+        hooks.get("agent_start")();
+        await tools.get("submit_safety_review").execute(
+          "verdict",
+          {
+            reviewKind: "plan",
+            scopeFingerprint: review.lifecycle.scopeFingerprint,
+            verdict: "approve",
+            summary: "Bounded",
+            evidence: ["Inspected"],
+            findings: [],
+          },
+          undefined,
+          undefined,
+          ctx,
+        );
+        await hooks.get("agent_end")(
+          {
+            messages: [
+              {
+                role: "assistant",
+                provider: review.selected.provider,
+                model: review.selected.modelId,
+                stopReason: "stop",
+                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+              },
+            ],
+          },
+          ctx,
+        );
+        const before = sent.length;
+        if (interruption === "restore_failed") onBuilderSwitch(() => false);
+        armed = true;
+        await hooks.get("agent_settled")({}, ctx);
+        assert.equal(
+          sent.slice(before).some((s) => s.message.content.includes("Independent review advice")),
+          false,
+        );
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  it("records unavailable review advice even when no child lease could be installed", async () => {
+    const { hooks, tools, ctx, latestLease, onBuilderSwitch, restoreEnvironment } =
+      await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      onBuilderSwitch(() => false);
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      assert.match(latestLease().lifecycle.planReview.summary, /unavailable/);
+      assert.equal(latestLease().lifecycle.plan, undefined);
+    } finally {
+      restoreEnvironment();
+    }
+  });
 
   it("notes a missing advisory action plan once per lease without a model reminder", async () => {
     const { hooks, ctx, sent, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
