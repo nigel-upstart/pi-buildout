@@ -85,6 +85,13 @@ function request(f) {
 
 test("SDK reviewer uses parent model access, loads no resources, and exposes read-only plus verdict tools", async (t) => {
   const f = await fixture(t);
+  const warmingModes = [];
+  const getWarmingMode = SettingsManager.prototype.getCacheWarmingMode;
+  t.mock.method(SettingsManager.prototype, "getCacheWarmingMode", function () {
+    const mode = getWarmingMode.call(this);
+    warmingModes.push(mode);
+    return mode;
+  });
   let calls = 0;
   const observed = [];
   f.runtime.streamSimple = (model, context) => {
@@ -115,6 +122,11 @@ test("SDK reviewer uses parent model access, loads no resources, and exposes rea
   assert.equal(calls, 2, "requests went through the parent's authenticated runtime");
   assert.equal(result.usage.cost, 0.02);
   assert.equal(result.usage.inputTokens, 40);
+  assert.ok(warmingModes.length > 0);
+  assert.ok(
+    warmingModes.every((mode) => mode === "off"),
+    "review sessions must not issue unbudgeted cache-warming calls",
+  );
   assert.equal(globalThis.__routerReviewerFactoryLoaded, undefined, "no router extension factory was loaded");
   assert.equal(
     f.runtime.streamSimple,

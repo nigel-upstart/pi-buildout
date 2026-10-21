@@ -413,22 +413,27 @@ These references describe Pi 1.3.0; check the installed host's help when using a
 ### Independent reviewer sessions
 
 The only runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an empty
-`ResourceLoader`. It loads no extensions (including router/subagents), skills, templates, context files, or MCP servers.
-Its explicit native tool allowlist is read/grep/find/ls plus its private `submit_safety_review` tool. The builder's
-`submit_safety_review` registration is hidden and cannot accept reviewer verdicts.
+`ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget. It
+loads no extensions (including router/subagents), skills, templates, context files, or MCP servers. Its explicit native
+tool allowlist is read/grep/find/ls plus its private `submit_safety_review` tool. The builder's `submit_safety_review`
+registration is hidden and cannot accept reviewer verdicts.
 
 The SDK takes a `ModelRuntime`, while extensions expose a `ModelRegistry`. With operator approval, a guarded read of
 that registry's private `runtime` field reuses the parent's actual model/auth runtime. If the field is missing or has an
 unexpected type, review is skipped with a human warning and telemetry. The shared runtime is never wrapped or mutated;
 request limits wrap only the reviewer's agent. No credentials are copied to disk.
 
-The router collects a bounded diff (24,000 characters) and bounded task/evidence prompt (60,000 characters). Each review
-has a delta-scaled wall budget: five minutes plus one second per changed line, capped at four hours. Unknown, binary, or
-unmeasurable scope receives four hours. The provisional slope lives in `core/review-budget.ts` for later budget-policy
-adoption. Each session also has at most eight model requests and 4,096 output tokens per request. A measured $1 cost
-threshold stops subsequent calls; it is not a provider-side billing limit and can overshoot by the final bounded
-request. Fallback sessions share the wall deadline and remaining measured cost budget. Usage/cost/status and
-`reviewRunner: "in_process"` are recorded in telemetry. No raw reviewer errors are logged.
+The router collects a bounded diff (24,000 characters) and bounded task/evidence prompt (60,000 characters). It retains
+bounded original task requirements on the lease and transfers them with the relevant plan and latest continuation;
+"continue" alone is never treated as the original requirements. Legacy leases recover the original prompt by its
+fingerprint when available and otherwise disclose the context gap. These bounds affect router-owned review context only;
+no third-party tool-result content is trimmed or replaced. Each review has a delta-scaled wall budget: five minutes plus
+one second per changed line, capped at four hours. Unknown, binary, or unmeasurable scope receives four hours. The
+provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each session also has at most eight
+model requests and 4,096 output tokens per request. A measured $1 cost threshold stops subsequent calls; it is not a
+provider-side billing limit and can overshoot by the final bounded request. Fallback sessions share the wall deadline
+and remaining measured cost budget. Usage/cost/status and `reviewRunner: "in_process"` are recorded in telemetry. No raw
+reviewer errors are logged.
 
 Valid verdicts are delivered as custom follow-up context plus a UI notification. Plan advice triggers a turn; completion
 findings are queued as follow-up context without manufacturing a new turn. Invalid output, timeout, and failure warn the

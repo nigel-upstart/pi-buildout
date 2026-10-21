@@ -106,7 +106,11 @@ export const inProcessReviewRunner: ReviewRunner = {
           model: { ...request.model, maxTokens: Math.min(request.model.maxTokens, 4096) },
           thinkingLevel: request.effort,
           sessionManager: SessionManager.inMemory(request.cwd),
-          settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+          settingsManager: SettingsManager.inMemory({
+            cacheWarming: "off",
+            compaction: { enabled: false },
+            retry: { enabled: false },
+          }),
           resourceLoader: emptyResources(request.systemPrompt),
           tools: ["read", "grep", "find", "ls", "submit_safety_review"],
           customTools: [

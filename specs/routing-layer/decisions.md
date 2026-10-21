@@ -897,12 +897,19 @@ Pi 1.3.0 investigation (published package paths, not assumptions):
   (`dist/core/extensions/types.d.ts:254–280`). Router event handlers collect bounded git evidence with `pi.exec`; the
   reviewer has no bash tool.
 
-Owner/task identity, selection, and epoch reject stale results. Input, boundaries, mode changes, overrides, and shutdown
-cancel the reviewer. Each unchanged review scope is scheduled at most once per attempt, preventing completion-advice
-rereview loops without gating tools. Review work never schedules review-of-review; the SDK child loads no extensions by
-construction, and ordinary routing is not disabled in other reviewer children. Legacy review-child persistence unwraps
-the builder instead of resuming a reviewer model. `REVIEW_STARTED`/`REVIEW_FINISHED` and grant-oriented child-lease
-restoration are removed.
+Reviewer settings explicitly disable cache warming: Pi 1.3.0 defaults to streaming warming, whose direct runtime
+requests and `entry_appended` usage otherwise bypass the agent request wrapper and assistant usage counter. Original
+task requirements are bounded and persisted on the lease; legacy leases can recover them by prompt fingerprint. The
+separate reviewer also receives the retained plan and latest continuation, all delimited as untrusted data. Router-owned
+context bounds never trim or replace third-party tool-result content.
+
+Owner/task identity, attempt, selection, evidence revision, and epoch reject stale results. Invalidating mode and
+builder-selection changes cancel sessions promptly, including telemetry-triggered shadow mode. Input, boundaries, mode
+changes, overrides, and shutdown cancel the reviewer. Each unchanged review scope is scheduled at most once per attempt,
+preventing completion-advice rereview loops without gating tools. Review work never schedules review-of-review; the SDK
+child loads no extensions by construction, and ordinary routing is not disabled in other reviewer children. Legacy
+review-child persistence unwraps the builder instead of resuming a reviewer model. `REVIEW_STARTED`/`REVIEW_FINISHED`
+and grant-oriented child-lease restoration are removed.
 
 The small `ReviewRunner.start(request)` contract returns a result promise and cancellation handle. Its promise may be
 resolved by later event observation, but the only shipped implementation is in-process. Delegation is deferred pending
