@@ -142,11 +142,24 @@ export function planFromAnswer(answer: unknown, tools: readonly ToolView[]): Del
  */
 function isolationGrounded(plan: DelegationPlan, tools: readonly ToolView[]): boolean {
   const tool = tools.find((candidate) => candidate.name === plan.spawnTool);
-  const argument = plan.spawnArguments.find((entry) => entry.path === plan.isolationArgument);
+  const matching = plan.spawnArguments.filter((entry) => entry.path === plan.isolationArgument);
+  const argument = matching.length === 1 ? matching[0] : undefined;
   const parameter = tool ? schemaAt(tool.parameters, plan.isolationArgument) : undefined;
   if (!tool || !parameter || argument?.literal === undefined || argument.bind) return false;
   const quote = normalized(plan.isolationEvidence);
   if (quote.length < 12 || !/\bextensions?\b/.test(quote)) return false;
+  // The documented condition must name the exact literal sent ("If true, ..."), not merely the argument.
+  let literal: unknown;
+  try {
+    literal = JSON.parse(argument.literal) as unknown;
+  } catch {
+    return false;
+  }
+  const words = (text: string) => text.split(/[^a-z0-9_]+/).filter(Boolean);
+  const token = words(normalized(typeof literal === "string" ? literal : JSON.stringify(literal)));
+  const said = words(quote);
+  const named = said.some((_, start) => token.every((word, offset) => said[start + offset] === word));
+  if (token.length === 0 || !named) return false;
   const leaf = normalized(plan.isolationArgument.split(".").at(-1) ?? "");
   const parameterDocs = typeof parameter.description === "string" ? normalized(parameter.description) : "";
   const toolDocs = normalized([tool.description, ...(tool.promptGuidelines ?? [])].join(" "));
@@ -171,6 +184,10 @@ export function bindPlan(
   const build = (tool: ToolView, entries: readonly Argument[], childId: boolean) => {
     const args: Record<string, unknown> = {};
     const bound = new Set<Binding>();
+    const paths = entries.map((entry) => entry.path);
+    // A duplicate could override the checked isolation literal; a prefix path cannot nest into a literal.
+    if (paths.some((path, index) => paths.some((other, at) => at !== index && `${other}.`.startsWith(`${path}.`))))
+      return undefined;
     for (const entry of entries) {
       if (!schemaAt(tool.parameters, entry.path) || (entry.bind === undefined) === (entry.literal === undefined))
         return undefined;
