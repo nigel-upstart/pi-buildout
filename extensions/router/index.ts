@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartUserEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
 import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
 import { compilePrompt, escapeXml } from "./core/compiler.ts";
@@ -235,7 +235,8 @@ const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
 /**
  * Advertise each safety validator only in the lifecycle phase that accepts it. Sync at every lifecycle transition,
- * including those that queue generated turns without before_agent_start.
+ * including generated turns: Pi <=1.1.0 skipped before_agent_start, and the router deliberately skips
+ * its user-prompt preparation for Pi 1.3.0 custom starts. Tool exposure must not depend on that hook.
  */
 export function activeToolsForSafetyLifecycle(
   activeTools: readonly string[],
@@ -465,7 +466,20 @@ type RouterExtensionOptions = {
   secondaryGracePolicy?: SecondaryGracePolicy;
 };
 
+export function supportsRouterPiVersion(version: string): boolean {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(version);
+  if (!match) return false;
+  const [, major = "0", minor = "0", patch = "0", prerelease] = match;
+  return (
+    BigInt(major) > 1n ||
+    (BigInt(major) === 1n && (BigInt(minor) > 2n || (BigInt(minor) === 2n && (BigInt(patch) > 0n || !prerelease))))
+  );
+}
+
 export default function routerExtension(pi: ExtensionAPI, options: RouterExtensionOptions = {}): void {
+  if (!supportsRouterPiVersion(VERSION)) {
+    throw new Error(`The model-aware router requires Pi >=1.2.0 (found ${VERSION})`);
+  }
   /**
    * The operator's model scope and last probe results, read once per session. Routing derives its
    * candidate endpoints from this rather than from a table in the repository, so enabling or disabling
@@ -500,6 +514,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let repoKey: string | undefined;
   let repoKeyCwd: string | undefined;
   let recordedExitMode: RouterMode | undefined;
+  // Only idle input awaiting user-run preparation belongs here. Queued steering/follow-up input
+  // stays inside the current run and must never become a later start's routing decision.
   let pendingInput: PendingInput | undefined;
   let nextParentTaskId: string | undefined;
   let lastRoute: LastRoute = {};
@@ -512,6 +528,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let attemptTurns = 0;
   let attemptToolCalls = 0;
   let agentRunSequence = 0;
+  // A clean profile handoff intentionally aborts the current run. Some providers report that
+  // cancellation as stopReason=error, so bind its cause to the run rather than parsing error text.
+  let profileRefreshAbort: { taskId: string; runSequence: number } | undefined;
   const deterministicCheckCalls = new Map<string, string>();
   const deterministicCheckResults = new Map<string, boolean>();
   const potentiallyMutatingCalls = new Map<string, { toolName: string; inputFingerprint: string }>();
@@ -569,6 +588,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
+
+  function clearPendingInput(ctx: ExtensionContext): void {
+    if (!pendingInput) return;
+    pendingInput = undefined;
+    ctx.ui.setWorkingMessage();
+  }
 
   function syncRouterTools(): void {
     const current = pi.getActiveTools();
@@ -1430,6 +1455,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Shadow routing never applies the refreshed profile, so interrupting the run would only cost the
     // user a turn; the telemetry above still records the handoff active mode would have taken.
     if (handoff === "clean_stop_resume" && leaseOwner.state.mode === "active") {
+      profileRefreshAbort = { taskId: correctedLease.taskId, runSequence: agentRunSequence };
       ctx.abort();
       pi.sendMessage(
         {
@@ -2678,7 +2704,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     },
   });
 
-  pi.on("session_shutdown", async (event) => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
     if (event.reason === "new") modeForNextSession = leaseOwner.state.mode;
     // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
@@ -2687,6 +2714,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_start", async (event, ctx) => {
+    clearPendingInput(ctx);
     // The persisted snapshot is an async restore proposal. Keep the safety question closed while
     // settings load, and let newer input/overrides win rather than restoring over their state.
     invalidateLease("session startup");
@@ -2815,8 +2843,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("input", (event, ctx) => {
-    // Generated turns bypass this hook, so retain both validators throughout active routing.
-    // In shadow and off modes, neither validator is declared.
+    // Custom continuations bypass input (even on Pi 1.3.0), so lifecycle transitions synchronize
+    // the phase-valid validators themselves. In shadow and off modes, neither is declared.
     syncRouterTools();
     if (leaseOwner.state.mode === "off") return { action: "continue" as const };
     leaseOwner.send({ type: "INTENT" });
@@ -2834,11 +2862,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       invalidateLease("new user input", false);
       persistState();
     }
+    // Busy input is queued into the current run (or rejected by Pi if delivery was omitted), not
+    // followed by a new before_agent_start. It still invalidates authority above, but must neither
+    // stage a future start nor overwrite idle input waiting through pre-run compaction/preparation.
+    if (event.streamingBehavior || !ctx.isIdle()) return { action: "continue" as const };
     const cache = cacheEstimate(ctx.sessionManager.getBranch());
     let gate = deterministicBoundaryGate(leaseOwner.state, {
       isUserInput: true,
       source: event.source,
-      ...(event.streamingBehavior ? { streamingBehavior: event.streamingBehavior } : {}),
       prompt: event.text,
       cachedTokens: cache.cachedTokens,
       expectedReuseRatio: cache.expectedReuseRatio,
@@ -2867,7 +2898,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return { action: "continue" as const };
   });
 
-  pi.on("before_agent_start", async (event, ctx) => {
+  // Pi 1.1.0 fired this hook only for user prompts. Pi 1.3.0 also fires it for idle custom runs
+  // (`triggerTurn`, including the router's own generated follow-ups), which carry no prompt. Those runs
+  // are handled by the lifecycle code that queues them, so the router skips them to keep the 1.1.0 behavior.
+  const handleUserPrompt = async (event: BeforeAgentStartUserEvent, ctx: ExtensionContext) => {
     agentRunPhase = "before_start";
     if (leaseOwner.state.mode === "off") {
       syncRouterTools();
@@ -3162,6 +3196,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       syncRouterTools();
       ctx.ui.setWorkingMessage();
     }
+  };
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    // Pi 1.1.0 events have no messageType and always take the user path.
+    if (event.messageType === "custom") return;
+    return handleUserPrompt(event, ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
@@ -3241,6 +3281,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Run-phase bookkeeping tracks Pi itself, so it stays accurate while off for use after re-enable.
     agentRunPhase = "active";
     runEndEpoch = undefined;
+    profileRefreshAbort = undefined;
     insideProviderTurn = false;
     activeToolExecutions = 0;
     if (leaseOwner.state.mode === "off") return;
@@ -3398,6 +3439,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_end", async (event, ctx) => {
+    // Clear before the first await and before early returns (including off/failed leases). Never
+    // clear in a finally: newer input may arrive while attempt telemetry is being recorded.
+    clearPendingInput(ctx);
+    const interruptedForProfileRefresh =
+      profileRefreshAbort?.taskId === leaseOwner.state.active?.taskId &&
+      profileRefreshAbort?.runSequence === agentRunSequence;
+    profileRefreshAbort = undefined;
     const leaseEpoch = leaseOwner.epoch;
     // Settlement compares against this, so input arriving after the run ended supersedes its lifecycle work.
     runEndEpoch = leaseEpoch;
@@ -3462,6 +3510,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         deterministicChecksPassed: [...deterministicCheckResults.values()].filter(Boolean).length,
         deterministicChecksFailed: [...deterministicCheckResults.values()].filter((passed) => !passed).length,
         stopReason: last?.stopReason,
+        ...(interruptedForProfileRefresh ? { interruptionReason: "prompt_profile_refresh" } : {}),
       },
       {
         taskId: active.taskId,
@@ -3480,6 +3529,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       // review). This attempt's outcome belongs to a lease that is gone, so it must not drive a repair or review.
       attemptDisposition = "incomplete";
       lastAttemptMetrics = undefined;
+      return;
+    }
+    if (interruptedForProfileRefresh) {
+      // The already-queued follow-up resumes this task. Do not spend a fallback attempt, switch
+      // providers (and rebill the cache), or start a safety repair for our own interrupted run.
+      attemptDisposition = "aborted";
+      lastProviderFailure = undefined;
       return;
     }
     const deterministicVerificationFailed =
@@ -3584,8 +3640,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
       if (leaseOwner.state.mode !== "active") return;
       if (revokedReviewStillRunning && !manualOverride) {
-        // Generated follow-ups skip before_agent_start, so restore the builder before settlement queues one,
-        // keeping preflight submissions blocked through the asynchronous switch and after a failed switch.
+        // Restore before queuing a follow-up: Pi <=1.1.0 skipped before_agent_start, and on Pi 1.3.0
+        // the router skips user-prompt preparation for custom starts. Keep submissions blocked through
+        // the asynchronous switch and after a failed switch.
         const revokedReviewRestored = await applyChoice(ctx, active.selected);
         if (!leaseOwner.owns(active, leaseEpoch)) return;
         if (!revokedReviewRestored) {
@@ -3810,8 +3867,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
           // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
           // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
-          if (pendingInput) ctx.ui.setWorkingMessage();
-          pendingInput = undefined;
+          clearPendingInput(ctx);
 
           // Mode is already off, so this records nothing. Keep the safety latch so a re-enabled lease
           // still treats an unreconciled low-confidence primary conservatively.

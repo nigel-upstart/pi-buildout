@@ -78,14 +78,16 @@ workspace packages, so it runs in its own scheduled CI job rather than on every 
 
 ## Development and quality checks
 
-Use Node.js 22.19 or newer and Pi **1.0.1 or newer**. The authored extensions and test suite pin the Pi `1.1.0`
-development packages, including the vendored OTel extension, and the router's cost tests pin that model registry. The
-installer rejects older Pi versions even with `--skip-skill-loading-patch`. It discovers managed installs through the
-launcher's `install/current-version` file, as well as npm bins, Homebrew wrappers, and npm-backed shims. Only the exact
-Pi versions `1.0.3`, `1.0.4`, `1.1.0`, and `1.3.0` have checksum-verified `/skills` patches; for other supported
-versions, use `--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every supported pi
-version; for a version other than the pinned or aliased one, the tests that apply the patch to a real package skip
-unless `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
+Use Node.js 22.19 or newer and Pi **1.2.0 or newer** to install the authored extensions (the router requires the
+custom-run preparation semantics introduced in 1.2.0). The test suite pins Pi `1.3.0` development packages, and the
+router's cost tests pin that model registry. The vendored OTel extension keeps its own Pi `1.1.0` development pin. The
+installer rejects older Pi versions for extension installation even with `--skip-skill-loading-patch`; patch-only mode
+(`--skip-extensions`) retains its Pi 1.0.1 minimum. It discovers managed installs through the launcher's
+`install/current-version` file, as well as npm bins, Homebrew wrappers, and npm-backed shims. Only the exact Pi versions
+`1.0.3`, `1.0.4`, `1.1.0`, and `1.3.0` have checksum-verified `/skills` patches; for other compatible versions, use
+`--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every supported pi version; for a
+version other than the pinned or aliased one, the tests that apply the patch to a real package skip unless
+`PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
 [`patches/pi-1.0.4/README.md`](patches/pi-1.0.4/README.md#runtime-behavior-tests)). Install
 [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
 hooks:

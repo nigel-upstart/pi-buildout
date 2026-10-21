@@ -4,8 +4,9 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 
-it("Pi declares and executes the refreshed tool set on a generated turn without before_agent_start", async () => {
+it("Pi 1.3.0 prepares a custom start and preserves the lifecycle-selected tool set", async () => {
   const requests = [];
+  const triggers = [];
   let executions = 0;
   const reviewTool = {
     name: "submit_safety_review",
@@ -55,8 +56,17 @@ it("Pi declares and executes the refreshed tool set on a generated turn without 
   // Replace persistence/settling services only; the provider-request and tool-dispatch loop is real.
   const session = Object.assign(Object.create(AgentSession.prototype), {
     agent,
+    // Observe actual run preparation without changing its preselected tools in a handler.
+    _extensionRunner: {
+      emitBeforeAgentStart: async (trigger, systemPromptOptions) => {
+        triggers.push(trigger);
+        return { messages: [], systemPromptOptions };
+      },
+    },
     _toolRegistry: new Map([[reviewTool.name, reviewTool]]),
     _toolDefinitions: new Map(),
+    _hiddenDeclarations: new Set(),
+    _pendingNextTurnMessages: [],
     _pendingToolNames: new Set(),
     _toolPromptSnippets: new Map(),
     _toolPromptGuidelines: new Map(),
@@ -79,6 +89,10 @@ it("Pi declares and executes the refreshed tool set on a generated turn without 
     { customType: "router-review", content: "Perform the scoped review", display: false },
     { triggerTurn: true },
   );
+  assert.equal(triggers.length, 1);
+  assert.equal(triggers[0].messageType, "custom");
+  assert.equal(triggers[0].message.customType, "router-review");
+  assert.equal("prompt" in triggers[0], false, "custom starts must not masquerade as user prompts");
   assert.equal(agent.state.messages.at(-1)?.errorMessage, undefined);
   assert.deepEqual(requests, [[reviewTool.name], [reviewTool.name]]);
   assert.equal(executions, 1);

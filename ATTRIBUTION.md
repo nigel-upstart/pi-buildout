@@ -82,27 +82,14 @@ of first resort.
 
 ### Pi extension event semantics
 
-- Sources: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581); the `ToolExecutionMode`
-  declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and concurrency" section of
-  `@earendil-works/pi-coding-agent` `docs/extensions.md`
+- Sources: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581), including
+  [our reproduction comment](https://github.com/earendil-works/pi/issues/5581#issuecomment-6009314962), and its fix
+  [PR #10739](https://github.com/earendil-works/pi/pull/10739) (merge `a447ba11f3e7760fcff91e924bda8c20033953ea`); the
+  `ToolExecutionMode` declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and
+  concurrency" section of `@earendil-works/pi-coding-agent` `docs/extensions.md`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/agent-core`)
-- Revisions reviewed: published `1.0.3` for the issue behavior and `1.0.4` for tool-execution ordering; no Git commit
-  was pinned
-- Issue #108 follow-up: published `0.87.1` and `1.1.0` `AgentSession.setActiveToolsByName`, `sendCustomMessage`, and
-  `Agent` provider-request/tool-dispatch behavior, verified with an in-memory provider experiment
-- License declared by the packages: MIT
-
-Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start`. The router uses Pi's
-active-tool selection API at persisted lifecycle transitions before queuing those turns, so only phase-valid safety
-validators are declared. The pure implementation-plan validator remains callable throughout active mode regardless of
-the lease's archetype. Execution guards still check mode, phase, one-shot verdicts, and review fingerprints for stale
-calls. These are local API integration patterns and behavioral tests; no upstream implementation code was copied or
-modified. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages, prose-only safety
-verdicts, or permanent tool exposure when routing is disabled. Shadow and off hide router tools.
-
-Use, tool-execution ordering: in the default `parallel` mode, Pi runs the `tool_call` hooks for every call in one
-assistant message sequentially, then executes the allowed calls concurrently. The router therefore spends a single-use
-discovery grant in its `tool_call` handler, not at `tool_execution_end`.
+- Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
+  custom-start preparation and busy-start semantics.
 
 No Pi code, issue prose, or documentation prose was copied or modified.
 
@@ -133,18 +120,6 @@ configures models through it. No Bifrost source was copied; the router only depe
 contract and its Bedrock model-path naming, documented in
 [`specs/routing-layer/decisions.md`](specs/routing-layer/decisions.md).
 
-### `pi-telemetry-otel`
-
-- Package: <https://www.npmjs.com/package/pi-telemetry-otel>
-- Revision reviewed: not pinned; it is an optional, separately installed companion package, not an extension runtime
-  dependency
-- License: not verified in this repository; see the npm listing for its declared license
-
-Use: `extensions/router/telemetry.ts` studies and consumes this package's public, documented integration contract — the
-`Symbol.for("pi.telemetry-otel.runtimeRegistry.v1")` and `Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1")`
-global registries — to emit optional parented OTel spans without a static dependency, and no-ops cleanly when the
-package is absent. No `pi-telemetry-otel` source was copied.
-
 ### Amazon Bedrock pricing and prompt caching
 
 - Sources: [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/),
@@ -153,13 +128,7 @@ package is absent. No `pi-telemetry-otel` source was copied.
 - Revision reviewed: live documentation on 2026-08-11
 - License: no documentation license was identified; no source code or documentation text was copied
 
-Use: published per-token input and output list rates now drive cost-first endpoint ordering. Cache read/write semantics
-establish the related cost classifications; the sources also establish default and one-hour TTL behavior, GPT-5.6's
-explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior, and the exclusion of cache-read tokens from
-input-token rate-limit quotas. The repository's operator-supplied `1.00001` Bedrock preference, which slightly
-prioritizes first-party endpoints when list rates match, remains separate from and was not derived from AWS
-documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and commitment pricing
-were intentionally not adopted.
+Use: published per-token input and output list rates now drive cost-first endpoint ordering.
 
 ### Amazon Bedrock Converse tool choice and extended thinking
 

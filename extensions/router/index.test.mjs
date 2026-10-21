@@ -32,13 +32,26 @@ import routerExtensionImpl, {
   routerReenabledNotice,
   safetyToolBlockReason,
   stageDeadlineDescription,
+  supportsRouterPiVersion,
 } from "./index.ts";
 
 // Lightweight Pi stubs in unrelated tests do not model the tool loadout. Supply that part of the
 // ExtensionAPI only when a test has not provided a stateful implementation of its own.
+// Likewise, input contexts default to idle unless a test models a busy run explicitly.
 function routerExtension(pi, options) {
   pi.getActiveTools ??= () => [];
   pi.setActiveTools ??= () => {};
+  const on = pi.on.bind(pi);
+  pi.on = (event, handler) =>
+    on(
+      event,
+      event === "input"
+        ? (input, ctx) => {
+            ctx.isIdle ??= () => true;
+            return handler(input, ctx);
+          }
+        : handler,
+    );
   return routerExtensionImpl(pi, options);
 }
 
@@ -1120,6 +1133,177 @@ describe("safetyToolBlockReason", () => {
 });
 
 describe("routerExtension", () => {
+  it("requires the Pi release with custom-start preparation and busy-start semantics", () => {
+    for (const version of ["1.0.1", "1.1.0", "1.2.0-rc.1", "1.2.0-beta.2", "broken"]) {
+      assert.equal(supportsRouterPiVersion(version), false, version);
+    }
+    for (const version of ["1.2.0", "1.2.0+build.1", "1.2.1", "1.3.0", "2.0.0"]) {
+      assert.equal(supportsRouterPiVersion(version), true, version);
+    }
+  });
+
+  describe("pending start input", () => {
+    const setup = (options = {}) =>
+      runAdapterTurn({
+        active: adapterLease(),
+        prompt: "Continue",
+        sessionId: "pending-start-input",
+        classifyTask: successfulClassifier(),
+        ...options,
+      });
+    const input = (result, text, extra = {}) =>
+      result.hooks.get("input")({ text, source: "interactive", ...extra }, result.ctx);
+    const prepare = (result, prompt) =>
+      result.hooks.get("before_agent_start")(
+        { messageType: "user", prompt, systemPrompt: "system", images: [] },
+        result.ctx,
+      );
+    const boundaries = (result) => result.events.filter(({ kind }) => kind === "boundary");
+
+    it("discards leftover input at agent_end before any telemetry await", async () => {
+      const entered = deferred();
+      const release = deferred();
+      const result = await setup({
+        telemetry: ({ events }) => ({
+          append: async (event) => {
+            events.push(event);
+            if (event.kind === "attempt_completed") {
+              entered.resolve();
+              await release.promise;
+            }
+          },
+          read: async () => [],
+        }),
+      });
+      const initialBoundaries = boundaries(result).length;
+      await input(result, "New task: stale input consumed inside the ending run");
+      const ending = result.hooks.get("agent_end")({ messages: [] }, result.ctx);
+      await entered.promise;
+      try {
+        // No input event for this start: stale input must not manufacture a task boundary.
+        await prepare(result, "A start with no pending input");
+        assert.equal(boundaries(result).length, initialBoundaries);
+        assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 0);
+      } finally {
+        release.resolve();
+        await ending;
+      }
+    });
+
+    it("does not clear newer input that arrives during agent_end telemetry", async () => {
+      const entered = deferred();
+      const release = deferred();
+      const result = await setup({
+        telemetry: ({ events }) => ({
+          append: async (event) => {
+            events.push(event);
+            if (event.kind === "attempt_completed") {
+              entered.resolve();
+              await release.promise;
+            }
+          },
+          read: async () => [],
+        }),
+      });
+      const ending = result.hooks.get("agent_end")({ messages: [] }, result.ctx);
+      await entered.promise;
+      try {
+        await input(result, "New task: newer request", { source: "extension" });
+      } finally {
+        release.resolve();
+        await ending;
+      }
+      await prepare(result, "New task: newer request");
+      assert.equal(boundaries(result).at(-1).data.source, "extension");
+      assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 1);
+    });
+
+    it("never stages queued input or overwrites the idle prompt awaiting preparation", async (t) => {
+      for (const streamingBehavior of ["steer", "followUp"]) {
+        for (const source of ["interactive", "rpc", "extension"]) {
+          await t.test(`${source}/${streamingBehavior}`, async () => {
+            const result = await setup();
+            const initialBoundaries = boundaries(result).length;
+            await input(result, "Queued input", { source, streamingBehavior });
+            await prepare(result, "A start with no pending input");
+            assert.equal(boundaries(result).length, initialBoundaries, "queued input has no separate start");
+            await input(result, "New task: idle prompt");
+            await input(result, "Queued input during pre-run compaction", { source, streamingBehavior });
+            await prepare(result, "New task: idle prompt");
+            assert.equal(boundaries(result).at(-1).data.source, "interactive");
+            assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 1);
+          });
+        }
+      }
+    });
+
+    it("does not stage busy input even when Pi will reject it for missing streamingBehavior", async () => {
+      const result = await setup();
+      const initialBoundaries = boundaries(result).length;
+      result.ctx.isIdle = () => false;
+      await input(result, "New task: rejected busy prompt");
+      result.ctx.isIdle = () => true;
+      await prepare(result, "A start with no pending input");
+      assert.equal(boundaries(result).length, initialBoundaries);
+      assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 0);
+    });
+
+    it("custom starts neither consume nor classify a pending user prompt", async () => {
+      const result = await setup({ mode: "active" });
+      const initialBoundaries = boundaries(result).length;
+      await input(result, "New task: real user request");
+      const beforeCustom = structuredClone({
+        events: result.events,
+        appended: result.appended,
+        models: result.selectedModels,
+        efforts: result.selectedEfforts,
+      });
+      for (const customType of ["model-router-context", "another-extension"]) {
+        const custom = await result.hooks.get("before_agent_start")(
+          {
+            messageType: "custom",
+            message: { role: "custom", customType, content: "Continue", display: false, timestamp: Date.now() },
+            systemPrompt: "system",
+          },
+          result.ctx,
+        );
+        assert.equal(custom, undefined);
+        assert.equal(boundaries(result).length, initialBoundaries);
+        assert.deepEqual(
+          {
+            events: result.events,
+            appended: result.appended,
+            models: result.selectedModels,
+            efforts: result.selectedEfforts,
+          },
+          beforeCustom,
+          "custom starts must not classify, change the lease, or select a model/effort",
+        );
+      }
+      await prepare(result, "New task: real user request");
+      assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 1);
+    });
+
+    it("discards leftover input on session shutdown, startup, and route off", async (t) => {
+      for (const boundary of ["session_shutdown", "session_start", "off"]) {
+        await t.test(boundary, async () => {
+          const result = await setup();
+          await input(result, "New task: input from the previous context");
+          if (boundary === "off") {
+            await result.commands.get("route").handler("off", result.ctx);
+            await result.commands.get("route").handler("shadow", result.ctx);
+          } else {
+            await result.hooks.get(boundary)({ reason: "reload" }, result.ctx);
+          }
+          const initialBoundaries = boundaries(result).length;
+          await prepare(result, "A start with no pending input");
+          assert.equal(boundaries(result).length, initialBoundaries);
+          assert.equal(result.events.filter(({ kind }) => kind === "classifier_invocation").length, 0);
+        });
+      }
+    });
+  });
+
   it("retains the existing selection and lease for every fresh-task invocation failure class", async (t) => {
     for (const errorName of ["AbortError", "TimeoutError", "Error"]) {
       await t.test(errorName, async () => {
@@ -2902,6 +3086,36 @@ describe("routerExtension", () => {
     assert.equal(result.sentMessages.length, 1);
     assert.equal(result.sentMessages[0].options.triggerTurn, true);
     assert.equal(result.sentMessages[0].options.deliverAs, "followUp");
+
+    const active = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+    const errorMessage = {
+      role: "assistant",
+      provider: active.selected.provider,
+      model: active.selected.modelId,
+      stopReason: "error",
+      errorMessage: "This operation was aborted",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+    };
+    // Session 01a15c75: Pi reported the router's own ctx.abort() as a provider error.
+    await result.hooks.get("agent_end")({ messages: [errorMessage] }, result.ctx);
+    await result.hooks.get("agent_settled")({}, result.ctx);
+    assert.equal(result.events.filter((event) => event.kind === "fallback").length, 0);
+    assert.equal(result.sentMessages.length, 1, "only the profile refresh continuation is queued");
+    assert.equal(
+      result.events.findLast((event) => event.kind === "attempt_completed")?.data.interruptionReason,
+      "prompt_profile_refresh",
+    );
+    assert.equal(
+      result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active.attemptIndex,
+      active.attemptIndex,
+    );
+
+    // The exemption belongs only to the interrupted run. Identical error text on a later run is
+    // still an error; do not introduce an error-string allowlist that could hide real failures.
+    result.hooks.get("agent_start")({}, result.ctx);
+    await result.hooks.get("agent_end")({ messages: [errorMessage] }, result.ctx);
+    assert.equal(result.events.filter((event) => event.kind === "fallback").length, 1);
   });
 
   it("records but does not perform a clean stop/resume handoff in shadow mode", async () => {

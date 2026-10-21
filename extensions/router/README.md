@@ -1,6 +1,8 @@
 # Model-aware router
 
-A task-leased, model-aware routing extension for pi. It classifies semantic task features, applies deterministic
+A task-leased, model-aware routing extension for Pi **1.2.0 or newer**. Pi 1.2.0 introduced custom-start
+`before_agent_start` preparation and busy-start semantics that this router relies on. The installer refuses older hosts,
+and the router also rejects them when loaded directly. It classifies semantic task features, applies deterministic
 eligibility/ranking policy, selects a versioned model prompt profile, and records an audit trail.
 
 The extension starts in **shadow mode**: it logs and displays the route but does not change the model, effort, or system
@@ -62,10 +64,10 @@ Safety is an explicit persisted lease lifecycle, not an inference from archetype
   `discovery_ready` grant bound to task, working directory, and session. The grant is spent before dispatch, revoked at
   task/runtime boundaries, and never authorizes the final plan. Active routing exposes plan/discovery submissions only
   in preflight, and scoped verdict submission only during a generated review without a recorded verdict. Exposure
-  updates at lifecycle transitions before generated messages are queued, including turns that skip `before_agent_start`;
-  shadow and off hide all router tools. Stale calls receive recovery instructions. Exposure alone never authorizes
-  execution. Rejection, missing evidence, reviewer failure, plan change, new user input, compaction, session change, or
-  manual model/effort override cannot authorize execution.
+  updates at lifecycle transitions before generated messages are queued, including custom starts for which the router
+  skips user-prompt preparation in `before_agent_start`; shadow and off hide all router tools. Stale calls receive
+  recovery instructions. Exposure alone never authorizes execution. Rejection, missing evidence, reviewer failure, plan
+  change, new user input, compaction, session change, or manual model/effort override cannot authorize execution.
 
 `submit_implementation_plan` validates implementation-plan DAGs throughout active routing, including a planning
 follow-up kept on a research lease. It preserves the task and model and grants no execution permission. Planning routes
@@ -131,6 +133,11 @@ terminal, so the classifier does not retry the attempt or advance to another end
 failure the current lease, model, effort, and profile remain selected. On a fresh-task failure the router does not
 create a route from synthetic evidence and keeps the current model/effort (and an existing lease, if present). Concrete
 timeout thresholds can be inspected directly in [`index.ts`](index.ts) and [`telemetry.ts`](telemetry.ts).
+
+A secondary correction that changes the prompt profile can intentionally stop and resume a continuing run. That
+router-owned interruption is bound to the task and run, recorded as
+`attempt_completed.interruptionReason: "prompt_profile_refresh"`, and does not consume a provider fallback even if Pi
+reports cancellation as `stopReason: "error"`. Errors on later runs still follow the normal fallback ladder.
 
 ### Classifier model selection
 
