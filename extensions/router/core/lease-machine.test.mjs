@@ -32,63 +32,14 @@ function lease(taskId = "parent") {
 }
 
 describe("XState lease owner", () => {
-  for (const boundary of [{ type: "INTENT" }, { type: "BOUNDARY", boundary: "post_compaction" }]) {
-    it(`marks advice stale after ${boundary.type} while allowing parent hand-back`, () => {
-      const parent = lease();
-      const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
-      const child = {
-        ...parent,
-        taskId: "review",
-        parentTaskId: parent.taskId,
-        parentLease: parent,
-        lifecycle: {
-          phase: "review",
-          policy: "ordinary",
-          taskFingerprint: "task",
-          reviewKind: "plan",
-          scopeFingerprint: "scope",
-        },
-      };
-      assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
-      assert.equal(owner.advance("RECONCILE", { ...child }, child, owner.epoch), false);
-      const epoch = owner.epoch;
-      owner.send(boundary);
-      assert.equal(owner.reviewBindingCurrent, false);
-      assert.equal(owner.advance("REVIEW_FINISHED", parent, child, epoch), false);
-      assert.equal(owner.advance("REVIEW_FINISHED", parent, child, owner.epoch), true);
-      assert.equal(owner.state.pendingHardBoundary, boundary.boundary);
-    });
-  }
-
-  it("ignores a redundant mode command so captured work and review bindings stay current", () => {
+  it("ignores a redundant mode command without changing the task epoch", () => {
     const parent = lease();
     const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
-    const child = {
-      ...parent,
-      taskId: "review",
-      parentTaskId: parent.taskId,
-      parentLease: parent,
-      lifecycle: {
-        phase: "review",
-        policy: "ordinary",
-        taskFingerprint: "task",
-        reviewKind: "plan",
-        scopeFingerprint: "scope",
-      },
-    };
-    assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
     const epoch = owner.epoch;
     owner.send({ type: "MODE", mode: "active" });
-    assert.equal(owner.epoch, epoch, "re-requesting the current mode is not a revocation");
-    assert.equal(owner.reviewBindingCurrent, true);
-    owner.send({ type: "MODE", mode: "shadow" });
-    assert.notEqual(owner.epoch, epoch, "an actual mode change still revokes");
-    owner.send({ type: "MODE", mode: "active" });
-    owner.send({ type: "OVERRIDE" });
-    const overridden = owner.epoch;
-    owner.send({ type: "MODE", mode: "active" });
-    assert.notEqual(owner.epoch, overridden, "re-entering active mode still clears a manual override");
-    assert.equal(owner.state.active.manualOverride, false);
+    assert.equal(owner.epoch, epoch);
+    owner.send({ type: "INTENT" });
+    assert.equal(owner.owns(parent, epoch), false);
   });
 
   it("keeps the installed lease's identity across mode changes unless an override is cleared", () => {
@@ -109,26 +60,11 @@ describe("XState lease owner", () => {
   });
 
   it("keeps a pending hard boundary across same-family advances until ROUTE installs a fresh lease", () => {
-    for (const type of ["EVIDENCE", "FALLBACK", "REPAIR", "PREPARE", "REVIEW_STARTED"]) {
+    for (const type of ["EVIDENCE", "FALLBACK", "REPAIR", "PREPARE"]) {
       const parent = lease();
       const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
       owner.send({ type: "BOUNDARY", boundary: "post_compaction" });
-      const next =
-        type === "REVIEW_STARTED"
-          ? {
-              ...parent,
-              taskId: "review",
-              parentTaskId: parent.taskId,
-              parentLease: parent,
-              lifecycle: {
-                phase: "review",
-                policy: "ordinary",
-                taskFingerprint: "task",
-                reviewKind: "completion",
-                scopeFingerprint: "scope",
-              },
-            }
-          : { ...parent, updatedAt: "2026-10-08" };
+      const next = { ...parent, updatedAt: "2026-10-08" };
       assert.equal(owner.advance(type, next, parent, owner.epoch), true, type);
       assert.equal(owner.state.pendingHardBoundary, "post_compaction", `${type} must not consume the boundary`);
     }
@@ -212,7 +148,7 @@ describe("XState lease owner", () => {
   it("keeps a cancellable secondary across review-family lifecycle progress", async () => {
     await fc.assert(
       fc.asyncProperty(
-        fc.array(fc.constantFrom("review", "repair", "fallback"), { maxLength: 20 }),
+        fc.array(fc.constantFrom("evidence", "repair", "fallback"), { maxLength: 20 }),
         async (changes) => {
           const owner = createLeaseOwner({ mode: "active", active: lease(), manualOverride: false });
           let signal;
@@ -228,33 +164,15 @@ describe("XState lease owner", () => {
           });
           for (const change of changes) {
             const active = owner.state.active;
-            if (change === "review") {
-              const child = {
-                ...active,
-                taskId: "review",
-                parentTaskId: active.taskId,
-                parentLease: active,
-                lifecycle: {
-                  phase: "review",
-                  policy: "ordinary",
-                  taskFingerprint: "task",
-                  reviewKind: "plan",
-                  scopeFingerprint: "scope",
-                },
-              };
-              assert.equal(owner.advance("REVIEW_STARTED", child, active, owner.epoch), true);
-              assert.equal(owner.advance("REVIEW_FINISHED", { ...active }, child, owner.epoch), true);
-            } else {
-              assert.equal(
-                owner.advance(
-                  change === "repair" ? "REPAIR" : "FALLBACK",
-                  { ...active, attemptIndex: active.attemptIndex + 1 },
-                  active,
-                  owner.epoch,
-                ),
-                true,
-              );
-            }
+            assert.equal(
+              owner.advance(
+                change === "repair" ? "REPAIR" : change === "evidence" ? "EVIDENCE" : "FALLBACK",
+                { ...active, attemptIndex: active.attemptIndex + 1 },
+                active,
+                owner.epoch,
+              ),
+              true,
+            );
             assert.equal(signal.aborted, false);
           }
           owner.send({ type: "ABORT_SECONDARY" });
@@ -334,8 +252,9 @@ describe("XState lease owner", () => {
   it("rejects out-of-phase transitions and mutation through nested snapshots", () => {
     const active = lease();
     const owner = createLeaseOwner({ mode: "active", active, manualOverride: false });
-    assert.equal(owner.advance("SUBMIT_REVIEW", active, active, owner.epoch), false);
-    assert.equal(owner.advance("SPEND_DISCOVERY", active, active, owner.epoch), false);
+    const executing = { ...active, lifecycle: { ...active.lifecycle, phase: "executing" } };
+    assert.equal(owner.advance("EVIDENCE", executing, active, owner.epoch), true);
+    assert.equal(owner.advance("SUBMIT_PLAN", executing, executing, owner.epoch), false);
     assert.throws(() => {
       owner.state.active.lifecycle.phase = "executing";
     }, TypeError);

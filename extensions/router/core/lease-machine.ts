@@ -6,8 +6,7 @@ import type { EffortLevel } from "./profiles.ts";
 
 type SecondaryInput = { work: (signal: AbortSignal) => Promise<void> };
 
-// The classifier is a child of the task family, not the temporary reviewer. Exiting running
-// or stopping the child aborts its background work.
+// The classifier is a child of the builder task. Exiting running or stopping the child aborts its background work.
 const secondaryMachine = setup({
   types: {
     context: {} as SecondaryInput,
@@ -32,17 +31,7 @@ const secondaryMachine = setup({
   },
 });
 
-type LeaseTransition =
-  | "ROUTE"
-  | "PREPARE"
-  | "FALLBACK"
-  | "REVIEW_STARTED"
-  | "REVIEW_FINISHED"
-  | "SUBMIT_PLAN"
-  | "SUBMIT_REVIEW"
-  | "RECONCILE"
-  | "REPAIR"
-  | "EVIDENCE";
+type LeaseTransition = "ROUTE" | "PREPARE" | "FALLBACK" | "SUBMIT_PLAN" | "RECONCILE" | "REPAIR" | "EVIDENCE";
 
 type LeaseAdvance = {
   type: LeaseTransition;
@@ -60,18 +49,10 @@ function validAdvance(event: LeaseAdvance): boolean {
   switch (event.type) {
     case "ROUTE":
       return true;
-    case "REVIEW_STARTED":
-      return phase !== "review" && event.lease.lifecycle.phase === "review" && event.lease.parentLease === event.owner;
-    case "REVIEW_FINISHED":
-      return phase === "review"
-        ? event.owner?.parentLease?.taskId === event.lease.taskId
-        : event.owner?.taskId === event.lease.taskId;
     case "SUBMIT_PLAN":
       return phase === "planning" && event.lease.lifecycle.phase === "planning";
-    case "SUBMIT_REVIEW":
-      return phase === "review" && event.lease.lifecycle.phase === "review";
     case "RECONCILE":
-      return phase !== "review" && event.owner?.taskId === event.lease.taskId;
+      return event.owner?.taskId === event.lease.taskId;
     case "PREPARE":
     case "FALLBACK":
     case "REPAIR":
@@ -95,15 +76,10 @@ type LeaseEvent =
 type LeaseContext = {
   state: LeaseState;
   epoch: number;
-  reviewEpoch: number | undefined;
   secondary: ActorRefFrom<typeof secondaryMachine> | undefined;
 };
 
-export function leaseFamily(lease: TaskLease | undefined): TaskLease | undefined {
-  return lease?.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
-}
-
-// Freeze the owned data, including nested review parents. Consumers can build candidate values,
+// Freeze the owned builder data. Consumers can build candidate values,
 // but cannot mutate a snapshot in place and bypass the transition guards.
 function freezeState(state: LeaseState): LeaseState {
   const seen = new WeakSet();
@@ -131,7 +107,7 @@ const leaseMachine = setup({
     }),
     install: enqueueActions(({ context, event, enqueue }) => {
       if (!isAdvance(event)) return;
-      if (event.type === "ROUTE" || leaseFamily(context.state.active)?.taskId !== leaseFamily(event.lease)?.taskId) {
+      if (event.type === "ROUTE" || context.state.active?.taskId !== event.lease.taskId) {
         if (context.secondary) enqueue.stopChild(context.secondary);
         enqueue.assign({ secondary: undefined });
       }
@@ -139,19 +115,11 @@ const leaseMachine = setup({
       const pendingHardBoundary = context.state.pendingHardBoundary;
       enqueue.assign({
         // Only ROUTE, which installs the lease freshly selected for a boundary, consumes it. Every other
-        // advance (evidence, fallback, repair, preparation, or a review hand-back) continues the same task
+        // advance (evidence, fallback, repair, or preparation) continues the same task
         // family, so a boundary such as compaction stays pending for the next ordinary input.
         state: freezeState(
           event.type !== "ROUTE" && pendingHardBoundary ? { ...installed, pendingHardBoundary } : installed,
         ),
-        // Verdict submission and fallback replace the child without starting a new review.
-        // Settlement's current epoch must never refresh the advice binding it started with.
-        reviewEpoch:
-          event.lease.lifecycle.phase !== "review"
-            ? undefined
-            : event.type === "REVIEW_STARTED"
-              ? context.epoch
-              : context.reviewEpoch,
       });
     }),
   },
@@ -160,7 +128,6 @@ const leaseMachine = setup({
   context: ({ input }) => ({
     state: freezeState(input),
     epoch: 0,
-    reviewEpoch: undefined,
     secondary: undefined,
   }),
   initial: "selecting",
@@ -168,10 +135,7 @@ const leaseMachine = setup({
     ROUTE: { guard: "ownsLease", target: ".selecting", actions: "install" },
     PREPARE: { guard: "ownsLease", target: ".selecting", actions: "install" },
     FALLBACK: { guard: "ownsLease", target: ".selecting", actions: "install" },
-    REVIEW_STARTED: { guard: "ownsLease", target: ".selecting", actions: "install" },
-    REVIEW_FINISHED: { guard: "ownsLease", target: ".selecting", actions: "install" },
     SUBMIT_PLAN: { guard: "ownsLease", target: ".selecting", actions: "install" },
-    SUBMIT_REVIEW: { guard: "ownsLease", target: ".selecting", actions: "install" },
     RECONCILE: { guard: "ownsLease", target: ".selecting", actions: "install" },
     REPAIR: { guard: "ownsLease", target: ".selecting", actions: "install" },
     EVIDENCE: { guard: "ownsLease", target: ".selecting", actions: "install" },
@@ -183,7 +147,6 @@ const leaseMachine = setup({
         assign({
           state: ({ event }) => freezeState(event.state),
           epoch: ({ context }) => context.epoch + 1,
-          reviewEpoch: undefined,
         }),
       ],
     },
@@ -272,7 +235,6 @@ const leaseMachine = setup({
       always: [
         { guard: ({ context }) => context.state.mode === "off", target: "off" },
         { guard: ({ context }) => !context.state.active, target: "idle" },
-        { guard: ({ context }) => context.state.active?.lifecycle.phase === "review", target: "review" },
         { guard: ({ context }) => context.state.active?.lifecycle.phase === "planning", target: "planning" },
         { guard: ({ context }) => context.state.active?.lifecycle.phase === "completed", target: "completed" },
         { target: "execution" },
@@ -281,7 +243,6 @@ const leaseMachine = setup({
     off: {},
     idle: {},
     planning: {},
-    review: {},
     execution: {},
     completed: {},
   },
@@ -295,11 +256,6 @@ export function createLeaseOwner(initial: LeaseState) {
     },
     get epoch(): number {
       return actor.getSnapshot().context.epoch;
-    },
-    /** Whether the active review started in the current epoch and can still grant or restore authority. */
-    get reviewBindingCurrent(): boolean {
-      const current = actor.getSnapshot().context;
-      return current.reviewEpoch !== undefined && current.reviewEpoch === current.epoch;
     },
     owns(lease: TaskLease | undefined, epoch: number): boolean {
       const current = actor.getSnapshot().context;
