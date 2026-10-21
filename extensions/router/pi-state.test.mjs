@@ -405,6 +405,39 @@ describe("lease restoration and context estimates", () => {
     }
   });
 
+  it("unwraps legacy review children instead of resuming a reviewer lease", () => {
+    const parent = leaseFixture();
+    const child = {
+      ...parent,
+      taskId: "review",
+      parentTaskId: parent.taskId,
+      parentLease: parent,
+      lifecycle: {
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: parent.lifecycle.taskFingerprint,
+        reviewKind: "completion",
+        scopeFingerprint: "a".repeat(64),
+      },
+    };
+    const restored = restoreLeaseState(
+      [
+        {
+          type: "custom",
+          customType: "model-router-state",
+          data: {
+            mode: "active",
+            active: child,
+            manualOverride: false,
+          },
+        },
+      ],
+      "shadow",
+    );
+    assert.deepEqual(restored.active, parent);
+    assert.equal(restored.active.parentLease, undefined);
+  });
+
   it("restores only router-authored state entries", () => {
     const state = restoreLeaseState(
       [

@@ -161,16 +161,7 @@ describe("advisory lifecycle", () => {
     const executing = { ...planning, phase: "executing" };
     assert.equal(isLeaseLifecycle(executing), true);
     assert.equal(executing.authorization, undefined);
-    assert.match(
-      safetyContextForLifecycle({
-        phase: "review",
-        policy: "ordinary",
-        taskFingerprint: "task",
-        reviewKind: "plan",
-        scopeFingerprint: "a".repeat(64),
-      }),
-      /call submit_safety_review with findings before finishing/,
-    );
+    assert.equal(isLeaseLifecycle({ phase: "review", policy: "ordinary", taskFingerprint: "task" }), false);
   });
   it("validates plan advice against the current review scope", () => {
     const submission = {

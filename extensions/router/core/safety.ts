@@ -101,7 +101,7 @@ export type CompletionEvidence = {
   evidenceFingerprint: string;
 };
 
-export type ReviewOutcome = {
+type ReviewOutcome = {
   kind: SafetyReviewKind;
   verdict?: SafetyReviewVerdict;
   summary: string;
@@ -135,14 +135,6 @@ export type LeaseLifecycle =
       completionReview: ReviewOutcome;
       plan?: PlanEvidence;
       planReview?: ReviewOutcome;
-    }
-  | {
-      phase: "review";
-      policy: "ordinary";
-      taskFingerprint: string;
-      reviewKind: SafetyReviewKind;
-      scopeFingerprint: string;
-      submission?: SafetyReviewSubmission;
     };
 
 export type SafetyEvidenceLog = {
@@ -258,10 +250,6 @@ export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | u
   switch (lifecycle.phase) {
     case "planning":
       return "Advisory lifecycle: inspect the task and its preconditions, then call submit_action_plan for independent pre-action advice. This is a recommendation, not a tool restriction or permission requirement.";
-    case "review":
-      return lifecycle.reviewKind === "plan"
-        ? `Advisory lifecycle: you are the independent plan reviewer for ${lifecycle.scopeFingerprint}. Inspect the evidence and call submit_safety_review with findings before finishing. Give advice, not permission; tools remain available.`
-        : `Advisory lifecycle: completion review for ${lifecycle.scopeFingerprint}; submit findings with submit_safety_review. This review does not gate tools.`;
     case "executing":
       return "Advisory lifecycle: carry out the task, account for review advice, and gather verification evidence for completion review.";
     case "building":
@@ -354,19 +342,6 @@ export function isLeaseLifecycle(value: unknown): value is LeaseLifecycle {
         reviewOutcome(lifecycle.completionReview, "completion") &&
         (lifecycle.plan === undefined || planEvidence(lifecycle.plan, taskFingerprint)) &&
         (lifecycle.planReview === undefined || reviewOutcome(lifecycle.planReview, "plan"))
-      );
-    case "review":
-      return (
-        lifecycle.policy === "ordinary" &&
-        REVIEW_KINDS.includes(lifecycle.reviewKind as SafetyReviewKind) &&
-        typeof lifecycle.scopeFingerprint === "string" &&
-        /^[a-f0-9]{64}$/.test(lifecycle.scopeFingerprint) &&
-        (lifecycle.submission === undefined ||
-          validateSafetyReview(
-            lifecycle.submission,
-            lifecycle.reviewKind as SafetyReviewKind,
-            lifecycle.scopeFingerprint,
-          ).success)
       );
     default:
       return false;
