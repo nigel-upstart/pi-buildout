@@ -422,6 +422,8 @@ test("only an exact invocation's deterministic argument rejection quarantines th
   const cases = [
     ["Unknown parameter: isolated", true, ["argument_rejected"]],
     ["Model not found: anthropic/claude-opus-5-5", true, []],
+    ["Unknown model: anthropic/claude-opus-5-5", true, []],
+    ["Unsupported model: anthropic/claude-opus-5-5", true, []],
     ["Provider rate limit; isolated request unavailable", true, []],
     ["Unknown parameter: isolated", false, []],
   ];
@@ -431,9 +433,85 @@ test("only an exact invocation's deterministic argument rejection quarantines th
     const args = argsFrom(h.sent[0]);
     h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: exact ? args : { ...args, extra: 1 } });
     h.runner.onToolResult(resultEvent(message, true));
-    assert.equal((await handle.result).status, "failed", "a failed spawn launched nothing: fallback is safe");
+    h.runner.onSettled();
+    assert.equal((await handle.result).status, "failed", "one failed spawn launched nothing: fallback is safe");
     assert.deepEqual(h.quarantined, expected, message);
   }
+});
+
+test("a failed spawn alongside a second spawn is uncertain, not a safe fallback", async () => {
+  const h = builderHarness();
+  const handle = h.runner.start(reviewRequest());
+  const args = argsFrom(h.sent[0]);
+  h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: args });
+  h.runner.onToolCall({ toolCallId: "call-2", toolName: "Agent", input: args });
+  h.runner.onToolResult(resultEvent("Unknown parameter: isolated", true));
+  h.runner.onSettled();
+  assert.equal((await handle.result).status, "uncertain");
+  assert.deepEqual(h.quarantined, [], "a duplicate invocation is not an exact single call");
+});
+
+/** One manager tool with create/wait actions, documenting extension isolation. */
+const managerTool = () =>
+  agentTool({
+    name: "subagent",
+    parameters: Type.Object({
+      action: Type.String({ enum: ["create", "wait", "status"] }),
+      task: Type.Optional(Type.String()),
+      model: Type.Optional(Type.String()),
+      effort: Type.Optional(Type.String()),
+      id: Type.Optional(Type.String()),
+      isolated: Type.Optional(Type.Boolean({ description: "If true, the child loads no extensions." })),
+    }),
+  });
+const managerAnswer = {
+  match: true,
+  spawnTool: "subagent",
+  spawnArguments: [
+    { path: "action", literal: '"create"' },
+    { path: "task", bind: "task" },
+    { path: "model", bind: "model" },
+    { path: "effort", bind: "effort" },
+    { path: "isolated", literal: "true" },
+  ],
+  resultTool: "subagent",
+  resultArguments: [
+    { path: "action", literal: '"wait"' },
+    { path: "id", bind: "child_id" },
+  ],
+  isolationArgument: "isolated",
+  isolationEvidence: "If true, the child loads no extensions.",
+};
+
+test("a companion wait counts only when it matches its template and the spawned child id", async () => {
+  const run = async (resultInput) => {
+    const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+    const handle = h.runner.start(reviewRequest());
+    const args = argsFrom(h.sent[0]);
+    const block = `<router-result nonce="${nonceOf(args.task)}">${JSON.stringify(verdict)}</router-result>`;
+    h.runner.onToolCall({ toolCallId: "spawn", toolName: "subagent", input: args });
+    h.runner.onToolResult({ ...resultEvent("Started child agent-42", false, "spawn"), toolName: "subagent" });
+    h.runner.onToolCall({ toolCallId: "wait", toolName: "subagent", input: resultInput });
+    h.runner.onToolResult({ ...resultEvent(block, false, "wait"), toolName: "subagent" });
+    h.runner.onSettled();
+    return (await handle.result).status;
+  };
+  assert.equal(await run({ action: "wait", id: "agent-42" }), "completed");
+  assert.equal(await run({ action: "status", id: "agent-42" }), "uncertain", "a status/transcript view");
+  assert.equal(await run({ action: "wait", id: "agent-99" }), "uncertain", "an id the spawn never returned");
+});
+
+test("quarantine contracts keep a parameter named description and its constraints", () => {
+  const quarantine = createQuarantine();
+  const tools = [agentTool()];
+  quarantine.add(bindPlan(planFromAnswer(agentAnswer(), tools), tools, values), "argument_rejected");
+  const retyped = agentTool({
+    parameters: Type.Object({
+      ...agentTool().parameters.properties,
+      description: Type.Number(),
+    }),
+  });
+  assert.equal(quarantine.blocks(retyped, [retyped]), false, "retyping the description parameter is meaningful");
 });
 
 test("settling without a spawn is a safe non-launch; a spawn without a verdict is uncertain", async () => {

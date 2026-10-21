@@ -245,13 +245,32 @@ export function bindPlan(
   };
 }
 
+/**
+ * Remove annotations from schema nodes only. Property maps keep their names (a parameter may be called
+ * `description`), and literal data such as `const`, `enum`, and `default` is kept verbatim.
+ */
 function stripDocs(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(stripDocs);
   if (!schema || typeof schema !== "object") return schema;
   return Object.fromEntries(
-    Object.entries(schema).flatMap(([key, value]) =>
-      ["description", "title", "examples", "$comment"].includes(key) ? [] : [[key, stripDocs(value)]],
-    ),
+    Object.entries(schema as Record<string, unknown>).flatMap(([key, value]): [string, unknown][] => {
+      if (["description", "title", "examples", "$comment"].includes(key)) return [];
+      if (["const", "enum", "default"].includes(key)) return [[key, value]];
+      if (
+        ["properties", "patternProperties", "$defs", "definitions"].includes(key) &&
+        value &&
+        typeof value === "object"
+      )
+        return [
+          [
+            key,
+            Object.fromEntries(
+              Object.entries(value as Record<string, unknown>).map(([name, child]) => [name, stripDocs(child)]),
+            ),
+          ],
+        ];
+      return [[key, stripDocs(value)]];
+    }),
   );
 }
 /** Meaningful contract only: cosmetic docs and unrelated tools cannot change it. */
