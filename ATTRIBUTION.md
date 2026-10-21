@@ -103,8 +103,8 @@ operator-effort recovery races. The original router guards distinguish its own e
 post-authentication default-effort echo from operator effort changes during authentication; no upstream setter
 implementation or private API was adopted. The published `1.3.0` `AgentSession.setThinkingLevel` and
 `ExtensionRunner.emit` were also inspected: the event is emitted without being awaited and each earlier handler is
-awaited, so the router records each expected effort echo by its observed level transition and consumes it on arrival
-instead of relying on a synchronous flag window.
+awaited, so the router records each expected effort echo, including the model switch's default-effort change, by its
+observed level transition and consumes it on arrival instead of relying on a synchronous flag window.
 
 No Pi code, issue prose, or documentation prose was copied or modified.
 
