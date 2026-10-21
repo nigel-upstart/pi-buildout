@@ -483,13 +483,14 @@ and shutdown cancel the session with `abort()`; cancellation and timeout wait up
 final usage before settling, and owner/epoch checks drop late results. One logical-review slot per task, stage, exact
 scope, builder attempt, and route is reserved before any await and persisted as a `model-router-review-slot` session
 entry. Generated advice and its continuation cannot reopen that slot, even after reload, and each mechanism gets at most
-one attempt, so consuming advice cannot create an unbounded rereview loop. A successful mutation or a failing
-deterministic check that finishes after completion advice reopens the completed lifecycle, so the newer evidence is
-reviewed at the next settlement. A plan review that ends without valid advice is not retried for the unchanged plan, but
-work executed afterwards still receives completion review. Reviewer children load no router: signaling requests
-isolation and the SDK session loads no extensions. No child marker or lineage system exists. Ordinary task/model routing
-remains available if the router is loaded in some other reviewer child, but review work never schedules
-review-of-review.
+one attempt, so consuming advice cannot create an unbounded rereview loop. Cancellation before any runner starts appends
+a release entry, because no child can exist and no advice was delivered. Unroutable selection keeps the slot consumed,
+so a deterministic failure is not retried on every settle. A successful mutation or a failing deterministic check that
+finishes after completion advice reopens the completed lifecycle, so the newer evidence is reviewed at the next
+settlement. A plan review that ends without valid advice is not retried for the unchanged plan, but work executed
+afterwards still receives completion review. Reviewer children load no router: signaling requests isolation and the SDK
+session loads no extensions. No child marker or lineage system exists. Ordinary task/model routing remains available if
+the router is loaded in some other reviewer child, but review work never schedules review-of-review.
 
 `ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. Both runners implement it. The
 router never imports the separately packaged subagents extension; it speaks only the bus subset.
