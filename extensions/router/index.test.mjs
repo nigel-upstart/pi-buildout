@@ -3186,10 +3186,12 @@ describe("routerExtension", () => {
     assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
   });
 
-  for (const { changeAt, changeKind } of ["correction", "recovery"].flatMap((changeAt) =>
-    ["model", "effort"].map((changeKind) => ({ changeAt, changeKind })),
+  for (const { changeAt, changeKind, delivery } of ["correction", "recovery"].flatMap((changeAt) =>
+    ["model", "effort"].flatMap((changeKind) =>
+      ["direct", "after a preceding observer"].map((delivery) => ({ changeAt, changeKind, delivery })),
+    ),
   )) {
-    it(`preserves an off-mode operator ${changeKind} selection during ${changeAt} authentication`, async () => {
+    it(`preserves an off-mode operator ${changeKind} selection during ${changeAt} authentication (${delivery})`, async () => {
       const secondary = deferred();
       const switching = deferred();
       const releaseSwitch = deferred();
@@ -3202,7 +3204,7 @@ describe("routerExtension", () => {
         models,
         mode: "active",
         prompt: "Implement one bounded repository change",
-        sessionId: `operator-${changeKind}-choice-during-${changeAt}`,
+        sessionId: `operator-${changeKind}-choice-during-${changeAt}-${delivery === "direct" ? "direct" : "observed"}`,
       });
       const latest = () => result.appended.findLast(({ customType }) => customType === "model-router-state").data;
       const original = latest().active;
@@ -3210,11 +3212,16 @@ describe("routerExtension", () => {
       await settleAgentRun(result, { stopReason: "aborted" });
       const select = result.pi.setModel;
       const setEffort = result.pi.setThinkingLevel;
+      // Pi emits thinking_level_select without awaiting it and awaits each earlier handler, so even a
+      // synchronous observer registered before the router delays the router's delivery.
+      const deliverEffort = async (event) => {
+        if (delivery !== "direct") await (() => {})();
+        await result.hooks.get("thinking_level_select")(event, result.ctx);
+      };
       result.pi.setThinkingLevel = (level) => {
         const previousLevel = result.pi.getThinkingLevel();
         setEffort(level);
-        if (level !== previousLevel)
-          void result.hooks.get("thinking_level_select")({ level, previousLevel }, result.ctx);
+        if (level !== previousLevel) void deliverEffort({ level, previousLevel });
       };
       let switchCount = 0;
       let correctionModel;
@@ -3308,6 +3315,51 @@ describe("routerExtension", () => {
     assert.equal(result.pi.getThinkingLevel(), active.selected.effort);
     const profile = PROMPT_PROFILES.find(({ id }) => id === active.promptProfileId);
     assert.ok(prepared.systemPrompt.includes(profile.guidelines[0]));
+    assert.equal(result.abortCount, 0);
+  });
+
+  it("recognizes its own effort echo when an earlier observer delays delivery", async () => {
+    const active = adapterLease();
+    const result = await runAdapterTurn({
+      active,
+      prepareTurn: false,
+      mode: "active",
+      models: standardRoutingModels(),
+      sessionId: "delayed-router-effort-echo",
+    });
+    await result.commands.get("route").handler("off", result.ctx);
+    const operatorModel = standardRoutingModels().find(({ id }) => id !== active.selected.modelId);
+    await result.pi.setModel(operatorModel);
+    await result.hooks.get("model_select")({ source: "set", model: operatorModel }, result.ctx);
+    result.pi.setThinkingLevel("low");
+    await result.hooks.get("thinking_level_select")({ level: "low", previousLevel: "high" }, result.ctx);
+    await result.commands.get("route").handler("active", result.ctx);
+    // Pi emits thinking_level_select without awaiting it and awaits each earlier handler, so a
+    // synchronous observer registered before the router delays delivery past the setter's return.
+    const setEffort = result.pi.setThinkingLevel;
+    const delivered = [];
+    result.pi.setThinkingLevel = (level) => {
+      const previousLevel = result.pi.getThinkingLevel();
+      setEffort(level);
+      if (level === previousLevel) return;
+      void (async () => {
+        await (() => {})();
+        await result.hooks.get("thinking_level_select")({ level, previousLevel }, result.ctx);
+        delivered.push(level);
+      })();
+    };
+    await result.hooks.get("before_agent_start")({ messageType: "custom", systemPrompt: "system" }, result.ctx);
+    await flushMicrotasks();
+    assert.deepEqual(delivered, [active.selected.effort]);
+    assert.equal(result.pi.getThinkingLevel(), active.selected.effort);
+    assert.equal(
+      result.events.some(({ kind, data }) => kind === "outcome" && data.manualOverride === "effort"),
+      false,
+      "the router's own delayed effort echo is not an operator override",
+    );
+    const latest = result.appended.findLast(({ customType }) => customType === "model-router-state").data;
+    assert.equal(latest.manualOverride, false);
+    assert.equal(latest.active?.taskId, active.taskId);
     assert.equal(result.abortCount, 0);
   });
 
