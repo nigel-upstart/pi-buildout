@@ -76,8 +76,8 @@ async function activeRouter(cwd, sessionId, phase) {
     policyVersion: POLICY_VERSION,
     lastPromptFingerprint: "fixture",
     lifecycle: {
-      phase: phase === "advisory_pending" ? phase : "preflight",
-      policy: phase === "advisory_pending" ? "advisory_then_completion_review" : "authorization_then_completion_review",
+      phase: phase === "review" ? "planning" : phase,
+      policy: phase === "building" ? "completion_review" : "plan_review_then_completion_review",
       taskFingerprint: "dispatch-task",
     },
     safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
@@ -130,65 +130,39 @@ async function activeRouter(cwd, sessionId, phase) {
   );
   const latest = () => entries.findLast((entry) => entry.customType === "model-router-state")?.data.active ?? parent;
   await hooks.get("session_start")({ reason: "reload" }, ctx);
-  if (phase === "review" || phase === "discovery_ready") {
-    await tools.get("submit_discovery_request").execute(
-      "request",
+  if (phase === "review") {
+    await tools.get("submit_action_plan").execute(
+      "plan",
       {
-        purpose: "discovery",
         objective: "Inspect a bounded fixture",
-        target: "fixture",
-        expectedEffects: ["Create a fixture record"],
+        targets: ["fixture"],
+        assumptions: [],
         preconditions: ["Temporary directory only"],
+        steps: [
+          {
+            id: "inspect",
+            action: "Inspect fixture",
+            target: "fixture",
+            expectedEffect: "Return metadata",
+            potentiallyIrreversible: false,
+          },
+        ],
         verification: ["Read the fixture"],
+        rollback: ["Remove fixture"],
         abortConditions: ["Unexpected target"],
-        toolName: "bash",
-        input: { command: "printf reviewed > reviewed.txt" },
+        toolNames: ["read"],
       },
       undefined,
       undefined,
       ctx,
     );
     await hooks.get("agent_settled")({}, ctx);
-    assert.equal(latest().lifecycle.phase, "review");
-    if (phase === "discovery_ready") {
-      ctx.model = models[1];
-      await tools.get("submit_safety_review").execute(
-        "verdict",
-        {
-          reviewKind: "authorization",
-          scopeFingerprint: latest().lifecycle.scopeFingerprint,
-          verdict: "approve",
-          summary: "Bounded fixture",
-          evidence: ["Temporary target"],
-          findings: [],
-        },
-        undefined,
-        undefined,
-        ctx,
-      );
-      await hooks.get("agent_end")(
-        {
-          messages: [
-            {
-              role: "assistant",
-              content: [],
-              provider: latest().selected.provider,
-              model: latest().selected.modelId,
-              stopReason: "stop",
-              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
-            },
-          ],
-        },
-        ctx,
-      );
-      await hooks.get("agent_settled")({}, ctx);
-    }
   }
   assert.equal(latest().lifecycle.phase, phase, "exercise the actual requested router phase");
   return { hooks, latest };
 }
 
-for (const phase of ["preflight", "discovery_ready", "review", "advisory_pending"]) {
+for (const phase of ["planning", "executing", "review", "building"]) {
   it(`real Pi dispatch permits direct and codemode mutations during active ${phase}`, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "pi-advisory-session-"));
     let session;

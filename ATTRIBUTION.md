@@ -719,8 +719,8 @@ patch artifacts and overlays were removed; historical attribution above remains 
   2026-10-07. Consumed as a development dependency, with no upstream source copied or modified.
 
 Conceptual use: XState's synchronous actor transitions, guarded statecharts, and cancellable promise children provide
-one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates JSON inputs,
-state-transition sequences, and adversarial schedules for actual router handlers and their ledger/model waits. The
-machine, adapter integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6
-alpha APIs, a global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check
-examples or its implementation; the existing Node test runner remains in place.
+one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates state-transition
+sequences and adversarial schedules for actual router handlers and their ledger/model waits. The machine, adapter
+integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6 alpha APIs, a
+global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check examples or
+its implementation; the existing Node test runner remains in place.

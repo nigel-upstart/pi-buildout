@@ -325,6 +325,42 @@ describe("lease restoration and context estimates", () => {
     }
   });
 
+  it("migrates persisted legacy discovery/grant state and both pre-action policies", () => {
+    for (const [phase, policy] of [
+      ["preflight", "authorization_then_completion_review"],
+      ["discovery_ready", "authorization_then_completion_review"],
+      ["authorized_execution", "authorization_then_completion_review"],
+      ["completed", "authorization_then_completion_review"],
+      ["advisory_pending", "advisory_then_completion_review"],
+      ["ready_after_advisory", "advisory_then_completion_review"],
+    ]) {
+      const active = {
+        ...leaseFixture(),
+        lifecycle: { phase, policy, taskFingerprint: "task", grant: {}, authorization: {} },
+      };
+      const restored = restoreLeaseState(
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: {
+              mode: "active",
+              active,
+              secondarySafetyPending: false,
+            },
+          },
+        ],
+        "shadow",
+      );
+      assert.deepEqual(restored.active.lifecycle, {
+        phase: "planning",
+        policy: "plan_review_then_completion_review",
+        taskFingerprint: "task",
+      });
+      assert.equal(restored.active.taskId, active.taskId);
+    }
+  });
+
   it("restores only router-authored state entries", () => {
     const state = restoreLeaseState(
       [
