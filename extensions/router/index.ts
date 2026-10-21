@@ -2648,10 +2648,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("session_shutdown", async (event, ctx) => {
     sessionGeneration++;
     cancelReview();
-    // Bounded drain so the cancelled child's terminal event can still be consumed.
-    await signalingRunner.dispose();
     clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
+    // Only after queued work is invalidated: a bounded drain so a cancelled child's terminal is still consumed.
+    await signalingRunner.dispose();
     if (event.reason === "new") modeForNextSession = leaseOwner.state.mode;
     // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
     // sees the mode in force when a session ends.
