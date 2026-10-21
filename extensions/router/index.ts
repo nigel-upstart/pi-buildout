@@ -3565,6 +3565,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       lastAttemptMetrics = undefined;
       return;
     }
+    // A delegation-only run never drives planning repair or builder fallback: reviews never change the builder.
+    if (builderRunner.delegating()) return;
     const deterministicVerificationFailed =
       isActiveAttempt && [...deterministicCheckResults.values()].some((passed) => !passed);
     const planValidationMissing =

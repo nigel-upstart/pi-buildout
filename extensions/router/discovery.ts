@@ -120,14 +120,15 @@ function callable(tools: readonly ToolView[], name: string | undefined): ToolVie
   const tool = tools.find((candidate) => candidate.name === name);
   return tool?.active && (tool.exposure === "direct" || tool.exposure === "model-only") ? tool : undefined;
 }
-const normalized = (text: string) => text.replace(/\s+/g, " ").trim().toLowerCase();
-/** Case-sensitive occurrence not embedded in a longer word, number, or signed value. */
+const spaced = (text: string) => text.replace(/\s+/g, " ").trim();
+const normalized = (text: string) => spaced(text).toLowerCase();
+/** Case-sensitive occurrence not embedded in a longer word, number (including decimals), or signed value. */
 function containsToken(text: string, token: string): boolean {
-  const word = /[\w+.-]/;
   for (let at = text.indexOf(token); at >= 0; at = text.indexOf(token, at + 1)) {
     const before = text.charAt(at - 1);
     const after = text.charAt(at + token.length);
-    if (!(before && word.test(before)) && !(after && /[\w+-]/.test(after))) return true;
+    const decimal = after === "." && /\d/.test(text.charAt(at + token.length + 1));
+    if (!(before && /[\w+.-]/.test(before)) && !(after && /[\w+-]/.test(after)) && !decimal) return true;
   }
   return false;
 }
@@ -145,8 +146,9 @@ export function planFromAnswer(answer: unknown, tools: readonly ToolView[]): Del
     isolationArgument: value.isolationArgument,
     isolationEvidence: value.isolationEvidence,
   };
-  // Publish only a structurally bindable plan; otherwise stay DIRTY so the next access can retry.
-  const structural = bindPlan(plan, tools, { task: "task", model: "provider/model", effort: "high" });
+  // Publish only a structurally bindable plan; otherwise stay DIRTY so the next access can retry. Bound values are
+  // placeholders here, so value constraints are checked only at dispatch with the parent's real values.
+  const structural = bindPlan(plan, tools, { task: "task", model: "provider/model", effort: "high" }, "structural");
   return structural ? plan : undefined;
 }
 
@@ -160,8 +162,9 @@ function isolationGrounded(plan: DelegationPlan, tools: readonly ToolView[]): bo
   const argument = matching.length === 1 ? matching[0] : undefined;
   const parameter = tool ? schemaAt(tool.parameters, plan.isolationArgument) : undefined;
   if (!tool || !parameter || argument?.literal === undefined || argument.bind) return false;
-  const quote = normalized(plan.isolationEvidence);
-  if (quote.length < 12 || !/\bextensions?\b/.test(quote)) return false;
+  // Whitespace-normalized only: documented case is meaningful ("If NONE" is not "If none").
+  const quote = spaced(plan.isolationEvidence);
+  if (quote.length < 12 || !/\bextensions?\b/i.test(quote)) return false;
   // The documented condition must name the exact literal sent ("If true, ..."), with case, sign, and punctuation.
   let literal: unknown;
   try {
@@ -170,11 +173,11 @@ function isolationGrounded(plan: DelegationPlan, tools: readonly ToolView[]): bo
     return false;
   }
   const token = typeof literal === "string" ? literal : JSON.stringify(literal);
-  if (!token || !containsToken(plan.isolationEvidence.replace(/\s+/g, " "), token)) return false;
+  if (!token || !containsToken(quote, token)) return false;
   const leaf = normalized(plan.isolationArgument.split(".").at(-1) ?? "");
-  const parameterDocs = typeof parameter.description === "string" ? normalized(parameter.description) : "";
-  const toolDocs = normalized([tool.description, ...(tool.promptGuidelines ?? [])].join(" "));
-  return parameterDocs.includes(quote) || (toolDocs.includes(quote) && quote.includes(leaf));
+  const parameterDocs = typeof parameter.description === "string" ? spaced(parameter.description) : "";
+  const toolDocs = spaced([tool.description, ...(tool.promptGuidelines ?? [])].join(" "));
+  return parameterDocs.includes(quote) || (toolDocs.includes(quote) && quote.toLowerCase().includes(leaf));
 }
 
 export type BoundCall = {
@@ -188,11 +191,13 @@ export function bindPlan(
   plan: DelegationPlan,
   tools: readonly ToolView[],
   values: { task: string; model: string; effort: string },
+  mode: "dispatch" | "structural" = "dispatch",
 ): BoundCall | undefined {
   const spawn = callable(tools, plan.spawnTool);
   const result = plan.resultTool ? callable(tools, plan.resultTool) : undefined;
   if (!spawn || (plan.resultTool && !result) || !isolationGrounded(plan, tools)) return undefined;
-  const build = (tool: ToolView, entries: readonly Argument[], childId: boolean) => {
+  // The companion's child id is unknown until the spawn returns; its call is checked against the template later.
+  const build = (tool: ToolView, entries: readonly Argument[], childId: boolean, validate: boolean) => {
     const args: Record<string, unknown> = {};
     const bound = new Set<Binding>();
     const paths = entries.map((entry) => entry.path);
@@ -224,6 +229,10 @@ export function bindPlan(
       for (const key of keys.slice(0, -1)) node = (node[key] ??= {}) as Record<string, unknown>;
       node[keys.at(-1) ?? ""] = value;
     }
+    const required = (tool.parameters as { required?: unknown }).required;
+    if (Array.isArray(required) && required.some((name) => typeof name === "string" && !Object.hasOwn(args, name)))
+      return undefined;
+    if (!validate) return { args, bound };
     try {
       const checked: unknown = validateToolArguments(
         { name: tool.name, description: tool.description, parameters: tool.parameters },
@@ -240,14 +249,14 @@ export function bindPlan(
       return undefined;
     }
   };
-  const spawnCall = build(spawn, plan.spawnArguments, false);
+  const spawnCall = build(spawn, plan.spawnArguments, false, mode === "dispatch");
   // The parent's concrete task and both model and effort must be bound; the plan cannot choose them.
   if (
     !spawnCall?.bound.has("task") ||
     !(spawnCall.bound.has("model_with_effort") || (spawnCall.bound.has("model") && spawnCall.bound.has("effort")))
   )
     return undefined;
-  const resultCall = result ? build(result, plan.resultArguments ?? [], true) : undefined;
+  const resultCall = result ? build(result, plan.resultArguments ?? [], true, false) : undefined;
   if (result && !resultCall?.bound.has("child_id")) return undefined;
   return {
     tool: spawn,
