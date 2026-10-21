@@ -99,6 +99,12 @@ of first resort.
   `sendCustomMessage`, plus the `InputEvent` and `BeforeAgentStartEvent` declarations. The two hooks share no input/run
   identity, input text can be transformed/expanded between them, and queued steering/follow-up input does not get a
   separate run-preparation hook.
+- Codemode-policy investigation: published `1.3.0` codemode extension/executor, nested-tool dispatcher, and SDK codemode
+  example. These establish that nested tools traverse permission hooks while model helpers and script-state persistence
+  take separate paths. No codemode implementation was adopted.
+- Profile-handoff follow-up: published `1.3.0` session cancellation/event behavior, checked against local session
+  telemetry. The router now records its own clean-stop cancellation cause per task/run rather than treating a provider's
+  cancellation-shaped error as a reason to switch providers. No upstream cancellation code was copied.
 - License declared by the packages: MIT
 
 Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skipped `before_agent_start` in the reviewed
@@ -598,6 +604,27 @@ MIT), which itself extends pi's skills configuration.
 - **Intentionally not adopted**: the skills catalog/activation model, session-scoped (`--session`) entries, the
   `/skills` command surface, and the enabled-entry list shape. Router start mode is a single scalar preference per
   scope, not a list, and it is not settable from a slash command.
+
+## Codemode policy alternatives researched (not adopted)
+
+The following sources informed the comparison of advisory guidance, command classification, and isolated execution. No
+source code was copied or modified, no dependency was added, and none replaces the router's existing policy.
+
+- `tree-sitter-bash`: <https://github.com/tree-sitter/tree-sitter-bash>, revision
+  `a06c2e4415e9bc0346c6b86d401879ffb44058f7`, MIT. Reviewed as a Bash AST foundation, not an effect classifier or
+  authorization boundary. Its parser and Node binding were not adopted.
+- `tiny-shell-gate`: <https://github.com/bobbyhalljr/tiny-shell-gate>, revision
+  `f9952a2e733268bbc7b902acf84383c9e9cfe346`, MIT. Its teaching example distinguishes exact-command approval from
+  program-name allowlisting and explicitly does not execute commands. Neither its character filter nor its mock gate was
+  adopted.
+- `cc-skills` read-only detector: <https://github.com/terrylica/cc-skills>, revision
+  `4a40528e22c992e626311ae4c66c00c12dff6381`, MIT. Reviewed `plugins/itp-hooks/hooks/lib/readonly-command-detector.ts`
+  as a counterexample: its intentional remote-SSH exemption and broad command regexes do not establish read-only
+  authorization. No detector rules were adopted.
+- `just-bash`: <https://github.com/vercel-labs/just-bash>, revision `9ab0e0d34c1d24978cd40ae890a91ccb223cc606`,
+  Apache-2.0 for the package. Its virtual filesystem, explicit network capabilities, and documented host-hook trust
+  assumptions inform the distinction between classification and constrained execution. No interpreter, filesystem
+  adapter, or sandbox integration was adopted.
 
 ## `shell-quote` and `shlex` (router shell tokenizer dependencies)
 

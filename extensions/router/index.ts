@@ -528,6 +528,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let attemptTurns = 0;
   let attemptToolCalls = 0;
   let agentRunSequence = 0;
+  // A clean profile handoff intentionally aborts the current run. Some providers report that
+  // cancellation as stopReason=error, so bind its cause to the run rather than parsing error text.
+  let profileRefreshAbort: { taskId: string; runSequence: number } | undefined;
   const deterministicCheckCalls = new Map<string, string>();
   const deterministicCheckResults = new Map<string, boolean>();
   const potentiallyMutatingCalls = new Map<string, { toolName: string; inputFingerprint: string }>();
@@ -1452,6 +1455,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Shadow routing never applies the refreshed profile, so interrupting the run would only cost the
     // user a turn; the telemetry above still records the handoff active mode would have taken.
     if (handoff === "clean_stop_resume" && leaseOwner.state.mode === "active") {
+      profileRefreshAbort = { taskId: correctedLease.taskId, runSequence: agentRunSequence };
       ctx.abort();
       pi.sendMessage(
         {
@@ -3277,6 +3281,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Run-phase bookkeeping tracks Pi itself, so it stays accurate while off for use after re-enable.
     agentRunPhase = "active";
     runEndEpoch = undefined;
+    profileRefreshAbort = undefined;
     insideProviderTurn = false;
     activeToolExecutions = 0;
     if (leaseOwner.state.mode === "off") return;
@@ -3437,6 +3442,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Clear before the first await and before early returns (including off/failed leases). Never
     // clear in a finally: newer input may arrive while attempt telemetry is being recorded.
     clearPendingInput(ctx);
+    const interruptedForProfileRefresh =
+      profileRefreshAbort?.taskId === leaseOwner.state.active?.taskId &&
+      profileRefreshAbort?.runSequence === agentRunSequence;
+    profileRefreshAbort = undefined;
     const leaseEpoch = leaseOwner.epoch;
     // Settlement compares against this, so input arriving after the run ended supersedes its lifecycle work.
     runEndEpoch = leaseEpoch;
@@ -3501,6 +3510,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         deterministicChecksPassed: [...deterministicCheckResults.values()].filter(Boolean).length,
         deterministicChecksFailed: [...deterministicCheckResults.values()].filter((passed) => !passed).length,
         stopReason: last?.stopReason,
+        ...(interruptedForProfileRefresh ? { interruptionReason: "prompt_profile_refresh" } : {}),
       },
       {
         taskId: active.taskId,
@@ -3519,6 +3529,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       // review). This attempt's outcome belongs to a lease that is gone, so it must not drive a repair or review.
       attemptDisposition = "incomplete";
       lastAttemptMetrics = undefined;
+      return;
+    }
+    if (interruptedForProfileRefresh) {
+      // The already-queued follow-up resumes this task. Do not spend a fallback attempt, switch
+      // providers (and rebill the cache), or start a safety repair for our own interrupted run.
+      attemptDisposition = "aborted";
+      lastProviderFailure = undefined;
       return;
     }
     const deterministicVerificationFailed =
