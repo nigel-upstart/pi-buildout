@@ -843,3 +843,23 @@ registry.
 4. **The scoped registry remains authoritative.** The policy names current releases, but endpoint resolution still skips
    any model absent from the operator's enabled live registry. This is especially important for provider surfaces that
    expose Astra but not Luna/Sol, or use `claude-opus-5.5` rather than `claude-opus-5-5` spelling.
+
+## Decision: one advisory plan-review policy, no grants (C1)
+
+Owner: router maintainers. Status: implemented. Links: [spec](SPEC.md#explicit-safety-lifecycle),
+[router lifecycle](../../extensions/router/README.md#lease-lifecycle-state-machine).
+
+The router recommends a pre-action plan review for the union of the old authorization and advisory conditions. A verdict
+is advice, never permission. Approval advances the steering phase to executing; concerns recommend revising the plan.
+Completion-only code-builder review and ordinary work retain their existing policy derivation. Automatic completion
+reviews remain limited to the existing high-risk policies.
+
+Discovery approval has no purpose without enforcement, so its tool, single-use grants, fingerprints, and events are
+removed. Old persisted grant states and policy names migrate to empty planning rather than manufacturing advice from an
+old approval. Action plans now declare descriptive `toolNames`, not authorized tool names, and accept reversible steps.
+Scope fingerprints and epochs only protect against stale advice.
+
+Missing recommended plans, possible mutations while advice is pending, and missing completion evidence notify the human
+and emit an enum-only skipped-step event once per step per lease. Mutation evidence is heuristic; the UI says so. These
+notes do not queue model reminders. The implementation-plan validator repair and deterministic check-failure fallback
+remain intact. In-session review transport is retained in C1; its replacement is a separate change.

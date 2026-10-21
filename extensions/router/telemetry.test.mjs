@@ -91,6 +91,22 @@ describe("JsonlTelemetryStore", () => {
     );
   });
 
+  it("still reads historical discovery telemetry fields", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "router-legacy-telemetry-"));
+    temporaryDirectories.push(directory);
+    const store = new JsonlTelemetryStore(join(directory, "events.jsonl"));
+    const legacy = {
+      ...event("legacy"),
+      kind: "outcome",
+      data: {
+        discoveryCallId: "old-call",
+        discoveryScopeFingerprint: "a".repeat(64),
+        discoverySucceeded: true,
+      },
+    };
+    await store.append(legacy);
+    assert.deepEqual(await store.read(), [legacy]);
+  });
   it("rejects persisted cache counts that are not finite and nonnegative", () => {
     // These reach aggregation through the store, so a persisted NaN would poison the token totals.
     const outcome = {
