@@ -310,7 +310,7 @@ describe("lease restoration and context estimates", () => {
     });
   }
 
-  it("validates the persisted secondary latch and discards ambiguous legacy low-confidence leases", () => {
+  it("ignores obsolete secondary markers, including malformed values, when restoring low-confidence leases", () => {
     const active = leaseFixture();
     active.features = { ...active.features, confidence: 0.6 };
     const restore = (extra) =>
@@ -318,11 +318,11 @@ describe("lease restoration and context estimates", () => {
         [{ type: "custom", customType: "model-router-state", data: { mode: "active", active, ...extra } }],
         "shadow",
       );
-    assert.equal(restore({}).active, undefined);
-    assert.equal(restore({ secondarySafetyPending: "yes" }).active, undefined);
-    assert.equal(restore({ secondarySafetyPending: true }).secondarySafetyPending, true);
-    assert.equal(restore({ secondarySafetyPending: true }).active.taskId, active.taskId);
-    assert.equal(restore({ secondarySafetyPending: false }).active.taskId, active.taskId);
+    const expected = { mode: "active", active, manualOverride: false };
+    assert.deepEqual(restore({}), expected);
+    for (const value of [undefined, null, true, false, "yes", 0, 1, [], {}]) {
+      assert.deepEqual(restore({ secondarySafetyPending: value }), expected);
+    }
   });
 
   it("restores only router-authored state entries", () => {
@@ -342,7 +342,7 @@ describe("lease restoration and context estimates", () => {
         {
           type: "custom",
           customType: "model-router-state",
-          data: { secondarySafetyPending: false, mode: "active", active },
+          data: { mode: "active", active },
         },
       ],
       "shadow",
@@ -357,7 +357,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: malformedRepair },
+            data: { mode: "active", active: malformedRepair },
           },
         ],
         "shadow",
@@ -373,7 +373,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: legacyImplicitChild },
+            data: { mode: "active", active: legacyImplicitChild },
           },
         ],
         "shadow",
@@ -395,7 +395,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: malformedIndependentReview },
+            data: { mode: "active", active: malformedIndependentReview },
           },
         ],
         "shadow",
@@ -411,7 +411,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: legacyVersion },
+            data: { mode: "active", active: legacyVersion },
           },
         ],
         "shadow",
@@ -427,7 +427,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: tampered },
+            data: { mode: "active", active: tampered },
           },
         ],
         "shadow",
@@ -441,7 +441,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: lease },
+            data: { mode: "active", active: lease },
           },
         ],
         "shadow",
@@ -513,7 +513,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: lease },
+            data: { mode: "active", active: lease },
           },
         ],
         "shadow",

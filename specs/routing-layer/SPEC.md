@@ -135,9 +135,11 @@ arguments — never accept free-form JSON parsed out of prose.
   directly. That threshold is a starting calibration point: high enough to escalate genuinely ambiguous prompts, low
   enough to avoid paying for a second-vendor call on the common, clearly-stated case; tune it from
   confidence-calibration telemetry.
-- Low confidence or high/critical risk → call a secondary classifier from a **different provider**; reconcile
-  conservatively (max of risk/horizon, union of review intent, prefer the second archetype when the first is
-  low-confidence or the second finds higher risk).
+- Low confidence or high/critical risk → trust the primary immediately and launch a background secondary from a
+  **different provider**. Reconcile material routing deltas only when their benefit exceeds cache-switch cost. The
+  complete model/effort/profile/features/archetype tuple applies while idle or at a later run start; Pi 1.3.0 cannot
+  replace the router's forced prompt mid-run. Never abort or create a synthetic resume turn for a correction. An owner
+  or epoch change drops it. Synchronous continuity classification retains its conservative reconciliation.
 - If the primary transport fails but the provider-diverse secondary returns a schema-valid result, use that validated
   result as a classifier failover; never merge it with synthetic conservative defaults, which would manufacture high
   risk and a program horizon without task evidence.
@@ -155,13 +157,13 @@ invocation receives an independent timeout budget defined in code
 classification and synchronous continuity escalation, where primary and secondary stages run inside one invocation.
 
 Background fresh-task secondary reconciliation is normatively a different control: it runs as its own classifier
-invocation bounded by the configurable `secondaryGracePolicy.secondaryDeadlineMs`
-([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts)), with `maxGraceMs` bounding only the
-pre-release grace window. Every `secondary_reconciliation` event records that budget as `secondaryDeadlineMs`, so a
-timeout is attributable to the budget that enforced it. `CLASSIFICATION_STAGE_TIMEOUT_MS` must not be treated as the
-control for that path. An `AbortSignal` is passed through those layers to the underlying `complete()` call for that
-stage. At the deadline the router aborts the active stage request and returns without waiting indefinitely for a
-provider transport to settle. Concrete timeout values and invocation wrappers can be inspected in
+invocation bounded by the configurable `secondaryReconciliationPolicy.secondaryDeadlineMs`
+([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts)). There is no foreground grace window. Every
+`secondary_reconciliation` event records that budget as `secondaryDeadlineMs`, so a timeout is attributable to the
+budget that enforced it. `CLASSIFICATION_STAGE_TIMEOUT_MS` must not be treated as the control for that path. An
+`AbortSignal` is passed through those layers to the underlying `complete()` call for that stage. At the deadline the
+router aborts the active stage request and returns without waiting indefinitely for a provider transport to settle.
+Concrete timeout values and invocation wrappers can be inspected in
 [`extensions/router/index.ts`](../../extensions/router/index.ts) and
 [`extensions/router/telemetry.ts`](../../extensions/router/telemetry.ts).
 
@@ -575,10 +577,11 @@ under another model family's prompt profile.
 - `/route off` takes effect immediately within an active session and bypasses all adapter routing and advisory behavior:
   no classification, prompt compilation, model/effort application or tracking, router-only tool exposure (lifecycle
   validators and `submit_implementation_plan`), lifecycle advice, fallback, review, attempt labeling, evidence
-  collection, or router telemetry. Off aborts pending secondary reconciliation (retaining unresolved low-confidence
-  classification status for the dormant lease) and applies no correction that settles afterwards. Other routing work
-  already in flight may run to completion, but its result is discarded rather than applied, including when routing is
-  re-enabled before it finishes. The dormant lease may be reused only after routing is explicitly re-enabled.
+  collection, or router telemetry. Off aborts pending secondary reconciliation without retaining a safety latch and
+  applies no correction that settles afterwards. Other routing work already in flight may run to completion, but its
+  result is discarded rather than applied, including when routing is re-enabled before it finishes. The dormant lease
+  may be reused only after routing is explicitly re-enabled.
+
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.
 - Classifier work is bounded by router-owned per-stage deadlines; abort/timeout is terminal across attempts within that
