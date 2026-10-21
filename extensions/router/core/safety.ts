@@ -260,7 +260,7 @@ export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | u
       return "Advisory lifecycle: inspect the task and its preconditions, then call submit_action_plan for independent pre-action advice. This is a recommendation, not a tool restriction or permission requirement.";
     case "review":
       return lifecycle.reviewKind === "plan"
-        ? `Advisory lifecycle: independent plan review is running for ${lifecycle.scopeFingerprint}. Recommend ending the turn and waiting for advice; tools remain available. Reviewers submit notes with submit_safety_review.`
+        ? `Advisory lifecycle: you are the independent plan reviewer for ${lifecycle.scopeFingerprint}. Inspect the evidence and call submit_safety_review with findings before finishing. Give advice, not permission; tools remain available.`
         : `Advisory lifecycle: completion review for ${lifecycle.scopeFingerprint}; submit findings with submit_safety_review. This review does not gate tools.`;
     case "executing":
       return "Advisory lifecycle: carry out the task, account for review advice, and gather verification evidence for completion review.";
