@@ -6343,4 +6343,47 @@ describe("routerExtension", () => {
       fixture.restoreEnvironment();
     }
   });
+
+  it("records a late cancelled outcome without touching the invalidated context", async () => {
+    const runner = controlledRunner();
+    const events = [];
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      telemetry: { read: async () => [], append: async (event) => events.push(event) },
+    });
+    const { hooks, ctx, sent, restoreEnvironment } = fixture;
+    try {
+      await launchReview(fixture);
+      const call = runner.calls[0];
+      await hooks.get("session_shutdown")({ reason: "reload" }, ctx);
+      assert.equal(call.cancelled, true);
+      // Pi invalidates the captured context after shutdown; every getter then throws.
+      const staleAccesses = [];
+      for (const key of ["ui", "cwd", "sessionManager", "modelRegistry", "model", "hasUI"])
+        Object.defineProperty(ctx, key, {
+          configurable: true,
+          get() {
+            staleAccesses.push(key);
+            throw new Error("This extension ctx is stale after session replacement or reload.");
+          },
+        });
+      const sentBefore = sent.length;
+      const eventsBefore = events.length;
+      call.resolve({ status: "cancelled", usage: { cost: 0.02, inputTokens: 3, outputTokens: 2 } });
+      await waitForReview(() => events.length > eventsBefore);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const outcome = events.findLast((event) => event.kind === "outcome" && event.data.reviewStatus === "cancelled");
+      assert.ok(outcome, "late cancelled outcome must still be recorded");
+      assert.equal(outcome.sessionId, "authorization-session");
+      assert.equal(outcome.data.staleVerdictDropped, true);
+      assert.equal(outcome.data.reviewCost, 0.02);
+      assert.equal(outcome.provider, call.request.model.provider);
+      assert.equal(outcome.modelId, call.request.model.id);
+      assert.equal(outcome.cacheWriteClassification !== undefined, true, "endpoint metadata captured before start");
+      assert.deepEqual(staleAccesses, [], "late outcomes must not read the invalidated context");
+      assert.equal(sent.length, sentBefore);
+    } finally {
+      restoreEnvironment();
+    }
+  });
 });
