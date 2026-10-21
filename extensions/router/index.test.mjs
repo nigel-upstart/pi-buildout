@@ -291,8 +291,8 @@ async function authorizationLifecycleFixture(options = {}) {
       activeTools = tools;
     },
     exec: async (command, args) => {
-      await hooksDuringSwitch.duringExec?.(command, args);
-      return { stdout: "", stderr: "", code: 1, killed: false };
+      const result = await hooksDuringSwitch.duringExec?.(command, args);
+      return result ?? { stdout: "", stderr: "", code: 1, killed: false };
     },
   };
   routerExtension(pi, options);
@@ -6386,4 +6386,61 @@ describe("routerExtension", () => {
       restoreEnvironment();
     }
   });
+
+  it("disables routing when a review cancelled by input then fails its outcome append", async () => {
+    const runner = controlledRunner();
+    let fail = false;
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      telemetry: {
+        read: async () => [],
+        append: async () => {
+          if (fail) throw new Error("fixture telemetry failure");
+        },
+      },
+    });
+    const { hooks, ctx, restoreEnvironment } = fixture;
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await launchReview(fixture);
+      const call = runner.calls[0];
+      await hooks.get("input")({ text: "Inspect instead", source: "interactive", streamingBehavior: "followUp" }, ctx);
+      assert.equal(call.cancelled, true);
+      fail = true;
+      call.resolve({ status: "cancelled", usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 } });
+      await waitForReview(() => notes.some((note) => /Router telemetry failed/.test(note.message)));
+      assert.equal(
+        notes.some((note) => note.level === "error" && /Router telemetry failed/.test(note.message)),
+        true,
+      );
+      const state = fixture.appended.findLast((entry) => entry.customType === "model-router-state");
+      assert.equal(state.data.mode, "shadow", "telemetry failure disables active routing");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  for (const tracked of ["", "10\t2\tsrc/changed.ts\n"]) {
+    it(`keeps the conservative review timeout when untracked files are in scope (tracked: ${tracked ? "yes" : "no"})`, async () => {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+      const ok = (stdout) => ({ stdout, stderr: "", code: 0, killed: false });
+      fixture.onExec(async (command, args) => {
+        if (command !== "git") return undefined;
+        if (args.includes("--numstat")) return ok(tracked);
+        if (args.includes("diff")) return ok("");
+        if (args.includes("ls-files")) return ok("new-binary.bin\0");
+        return undefined;
+      });
+      try {
+        await launchReview(fixture);
+        assert.equal(runner.calls.length, 1);
+        // Untracked scope is unmeasured, so the reviewer gets the four-hour cap rather than the five-minute floor.
+        assert.ok(runner.calls[0].request.timeoutMs > 60 * 60_000, `timeout ${runner.calls[0].request.timeoutMs}`);
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    });
+  }
 });

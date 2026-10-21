@@ -517,6 +517,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let queuedSecondaryReconciliation: QueuedSecondaryReconciliation | undefined;
 
   let telemetryHealthy = true;
+  // Pi invalidates a session's ctx only after session_shutdown; work that outlives its session checks this first.
+  let sessionGeneration = 0;
   let attemptDisposition: AttemptDisposition = "unknown";
   // The routing epoch when the latest run ended; agent_settled uses it to detect a superseded run.
   let runEndEpoch: number | undefined;
@@ -1989,6 +1991,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       // A cancelled reviewer can settle after reload/session replacement invalidates ctx, so outcome
       // telemetry uses metadata captured while ctx is still live.
       const sessionId = ctx.sessionManager.getSessionId();
+      const generation = sessionGeneration;
       const registry = buildRegistrySnapshot(ctx, scope);
       const builder = registry.find(
         (candidate) => candidate.provider === parent.selected.provider && candidate.modelId === parent.selected.modelId,
@@ -2025,7 +2028,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           ],
           { timeout: 10_000 },
         );
-        if (measured.code === 0) numstat = measured.stdout;
+        if (measured.code === 0) {
+          // numstat cannot measure untracked files, so their presence keeps the conservative timeout cap.
+          const untracked = await pi.exec("git", ["-C", ctx.cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
+            timeout: 10_000,
+          });
+          if (untracked.code === 0 && untracked.stdout.length === 0) numstat = measured.stdout;
+        }
       } catch {
         /* Missing diff is explicit evidence, never permission. */
       }
@@ -2135,8 +2144,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             { taskId: parent.taskId, provider: choice.provider, modelId: choice.modelId },
           );
         } catch (error) {
-          // A stale owner may hold an invalidated ctx; only the current owner reports the failure.
-          if (reviewCurrent(review)) disableForTelemetryFailure(ctx, error);
+          // Cancellation never hides the failure, but a shut-down session's ctx may be invalidated.
+          if (generation === sessionGeneration) disableForTelemetryFailure(ctx, error);
           return;
         }
         if (!reviewCurrent(review)) return;
@@ -2504,6 +2513,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
+    sessionGeneration++;
     cancelReview();
     clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
