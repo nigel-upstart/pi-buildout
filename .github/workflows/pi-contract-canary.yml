@@ -1,0 +1,44 @@
+name: pi contract canary
+
+# The router relies on Pi host contracts, including the accepted private ModelRegistry.runtime field. Normal
+# CI (check.yml) runs the offline contract tests against the pinned development Pi. This daily and on-demand
+# job reruns them against the supported floor and the latest released Pi, each installed with lockstep
+# @earendil-works packages into an isolated temporary prefix, so upstream drift surfaces before an
+# upgrade. It needs the npm registry; it is deliberately not a pre-commit or pull-request gate.
+
+on:
+  schedule:
+    - cron: "43 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-contract-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    name: pi ${{ matrix.pi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Exactly the supported minimum and the latest release (npm dist-tag), never upstream main or a history.
+        pi: ["1.2.0", "latest"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # No repository `npm ci`: the contract tests import only Node built-ins and host-provided packages,
+      # which resolve from the isolated fixture, so the pinned development Pi is not even installed.
+      # A registry, install, coherence, or out-of-range failure fails the job instead of looking compatible.
+      - name: Install Pi ${{ matrix.pi }} into an isolated prefix and run the contract tests
+        env:
+          PI_SPEC: ${{ matrix.pi }}
+        run: node scripts/pi-contract-canary.mjs "$PI_SPEC"
