@@ -1,5 +1,15 @@
 # Routing layer — architecture decisions
 
+## Advisory-only safety phases, 2026-10-21
+
+Router safety guides the model but never blocks tool dispatch. Keep lifecycle phases, phase-specific submission tools,
+independent authorization/advisory/completion reviews, evidence tracking, and deterministic-check failure recovery.
+Remove router shell classification, read-only allowlists, plan-tool enforcement, and missing-review fallback escalation.
+Approvals record scoped review outcomes, not permission to proceed. Enforce tool availability through Pi-native tool
+selection and host access through a container or sandbox, rather than a second router policy engine. This avoids a
+script-text policy that cannot represent every concrete nested effect. Secondary reconciliation remains unchanged in
+this PR except that its pending state no longer blocks calls; the next stacked PR removes that latch machinery.
+
 Companion to [`SPEC.md`](SPEC.md) (the functional spec), [`eval.md`](eval.md) (the evaluation harness), and
 [`source-basis.md`](source-basis.md) (design provenance and public references). This document records _how_ it will be
 built and why — language, framework, tooling — plus the implementation-time findings that resolve the original open

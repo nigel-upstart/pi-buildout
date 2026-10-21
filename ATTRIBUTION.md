@@ -508,6 +508,13 @@ Ideas and API patterns used:
 - The Pi 0.85.1 and 0.87.1 patches adapt the synchronous `proper-lockfile` acquisition/retry and `finally` release
   pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
+- Pi `1.3.0`'s SDK/codemode documentation and `examples/sdk/06-extensions.ts` and `14-codemode-mcp.ts` informed the
+  advisory-router regression fixture: in-memory `AgentSession`, explicit resource factories, deterministic model
+  responses, and real nested tool dispatch. This is conceptual API use, not copied Pi code; live providers, MCP
+  connections, user resources, and persistent sessions are intentionally excluded.
+- Pi `1.3.0`'s `docs/security.md`, `containerization.md`, `cli.md`, and `settings.md` informed the router's documented
+  separation between advisory prompts, native tool selection, and whole-process isolation. No documentation text or
+  isolation implementation was copied; the router does not implement a sandbox.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
   `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
@@ -550,31 +557,6 @@ MIT), which itself extends pi's skills configuration.
 - **Intentionally not adopted**: the skills catalog/activation model, session-scoped (`--session`) entries, the
   `/skills` command surface, and the enabled-entry list shape. Router start mode is a single scalar preference per
   scope, not a list, and it is not settable from a slash command.
-
-## `shell-quote` and `shlex` (router shell tokenizer dependencies)
-
-- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.11.0`, MIT) and `shlex`
-  (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
-- Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
-  copied or modified, and both ship their own type declarations. `shell-quote` was raised to the first patched release
-  for [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv); this does not change the adopted API.
-
-What each is used for, and why both:
-
-- `shell-quote`'s `parse` supplies the token structure the read-only gate needs, classifying control operators, glob
-  patterns, and comments as distinct entries rather than as text.
-- `shlex`'s `split` supplies malformed-quoting detection, which `shell-quote` does not report: it accepts an unbalanced
-  quote silently.
-
-Behavior of both libraries that this repository deliberately compensates for, rather than relying on:
-
-- Both treat newlines and carriage returns as ordinary whitespace, so a two-line command lexes into one argument list.
-  Control characters are therefore rejected on the raw string before either lexer runs.
-- `shell-quote` performs parameter expansion during parsing and yields an empty token for an unset variable, so `$` and
-  backticks are rejected before parsing rather than interpreted.
-
-The argv policy itself — the allowed binaries, git subcommands, and per-binary flag allowlists — is original code in
-this repository and is not derived from either package.
 
 ## `pi-web-access` (removed local OpenAI auth patch)
 

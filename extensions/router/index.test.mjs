@@ -25,12 +25,11 @@ import routerExtensionImpl, {
   activeToolsForSafetyLifecycle,
   automaticRoutingBlockReason,
   deterministicCheckCommand,
-  restrictedPhaseLiftedByOff,
+  advisoryPhasePausedByOff,
   resumeCompletedLifecycle,
   routeChoicesForNewLease,
   routerOffNotice,
   routerReenabledNotice,
-  safetyToolBlockReason,
   stageDeadlineDescription,
   supportsRouterPiVersion,
 } from "./index.ts";
@@ -679,6 +678,8 @@ async function runAdapterTurn({
   streamingBehavior,
   reason = "reload",
   mode = "shadow",
+  manualOverride = false,
+  prepareTurn = true,
   models,
   branchEntries = [],
   contextUsage = { tokens: 0, contextWindow: 128_000 },
@@ -698,7 +699,7 @@ async function runAdapterTurn({
     {
       type: "custom",
       customType: "model-router-state",
-      data: { mode, manualOverride: false, ...(active ? { active } : {}) },
+      data: { mode, manualOverride, ...(active ? { active } : {}) },
     },
     ...branchEntries,
   ];
@@ -768,8 +769,11 @@ async function runAdapterTurn({
     ...(secondaryGracePolicy ? { secondaryGracePolicy } : {}),
   });
   await hooks.get("session_start")({ reason }, ctx);
-  await hooks.get("input")({ text: prompt, source, ...(streamingBehavior ? { streamingBehavior } : {}) }, ctx);
-  const beforeAgentStart = await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
+  let beforeAgentStart;
+  if (prepareTurn) {
+    await hooks.get("input")({ text: prompt, source, ...(streamingBehavior ? { streamingBehavior } : {}) }, ctx);
+    beforeAgentStart = await hooks.get("before_agent_start")({ prompt, systemPrompt: "system", images: [] }, ctx);
+  }
   return {
     pi,
     hooks,
@@ -872,16 +876,16 @@ describe("resumeCompletedLifecycle", () => {
 });
 
 describe("router-off safety notice", () => {
-  it("names only the tool-restricting phases that off lifts", () => {
+  it("names advisory guidance paused by off and resumed by active mode", () => {
     for (const phase of ["preflight", "discovery_ready", "review", "advisory_pending"]) {
-      assert.equal(restrictedPhaseLiftedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), phase);
-      assert.ok(routerOffNotice(phase).includes(`${phase} safety lifecycle no longer restricts tools`), phase);
+      assert.equal(advisoryPhasePausedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), phase);
+      assert.ok(routerOffNotice(phase).includes(`Advisory ${phase} guidance is paused`), phase);
     }
     for (const phase of ["ordinary", "building", "ready_after_advisory", "authorized_execution", "completed"]) {
-      assert.equal(restrictedPhaseLiftedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), undefined);
+      assert.equal(advisoryPhasePausedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), undefined);
     }
-    assert.equal(restrictedPhaseLiftedByOff(undefined), undefined);
-    assert.match(routerReenabledNotice("preflight"), /preflight safety lifecycle restricts tools again/);
+    assert.equal(advisoryPhasePausedByOff(undefined), undefined);
+    assert.match(routerReenabledNotice("preflight"), /Advisory preflight guidance has resumed/);
   });
 });
 
@@ -986,11 +990,6 @@ describe("router-mode tool exposure", () => {
           ["read", "bash", ...expected],
           `${mode}/${phase}`,
         );
-        assert.equal(
-          safetyToolBlockReason({ lifecycle, manualOverride: true }, "submit_implementation_plan", {}),
-          undefined,
-          `plan validation stays pure in ${mode}/${phase}`,
-        );
       }
     }
     assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active", { phase: "review", submission: {} }), [
@@ -1088,47 +1087,116 @@ describe("stageDeadlineDescription", () => {
   });
 });
 
-describe("safetyToolBlockReason", () => {
-  it("restricts explicit lifecycle phases without treating standalone review as a child review", () => {
-    const standaloneReview = {
-      manualOverride: false,
-      lifecycle: { phase: "ordinary", policy: "ordinary", taskFingerprint: "task" },
-    };
-    assert.equal(safetyToolBlockReason(standaloneReview, "subagent", { action: "create" }), undefined);
-    assert.equal(
-      safetyToolBlockReason(standaloneReview, "bash", { command: "gh pr comment 305 --body review" }),
-      undefined,
-    );
-
-    const independentReview = {
-      manualOverride: false,
-      lifecycle: {
-        phase: "review",
-        policy: "ordinary",
-        taskFingerprint: "task",
-        reviewKind: "completion",
-        scopeFingerprint: "a".repeat(64),
-      },
-    };
-    assert.equal(safetyToolBlockReason(independentReview, "bash", { command: "git diff --stat" }), undefined);
-    assert.match(safetyToolBlockReason(independentReview, "subagent", { action: "create" }), /read-only/);
-    assert.match(
-      safetyToolBlockReason(independentReview, "bash", { command: "gh pr comment 305 --body review" }),
-      /read-only/,
-    );
-    assert.match(
-      safetyToolBlockReason({ ...independentReview, manualOverride: true }, "submit_safety_review", {}),
-      /Manual.*invalidated/,
-    );
-    assert.equal(
-      safetyToolBlockReason({ ...standaloneReview, manualOverride: true }, "edit", { path: "README.md" }),
-      undefined,
-      "a manual override on ordinary work must not block normal tools",
-    );
-    assert.equal(
-      safetyToolBlockReason({ ...standaloneReview, manualOverride: true }, "bash", { command: "npm test" }),
-      undefined,
-    );
+describe("advisory tool-call observation", () => {
+  it("never blocks tools across lifecycle phases, modes, or manual overrides", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    let reviewLease;
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.tools
+        .get("submit_action_plan")
+        .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      reviewLease = fixture.latestLease();
+      assert.equal(reviewLease.lifecycle.phase, "review");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+    const phases = [
+      { phase: "ordinary", policy: "ordinary" },
+      { phase: "building", policy: "completion_review" },
+      { phase: "advisory_pending", policy: "advisory_then_completion_review" },
+      { phase: "preflight", policy: "authorization_then_completion_review" },
+      reviewLease.lifecycle,
+    ];
+    for (const mode of ["active", "shadow", "off"]) {
+      for (const manualOverride of [false, true]) {
+        for (const lifecycle of phases) {
+          const active = {
+            ...(lifecycle.phase === "review" ? reviewLease : adapterLease()),
+            manualOverride,
+            lifecycle: { ...lifecycle, taskFingerprint: "task-fingerprint" },
+          };
+          const result = await runAdapterTurn({
+            active,
+            mode,
+            manualOverride,
+            prepareTurn: false,
+            sessionId: "advisory-tool-observation",
+          });
+          for (const toolName of [
+            "read",
+            "edit",
+            "write",
+            "bash",
+            "subagent",
+            "custom_mutator",
+            "submit_action_plan",
+            "submit_discovery_request",
+            "submit_safety_review",
+            "submit_implementation_plan",
+          ]) {
+            assert.equal(
+              result.hooks.get("tool_call")(
+                { toolCallId: `${mode}-${lifecycle.phase}-${toolName}`, toolName, input: { command: "deploy" } },
+                result.ctx,
+              ),
+              undefined,
+              `${mode}/${lifecycle.phase}/manualOverride=${String(manualOverride)}/${toolName}`,
+            );
+          }
+        }
+      }
+    }
+  });
+  it("does not trigger fallback when a review turn ends without a safety-review submission", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    const { hooks, tools, ctx, models, latestLease, selectedModels } = fixture;
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const child = latestLease();
+      assert.equal(child.lifecycle.phase, "review");
+      const switchesBefore = selectedModels.length;
+      ctx.model = models.find(
+        (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
+      );
+      hooks.get("agent_start")({}, ctx);
+      hooks.get("turn_start")({}, ctx);
+      await hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: child.selected.provider,
+              model: child.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        ctx,
+      );
+      await hooks.get("agent_settled")({}, ctx);
+      const retained = latestLease();
+      assert.equal(retained.taskId, child.taskId);
+      assert.equal(retained.lifecycle.phase, "review");
+      assert.equal(retained.lifecycle.submission, undefined);
+      assert.equal(retained.attemptIndex, child.attemptIndex);
+      assert.equal(retained.executionFailed, undefined);
+      assert.equal(selectedModels.length, switchesBefore, "missing review advice does not switch to fallback");
+      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(
+        events.some(({ kind }) => kind === "fallback"),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
   });
 });
 
@@ -1496,7 +1564,7 @@ describe("routerExtension", () => {
     assert.equal(tools.has("submit_safety_review"), true);
   });
 
-  it("makes /route off an immediate bypass for routing, selection tracking, and safety blocking", async () => {
+  it("pauses routing, selection tracking, and advisory guidance immediately on /route off", async () => {
     const hooks = new Map();
     const commands = new Map();
     const tools = new Map();
@@ -1573,10 +1641,10 @@ describe("routerExtension", () => {
       "submit_discovery_request",
     ]);
     await commands.get("route").handler("off", ctx);
-    assert.equal(sentMessages.length, 1, "off must tell the model the preflight restriction is lifted");
+    assert.equal(sentMessages.length, 1, "off must tell the model preflight guidance is paused");
     assert.equal(sentMessages[0].options.deliverAs, "nextTurn");
     assert.equal(sentMessages[0].message.display, false);
-    assert.match(sentMessages[0].message.content, /preflight safety lifecycle no longer restricts tools/);
+    assert.match(sentMessages[0].message.content, /Advisory preflight guidance is paused/);
     await commands.get("route").handler("off", ctx);
     assert.equal(sentMessages.length, 1, "a repeated off must not repeat the notice");
     const entriesAfterOff = appended.length;
@@ -1607,7 +1675,7 @@ describe("routerExtension", () => {
     await commands.get("route").handler("active", ctx);
     assert.equal(sentMessages.length, 2, "re-enabling must correct the earlier off notice");
     assert.equal(sentMessages[1].message.details.restoredPhase, "preflight");
-    assert.match(sentMessages[1].message.content, /preflight safety lifecycle restricts tools again/);
+    assert.match(sentMessages[1].message.content, /Advisory preflight guidance has resumed/);
     await hooks.get("input")({ text: "Queue a route, then disable it", source: "interactive" }, ctx);
     await commands.get("route").handler("off", ctx);
     const entriesAfterPendingOff = appended.length;
@@ -1646,19 +1714,19 @@ describe("routerExtension", () => {
     );
     await assert.rejects(
       tools.get("submit_action_plan").execute("shadow-plan", irreversibleActionPlan(), undefined, undefined, ctx),
-      /active irreversible-action preflight/,
+      /accepts submissions during active irreversible-action preflight/,
     );
     await assert.rejects(
       tools.get("submit_safety_review").execute("shadow-review", {}, undefined, undefined, ctx),
-      /active generated independent review/,
+      /accepts submissions during an active generated independent review/,
     );
     await commands.get("route").handler("active", ctx);
     assert.ok(activeTools.includes("submit_action_plan"));
     assert.equal(activeTools.includes("submit_safety_review"), false);
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "active-edit", toolName: "edit", input: { path: "README.md" } }).reason,
-      /preflight/,
-      "re-enabling active mode must restore the existing safety lifecycle",
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "active-edit", toolName: "edit", input: { path: "README.md" } }),
+      undefined,
+      "re-enabling restores advisory context without restricting tool calls",
     );
   });
 
@@ -1687,7 +1755,7 @@ describe("routerExtension", () => {
       assert.equal(
         result.hooks.get("tool_call")({ toolCallId: `shadow-${toolName}`, toolName, input: { command: "deploy" } }),
         undefined,
-        `${toolName} must bypass the persisted safety gate in shadow`,
+        `${toolName} remains available in shadow`,
       );
     }
     startAgentRun(result);
@@ -2040,7 +2108,7 @@ describe("routerExtension", () => {
     assert.equal(result.beforeAgentStart.message.details.profileId, persisted.promptProfileId);
   });
 
-  it("keeps conservative mutating-tool gates while low-confidence secondary safety is pending", async () => {
+  it("observes tools without blocking while low-confidence secondary safety is pending", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
       classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
@@ -2052,13 +2120,12 @@ describe("routerExtension", () => {
     });
     startAgentRun(result);
 
-    const blocked = result.hooks.get("tool_call")({
+    const observed = result.hooks.get("tool_call")({
       toolCallId: "edit-while-pending",
       toolName: "edit",
       input: { path: "README.md", oldString: "old", newString: "new" },
     });
-    assert.equal(blocked.block, true);
-    assert.match(blocked.reason, /Secondary safety classification is pending/);
+    assert.equal(observed, undefined, "pending secondary advice never blocks tools");
     for (const [toolName, input] of [
       ["submit_implementation_plan", {}],
       [
@@ -2119,13 +2186,13 @@ describe("routerExtension", () => {
     assert.equal(injected, true);
     assert.equal(secondaryStarted, true, "the reserved safety question must have a classifier that can answer it");
     startAgentRun(result);
-    assert.match(
+    assert.equal(
       result.hooks.get("tool_call")({
         toolCallId: "edit-while-pending",
         toolName: "edit",
         input: { path: "README.md", oldString: "old", newString: "new" },
-      }).reason,
-      /Secondary safety classification is pending/,
+      }),
+      undefined,
     );
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
     await flushMicrotasks();
@@ -2137,11 +2204,11 @@ describe("routerExtension", () => {
         input: { path: "README.md", oldString: "old", newString: "new" },
       }),
       undefined,
-      "the latch resolves once the secondary answers",
+      "tools remain available after the secondary answers",
     );
   });
 
-  it("retains the low-confidence mutation gate when the secondary never returns a usable answer", async () => {
+  it("retains unanswered secondary context without blocking tools when transport fails", async () => {
     const result = await runAdapterTurn({
       classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
       classifySecondaryTask: async () => {
@@ -2161,27 +2228,25 @@ describe("routerExtension", () => {
       "secondary_failed",
     );
 
-    // The safety question the gate exists for was never answered, so the latch must not lift just
-    // because the attempt is terminal.
-    const blocked = result.hooks.get("tool_call")({
+    // An unanswered secondary remains advisory context even after the attempt is terminal.
+    const observed = result.hooks.get("tool_call")({
       toolCallId: "edit-after-unresolved-secondary",
       toolName: "edit",
       input: { path: "README.md", oldString: "old", newString: "new" },
     });
-    assert.equal(blocked.block, true);
-    assert.match(blocked.reason, /Secondary safety classification is pending/);
+    assert.equal(observed, undefined, "pending secondary advice never blocks tools");
 
-    // A manual override is the operator's escape hatch and clears the retained latch.
+    // A manual override clears retained classifier context, not a tool restriction.
     await result.hooks.get("model_select")({ source: "user", model: standardRoutingModels()[1] }, result.ctx);
     const afterOverride = result.hooks.get("tool_call")({
       toolCallId: "edit-after-manual-override",
       toolName: "edit",
       input: { path: "README.md", oldString: "old", newString: "new" },
     });
-    if (afterOverride?.block) assert.doesNotMatch(afterOverride.reason, /Secondary safety classification is pending/);
+    assert.equal(afterOverride, undefined, "manual overrides also leave tools available");
   });
 
-  it("retains the mutation gate when the secondary returns no schema-valid provider-diverse answer", async () => {
+  it("keeps tools available when the secondary returns no schema-valid provider-diverse answer", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
       classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
@@ -2199,13 +2264,12 @@ describe("routerExtension", () => {
     await settleAgentRun(result);
     await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
 
-    const blocked = result.hooks.get("tool_call")({
+    const observed = result.hooks.get("tool_call")({
       toolCallId: "edit-after-schema-exhausted-secondary",
       toolName: "edit",
       input: { path: "README.md", oldString: "old", newString: "new" },
     });
-    assert.equal(blocked.block, true);
-    assert.match(blocked.reason, /Secondary safety classification is pending/);
+    assert.equal(observed, undefined, "pending secondary advice never blocks tools");
   });
 
   it("reaches the pre-request boundary when settlement telemetry is slower than the classifier", async () => {
@@ -2258,7 +2322,7 @@ describe("routerExtension", () => {
     assert.equal(result.abortCount, 0);
   });
 
-  it("keeps the mutation gate when a safety-relevant correction is never installed", async () => {
+  it("keeps tools available when a safety-relevant correction is never installed", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
       classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
@@ -2271,8 +2335,8 @@ describe("routerExtension", () => {
     startAgentRun(result);
     await settleAgentRun(result);
 
-    // The task has already ended, so this stricter correction cannot be installed; the lease keeps
-    // the weaker primary policy and must stay fail-closed for mutating tools.
+    // The task has already ended, so this stricter correction cannot be installed. The retained
+    // primary policy remains advisory and does not restrict tools.
     secondary.resolve(
       classificationResult(2, {
         confidence: 0.95,
@@ -2286,16 +2350,15 @@ describe("routerExtension", () => {
     assert.equal(reconciliation?.data.accepted, false);
     assert.equal(reconciliation?.data.safetyRelevant, true);
 
-    const blocked = result.hooks.get("tool_call")({
+    const observed = result.hooks.get("tool_call")({
       toolCallId: "edit-after-uninstalled-safety-correction",
       toolName: "edit",
       input: { path: "README.md", oldString: "old", newString: "new" },
     });
-    assert.equal(blocked.block, true);
-    assert.match(blocked.reason, /Secondary safety classification is pending/);
+    assert.equal(observed, undefined, "pending secondary advice never blocks tools");
   });
 
-  it("keeps the low-confidence latch across compaction while discarding the stale secondary", async () => {
+  it("preserves low-confidence context across compaction without blocking tools or accepting stale results", async () => {
     const secondary = deferred();
     let secondarySignal;
     const result = await runAdapterTurn({
@@ -2313,15 +2376,13 @@ describe("routerExtension", () => {
     await result.hooks.get("session_compact")({}, result.ctx);
     assert.equal(secondarySignal.aborted, true);
 
-    // Compaction keeps the lease and lets a running turn finish, so the unreconciled
-    // low-confidence primary must stay fail-closed for mutating tools.
-    const blocked = result.hooks.get("tool_call")({
+    // Compaction keeps the lease and discards stale secondary work without restricting tools.
+    const observed = result.hooks.get("tool_call")({
       toolCallId: "edit-after-compaction",
       toolName: "edit",
       input: { path: "README.md", oldString: "old", newString: "new" },
     });
-    assert.equal(blocked.block, true);
-    assert.match(blocked.reason, /Secondary safety classification is pending/);
+    assert.equal(observed, undefined, "pending secondary advice never blocks tools");
 
     const reconciliationCount = result.events.filter(({ kind }) => kind === "secondary_reconciliation").length;
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
@@ -2471,7 +2532,7 @@ describe("routerExtension", () => {
     );
   });
 
-  it("keeps the low-confidence mutation gate while settlement telemetry is pending", async () => {
+  it("keeps tools available while secondary settlement telemetry is pending", async () => {
     const secondary = deferred();
     const telemetryStarted = deferred();
     const releaseTelemetry = deferred();
@@ -2498,13 +2559,12 @@ describe("routerExtension", () => {
 
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
     await telemetryStarted.promise;
-    const blocked = result.hooks.get("tool_call")({
+    const observed = result.hooks.get("tool_call")({
       toolCallId: "edit-during-settlement-telemetry",
       toolName: "edit",
       input: { path: "README.md", oldString: "old", newString: "new" },
     });
-    assert.equal(blocked.block, true);
-    assert.match(blocked.reason, /Secondary safety classification is pending/);
+    assert.equal(observed, undefined, "pending secondary advice never blocks tools");
 
     releaseTelemetry.resolve();
     await flushMicrotasks();
@@ -4747,7 +4807,7 @@ describe("routerExtension", () => {
     }
   });
 
-  it("authorizes only an approved exact irreversible-action plan and invalidates it on user input", async () => {
+  it("records independent exact-plan feedback and invalidates it on user input without blocking tools", async () => {
     const hooks = new Map();
     const tools = new Map();
     const appended = [];
@@ -4885,7 +4945,7 @@ describe("routerExtension", () => {
         { prompt: "Perform the generated review", systemPrompt: "base" },
         ctx,
       );
-      assert.match(reviewStart.systemPrompt, /read-only authorization review/);
+      assert.match(reviewStart.systemPrompt, /authorization review on scope/);
       assert.deepEqual(activeTools, ["read", "bash", "submit_safety_review"]);
       hooks.get("agent_start")();
       await tools.get("submit_safety_review").execute(
@@ -4925,25 +4985,22 @@ describe("routerExtension", () => {
         { prompt: "Inspect and plan the production change", systemPrompt: "base" },
         ctx,
       );
-      assert.match(preflightStart.systemPrompt, /Safety lifecycle: remain non-mutating/);
+      assert.match(preflightStart.systemPrompt, /Safety advisory \(non-blocking\)/);
       assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_discovery_request"]);
-      assert.match(
-        hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
-        /preflight/,
-      );
+      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
       await assert.rejects(
         tools.get("submit_safety_review").execute("premature-review", {}, undefined, undefined, ctx),
-        /active generated independent review/,
+        /accepts submissions during an active generated independent review/,
       );
       await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
       await hooks.get("agent_settled")({}, ctx);
       // Pi skips before_agent_start on generated turns: exposure must already match the review.
       assert.deepEqual(activeTools, ["read", "bash", "submit_safety_review"]);
       const rejectedChild = latestLease();
-      assert.match(hooks.get("tool_call")({ toolName: "submit_action_plan", input: {} }).reason, /read-only/);
+      assert.equal(hooks.get("tool_call")({ toolName: "submit_action_plan", input: {} }), undefined);
       await assert.rejects(
         tools.get("submit_action_plan").execute("review-plan", irreversibleActionPlan(), undefined, undefined, ctx),
-        /active irreversible-action preflight/,
+        /accepts submissions during active irreversible-action preflight/,
       );
       assert.equal(rejectedChild.lifecycle.reviewKind, "authorization");
       await completeReview(rejectedChild, "reject");
@@ -4970,18 +5027,15 @@ describe("routerExtension", () => {
       assert.equal(sent.length, 3, "approval adds the second review request and one execution continuation");
       await assert.rejects(
         tools.get("submit_safety_review").execute("late-review", {}, undefined, undefined, ctx),
-        /active generated independent review/,
+        /accepts submissions during an active generated independent review/,
       );
       assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
-      assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /outside/);
+      assert.equal(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }), undefined);
 
       await hooks.get("input")({ text: "Change the target and continue", source: "interactive" }, ctx);
       assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_discovery_request"]);
       assert.equal(latestLease().lifecycle.phase, "preflight");
-      assert.match(
-        hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
-        /preflight/,
-      );
+      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
     } finally {
       if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
       else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
@@ -5121,9 +5175,9 @@ describe("routerExtension", () => {
           assert.equal(boundary.data.action, "continue");
           assert.equal(latestLease().taskId, parent.taskId);
           assert.equal(latestLease().lifecycle.phase, "preflight");
-          assert.match(
-            hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
-            /preflight/,
+          assert.equal(
+            hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }),
+            undefined,
           );
         }
       } finally {
@@ -5381,10 +5435,7 @@ describe("routerExtension", () => {
           false,
           "no state after the interruption may carry the revoked authorization",
         );
-        assert.match(
-          hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
-          /preflight/,
-        );
+        assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
       } finally {
         fixture.restoreEnvironment();
       }
@@ -5471,17 +5522,14 @@ describe("routerExtension", () => {
           [parent.selected.provider, parent.selected.modelId],
           "the next user turn runs on the builder",
         );
-        assert.match(
-          hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }).reason,
-          /Irreversible-action preflight/,
-        );
+        assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
       } finally {
         restoreEnvironment();
       }
     });
   }
 
-  it("gates input that arrives during a new session's startup as a new task, not the previous session's lease", async () => {
+  it("classifies input during a new session's startup as a new task, not the previous session's lease", async () => {
     const { hooks, parent, ctx, latestLease, restoreEnvironment, onExec } = await authorizationLifecycleFixture();
     try {
       await hooks.get("session_start")({ reason: "reload" }, ctx);
@@ -5841,18 +5889,18 @@ describe("routerExtension", () => {
       assert.match(messages.at(-1).message.content, /NOT the final action plan/);
       assert.match(messages.at(-1).message.content, /glean search owner/);
       assert.match(messages.at(-1).message.content, /<untrusted_discovery_request>/);
-      assert.match(
-        hooks.get("tool_call")({ toolCallId: "review-call", toolName: "bash", input: request.input }, ctx).reason,
-        /read-only/,
+      assert.equal(
+        hooks.get("tool_call")({ toolCallId: "review-call", toolName: "bash", input: request.input }, ctx),
+        undefined,
       );
-      assert.match(
+      assert.equal(
         hooks.get("tool_call")(
           { toolCallId: "review-request", toolName: "submit_discovery_request", input: request },
           ctx,
-        ).reason,
-        /read-only/,
+        ),
+        undefined,
       );
-      await assert.rejects(submit(), /active irreversible-action preflight/);
+      await assert.rejects(submit(), /accepts submissions during active irreversible-action preflight/);
       ctx.model = models[1];
       await tools.get("submit_safety_review").execute(
         "verdict",
@@ -5914,16 +5962,16 @@ describe("routerExtension", () => {
     await submit();
     assert.equal(latest().lifecycle.discovery.sessionId, sessionId);
     assert.equal(latest().lifecycle.discovery.cwd, ctx.cwd);
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "premature", toolName: "bash", input: request.input }, ctx).reason,
-      /preflight/,
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "premature", toolName: "bash", input: request.input }, ctx),
+      undefined,
     );
     await review("reject");
     assert.equal(latest().lifecycle.phase, "preflight");
     assert.equal(latest().lifecycle.discovery, undefined);
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "rejected", toolName: "bash", input: request.input }, ctx).reason,
-      /preflight/,
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "rejected", toolName: "bash", input: request.input }, ctx),
+      undefined,
     );
     ctx.model = models[0];
     await submit();
@@ -5931,21 +5979,21 @@ describe("routerExtension", () => {
     assert.equal(latest().lifecycle.phase, "discovery_ready");
     assert.equal(latest().lifecycle.grant.reviewTaskId, child.taskId);
     assert.equal(latest().lifecycle.grant.sessionId, sessionId);
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "wrong", toolName: "bash", input: { command: "glean search other" } }, ctx)
-        .reason,
-      /does not match/,
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "wrong", toolName: "bash", input: { command: "glean search other" } }, ctx),
+      undefined,
     );
     assert.equal(latest().lifecycle.phase, "discovery_ready");
     assert.equal(
       hooks.get("tool_call")({ toolCallId: "status", toolName: "bash", input: { command: "git status" } }, ctx),
       undefined,
     );
-    assert.equal(latest().lifecycle.phase, "discovery_ready", "read-only inspection does not spend the grant");
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "edit", toolName: "edit", input: {} }, ctx).reason,
-      /Only the exact approved/,
+    assert.equal(
+      latest().lifecycle.phase,
+      "discovery_ready",
+      "a non-matching inspection call does not spend the discovery record",
     );
+    assert.equal(hooks.get("tool_call")({ toolCallId: "edit", toolName: "edit", input: {} }, ctx), undefined);
     assert.equal(
       hooks.get("tool_call")({ toolCallId: "read", toolName: "read", input: { path: "x" } }, ctx),
       undefined,
@@ -5954,10 +6002,10 @@ describe("routerExtension", () => {
       hooks.get("tool_call")({ toolCallId: "approved", toolName: "bash", input: request.input }, ctx),
       undefined,
     );
-    assert.equal(latest().lifecycle.phase, "preflight", "grant must be spent synchronously before dispatch");
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "replay", toolName: "bash", input: request.input }, ctx).reason,
-      /preflight/,
+    assert.equal(latest().lifecycle.phase, "preflight", "a matching call spends the discovery record synchronously");
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "replay", toolName: "bash", input: request.input }, ctx),
+      undefined,
     );
     hooks.get("tool_execution_end")({ toolCallId: "approved", toolName: "bash", isError: true }, ctx);
     await waitUntil(() => events.some((event) => event.data.discoveryCallId === "approved"));
@@ -5968,18 +6016,18 @@ describe("routerExtension", () => {
     await review("approve");
     await hooks.get("input")({ text: "New intent", source: "interactive" }, ctx);
     assert.equal(latest().lifecycle.phase, "preflight");
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "after-input", toolName: "bash", input: request.input }, ctx).reason,
-      /preflight/,
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "after-input", toolName: "bash", input: request.input }, ctx),
+      undefined,
     );
     ctx.model = models[0];
     await submit();
     await review("approve");
     const compacting = hooks.get("session_compact")({}, ctx);
     assert.equal(
-      hooks.get("tool_call")({ toolCallId: "during-compaction", toolName: "bash", input: request.input }, ctx)?.block,
-      true,
-      "compaction revokes the grant before its first await",
+      hooks.get("tool_call")({ toolCallId: "during-compaction", toolName: "bash", input: request.input }, ctx),
+      undefined,
+      "compaction revokes discovery evidence without blocking the underlying tool",
     );
     await compacting;
     assert.equal(latest().lifecycle.phase, "preflight", "compaction revokes an unspent grant");
@@ -5990,12 +6038,12 @@ describe("routerExtension", () => {
     assert.equal(latest().lifecycle.phase, "preflight", "router off revokes an unspent grant");
     assert.match(
       messages.findLast(({ message }) => message.details?.reconciliation === "router_off")?.message.content,
-      /discovery_ready safety lifecycle no longer restricts tools/,
+      /Advisory discovery_ready guidance is paused/,
     );
     await commands.get("route").handler("active", ctx);
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "after-off", toolName: "bash", input: request.input }, ctx).reason,
-      /preflight/,
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "after-off", toolName: "bash", input: request.input }, ctx),
+      undefined,
     );
     ctx.model = models[0];
     await submit();
@@ -6005,7 +6053,7 @@ describe("routerExtension", () => {
       { toolCallId: "during-model-override", toolName: "bash", input: request.input },
       ctx,
     );
-    assert.equal(duringModelOverride?.block, true, "a model override revokes the grant before its first await");
+    assert.equal(duringModelOverride, undefined, "a model override revokes discovery evidence, not tool access");
     await selecting;
     assert.equal(latest().lifecycle.phase, "preflight", "manual override revokes an unspent grant");
     await commands.get("route").handler("active", ctx);
@@ -6017,7 +6065,7 @@ describe("routerExtension", () => {
       { toolCallId: "during-effort-override", toolName: "bash", input: request.input },
       ctx,
     );
-    assert.equal(duringEffortOverride?.block, true, "an effort override revokes the grant before its first await");
+    assert.equal(duringEffortOverride, undefined, "an effort override revokes discovery evidence, not tool access");
     await leveling;
     assert.equal(latest().lifecycle.phase, "preflight", "an effort override revokes an unspent grant");
     await commands.get("route").handler("active", ctx);
@@ -6031,9 +6079,9 @@ describe("routerExtension", () => {
     await submit();
     await review("approve");
     sessionId = "other-session";
-    assert.match(
-      hooks.get("tool_call")({ toolCallId: "other-session", toolName: "bash", input: request.input }, ctx).reason,
-      /does not match/,
+    assert.equal(
+      hooks.get("tool_call")({ toolCallId: "other-session", toolName: "bash", input: request.input }, ctx),
+      undefined,
     );
     assert.equal(latest().lifecycle.phase, "discovery_ready", "a mismatched context cannot spend the grant");
     branch[0].data = { mode: "active", manualOverride: false, active: latest() };
@@ -6079,7 +6127,7 @@ describe("routerExtension", () => {
     );
     await hooks.get("agent_settled")({}, ctx);
     const finalReview = latest();
-    assert.equal(finalReview.lifecycle.phase, "review", "final action requires a separate review");
+    assert.equal(finalReview.lifecycle.phase, "review", "the final plan receives a separate scoped review");
     assert.notEqual(finalReview.lifecycle.scopeFingerprint, child.lifecycle.scopeFingerprint);
     ctx.model = models[1];
     await tools.get("submit_safety_review").execute(
@@ -6150,7 +6198,8 @@ describe("routerExtension", () => {
       ctx,
     );
     const approvals = () =>
-      messages.filter(({ message }) => /One exact discovery call is approved/.test(message.content)).length;
+      messages.filter(({ message }) => /Independent review approved one exact discovery call/.test(message.content))
+        .length;
     const approvalsBefore = approvals();
     const model = deferred();
     modelGate = model.promise;
@@ -6352,8 +6401,8 @@ describe("routerExtension", () => {
     assert.match(latest().lifecycle.lastAuthorizationReview.summary, /could not be restored/);
     assert.equal(approvals(), approvalsBeforeFailure, "a withheld approval must not be announced");
     assert.equal(
-      hooks.get("tool_call")({ toolCallId: "unrestored", toolName: "bash", input: request.input }, ctx)?.block,
-      true,
+      hooks.get("tool_call")({ toolCallId: "unrestored", toolName: "bash", input: request.input }, ctx),
+      undefined,
     );
     // Model-written request text cannot add instruction lines or close the untrusted block.
     ctx.model = models[0];
@@ -6419,7 +6468,7 @@ describe("routerExtension", () => {
     );
     setModelResult = true;
     // New input during settlement's builder switch supersedes the settled run: no failure notice, no
-    // generated follow-up, and while the reviewer is still selected submissions stay blocked until that input's turn
+    // generated follow-up, and while the reviewer is still selected validators remain unavailable until that input's turn
     // preparation restores the builder.
     const supersededSwitch = deferred();
     modelGate = supersededSwitch.promise;
@@ -6651,7 +6700,7 @@ describe("routerExtension", () => {
   });
 
   for (const inactiveMode of ["off", "shadow"]) {
-    it(`keeps preflight blocked when /route ${inactiveMode} hands back a running review until the builder is restored`, async () => {
+    it(`hides preflight validators when /route ${inactiveMode} hands back a review until the builder is restored`, async () => {
       let outcomeGate;
       const result = await runAdapterTurn({
         classifyTask: successfulClassifier(1, {
@@ -6726,7 +6775,7 @@ describe("routerExtension", () => {
         result.ctx,
       );
       // The hand-back installs the parent before awaiting its outcome telemetry; re-enabling during that await
-      // restores the submission tools at once, so the parent must already be blocked.
+      // refreshes validator visibility at once, so the unrestored parent's validators must stay hidden.
       const handBackTelemetry = deferred();
       outcomeGate = handBackTelemetry;
       const settling = result.hooks.get("agent_settled")({}, result.ctx);
@@ -6736,7 +6785,7 @@ describe("routerExtension", () => {
       assert.equal(
         result.activeTools.includes("submit_discovery_request"),
         false,
-        "a blocked preflight validator is not advertised",
+        "a preflight validator for an unrestored builder is not advertised",
       );
       handBackTelemetry.resolve();
       await settling;
@@ -6824,11 +6873,10 @@ describe("routerExtension", () => {
       { toolCallId: "unapproved", toolName: "bash", input: { command: "rotate production credential" } },
       result.ctx,
     );
-    assert.match(decision.reason, /preflight/);
-    assert.doesNotMatch(decision.reason, /Secondary safety classification is pending/);
+    assert.equal(decision, undefined, "neither preflight nor secondary context restricts tools");
   });
 
-  it("keeps the parent's secondary safety latch when classification fails during its review", async () => {
+  it("preserves the parent's secondary context across review and reload without blocking tools", async () => {
     await fc.assert(
       fc.asyncProperty(fc.constantFrom("transport", "schema", "valid"), fc.boolean(), async (failure, afterVerdict) => {
         const secondary = deferred();
@@ -6901,31 +6949,30 @@ describe("routerExtension", () => {
           },
           result.ctx,
         );
-        if (failure === "valid")
-          assert.equal(decision, undefined, "a reconciled provider-diverse answer releases the gate");
-        else {
-          assert.equal(
-            decision?.block,
-            true,
-            "review approval must not resolve an unanswered secondary safety question",
-          );
-          assert.match(decision.reason, /Secondary safety classification is pending/);
-        }
+        assert.equal(decision, undefined, "secondary reconciliation never determines tool availability");
+        assert.equal(
+          result.appended.findLast((entry) => entry.customType === "model-router-state").data.secondarySafetyPending,
+          failure !== "valid",
+          "independent review does not answer an unresolved secondary classification",
+        );
         result.ctx.sessionManager.getBranch = () => result.appended.map((entry) => ({ type: "custom", ...entry }));
         await result.hooks.get("session_start")({ reason: "reload" }, result.ctx);
         const restoredDecision = result.hooks.get("tool_call")(
           { toolCallId: "after-reload", toolName: "bash", input: { command: "rotate production credential" } },
           result.ctx,
         );
-        if (failure === "valid") assert.equal(restoredDecision, undefined);
-        else assert.match(restoredDecision.reason, /Secondary safety classification is pending/);
+        assert.equal(restoredDecision, undefined, "restored secondary context remains non-blocking");
+        assert.equal(
+          result.appended.findLast((entry) => entry.customType === "model-router-state").data.secondarySafetyPending,
+          failure !== "valid",
+          "restoration preserves the secondary classification context",
+        );
         const reload = result.hooks.get("session_start")({ reason: "reload" }, result.ctx);
         const duringReload = result.hooks.get("tool_call")(
           { toolCallId: "during-reload", toolName: "bash", input: { command: "rotate production credential" } },
           result.ctx,
         );
-        assert.equal(duringReload?.block, true, "authorization must be closed while restoration awaits");
-        assert.match(duringReload.reason, /preflight/);
+        assert.equal(duringReload, undefined, "restoration does not interrupt tool access");
         await result.hooks.get("input")(
           { text: "Cancel rotation; investigate instead", source: "interactive" },
           result.ctx,
@@ -6935,13 +6982,13 @@ describe("routerExtension", () => {
           { toolCallId: "superseded-reload", toolName: "bash", input: { command: "rotate production credential" } },
           result.ctx,
         );
-        assert.equal(supersededRestore?.block, true, "new input must supersede the persisted authorization");
+        assert.equal(supersededRestore, undefined, "superseding input invalidates evidence without blocking tools");
       }),
       fastCheckOptions,
     );
   });
 
-  it("spends discovery approval even when the secondary safety gate blocks dispatch", async () => {
+  it("observes discovery once while secondary advice is pending without blocking dispatch", async () => {
     const secondary = deferred();
     const result = await runAdapterTurn({
       classifyPrimaryTask: async () =>
@@ -6984,12 +7031,12 @@ describe("routerExtension", () => {
       "review",
       JSON.stringify(result.events.filter((event) => event.kind === "route_decision")),
     );
-    assert.match(
+    assert.equal(
       result.hooks.get("tool_call")(
         { toolCallId: "review-discovery", toolName: "bash", input: request.input },
         result.ctx,
-      ).reason,
-      /read-only/,
+      ),
+      undefined,
     );
     startAgentRun(result);
     await result.tools.get("submit_safety_review").execute(
@@ -7008,22 +7055,25 @@ describe("routerExtension", () => {
     );
     await settleAgentRun(result);
     assert.equal(latest().lifecycle.phase, "discovery_ready");
-    const blocked = result.hooks.get("tool_call")(
-      { toolCallId: "blocked-discovery", toolName: "bash", input: request.input },
+    const observed = result.hooks.get("tool_call")(
+      { toolCallId: "observed-discovery", toolName: "bash", input: request.input },
       result.ctx,
     );
-    assert.match(blocked.reason, /Secondary safety classification is pending/);
-    assert.equal(latest().lifecycle.phase, "preflight", "the secondary gate must not leave a reusable grant");
-    assert.match(
-      result.hooks.get("tool_call")({ toolCallId: "replay", toolName: "bash", input: request.input }, result.ctx)
-        .reason,
-      /preflight/,
+    assert.equal(observed, undefined, "secondary advice does not restrict discovery dispatch");
+    assert.equal(
+      latest().lifecycle.phase,
+      "preflight",
+      "the matching observation must not leave a reusable discovery record",
+    );
+    assert.equal(
+      result.hooks.get("tool_call")({ toolCallId: "replay", toolName: "bash", input: request.input }, result.ctx),
+      undefined,
     );
     secondary.resolve(classificationResult(2, { confidence: 0.95 }));
     await flushMicrotasks();
   });
 
-  it("runs a required completion review as a read-only child lease and restores the builder", async () => {
+  it("runs a scoped completion-review child lease and restores the builder", async () => {
     const hooks = new Map();
     const appended = [];
     const sent = [];
@@ -7172,13 +7222,10 @@ describe("routerExtension", () => {
       assert.equal(child.lifecycle.reviewKind, "completion");
       assert.equal(child.archetype, "code_review");
       assert.notEqual(child.selected.vendor, "openai");
-      assert.match(hooks.get("tool_call")({ toolName: "edit", input: {} }).reason, /read-only/);
+      assert.equal(hooks.get("tool_call")({ toolName: "edit", input: {} }), undefined);
       assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff --stat" } }), undefined);
-      assert.match(
-        hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff | sh" } }).reason,
-        /read-only/,
-      );
-      assert.match(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }).reason, /read-only/);
+      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff | sh" } }), undefined);
+      assert.equal(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }), undefined);
       await hooks.get("agent_settled")({}, ctx);
       assert.equal(appended.at(-1).data.active.taskId, child.taskId, "pending review must not restore its parent");
       ctx.model = selectedModels[0];
