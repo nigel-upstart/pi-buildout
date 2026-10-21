@@ -245,8 +245,8 @@ Review routing has two deliberately separate forms:
 - A generated plan or completion review has a tracked parent/builder lease. It tries the eligible non-builder reviewer
   vendors sequentially (with a floor of two) and is instructed to inspect without mutation. It never falls back to the
   builder: a builder cannot independently review its own plan, and a non-independent verdict must not be mislabeled as
-  completion review. Exhaustion restores the parent with an explicit unavailable/skipped outcome and cautionary
-  guidance; execution is never blocked by the router.
+  completion review. Exhaustion records an unavailable outcome in telemetry and a human warning, but no advice message;
+  execution is never blocked by the router.
 - A standalone user-requested review has no parent and no assumed builder. Before model selection, the router gathers a
   bounded non-mutating view of the local delta or referenced pull request and classifies the delta's scope, languages,
   complexity, risk, horizon, context, and tool needs. It then uses the ordinary feature-based `code_review` policy and
@@ -322,9 +322,9 @@ reviewer verdicts and unresolved secondary classification inform prompts, status
 not execution permissions. There is no router shell parser, read-only dispatch allowlist, plan-tool-name enforcement, or
 single-use execution grant in this contract.
 
-Every v2 task lease persists a discriminated lifecycle. Parent linkage alone has no safety meaning and is valid only on
-an explicit generated `review` lifecycle. Restored v1, malformed, implicitly parent-linked, wrong-policy, stale-plan, or
-wrong-scope states are discarded rather than inferred. Discarding state never withdraws ordinary tools.
+Every v2 task lease persists a discriminated builder lifecycle. Generated reviews run in separate in-memory SDK
+sessions, never child leases. Legacy persisted review children restore their builder; malformed states are discarded.
+Discarding state never withdraws ordinary tools.
 
 The policy derived once at task creation is one of:
 
@@ -337,7 +337,8 @@ The policy derived once at task creation is one of:
 Phases steer rather than gate. `planning` recommends inspection and `submit_action_plan`; pending plan review recommends
 ending the turn and waiting for advice; `executing` recommends carrying out the task and collecting evidence; completion
 review delivers findings, then `completed` records them. The router never blocks tools or narrows builder tools. It may
-hide only its own validators outside their accepting phases.
+hide only its own validators outside their accepting phases. Reviewer transport never changes the builder model, effort,
+prompt profile, or provider conversation cache. Reviewers have only native read/grep/find/ls and a private verdict tool.
 
 An action plan names concrete targets, steps, effects (which may be reversible), preconditions, verification, rollback,
 abort conditions, and `toolNames`. The reviewer evaluates the plan as untrusted data. `approve` or `proceed` advances to
@@ -361,8 +362,7 @@ Automatic completion reviews remain limited to these existing high-risk policies
 delta attributable to the task, recorded successful mutation, diff evidence, and the latest result of every recorded
 deterministic check to pass. Stale failures do not override a later pass of the same command. Work executed during
 planning without an action plan still receives a completion review after its `action_plan` note. A prose-only reviewer
-response is not a validated review: the run hands back to the parent as unavailable, without fallback. Evidence recorded
-during a review stays with the task after hand-back.
+response is not a validated review.
 
 The PR-count bands in the table above (`1 PR`, `2–10 PRs`, `11–100 PRs`) are the `HORIZONS` enum in
 [`core/features.ts`](../../extensions/router/core/features.ts) — a coarse classification taxonomy, not tunable
@@ -529,8 +529,8 @@ under another model family's prompt profile.
   result is discarded rather than applied, including when routing is re-enabled before it finishes. The dormant lease
   may be reused only after routing is explicitly re-enabled.
 
-- A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
-  explicit lease transitions, not fresh classifications.
+- A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts are explicit transitions;
+  independent review sessions do not replace the builder or perform fresh task classification.
 - Classifier work is bounded by router-owned per-stage deadlines; abort/timeout is terminal across attempts within that
   stage, endpoints, and escalation, and classification failure cannot replace the retained selection.
 - A telemetry append rejection or 250 ms caller deadline disables active routing for the session and cannot be hidden by
