@@ -6558,8 +6558,17 @@ describe("routerExtension", () => {
     try {
       await launchReview(fixture);
       await waitForReview(() => notes.some((note) => /could not start/.test(note)));
-      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
-      const failed = events.find((e) => e.kind === "outcome" && e.data.reviewStatus === "unroutable");
+      // The note precedes the awaited telemetry write; poll until the outcome is on disk.
+      let failed;
+      for (let i = 0; i < 200 && !failed; i++) {
+        const text = await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8").catch(() => "");
+        failed = text
+          .split("\n")
+          .filter(Boolean)
+          .map(JSON.parse)
+          .find((e) => e.kind === "outcome" && e.data.reviewStatus === "unroutable");
+        if (!failed) await new Promise((resolve) => setTimeout(resolve, 5));
+      }
       assert.equal(failed.data.reviewStage, "selection");
       assert.equal(failed.data.reviewRunner, undefined);
       assert.equal(runner.calls.length, 0);
