@@ -3263,8 +3263,10 @@ describe("routerExtension", () => {
     assert.equal(reconciliation?.data.secondaryDeadlineStage, undefined);
   });
 
-  for (const changeAt of ["correction", "recovery"]) {
-    it(`preserves an off-mode operator selection during ${changeAt} authentication`, async () => {
+  for (const { changeAt, changeKind } of ["correction", "recovery"].flatMap((changeAt) =>
+    ["model", "effort"].map((changeKind) => ({ changeAt, changeKind })),
+  )) {
+    it(`preserves an off-mode operator ${changeKind} selection during ${changeAt} authentication`, async () => {
       const secondary = deferred();
       const switching = deferred();
       const releaseSwitch = deferred();
@@ -3277,13 +3279,20 @@ describe("routerExtension", () => {
         models,
         mode: "active",
         prompt: "Implement one bounded repository change",
-        sessionId: `operator-choice-during-${changeAt}`,
+        sessionId: `operator-${changeKind}-choice-during-${changeAt}`,
       });
       const latest = () => result.appended.findLast(({ customType }) => customType === "model-router-state").data;
       const original = latest().active;
       startAgentRun(result);
       await settleAgentRun(result, { stopReason: "aborted" });
       const select = result.pi.setModel;
+      const setEffort = result.pi.setThinkingLevel;
+      result.pi.setThinkingLevel = (level) => {
+        const previousLevel = result.pi.getThinkingLevel();
+        setEffort(level);
+        if (level !== previousLevel)
+          void result.hooks.get("thinking_level_select")({ level, previousLevel }, result.ctx);
+      };
       let switchCount = 0;
       let correctionModel;
       result.pi.setModel = async (model) => {
@@ -3296,7 +3305,11 @@ describe("routerExtension", () => {
           restoring.resolve();
           await releaseRestore.promise;
         }
-        return select(model);
+        const selected = await select(model);
+        // Pi also resets effort synchronously after authentication, before model_select.
+        result.pi.setThinkingLevel("high");
+        await result.hooks.get("model_select")({ source: "set", model }, result.ctx);
+        return selected;
       };
       secondary.resolve(
         classificationResult(2, {
@@ -3312,15 +3325,23 @@ describe("routerExtension", () => {
         releaseSwitch.resolve();
         await restoring.promise;
       }
-      const operatorModel = models.find(
-        (model) => model.id !== original.selected.modelId && model.id !== correctionModel.id,
-      );
+      const operatorModel =
+        changeKind === "model"
+          ? models.find((model) => model.id !== original.selected.modelId && model.id !== correctionModel.id)
+          : result.ctx.model;
       assert.ok(operatorModel);
-      await select(operatorModel);
-      await result.hooks.get("model_select")({ source: "set", model: operatorModel }, result.ctx);
+      if (changeKind === "model") {
+        await select(operatorModel);
+        await result.hooks.get("model_select")({ source: "set", model: operatorModel }, result.ctx);
+      } else {
+        assert.equal(result.pi.getThinkingLevel(), "high");
+        result.pi.setThinkingLevel("low");
+      }
+      const eventsWhileOff = result.events.length;
+      const stateWhileOff = result.appended.length;
       if (changeAt === "correction") releaseSwitch.resolve();
       else releaseRestore.resolve();
-      await waitUntil(() => switchCount >= (changeAt === "recovery" ? 3 : 2));
+      await waitUntil(() => switchCount >= (changeKind === "model" && changeAt === "recovery" ? 3 : 2));
       await flushMicrotasks();
       assert.equal(
         result.ctx.model.id,
@@ -3328,6 +3349,9 @@ describe("routerExtension", () => {
         "uncancellable recovery must not overwrite a newer off-mode choice",
       );
       assert.equal(result.ctx.model.provider, operatorModel.provider);
+      if (changeKind === "effort") assert.equal(result.pi.getThinkingLevel(), "low");
+      assert.equal(result.events.length, eventsWhileOff, "off-mode effort changes must not emit router telemetry");
+      assert.equal(result.appended.length, stateWhileOff, "off-mode effort changes must not persist routing state");
       assert.equal(latest().mode, "off");
       assert.equal(latest().active.selected.modelId, original.selected.modelId);
       assert.equal(
