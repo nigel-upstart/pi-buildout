@@ -343,10 +343,10 @@ function builderHarness({ tools = [agentTool()], answer = agentAnswer(), publish
 }
 const argsFrom = (content) => JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
 const nonceOf = (text) => /nonce="([a-f0-9]{32})"/.exec(text)[1];
-const resultEvent = (text, isError = false, toolCallId = "call-1") => ({
+const resultEvent = (text, isError = false, toolCallId = "call-1", input = {}) => ({
   toolCallId,
   toolName: "Agent",
-  input: {},
+  input,
   content: [{ type: "text", text }],
   isError,
 });
@@ -361,10 +361,11 @@ test("builder path: exact validated call, observed nonce verdict, and an unchang
   assert.match(h.sent[0], /Do not request status, transcript, or verbose views/);
   h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: args });
   const wrapper = `Agent finished (tokens: 900)\nDone.\n<router-result nonce="${nonceOf(args.prompt)}">${JSON.stringify(verdict)}</router-result>`;
-  const event = resultEvent(wrapper);
+  const event = resultEvent(wrapper, false, "call-1", args);
   const before = structuredClone(event);
   assert.equal(h.runner.onToolResult(event), undefined, "observational: no replacement result");
   assert.deepEqual(event, before, "third-party wrapper text is left exactly as returned");
+  h.runner.onSettled();
   const result = await handle.result;
   assert.equal(result.status, "completed");
   assert.deepEqual(result.verdict, verdict);
@@ -405,7 +406,12 @@ test("echoed instructions and deviating calls never count as a verdict", async (
   const args = argsFrom(h.sent[0]);
   h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: { ...args, isolated: false } });
   h.runner.onToolResult(
-    resultEvent(`<router-result nonce="${nonceOf(args.prompt)}">${JSON.stringify(verdict)}</router-result>`),
+    resultEvent(
+      `<router-result nonce="${nonceOf(args.prompt)}">${JSON.stringify(verdict)}</router-result>`,
+      false,
+      "call-1",
+      { ...args, isolated: false },
+    ),
   );
   h.runner.onSettled();
   assert.equal((await handle.result).status, "uncertain", "a deviated child may still run: no replacement");
@@ -414,7 +420,8 @@ test("echoed instructions and deviating calls never count as a verdict", async (
   const echoed = echo.runner.start(reviewRequest());
   const echoArgs = argsFrom(echo.sent[0]);
   echo.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: echoArgs });
-  echo.runner.onToolResult(resultEvent(`Task was: ${echoArgs.prompt}`));
+  echo.runner.onToolResult(resultEvent(`Task was: ${echoArgs.prompt}`, false, "call-1", echoArgs));
+  echo.runner.onSettled();
   assert.equal((await echoed.result).status, "uncertain", "an echoed contract is not a verdict");
 });
 
@@ -431,8 +438,9 @@ test("only an exact invocation's deterministic argument rejection quarantines th
     const h = builderHarness();
     const handle = h.runner.start(reviewRequest());
     const args = argsFrom(h.sent[0]);
-    h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: exact ? args : { ...args, extra: 1 } });
-    h.runner.onToolResult(resultEvent(message, true));
+    const input = exact ? args : { ...args, extra: 1 };
+    h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input });
+    h.runner.onToolResult(resultEvent(message, true, "call-1", input));
     h.runner.onSettled();
     assert.equal((await handle.result).status, "failed", "one failed spawn launched nothing: fallback is safe");
     assert.deepEqual(h.quarantined, expected, message);
@@ -445,7 +453,7 @@ test("a failed spawn alongside a second spawn is uncertain, not a safe fallback"
   const args = argsFrom(h.sent[0]);
   h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: args });
   h.runner.onToolCall({ toolCallId: "call-2", toolName: "Agent", input: args });
-  h.runner.onToolResult(resultEvent("Unknown parameter: isolated", true));
+  h.runner.onToolResult(resultEvent("Unknown parameter: isolated", true, "call-1", args));
   h.runner.onSettled();
   assert.equal((await handle.result).status, "uncertain");
   assert.deepEqual(h.quarantined, [], "a duplicate invocation is not an exact single call");
@@ -490,9 +498,9 @@ test("a companion wait counts only when it matches its template and the spawned 
     const args = argsFrom(h.sent[0]);
     const block = `<router-result nonce="${nonceOf(args.task)}">${JSON.stringify(verdict)}</router-result>`;
     h.runner.onToolCall({ toolCallId: "spawn", toolName: "subagent", input: args });
-    h.runner.onToolResult({ ...resultEvent("Started child agent-42", false, "spawn"), toolName: "subagent" });
+    h.runner.onToolResult({ ...resultEvent("Started child agent-42", false, "spawn", args), toolName: "subagent" });
     h.runner.onToolCall({ toolCallId: "wait", toolName: "subagent", input: resultInput });
-    h.runner.onToolResult({ ...resultEvent(block, false, "wait"), toolName: "subagent" });
+    h.runner.onToolResult({ ...resultEvent(block, false, "wait", resultInput), toolName: "subagent" });
     h.runner.onSettled();
     return (await handle.result).status;
   };
@@ -522,9 +530,99 @@ test("settling without a spawn is a safe non-launch; a spawn without a verdict i
 
   const h = builderHarness();
   const handle = h.runner.start(reviewRequest());
-  h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: argsFrom(h.sent[0]) });
-  h.runner.onToolResult(resultEvent("agent-7 started in the background"));
+  const args = argsFrom(h.sent[0]);
+  h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: args });
+  h.runner.onToolResult(resultEvent("agent-7 started in the background", false, "call-1", args));
+  h.runner.onSettled();
   assert.equal((await handle.result).status, "uncertain");
+});
+
+test("decisions wait for settle: mutated execution, a later duplicate, or a user abort never complete", async () => {
+  const run = async (steps, aborted = false) => {
+    const h = builderHarness();
+    const handle = h.runner.start(reviewRequest());
+    const args = argsFrom(h.sent[0]);
+    const block = `<router-result nonce="${nonceOf(args.prompt)}">${JSON.stringify(verdict)}</router-result>`;
+    steps(h.runner, args, block);
+    h.runner.onSettled(aborted);
+    return (await handle.result).status;
+  };
+  const exactCall = (runner, args, block, input = args) => {
+    runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: args });
+    runner.onToolResult(resultEvent(block, false, "call-1", input));
+  };
+  assert.equal(await run(exactCall), "completed");
+  assert.equal(
+    await run((runner, args, block) => exactCall(runner, args, block, { ...args, isolated: false })),
+    "uncertain",
+    "a later handler mutated the executed input",
+  );
+  assert.equal(
+    await run((runner, args, block) => {
+      exactCall(runner, args, block);
+      runner.onToolCall({ toolCallId: "call-2", toolName: "Agent", input: args });
+    }),
+    "uncertain",
+    "a duplicate after the verdict invalidates it",
+  );
+  assert.equal(await run(exactCall, true), "cancelled", "Escape cancels instead of falling forward");
+});
+
+test("structurally invalid answers stay DIRTY; prototype paths and imprecise literals never ground", async () => {
+  const h = harness([agentTool()]);
+  h.discovery.observe();
+  h.calls[0].resolve(
+    agentAnswer({ spawnArguments: [...agentAnswer().spawnArguments, { path: "sandbox", literal: "1" }] }),
+  );
+  await tick();
+  assert.equal(h.discovery.observe(), undefined);
+  assert.equal(h.calls.length, 2, "the next access retries an unbindable answer");
+
+  const tools = [agentTool()];
+  const polluted = agentAnswer({
+    spawnArguments: [...agentAnswer().spawnArguments, { path: "__proto__.routerPolluted", literal: "true" }],
+  });
+  assert.equal(planFromAnswer(polluted, tools), undefined);
+  assert.equal({}.routerPolluted, undefined);
+
+  const signed = agentTool({
+    parameters: Type.Object({
+      prompt: Type.String(),
+      model: Type.String(),
+      effort: Type.String(),
+      level: Type.Number({ description: "If -1, the child loads no extensions." }),
+    }),
+  });
+  const signedAnswer = (literal) =>
+    agentAnswer({
+      spawnArguments: [
+        { path: "prompt", bind: "task" },
+        { path: "model", bind: "model" },
+        { path: "effort", bind: "effort" },
+        { path: "level", literal },
+      ],
+      isolationArgument: "level",
+      isolationEvidence: "If -1, the child loads no extensions.",
+    });
+  assert.ok(planFromAnswer(signedAnswer("-1"), [signed]));
+  assert.equal(planFromAnswer(signedAnswer("1"), [signed]), undefined, "the sign is meaningful");
+  assert.equal(
+    planFromAnswer(agentAnswer({ isolationEvidence: "If TRUE, agent gets no extension/MCP tools" }), tools),
+    undefined,
+  );
+});
+
+test("a missing companion retains quarantine only while the spawn contract is unchanged", () => {
+  const quarantine = createQuarantine();
+  const tools = [managerTool()];
+  const call = bindPlan(planFromAnswer(managerAnswer, tools), tools, values);
+  quarantine.add(
+    { ...call, result: { ...call.result, tool: { ...managerTool(), name: "wait_tool" } } },
+    "argument_rejected",
+  );
+  assert.equal(quarantine.blocks(managerTool(), tools), true, "companion missing, spawn unchanged");
+  const updated = agentTool({ name: "subagent", parameters: Type.Object({ task: Type.String() }) });
+  assert.equal(quarantine.blocks(updated, [updated]), false, "an updated spawn is reconsidered");
 });
 
 test("builder deadline is a timeout without replacement, and cancellation is stale", async () => {

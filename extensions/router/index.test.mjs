@@ -6363,6 +6363,8 @@ describe("routerExtension", () => {
       const before = structuredClone(event);
       assert.equal(await fixture.hooks.get("tool_result")(event, fixture.ctx), undefined);
       assert.deepEqual(event, before, "the third-party tool result is never modified");
+      // The delegation run settles; only then is the provisional verdict accepted.
+      await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
       await waitForReview(() => fixture.sent.some((s) => /Steered finding/.test(s.message.content)));
       assert.equal(runner.calls.length, 0, "the SDK fallback is unused");
       assert.equal(fixture.selectedModels.length, 0);

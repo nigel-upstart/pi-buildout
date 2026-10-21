@@ -3590,7 +3590,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("agent_settled", async (_event, ctx) => {
     // A builder-steered delegation run ends its observation window here.
-    builderRunner.onSettled();
+    builderRunner.onSettled(_event.aborted);
     // The settled run is bound to the epoch at its agent_end (or, without one, before the drain). Same-epoch
     // secondary reconciliation still applies, but input, a boundary, or a mode change since then supersedes it.
     const runEpoch = runEndEpoch ?? leaseOwner.epoch;
