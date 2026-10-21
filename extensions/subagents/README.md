@@ -24,8 +24,9 @@ the child.
 
 Use the existing `wait` action when this turn needs a child's result. A settled wait returns status metadata and only
 the bounded `lastAssistantText` (up to 45,000 characters), not the delegated task or working transcript. If there is no
-final assistant text, it returns metadata only; it never substitutes transcript text. Failure/stopped state and errors
-remain visible, so “settled” does not imply success. Usage metadata is retained.
+final assistant text, or the latest turn failed, stopped, or still has queued messages, it returns metadata only; it
+never substitutes stale final text or transcript text. Failure/stopped state and errors remain visible, so “settled”
+does not imply success. Usage metadata is retained.
 
 A timeout returns a concise still-active receipt and status metadata only—no partial assistant output, task echo,
 transcript, tool arguments, or stderr. It does not stop or interrupt the child. Call `wait` again for the result.
