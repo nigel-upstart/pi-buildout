@@ -20,6 +20,21 @@ The extension's `subagent` tool supports `create`, `list`, `status`, `wait`, `st
 `stop`. Creation is asynchronous and returns a direct-child id. `wait` is explicit and bounded: timing out never stops
 the child.
 
+## Waiting for results versus inspecting diagnostics
+
+Use the existing `wait` action when this turn needs a child's result. A settled wait returns status metadata and only
+the bounded `lastAssistantText` (up to 45,000 characters), not the delegated task or working transcript. If there is no
+final assistant text, it returns metadata only; it never substitutes transcript text. Failure/stopped state and errors
+remain visible, so “settled” does not imply success. Usage metadata is retained.
+
+A timeout returns a concise still-active receipt and status metadata only—no partial assistant output, task echo,
+transcript, tool arguments, or stderr. It does not stop or interrupt the child. Call `wait` again for the result.
+Cancellation likewise does not stop the child. These output rules apply to both the displayed content and result
+details.
+
+Use `status` explicitly for diagnostics, including the task, transcript tail, current tool, and stderr. Its behavior is
+unchanged. There is no output-mode parameter or transcript-tail selection API.
+
 ## Context and model selection
 
 `create` accepts optional `contextMode: "task_compacted" | "none"`. The default, `task_compacted`, preserves existing
