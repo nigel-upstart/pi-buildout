@@ -489,19 +489,26 @@ The builder must copy the arguments exactly, in its own context and at builder o
 fallback. Tasks over 12,000 characters (most diff-carrying completion reviews) therefore skip the builder path and use
 the SDK.
 
-Discovery publishes only a structurally bindable plan; anything else stays DIRTY for the next access. Argument paths
-named `__proto__`, `prototype`, or `constructor` are rejected. The isolation literal is matched case-sensitively with
-its sign and punctuation.
+Discovery publishes only a structurally bindable plan; anything else stays DIRTY for the next access. That check covers
+published paths, required fields, and bindings with placeholder values. Value constraints on bound fields are checked
+only at dispatch, with the parent's real values; the companion call is checked against its template once the child id
+exists. Argument paths named `__proto__`, `prototype`, or `constructor` are rejected. The isolation quote and literal
+are matched with case, sign, decimals, and punctuation preserved.
+
+A verdict completes only if it validates for the review's kind and exact scope. An invalid or foreign verdict from a
+launched child is uncertain, not a fallback. The delegation run itself never triggers planning repair or builder
+fallback.
 
 Candidate quarantine records only high-confidence contract incompatibility: an exact single invocation whose error
-rejects a bound argument by name ("Unknown parameter: isolated"). Rejected values such as "Unknown model" and
-operational wording such as not found, auth, rate limit, timeout, or Pi validation never quarantine. It is keyed by
-source path, namespace, and tool name, plus the spawn and result-tool schemas with annotations stripped from schema
-nodes only (property names and literal data kept), and exposure. Help-text edits, unrelated tools, and disappearance do
-not clear it; a meaningful schema change does. A missing companion keeps it only while the spawn contract is unchanged.
-The map holds 64 entries; when full it blocks every candidate rather than evicting evidence. Quarantined contracts are
-excluded from discovery input, so an answer repeating one cannot publish. Adding one aborts the flight and advances the
-generation without an eager refresh.
+rejects a bound argument by name ("Unknown parameter: isolated"). The extracted name must be one of the bound argument
+paths. Rejected values ("Invalid parameter model: must be ...", "Unknown model"), unbound names, and operational wording
+such as not found, auth, rate limit, timeout, or Pi validation never quarantine. It is keyed by source path, namespace,
+and tool name, plus the spawn and result-tool schemas with annotations stripped from schema nodes only (property names
+and literal data kept), and exposure. Help-text edits, unrelated tools, and disappearance do not clear it; a meaningful
+schema change does. A missing companion keeps it only while the spawn contract is unchanged. The map holds 64 entries;
+when full it blocks every candidate rather than evicting evidence. Quarantined contracts are excluded from discovery
+input, so an answer repeating one cannot publish. Adding one aborts the flight and advances the generation without an
+eager refresh.
 
 The **SDK** runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an
 empty `ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget.

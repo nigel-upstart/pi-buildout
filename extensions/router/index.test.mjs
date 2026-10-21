@@ -6340,6 +6340,23 @@ describe("routerExtension", () => {
       const nonce = /nonce="([a-f0-9]{32})"/.exec(args.prompt)[1];
       const scopeFingerprint = /scopeFingerprint "([a-f0-9]{64})"/.exec(args.prompt)[1];
       fixture.hooks.get("tool_call")({ toolCallId: "agent-call", toolName: "Agent", input: args }, fixture.ctx);
+      // The delegation run's own end never drives builder repair/fallback, even on a length stop.
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: "openai-codex",
+              model: "gpt-6-sol",
+              stopReason: "length",
+              content: [],
+              usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+      assert.equal(fixture.selectedModels.length, 0, "no builder fallback switch during delegation");
       const advice = {
         reviewKind: "plan",
         scopeFingerprint,
