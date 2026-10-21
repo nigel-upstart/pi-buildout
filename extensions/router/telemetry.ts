@@ -16,7 +16,8 @@ type TelemetryEventKind =
   | "route_decision"
   | "attempt_completed"
   | "fallback"
-  | "outcome";
+  | "outcome"
+  | "advisory_step_skipped";
 
 /** Correction application/deferral boundary; absent on legacy records. */
 export type SecondarySwapBoundary = "idle" | "next_run" | "dropped" | "rejected";

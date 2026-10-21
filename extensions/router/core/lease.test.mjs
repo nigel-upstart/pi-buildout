@@ -416,7 +416,7 @@ describe("task boundary gate", () => {
     const authorized = {
       ...active,
       features: { ...external, risk: "high" },
-      lifecycle: { phase: "preflight", policy: "authorization_then_completion_review", taskFingerprint: "task" },
+      lifecycle: { phase: "planning", policy: "plan_review_then_completion_review", taskFingerprint: "task" },
     };
     const relaxed = resolveContinuity(
       authorized,
@@ -434,7 +434,7 @@ describe("task boundary gate", () => {
         phase: "review",
         policy: "ordinary",
         taskFingerprint: "task",
-        reviewKind: "authorization",
+        reviewKind: "plan",
         scopeFingerprint: "scope",
       },
     };
@@ -476,7 +476,7 @@ describe("task boundary gate", () => {
     const advising = {
       ...completion,
       features: nonCodeFeatures,
-      lifecycle: { phase: "advisory_pending", policy: "advisory_then_completion_review", taskFingerprint: "task" },
+      lifecycle: { phase: "planning", policy: "plan_review_then_completion_review", taskFingerprint: "task" },
     };
     const backToCode = resolveContinuity(advising, { ...codeFeatures, taskContinuity: "clear_continuation" }, cache);
     assert.equal(backToCode.action, "continue", "the stricter advisory lease is kept");
