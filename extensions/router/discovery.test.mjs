@@ -684,9 +684,24 @@ test("a missing companion retains quarantine only while the spawn contract is un
   assert.equal(quarantine.blocks(updated, [updated]), false, "an updated spawn is reconsidered");
 });
 
+test("a timed-out attempt's run stays guarded until it settles, and no new attempt overlaps it", async () => {
+  const h = builderHarness();
+  assert.equal((await h.runner.start(reviewRequest({ timeoutMs: 5 })).result).status, "timeout");
+  assert.equal(h.runner.delegating(), true, "the dispatched run is still executing");
+  assert.equal((await h.runner.start(reviewRequest()).result).status, "unavailable");
+  assert.equal(h.sent.length, 1, "no second dispatch while the first run is alive");
+  h.runner.onSettled();
+  assert.equal(h.runner.delegating(), false);
+  const next = h.runner.start(reviewRequest());
+  assert.equal(h.sent.length, 2);
+  next.cancel();
+  assert.equal((await next.result).status, "cancelled");
+});
+
 test("builder deadline is a timeout without replacement, and cancellation is stale", async () => {
   const h = builderHarness();
   assert.equal((await h.runner.start(reviewRequest({ timeoutMs: 5 })).result).status, "timeout");
+  h.runner.onSettled();
   const handle = h.runner.start(reviewRequest());
   handle.cancel();
   assert.equal((await handle.result).status, "cancelled");

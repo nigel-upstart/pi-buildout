@@ -76,6 +76,8 @@ export function createBuilderReviewRunner(deps: {
   const textOf = (event: ToolResultEvent) =>
     event.content.flatMap((part) => (part.type === "text" && part.text ? [part.text] : [])).join("\n");
   let open: Attempt | undefined;
+  /** The dispatched run outlives a timed-out or cancelled attempt; only its settle clears this. */
+  let runInFlight = false;
   const zero = { cost: 0, inputTokens: 0, outputTokens: 0 };
   const unavailable = () => ({
     result: Promise.resolve<ReviewResult>({ status: "unavailable", usage: zero }),
@@ -85,7 +87,8 @@ export function createBuilderReviewRunner(deps: {
   });
   const runner: ReviewRunner = {
     start(request) {
-      if (open) return unavailable();
+      // Never overlap a still-running delegation run, even after its attempt timed out or was cancelled.
+      if (open || runInFlight) return unavailable();
       const nonce = newReviewNonce();
       const task = [
         request.systemPrompt,
@@ -138,6 +141,7 @@ export function createBuilderReviewRunner(deps: {
         Math.max(1, request.timeoutMs),
       );
       open = attempt;
+      runInFlight = true;
       deps.dispatch(
         [
           "Router review delegation (advisory; it blocks nothing and grants no permission).",
@@ -213,11 +217,12 @@ export function createBuilderReviewRunner(deps: {
      * No spawn, or exactly one failed spawn, launched nothing of ours and allows fallback; a user abort cancels.
      * Anything else, including a successful spawn without a verdict, leaves ownership unknown.
      */
-    /** True while a dispatched delegation run is being observed. */
+    /** True from dispatch until the delegation run settles, regardless of the attempt's own outcome. */
     delegating(): boolean {
-      return open !== undefined;
+      return runInFlight;
     },
     onSettled(aborted = false): void {
+      runInFlight = false;
       const attempt = open;
       if (!attempt) return;
       const single = attempt.spawnCalls === 1;
