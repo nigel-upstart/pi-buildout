@@ -438,8 +438,8 @@ describe("safety lifecycle evidence and advisory context", () => {
       }),
     ];
     for (const context of contexts) {
-      assert.match(context, /Safety advisory \(non-blocking\)/);
-      assert.match(context, /[Tt]ools remain available/);
+      assert.match(context, /^Safety advisory: /);
+      assert.doesNotMatch(context, /non-blocking|tools remain available/i);
       assert.doesNotMatch(context, /must|required|read-only|remain non-mutating|execute only|requires.*approval/i);
     }
     assert.match(contexts[0], /submit_action_plan/);

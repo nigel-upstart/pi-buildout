@@ -380,7 +380,10 @@ attributable to the task, at least one recorded successful mutation, a baseline/
 result of every recorded deterministic check to pass before that review is generated. Failed checks may be repaired and
 rerun; stale failures do not override a later pass of the same command. Missing evidence affects review readiness, not
 tool permissions. Generated reviewers are instructed not to mutate; that instruction is not a security boundary. A
-prose-only reviewer response is not a completed review.
+prose-only reviewer response is not a completed review: the run hands back to the parent as unavailable, without
+fallback. Evidence recorded during a review stays with the task after hand-back. Work executed in preflight without an
+action plan still receives a completion review. Calls made by a reviewed discovery call, such as codemode nested calls,
+are discovery rather than completion evidence.
 
 ### Enforcement outside the router
 

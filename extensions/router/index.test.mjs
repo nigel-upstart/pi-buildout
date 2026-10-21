@@ -1149,9 +1149,27 @@ describe("advisory tool-call observation", () => {
       }
     }
   });
-  it("does not trigger fallback when a review turn ends without a safety-review submission", async () => {
+  const finishRun = async (hooks, ctx, selected) => {
+    await hooks.get("agent_end")(
+      {
+        messages: [
+          {
+            role: "assistant",
+            provider: selected.provider,
+            model: selected.modelId,
+            stopReason: "stop",
+            usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
+          },
+        ],
+      },
+      ctx,
+    );
+    await hooks.get("agent_settled")({}, ctx);
+  };
+
+  it("hands back a review that ends without a submission, keeping its evidence and skipping fallback", async () => {
     const fixture = await authorizationLifecycleFixture();
-    const { hooks, tools, ctx, models, latestLease, selectedModels } = fixture;
+    const { hooks, tools, ctx, models, latestLease, selectedModels, parent } = fixture;
     try {
       await hooks.get("session_start")({ reason: "reload" }, ctx);
       await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
@@ -1164,28 +1182,26 @@ describe("advisory tool-call observation", () => {
       );
       hooks.get("agent_start")({}, ctx);
       hooks.get("turn_start")({}, ctx);
-      await hooks.get("agent_end")(
-        {
-          messages: [
-            {
-              role: "assistant",
-              provider: child.selected.provider,
-              model: child.selected.modelId,
-              stopReason: "stop",
-              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
-            },
-          ],
-        },
-        ctx,
+      const write = { toolCallId: "reviewer-write", toolName: "write", input: { path: "x", content: "y" } };
+      assert.equal(hooks.get("tool_call")(write, ctx), undefined);
+      hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
+      assert.equal(latestLease().safetyEvidence.mutations.length, 1, "reviewer mutation recorded on the child");
+      await finishRun(hooks, ctx, child.selected);
+      const restored = latestLease();
+      assert.equal(restored.taskId, parent.taskId, "a finished review without a verdict is handed back");
+      assert.equal(restored.lifecycle.phase, "preflight");
+      assert.equal(restored.lifecycle.lastAuthorizationReview.verdict, undefined);
+      assert.equal(restored.executionFailed, undefined);
+      assert.deepEqual(
+        restored.safetyEvidence.mutations.map(({ toolName }) => toolName),
+        ["write"],
+        "reviewer evidence survives hand-back",
       );
-      await hooks.get("agent_settled")({}, ctx);
-      const retained = latestLease();
-      assert.equal(retained.taskId, child.taskId);
-      assert.equal(retained.lifecycle.phase, "review");
-      assert.equal(retained.lifecycle.submission, undefined);
-      assert.equal(retained.attemptIndex, child.attemptIndex);
-      assert.equal(retained.executionFailed, undefined);
-      assert.equal(selectedModels.length, switchesBefore, "missing review advice does not switch to fallback");
+      assert.deepEqual(
+        selectedModels.slice(switchesBefore).map(({ id }) => id),
+        [parent.selected.modelId],
+        "only the builder is restored; no fallback reviewer",
+      );
       const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
         .trim()
         .split("\n")
@@ -1194,6 +1210,46 @@ describe("advisory tool-call observation", () => {
         events.some(({ kind }) => kind === "fallback"),
         false,
       );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("starts a completion review for work executed in preflight without an action plan", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    const { hooks, ctx, latestLease, sent, parent } = fixture;
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      hooks.get("agent_start")({}, ctx);
+      hooks.get("turn_start")({}, ctx);
+      const write = { toolCallId: "unplanned-write", toolName: "write", input: { path: "x", content: "y" } };
+      assert.equal(hooks.get("tool_call")(write, ctx), undefined);
+      hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
+      await finishRun(hooks, ctx, parent.selected);
+      const child = latestLease();
+      assert.equal(child.lifecycle.phase, "review");
+      assert.equal(child.lifecycle.reviewKind, "completion");
+      assert.equal(child.parentLease.taskId, parent.taskId);
+      assert.equal(
+        sent.some(({ message }) => message.details?.repairReason === "missing_action_plan"),
+        false,
+        "executed work is reviewed rather than asked for a plan it no longer precedes",
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("still asks for an action plan when preflight records no executed work", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    const { hooks, ctx, latestLease, sent, parent } = fixture;
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      hooks.get("agent_start")({}, ctx);
+      hooks.get("turn_start")({}, ctx);
+      await finishRun(hooks, ctx, parent.selected);
+      assert.equal(latestLease().lifecycle.phase, "preflight");
+      assert.equal(sent.filter(({ message }) => message.details?.repairReason === "missing_action_plan").length, 1);
     } finally {
       fixture.restoreEnvironment();
     }
@@ -4985,7 +5041,7 @@ describe("routerExtension", () => {
         { prompt: "Inspect and plan the production change", systemPrompt: "base" },
         ctx,
       );
-      assert.match(preflightStart.systemPrompt, /Safety advisory \(non-blocking\)/);
+      assert.match(preflightStart.systemPrompt, /Safety advisory: /);
       assert.deepEqual(activeTools, ["read", "bash", "submit_action_plan", "submit_discovery_request"]);
       assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "deploy production" } }), undefined);
       await assert.rejects(
@@ -6007,6 +6063,23 @@ describe("routerExtension", () => {
       hooks.get("tool_call")({ toolCallId: "replay", toolName: "bash", input: request.input }, ctx),
       undefined,
     );
+    // Calls the reviewed discovery makes itself (for example through codemode) inherit its attribution.
+    const nestedWrite = {
+      toolCallId: "approved/1",
+      parentToolCallId: "approved",
+      toolName: "write",
+      input: { path: "x", content: "y" },
+    };
+    const nestedCheck = {
+      toolCallId: "approved/1/1",
+      parentToolCallId: "approved/1",
+      toolName: "bash",
+      input: { command: "npm test" },
+    };
+    for (const call of [nestedWrite, nestedCheck]) assert.equal(hooks.get("tool_call")(call, ctx), undefined);
+    for (const call of [nestedCheck, nestedWrite]) hooks.get("tool_execution_end")({ ...call, isError: false }, ctx);
+    assert.deepEqual(latest().safetyEvidence.mutations, [], "nested discovery effects are not final-action evidence");
+    assert.deepEqual(latest().safetyEvidence.checks, [], "nested discovery checks are not final-action evidence");
     hooks.get("tool_execution_end")({ toolCallId: "approved", toolName: "bash", isError: true }, ctx);
     await waitUntil(() => events.some((event) => event.data.discoveryCallId === "approved"));
     assert.equal(events.find((event) => event.data.discoveryCallId === "approved").data.discoverySucceeded, false);

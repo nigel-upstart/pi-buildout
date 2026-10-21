@@ -442,15 +442,15 @@ export function initialLifecycle(policy: SafetyPolicy, taskFingerprint: string):
 export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | undefined {
   switch (lifecycle.phase) {
     case "preflight":
-      return "Safety advisory (non-blocking): inspect targets and consider submitting a concrete irreversible-action plan with submit_action_plan for independent feedback. If more discovery would help, submit_discovery_request can describe one exact bounded tool invocation for review. Reviews provide advice, not execution permission; tools remain available.";
+      return "Safety advisory: inspect targets, then submit a concrete irreversible-action plan with submit_action_plan for independent feedback. If more discovery would help, submit_discovery_request can describe one exact bounded tool invocation for review.";
     case "advisory_pending":
-      return "Safety advisory (non-blocking): gather bounded context for a pre-action advisor to assess risks and suggest precautions. Tools remain available while advice is pending.";
+      return "Safety advisory: gather bounded context for a pre-action advisor to assess risks and suggest precautions.";
     case "discovery_ready":
-      return "Safety advisory (non-blocking): feedback is recorded for one exact discovery call; observing a matching call consumes that record once. Recommended next step: perform the scoped discovery, then call submit_action_plan for review of the final action. This is not execution permission or a restriction on other calls; tools remain available. Follow the user's instructions and approvals.";
+      return "Safety advisory: feedback is recorded for one exact discovery call. Next step: perform that discovery, then call submit_action_plan for review of the final action.";
     case "authorized_execution":
-      return `Safety advisory (non-blocking): independent feedback is recorded for plan ${lifecycle.plan.planFingerprint}. Consider further review if targets, steps, or preconditions change. Tools remain available; this record is not an execution permission boundary.`;
+      return `Safety advisory: independent feedback is recorded for plan ${lifecycle.plan.planFingerprint}. Seek further review if targets, steps, or preconditions change.`;
     case "review":
-      return `Safety advisory (non-blocking): focus the ${lifecycle.reviewKind} review on scope ${lifecycle.scopeFingerprint} and submit findings with submit_safety_review. Prefer inspection over changing the reviewed work; tools remain available.`;
+      return `Safety advisory: focus the ${lifecycle.reviewKind} review on scope ${lifecycle.scopeFingerprint} and submit findings with submit_safety_review. Prefer inspection over changing the reviewed work.`;
     case "ordinary":
     case "building":
     case "ready_after_advisory":
