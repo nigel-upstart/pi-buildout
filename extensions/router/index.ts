@@ -2082,6 +2082,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return undefined;
   }
 
+  function reviewFailureFields(stage: string): Record<string, string> {
+    return stage === "selection"
+      ? { reviewStage: "selection", reviewStatus: "unroutable" }
+      : { reviewRunner: stage, reviewStatus: "failed" };
+  }
+
   async function startIndependentReview(
     ctx: ExtensionContext,
     parent: TaskLease,
@@ -2115,6 +2121,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     pendingReview = review;
     // Reserved before any await. Advice for this unchanged scope can never reopen it, including after reload.
     consumeReviewSlot(slot, review.id);
+    // Telemetry attributes an exception to child selection or to the runner that was starting.
+    let failedStage = "selection";
     try {
       // A cancelled reviewer can settle after reload/session replacement invalidates ctx, so outcome
       // telemetry uses metadata captured while ctx is still live.
@@ -2210,6 +2218,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         if (remaining <= 0 || spent >= 1) break;
         const endpointFields = endpointFieldsFor(model);
         review.launched = true;
+        failedStage = runnerName;
         review.handle = runner.start({
           cwd: ctx.cwd,
           registry: ctx.modelRegistry,
@@ -2348,7 +2357,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         await record(
           ctx,
           "outcome",
-          { reviewId: review.id, reviewKind, reviewRunner: "in_process", reviewStatus: "failed" },
+          { reviewId: review.id, reviewKind, ...reviewFailureFields(failedStage) },
           { taskId: parent.taskId },
         );
       }
