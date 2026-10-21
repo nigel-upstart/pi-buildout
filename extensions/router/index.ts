@@ -549,37 +549,50 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     attemptIndex: number;
     kind: SafetyReviewKind;
     scope: string;
+    /** Persisted logical-review slot reserved for this review. */
+    slot: string;
     selected: TaskLease["selected"];
     evidence: TaskLease["safetyEvidence"];
     handle?: ReviewHandle;
     /** Aborts parent-side child selection; runner handles cancel their own launches. */
     controller: AbortController;
+    /** Set before a runner starts; until then nothing can be running for this slot. */
+    launched: boolean;
     cancelled: boolean;
   };
   let pendingReview: PendingReview | undefined;
-  const consumedReviewSlots = new Set<string>();
+  /** Slot to owning review id; the branch remains authoritative across reload. */
+  const consumedReviewSlots = new Map<string, string>();
   const reviewRunner = options.reviewRunner ?? inProcessReviewRunner;
   // Instance-closure state only: a verified negative discovery resets with reload/session replacement.
   const signalingRunner = createSignalingReviewRunner(pi.events);
   function reviewSlotConsumed(ctx: ExtensionContext, slot: string | ((slot: string) => boolean)): boolean {
     const matches = typeof slot === "string" ? (candidate: string) => candidate === slot : slot;
-    return (
-      [...consumedReviewSlots].some(matches) ||
-      ctx.sessionManager.getBranch().some((entry) => {
-        if (entry.type !== "custom" || entry.customType !== REVIEW_SLOT_ENTRY) return false;
-        const data: unknown = entry.data;
-        const consumed = data && typeof data === "object" ? (data as { slot?: unknown }).slot : undefined;
-        return typeof consumed === "string" && matches(consumed);
-      })
-    );
+    if ([...consumedReviewSlots.keys()].some(matches)) return true;
+    // The latest persisted entry for each slot wins: a reservation consumes it, a release reopens it.
+    const persisted = new Map<string, boolean>();
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== REVIEW_SLOT_ENTRY) continue;
+      const data: unknown = entry.data;
+      const consumed = data && typeof data === "object" ? (data as { slot?: unknown }).slot : undefined;
+      if (typeof consumed !== "string" || !matches(consumed)) continue;
+      persisted.set(consumed, (data as { released?: unknown }).released !== true);
+    }
+    return [...persisted.values()].some(Boolean);
   }
   function consumeReviewSlot(slot: string, reviewId: string): void {
-    if (consumedReviewSlots.size >= 64) consumedReviewSlots.delete(consumedReviewSlots.values().next().value ?? "");
-    consumedReviewSlots.add(slot);
+    if (consumedReviewSlots.size >= 64) consumedReviewSlots.delete(consumedReviewSlots.keys().next().value ?? "");
+    consumedReviewSlots.set(slot, reviewId);
     pi.appendEntry(REVIEW_SLOT_ENTRY, { slot, reviewId });
   }
   function cancelReview(): void {
     if (!pendingReview) return;
+    const slot = pendingReview.slot;
+    // Cancelled before any runner started: no child can exist and no advice was delivered, so reopen it.
+    if (!pendingReview.launched && consumedReviewSlots.get(slot) === pendingReview.id) {
+      consumedReviewSlots.delete(slot);
+      pi.appendEntry(REVIEW_SLOT_ENTRY, { slot, reviewId: pendingReview.id, released: true });
+    }
     pendingReview.cancelled = true;
     pendingReview.controller.abort();
     pendingReview.handle?.cancel();
@@ -2092,9 +2105,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       attemptIndex: parent.attemptIndex,
       kind: reviewKind,
       scope: scopeFingerprint,
+      slot,
       selected: parent.selected,
       evidence: parent.safetyEvidence,
       controller: new AbortController(),
+      launched: false,
       cancelled: false,
     };
     pendingReview = review;
@@ -2194,6 +2209,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const remaining = deadline - Date.now();
         if (remaining <= 0 || spent >= 1) break;
         const endpointFields = endpointFieldsFor(model);
+        review.launched = true;
         review.handle = runner.start({
           cwd: ctx.cwd,
           registry: ctx.modelRegistry,

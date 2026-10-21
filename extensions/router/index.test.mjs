@@ -6260,6 +6260,27 @@ describe("routerExtension", () => {
     } finally {
       fixture.restoreEnvironment();
     }
+    // Nothing launched, so the slot is released and a later (here: reloaded) instance may review it.
+    const slots = fixture.appended.filter((entry) => entry.customType === "model-router-review-slot");
+    assert.deepEqual(
+      slots.map((entry) => entry.data.released === true),
+      [false, true],
+    );
+    const reloaded = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+    });
+    const branch = reloaded.ctx.sessionManager.getBranch;
+    reloaded.ctx.sessionManager.getBranch = () => [
+      ...branch(),
+      ...slots.map((entry) => ({ type: "custom", customType: entry.customType, data: entry.data })),
+    ];
+    try {
+      await launchReview(reloaded, runner);
+      assert.equal(runner.calls.length, 1);
+    } finally {
+      reloaded.restoreEnvironment();
+    }
   });
 
   it("lets the child task, not the builder profile, determine the reviewer pair", async () => {
