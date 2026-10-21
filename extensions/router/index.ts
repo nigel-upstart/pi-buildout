@@ -531,6 +531,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     kind: SafetyReviewKind;
     scope: string;
     selected: TaskLease["selected"];
+    evidence: TaskLease["safetyEvidence"];
     handle?: ReviewHandle;
     cancelled: boolean;
   };
@@ -551,7 +552,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       leaseOwner.epoch === review.epoch &&
       leaseOwner.state.mode === "active" &&
       active?.taskId === review.taskId &&
-      sameRouteChoice(active.selected, review.selected)
+      sameRouteChoice(active.selected, review.selected) &&
+      (review.kind !== "completion" || active.safetyEvidence === review.evidence)
     );
   }
   function lifecycleAdvice(active: TaskLease): string | undefined {
@@ -1941,6 +1943,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       kind: reviewKind,
       scope: scopeFingerprint,
       selected: parent.selected,
+      evidence: parent.safetyEvidence,
       cancelled: false,
     };
     pendingReview = review;
@@ -2015,7 +2018,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const remaining = timeoutMs - (Date.now() - started);
         if (remaining <= 0 || spent >= 1) break;
         const model = ctx.modelRegistry.find(choice.provider, choice.modelId);
-        if (!model) continue;
+        if (!model) {
+          ctx.ui.notify(
+            "Independent reviewer model became unavailable; trying the remaining reviewer ladder.",
+            "warning",
+          );
+          await record(
+            ctx,
+            "outcome",
+            { reviewId: review.id, reviewKind, reviewRunner: "in_process", reviewStatus: "model_unavailable" },
+            { taskId: parent.taskId },
+          );
+          continue;
+        }
         review.handle = reviewRunner.start({
           cwd: ctx.cwd,
           registry: ctx.modelRegistry,
