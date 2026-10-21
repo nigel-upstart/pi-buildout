@@ -5991,6 +5991,44 @@ describe("routerExtension", () => {
     assert.equal(decision, undefined, "secondary corrections never restrict tools");
   });
 
+  it("drops completion advice if builder evidence changed while review was pending", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await flushMicrotasks();
+      const call = runner.calls[0];
+      fixture.hooks.get("tool_call")(
+        { toolCallId: "new-mutation", toolName: "write", input: { path: "changed" } },
+        fixture.ctx,
+      );
+      fixture.hooks.get("tool_execution_end")({ toolCallId: "new-mutation", isError: false }, fixture.ctx);
+      call.resolve({
+        status: "completed",
+        verdict: validAdvice(call.request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().safetyEvidence.mutations.length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(fixture.latestLease().lifecycle.phase, "executing");
+      assert.equal(
+        fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("delivers completion findings as a follow-up without switching builder models", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
