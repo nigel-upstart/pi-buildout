@@ -170,6 +170,14 @@ scope/languages/complexity/risk/horizon/context/tool needs, and use feature-base
 the current lease, invent a builder, become read-only merely because another task preceded them, or trigger recursive
 automatic review. They may perform explicitly requested external operations such as posting review comments.
 
+The in-process reviewer reaches the parent's model runtime through Pi's private `ModelRegistry.runtime` field. If a Pi
+release removes or changes it, the review is skipped with a warning note instead of crashing. The offline Pi contract
+canary (`pi-contract.test.mjs`) fails clearly on that drift and also covers the other Pi host surfaces the router uses.
+Ordinary `npm test` runs it against the pinned development Pi; the daily `pi contract canary` workflow runs it against
+the supported floor (Pi 1.2.0) and the latest release, each installed in isolation by
+`node scripts/pi-contract-canary.mjs <1.2.0|latest>`. A latest release outside `>=1.2.0 <2.0.0` fails as an
+unsupported-upgrade investigation rather than being tested as supported.
+
 ## Start mode and enablement continuity
 
 Enablement is sticky. The mode selected with `/route shadow|active|off` survives `/compact` and `/clear`, and by default

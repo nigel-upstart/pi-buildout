@@ -165,6 +165,33 @@ observed level transition and consumes it on arrival instead of relying on a syn
 
 No Pi code, issue prose, or documentation prose was copied or modified.
 
+### Pi host contract canary
+
+- Sources: published `@earendil-works/pi-coding-agent` (with lockstep `pi-ai`, `pi-agent-core`, `pi-tui`, `pi-codemode`,
+  `pi-mcp`, and `pi-telemetry`) `1.2.0` (tag `v1.2.0`, commit `06a466935536f8c9bcacb2d5efc0fc021be1bdff`) and `1.3.0`
+  (tag `v1.3.0`, commit `71023aec1546d6d677a65669c5665c0927ce0dd0`); `docs/sdk.md`, `docs/extensions.md`,
+  `docs/custom-provider.md`, `docs/models.md`, and `examples/sdk/06-extensions.ts` and `12-full-control.ts` from the
+  installed `1.3.0` package
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/ai`,
+  `packages/agent-core`)
+- License declared by the repository and packages: MIT
+
+Use: `extensions/router/pi-contract.test.mjs`, the shared offline fixture `extensions/router/fixtures/pi-sdk.mjs`, and
+`scripts/pi-contract-canary.mjs` assert Pi behavior the router depends on, as documented by those docs and declared in
+the packages' `dist/core/extensions/types.d.ts`, `dist/core/model-runtime.d.ts`, `dist/core/event-bus.js`, and
+`dist/core/extensions/loader.js` at both versions: the private `ModelRegistry.runtime` field behind
+`ExtensionContext.modelRegistry`; runtime API-key resolution through a registered `ProviderConfig.streamSimple` custom
+API (used as the no-network fake provider, following the custom-provider stream contract); `ToolInfo` fields from
+`getAllTools()` and active-tool membership by exposure; `before_agent_start` `messageType: "custom"` for
+`sendMessage(..., { triggerTurn: true })`; `tool_result` fields for direct and `ctx.executeTool()` nested calls; and the
+event bus's synchronous `EventEmitter` delivery and reload-time listener invalidation. The full-control example's
+empty-resource `ResourceLoader` shape was already adopted by `review-runner.ts`; inline `extensionFactories` follow the
+extensions example.
+
+Only behavior was used: no Pi code, tests, or documentation prose was copied or modified. Intentionally not adopted: a
+public `ctx.modelRegistry.streamSimple()`-backed agent loop replacing the accepted private runtime field, Pi's own
+provider test suites, `RpcClient`, a historical version matrix, and any upstream `main` (unreleased) lane.
+
 ### Pi model catalog: GPT-6.1 Sol pricing
 
 - Source: bundled `@earendil-works/pi-ai` provider catalog shipped with `@earendil-works/pi-coding-agent`
