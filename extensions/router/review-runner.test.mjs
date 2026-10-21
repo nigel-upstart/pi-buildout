@@ -295,3 +295,46 @@ for (const reason of ["error", "aborted"]) {
     assert.equal(result.usage.cost, 0.02, "usage from the failed message is still counted");
   });
 }
+
+test("SDK reviewer reports usage from the final aborted message after cancellation or timeout", async (t) => {
+  const f = await fixture(t);
+  f.runtime.streamSimple = (model, _context, options) => {
+    const stream = createAssistantMessageEventStream();
+    options.signal.addEventListener(
+      "abort",
+      () => {
+        // The in-flight request reports its partial spend only in the final aborted message.
+        const message = {
+          role: "assistant",
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          content: [],
+          stopReason: "aborted",
+          timestamp: Date.now(),
+          usage: {
+            input: 30,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 35,
+            cost: { input: 0.02, output: 0.01, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+          },
+        };
+        setTimeout(() => stream.push({ type: "error", reason: "aborted", error: message }), 5);
+      },
+      { once: true },
+    );
+    return stream;
+  };
+  const handle = inProcessReviewRunner.start(request(f));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  handle.cancel();
+  const cancelled = await handle.result;
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.usage.cost, 0.03);
+  assert.equal(cancelled.usage.inputTokens, 30);
+  const timedOut = await inProcessReviewRunner.start({ ...request(f), timeoutMs: 30 }).result;
+  assert.equal(timedOut.status, "timeout");
+  assert.equal(timedOut.usage.cost, 0.03);
+});
