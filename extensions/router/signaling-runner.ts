@@ -17,6 +17,8 @@ type Terminal = { id: string; completed: boolean; result: string; usage: ReviewR
 const PING_WAIT_MS = 1_000;
 const CONTROL_WAIT_MS = 5_000;
 const SPAWN_WAIT_MS = 120_000;
+/** Shutdown waits this long for cancelled children's terminal events so they can still be consumed. */
+const DRAIN_WAIT_MS = 2_000;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -62,17 +64,31 @@ function usageOf(value: unknown): ReviewResult["usage"] {
 export type SignalingReviewRunner = ReviewRunner & {
   /** Verified absence/incompatibility for this extension instance; operational failures never set it. */
   readonly negative: string | undefined;
-  dispose(): void;
+  /** Waits briefly for outstanding terminal events, then removes every remaining listener. */
+  dispose(): Promise<void>;
 };
 
 export function createSignalingReviewRunner(bus: Bus | undefined): SignalingReviewRunner {
   let negative: string | undefined = bus ? undefined : "no_event_bus";
   const live = new Set<() => void>();
+  const drained = new Set<() => void>();
   return {
     get negative() {
       return negative;
     },
-    dispose() {
+    async dispose() {
+      if (live.size > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            drained.delete(done);
+            resolve();
+          };
+          drained.add(done);
+          timer = setTimeout(done, DRAIN_WAIT_MS);
+        });
+        clearTimeout(timer);
+      }
       for (const close of [...live]) close();
     },
     start(request: ReviewRequest) {
@@ -94,6 +110,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
       const close = () => {
         for (const off of offTerminal.splice(0)) off();
         live.delete(close);
+        if (live.size === 0) for (const done of [...drained]) done();
       };
       const finish = (status: ReviewResult["status"], extra: Partial<ReviewResult> = {}) => {
         if (finished) return;
@@ -190,7 +207,12 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         );
         const accepted =
           spawn.kind === "reply" && spawn.value.success === true ? record(spawn.value.data)?.id : undefined;
-        if (spawn.kind === "reply" && spawn.value.success === false && !early) {
+        if (
+          spawn.kind === "reply" &&
+          spawn.value.success === false &&
+          typeof spawn.value.error === "string" &&
+          !early
+        ) {
           // The manager reported a failed launch: no child is ours, so a fallback cannot overlap.
           close();
           finish("unavailable");
