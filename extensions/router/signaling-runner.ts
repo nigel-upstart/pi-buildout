@@ -24,18 +24,32 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
-/** Fresh requestId, reply subscription before emit, bounded wait, and unsubscribe on settlement. */
-function rpc(bus: Bus, method: string, fields: Record<string, unknown>, waitMs: number): Promise<Reply> {
+/**
+ * Fresh requestId, reply subscription before emit, bounded wait, and unsubscribe on settlement. `waiters`
+ * lets disposal settle outstanding requests as timeouts, releasing their listeners and timers.
+ */
+function rpc(
+  bus: Bus,
+  waiters: Set<() => void>,
+  method: string,
+  fields: Record<string, unknown>,
+  waitMs: number,
+): Promise<Reply> {
   const requestId = randomUUID();
   return new Promise((resolve) => {
     let settled = false;
     const settle = (reply: Reply) => {
       if (settled) return;
       settled = true;
+      waiters.delete(abandon);
       off();
       clearTimeout(timer);
       resolve(reply);
     };
+    const abandon = () => {
+      settle({ kind: "timeout" });
+    };
+    waiters.add(abandon);
     const off = bus.on(`subagents:rpc:${method}:reply:${requestId}`, (data) => {
       const value = record(data);
       settle(value ? { kind: "reply", value } : { kind: "invalid" });
@@ -72,6 +86,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
   let negative: string | undefined = bus ? undefined : "no_event_bus";
   const live = new Set<() => void>();
   const drained = new Set<() => void>();
+  const waiters = new Set<() => void>();
   return {
     get negative() {
       return negative;
@@ -90,6 +105,8 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         clearTimeout(timer);
       }
       for (const close of [...live]) close();
+      // A lost acceptance settles as a timeout: abort, never resend, and never replace.
+      for (const abandon of [...waiters]) abandon();
     },
     start(request: ReviewRequest) {
       const zero = { cost: 0, inputTokens: 0, outputTokens: 0 };
@@ -121,7 +138,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
       };
       const stop = () => {
         controller.abort();
-        if (bus && childId && !observed) void rpc(bus, "stop", { agentId: childId }, CONTROL_WAIT_MS);
+        if (bus && childId && !observed) void rpc(bus, waiters, "stop", { agentId: childId }, CONTROL_WAIT_MS);
       };
       const settle = (terminal: Terminal) => {
         if (!terminal.completed) {
@@ -140,7 +157,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         if (childId ? event.id !== childId : event.description !== description) return;
         observed = true;
         // Synchronously, before any await: the manager checks this flag right after emit returns.
-        if (bus) void rpc(bus, "consume", { agentId: event.id }, CONTROL_WAIT_MS);
+        if (bus) void rpc(bus, waiters, "consume", { agentId: event.id }, CONTROL_WAIT_MS);
         close();
         const terminal = {
           id: event.id,
@@ -164,7 +181,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
           finish("unavailable");
           return;
         }
-        const ping = await rpc(bus, "ping", {}, PING_WAIT_MS);
+        const ping = await rpc(bus, waiters, "ping", {}, PING_WAIT_MS);
         if (isFinished()) return;
         if (ping.kind === "timeout") {
           negative = "no_responder";
@@ -186,6 +203,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         offTerminal.push(bus.on("subagents:failed", onTerminal(false)));
         const spawn = await rpc(
           bus,
+          waiters,
           "spawn",
           {
             type: "general-purpose",

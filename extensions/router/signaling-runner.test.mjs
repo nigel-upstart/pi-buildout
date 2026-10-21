@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { registerSignaling, isolatedChildArgs } from "../subagents/signaling.ts";
+import { parseReviewOutput } from "./review-output.ts";
 import { createSignalingReviewRunner } from "./signaling-runner.ts";
 
 const scope = "a".repeat(64);
@@ -234,6 +235,40 @@ test("shutdown right after cancellation drains briefly so the stop terminal is c
   assert.deepEqual(seen.stops, ["agent-1"]);
   assert.deepEqual(seen.consumed, ["agent-1"]);
   assert.deepEqual(seen.notified, []);
+});
+
+test("a closing tag quoted inside a JSON string does not truncate the verdict", () => {
+  const nonce = "1".repeat(32);
+  const quoted = { ...verdict, findings: ['The child echoed "</router-result>" and a brace } in prose'] };
+  assert.deepEqual(parseReviewOutput(block(nonce, quoted), nonce), quoted);
+  assert.equal(parseReviewOutput(`<router-result nonce="${nonce}">{"a":1} trailing</router-result>`, nonce), undefined);
+});
+
+test("disposal after a cancelled, lost acceptance releases every reply listener and timer", async () => {
+  const inner = createEventBus();
+  let subscriptions = 0;
+  const bus = {
+    emit: (channel, data) => inner.emit(channel, data),
+    on(channel, handler) {
+      subscriptions++;
+      const off = inner.on(channel, handler);
+      return () => {
+        subscriptions--;
+        off();
+      };
+    },
+  };
+  const seen = releasedManager(bus, { spawn: "lost" });
+  const baseline = subscriptions;
+  const runner = createSignalingReviewRunner(bus);
+  const handle = runner.start(request());
+  for (let i = 0; i < 20 && seen.spawns.length === 0; i++) await tick();
+  handle.cancel();
+  const started = Date.now();
+  await runner.dispose();
+  assert.ok(Date.now() - started < 5_000, "bounded by the drain, not the 120-second spawn wait");
+  assert.equal(subscriptions, baseline, "only the manager's own handlers remain");
+  assert.equal(seen.spawns.length, 1, "never resent");
 });
 
 test("lost acceptance at the deadline aborts without resend and consumes the late terminal", async () => {

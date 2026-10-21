@@ -27,11 +27,32 @@ export function parseReviewOutput(text: string, nonce: string): unknown {
   const open = `<router-result nonce="${nonce}">`;
   const start = bounded.lastIndexOf(open);
   if (start < 0) return undefined;
-  const end = bounded.indexOf("</router-result>", start + open.length);
-  if (end < 0 || end - start > MAX_BLOCK_CHARS) return undefined;
+  const end = jsonObjectEnd(bounded, start + open.length);
+  if (end === undefined || end - start > MAX_BLOCK_CHARS) return undefined;
+  // The closing tag must follow the object itself; a tag quoted inside a JSON string is content.
+  if (!/^\s*<\/router-result>/.test(bounded.slice(end, end + 64))) return undefined;
   try {
     return JSON.parse(bounded.slice(start + open.length, end)) as unknown;
   } catch {
     return undefined;
   }
+}
+
+/** Index just past the JSON object starting at `from` (after whitespace), skipping string contents. */
+function jsonObjectEnd(text: string, from: number): number | undefined {
+  let index = from;
+  while (/\s/.test(text.charAt(index))) index++;
+  if (text[index] !== "{") return undefined;
+  let depth = 0;
+  let inString = false;
+  for (const limit = Math.min(text.length, from + MAX_BLOCK_CHARS); index < limit; index++) {
+    const char = text[index];
+    if (inString) {
+      if (char === "\\") index++;
+      else if (char === '"') inString = false;
+    } else if (char === '"') inString = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) return index + 1;
+  }
+  return undefined;
 }
