@@ -128,6 +128,18 @@ research and intended reuse, not a claim that code has landed. No upstream code 
   Workflow layout draws from this repository’s `.github/workflows/patch-drift.yml`; new action versions and org
   allowlist compatibility remain implementation-time checks. No networked pre-commit hook is proposed.
 
+## Generic compatible subagent signaling
+
+The implementation in `extensions/subagents/signaling.ts` is an original compatible implementation of the documented
+`tintinweb/pi-subagents` protocol-2 subset (MIT), not copied code. Sources: <https://github.com/tintinweb/pi-subagents>,
+release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`) and documentation/source snapshot
+`ca93a5247e72e7053fcd10bea7125d6c4205f949`, `docs/rpc.md`, `src/cross-extension-rpc.ts`, and terminal emission in
+`src/index.ts`. Used: ping/spawn/consume/stop names, reply envelopes, generic task/model/thinking options, final
+results, and synchronous consumption. Not adopted: steer, workflow/profile systems, registry singleton, scheduling,
+worktrees, proactive parent notifications, or protocol dialect shims. Pi 1.2.0 source
+`06a466935536f8c9bcacb2d5efc0fc021be1bdff` and installed 1.3.0 CLI resource suppression flags establish the isolated
+launch behavior; no Pi code was copied.
+
 ## Routing layer (`extensions/router`)
 
 Full design provenance, including the historical conversation export the router's spec derives from and the public
