@@ -5769,6 +5769,99 @@ describe("routerExtension", () => {
     }
   });
 
+  it("cancels plan review and drops a late approval once the last builder rung fails", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    // Last rung: no untried fallback and no previous selection, so exhaustion keeps the same selection.
+    fixture.parent.attemptIndex = fixture.parent.fallbacks.length;
+    try {
+      await launchReview(fixture);
+      const call = runner.calls[0];
+      await fixture.commands.get("route").handler("fail quality", fixture.ctx);
+      assert.equal(fixture.latestLease().executionFailed, true);
+      assert.equal(call.cancelled, true, "a failed builder's pending review is obsolete");
+      const count = fixture.sent.length;
+      call.resolve({
+        status: "completed",
+        verdict: validAdvice(call.request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await flushMicrotasks();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(fixture.sent.length, count, "late approval must not queue another builder turn");
+      assert.equal(fixture.latestLease().lifecycle.phase, "planning");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels a pending review on /route reset", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      await fixture.commands.get("route").handler("reset", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("adds reviewer cost to the owning task's labeled cost without folding reviewer tokens", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const builderTurn = async () => {
+      fixture.hooks.get("agent_start")();
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: fixture.parent.selected.provider,
+              model: fixture.parent.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 10, output: 1, cacheRead: 4, cacheWrite: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+    };
+    const labeledCosts = async () =>
+      (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((event) => event.kind === "outcome" && typeof event.data.accepted === "boolean")
+        .map((event) => event.data);
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.tools
+        .get("submit_action_plan")
+        .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+      await builderTurn();
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.25, inputTokens: 1000, outputTokens: 100 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "executing");
+      await fixture.commands.get("route").handler("accept", fixture.ctx);
+      let labels = await labeledCosts();
+      assert.ok(Math.abs(labels.at(-1).modelAndToolCost - 0.26) < 1e-9, JSON.stringify(labels.at(-1)));
+      assert.equal(labels.at(-1).cacheReadTokens, 4, "reviewer tokens stay out of builder cache metrics");
+      // The task total keeps the review share after a later builder attempt.
+      await builderTurn();
+      await fixture.commands.get("route").handler("accept", fixture.ctx);
+      labels = await labeledCosts();
+      assert.ok(Math.abs(labels.at(-1).modelAndToolCost - 0.27) < 1e-9, JSON.stringify(labels.at(-1)));
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("skips unavailable Pi runtimes with a human note and telemetry", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });

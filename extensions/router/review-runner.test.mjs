@@ -268,3 +268,30 @@ test("SDK reviewer bounds spending and rejects prose-only or malformed verdicts"
   assert.equal(bounded.status, "budget_exceeded");
   assert.equal(bounded.verdict, undefined);
 });
+
+for (const reason of ["error", "aborted"]) {
+  test(`SDK reviewer fails a valid verdict when the session then ends with stopReason ${reason}`, async (t) => {
+    const f = await fixture(t);
+    let calls = 0;
+    f.runtime.streamSimple = (model) => {
+      if (calls++ === 0)
+        return streamMessage(
+          model,
+          [{ type: "toolCall", id: "verdict", name: "submit_safety_review", arguments: verdict }],
+          "toolUse",
+        );
+      const stream = streamMessage(model, []);
+      const failed = createAssistantMessageEventStream();
+      // A provider failure after submission: Pi ends the run normally with an error/aborted assistant message.
+      void stream.result().then((message) => {
+        failed.push({ type: "error", reason, error: { ...message, stopReason: reason, errorMessage: "fixture" } });
+      });
+      return failed;
+    };
+    const result = await inProcessReviewRunner.start(request(f)).result;
+    assert.equal(calls, 2);
+    assert.equal(result.status, "failed");
+    assert.equal(result.verdict, undefined, "advice from a failed session is never delivered");
+    assert.equal(result.usage.cost, 0.02, "usage from the failed message is still counted");
+  });
+}
