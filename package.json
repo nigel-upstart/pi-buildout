@@ -19,7 +19,7 @@
     "browserslist": "4.28.9",
     "smol-toml": "1.9.0",
     "markdownlint-cli2": {
-      "markdown-it": "14.3.2"
+      "markdown-it": "14.3.3"
     },
     "pi-coding-agent-1.0.3": {
       "@earendil-works/pi-codemode": "1.0.3"

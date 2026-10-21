@@ -3086,6 +3086,36 @@ describe("routerExtension", () => {
     assert.equal(result.sentMessages.length, 1);
     assert.equal(result.sentMessages[0].options.triggerTurn, true);
     assert.equal(result.sentMessages[0].options.deliverAs, "followUp");
+
+    const active = result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active;
+    result.ctx.model = result.ctx.modelRegistry.find(active.selected.provider, active.selected.modelId);
+    const errorMessage = {
+      role: "assistant",
+      provider: active.selected.provider,
+      model: active.selected.modelId,
+      stopReason: "error",
+      errorMessage: "This operation was aborted",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+    };
+    // Session 01a15c75: Pi reported the router's own ctx.abort() as a provider error.
+    await result.hooks.get("agent_end")({ messages: [errorMessage] }, result.ctx);
+    await result.hooks.get("agent_settled")({}, result.ctx);
+    assert.equal(result.events.filter((event) => event.kind === "fallback").length, 0);
+    assert.equal(result.sentMessages.length, 1, "only the profile refresh continuation is queued");
+    assert.equal(
+      result.events.findLast((event) => event.kind === "attempt_completed")?.data.interruptionReason,
+      "prompt_profile_refresh",
+    );
+    assert.equal(
+      result.appended.findLast((entry) => entry.customType === "model-router-state")?.data.active.attemptIndex,
+      active.attemptIndex,
+    );
+
+    // The exemption belongs only to the interrupted run. Identical error text on a later run is
+    // still an error; do not introduce an error-string allowlist that could hide real failures.
+    result.hooks.get("agent_start")({}, result.ctx);
+    await result.hooks.get("agent_end")({ messages: [errorMessage] }, result.ctx);
+    assert.equal(result.events.filter((event) => event.kind === "fallback").length, 1);
   });
 
   it("records but does not perform a clean stop/resume handoff in shadow mode", async () => {

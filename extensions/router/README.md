@@ -134,6 +134,11 @@ failure the current lease, model, effort, and profile remain selected. On a fres
 create a route from synthetic evidence and keeps the current model/effort (and an existing lease, if present). Concrete
 timeout thresholds can be inspected directly in [`index.ts`](index.ts) and [`telemetry.ts`](telemetry.ts).
 
+A secondary correction that changes the prompt profile can intentionally stop and resume a continuing run. That
+router-owned interruption is bound to the task and run, recorded as
+`attempt_completed.interruptionReason: "prompt_profile_refresh"`, and does not consume a provider fallback even if Pi
+reports cancellation as `stopReason: "error"`. Errors on later runs still follow the normal fallback ladder.
+
 ### Classifier model selection
 
 The concrete tier lists live in [`pi-classifier.ts`](pi-classifier.ts) (`PRIMARY_CLASSIFIER_TIERS` and

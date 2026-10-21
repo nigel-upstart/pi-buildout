@@ -88,38 +88,8 @@ of first resort.
   `ToolExecutionMode` declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and
   concurrency" section of `@earendil-works/pi-coding-agent` `docs/extensions.md`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/agent-core`)
-- Revisions reviewed: published `1.0.3` for the issue behavior and `1.0.4` for tool-execution ordering; no Git commit
-  was pinned
-- Issue #108 follow-up: published `0.87.1` and `1.1.0` `AgentSession.setActiveToolsByName`, `sendCustomMessage`, and
-  `Agent` provider-request/tool-dispatch behavior, verified with an in-memory provider experiment
 - Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
-  custom-start preparation and busy-start semantics; published `1.3.0` `VERSION` export provides a load-time guard.
-  Older `/skills` patches remain patch-only and do not imply router compatibility.
-- Pending-input follow-up: published `1.3.0` `AgentSession.prompt`, `_queueUserInput`, `_prepareRun`, and
-  `sendCustomMessage`, plus the `InputEvent` and `BeforeAgentStartEvent` declarations. The two hooks share no input/run
-  identity, input text can be transformed/expanded between them, and queued steering/follow-up input does not get a
-  separate run-preparation hook.
-- License declared by the packages: MIT
-
-Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skipped `before_agent_start` in the reviewed
-0.87.1 and 1.1.0 releases. Pi 1.3.0 prepares those starts with `messageType: "custom"` and no user prompt; the router
-currently skips its user-prompt handler for those events. The router uses Pi's active-tool selection API at persisted
-lifecycle transitions before queuing those turns, so only phase-valid safety validators are declared. The pure
-implementation-plan validator remains callable throughout active mode regardless of the lease's archetype. Execution
-guards still check mode, phase, one-shot verdicts, and review fingerprints for stale calls. These are local API
-integration patterns and behavioral tests; no upstream implementation code was copied or modified. We did not adopt the
-upstream proposed shared turn-preflight patch, fake user messages, prose-only safety verdicts, or permanent tool
-exposure when routing is disabled. Shadow and off hide router tools.
-
-Use, pending input: the router stages only idle user input for its next user-run preparation. Busy input still
-invalidates safety authority but cannot overwrite that slot. Run-end and session-boundary cleanup happens before
-awaiting other work, so a late cleanup cannot erase newer input. We did not invent a prompt hash or local UUID to
-simulate a shared upstream identity, or copy Pi's queue/run implementation. This is an original integration fix, not a
-general multi-run correlation protocol.
-
-Use, tool-execution ordering: in the default `parallel` mode, Pi runs the `tool_call` hooks for every call in one
-assistant message sequentially, then executes the allowed calls concurrently. The router therefore spends a single-use
-discovery grant in its `tool_call` handler, not at `tool_execution_end`.
+  custom-start preparation and busy-start semantics.
 
 No Pi code, issue prose, or documentation prose was copied or modified.
 
@@ -150,18 +120,6 @@ configures models through it. No Bifrost source was copied; the router only depe
 contract and its Bedrock model-path naming, documented in
 [`specs/routing-layer/decisions.md`](specs/routing-layer/decisions.md).
 
-### `pi-telemetry-otel`
-
-- Package: <https://www.npmjs.com/package/pi-telemetry-otel>
-- Revision reviewed: not pinned; it is an optional, separately installed companion package, not an extension runtime
-  dependency
-- License: not verified in this repository; see the npm listing for its declared license
-
-Use: `extensions/router/telemetry.ts` studies and consumes this package's public, documented integration contract — the
-`Symbol.for("pi.telemetry-otel.runtimeRegistry.v1")` and `Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1")`
-global registries — to emit optional parented OTel spans without a static dependency, and no-ops cleanly when the
-package is absent. No `pi-telemetry-otel` source was copied.
-
 ### Amazon Bedrock pricing and prompt caching
 
 - Sources: [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/),
@@ -170,13 +128,7 @@ package is absent. No `pi-telemetry-otel` source was copied.
 - Revision reviewed: live documentation on 2026-08-11
 - License: no documentation license was identified; no source code or documentation text was copied
 
-Use: published per-token input and output list rates now drive cost-first endpoint ordering. Cache read/write semantics
-establish the related cost classifications; the sources also establish default and one-hour TTL behavior, GPT-5.6's
-explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior, and the exclusion of cache-read tokens from
-input-token rate-limit quotas. The repository's operator-supplied `1.00001` Bedrock preference, which slightly
-prioritizes first-party endpoints when list rates match, remains separate from and was not derived from AWS
-documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and commitment pricing
-were intentionally not adopted.
+Use: published per-token input and output list rates now drive cost-first endpoint ordering.
 
 ### Amazon Bedrock Converse tool choice and extended thinking
 
