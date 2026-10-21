@@ -31,6 +31,8 @@ export type TaskLease = {
   modelSnapshotId: string;
   policyVersion: string;
   lastPromptFingerprint: string;
+  /** Bounded original requirements for isolated reviews; never an instruction-policy source. */
+  reviewTaskContext?: string;
   manualOverride: boolean;
   repositoryLanguageBucket?: string;
   contextSizeBucket?: string;

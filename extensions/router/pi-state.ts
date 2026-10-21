@@ -177,6 +177,8 @@ function isTaskLease(value: unknown): value is TaskLease {
     // next user turn create a fresh lease rather than degrading silently.
     lease.policyVersion !== POLICY_VERSION ||
     typeof lease.lastPromptFingerprint !== "string" ||
+    (lease.reviewTaskContext !== undefined &&
+      (typeof lease.reviewTaskContext !== "string" || lease.reviewTaskContext.length > 6000)) ||
     typeof lease.manualOverride !== "boolean" ||
     (lease.advisoryStepsNoted !== undefined &&
       (!Array.isArray(lease.advisoryStepsNoted) ||

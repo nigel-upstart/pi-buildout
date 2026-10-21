@@ -5629,6 +5629,146 @@ describe("routerExtension", () => {
       }
     });
   }
+  it("cancels on shadow transitions but preserves a redundant active command", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      await fixture.commands.get("route").handler("active", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, false);
+      await fixture.commands.get("route").handler("shadow", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels review when a telemetry failure disables active routing", async () => {
+    const runner = controlledRunner();
+    let fail = false;
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      telemetry: {
+        read: async () => [],
+        append: async () => {
+          if (fail) throw new Error("fixture telemetry failure");
+        },
+      },
+    });
+    try {
+      await launchReview(fixture);
+      fail = true;
+      fixture.hooks.get("agent_start")();
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: fixture.parent.selected.provider,
+              model: fixture.parent.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 1, output: 1, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels the paid reviewer before applying a different builder selection", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      fixture.onBuilderSwitch(() => {
+        assert.equal(runner.calls[0].cancelled, true);
+      });
+      await fixture.commands.get("route").handler("fail availability", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels obsolete builder reviews and schedules the same scope on a new attempt", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    // Keep the selection identical so only the changed attempt index distinguishes the new review.
+    fixture.parent.fallbacks = [{ ...fixture.parent.selected }];
+    try {
+      await launchReview(fixture);
+      const first = runner.calls[0];
+      await fixture.commands.get("route").handler("fail availability", fixture.ctx);
+      assert.equal(first.cancelled, true);
+      assert.equal(fixture.latestLease().attemptIndex, 1);
+      fixture.ctx.model = fixture.models.find(
+        (m) =>
+          m.provider === fixture.latestLease().selected.provider && m.id === fixture.latestLease().selected.modelId,
+      );
+      fixture.hooks.get("agent_start")();
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: fixture.latestLease().selected.provider,
+              model: fixture.latestLease().selected.modelId,
+              stopReason: "stop",
+              usage: { input: 1, output: 1, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 2);
+      assert.equal(runner.calls[1].request.scopeFingerprint, first.request.scopeFingerprint);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("transfers original requirements and retained plan despite a continuation-only latest message", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const validation = validateActionPlan(irreversibleActionPlan());
+    fixture.parent.reviewTaskContext = "Original requirement: preserve the rollback overlap window.";
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+      plan: {
+        taskFingerprint: "task-fingerprint",
+        planFingerprint: validation.fingerprint,
+        submittedAt: "now",
+        plan: validation.plan,
+      },
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+    ];
+    const branch = fixture.ctx.sessionManager.getBranch;
+    fixture.ctx.sessionManager.getBranch = () => [
+      ...branch(),
+      { type: "message", message: { role: "user", content: "continue" } },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      assert.match(runner.calls[0].request.prompt, /preserve the rollback overlap window/);
+      assert.match(runner.calls[0].request.prompt, /untrusted_retained_plan/);
+      assert.ok(runner.calls[0].request.prompt.includes(validation.plan.objective));
+      assert.ok(runner.calls[0].request.prompt.length < 60_000);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("skips unavailable Pi runtimes with a human note and telemetry", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
