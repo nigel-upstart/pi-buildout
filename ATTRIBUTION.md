@@ -120,18 +120,6 @@ configures models through it. No Bifrost source was copied; the router only depe
 contract and its Bedrock model-path naming, documented in
 [`specs/routing-layer/decisions.md`](specs/routing-layer/decisions.md).
 
-### `pi-telemetry-otel`
-
-- Package: <https://www.npmjs.com/package/pi-telemetry-otel>
-- Revision reviewed: not pinned; it is an optional, separately installed companion package, not an extension runtime
-  dependency
-- License: not verified in this repository; see the npm listing for its declared license
-
-Use: `extensions/router/telemetry.ts` studies and consumes this package's public, documented integration contract — the
-`Symbol.for("pi.telemetry-otel.runtimeRegistry.v1")` and `Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1")`
-global registries — to emit optional parented OTel spans without a static dependency, and no-ops cleanly when the
-package is absent. No `pi-telemetry-otel` source was copied.
-
 ### Amazon Bedrock pricing and prompt caching
 
 - Sources: [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/),
