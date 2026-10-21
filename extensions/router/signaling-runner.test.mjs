@@ -82,6 +82,11 @@ function releasedManager(bus, behavior = {}) {
   handle("spawn", async (raw) => {
     seen.spawns.push(raw);
     if (behavior.spawn === "error") throw new Error("Model not found");
+    if (behavior.spawn === "bare-error") {
+      // Malformed: protocol-2 error envelopes carry a string `error`.
+      bus.emit(`subagents:rpc:spawn:reply:${raw.requestId}`, { success: false });
+      await new Promise(() => {});
+    }
     const record = {
       id: `agent-${String(seen.spawns.length)}`,
       description: raw.options.description,
@@ -207,6 +212,28 @@ test("malformed acceptance is uncertain: abort, no resend, and a late terminal i
   bus.emit("subagents:completed", { id: "agent-1", description: seen.spawns[0].options.description, result: "late" });
   assert.deepEqual(seen.consumeRequests, ["agent-1"], "consume is sent synchronously for the late terminal");
   await tick();
+});
+
+test("an error envelope without a string error is uncertain, not a confirmed non-launch", async () => {
+  const bus = createEventBus();
+  const seen = releasedManager(bus, { spawn: "bare-error" });
+  const result = await createSignalingReviewRunner(bus).start(request()).result;
+  assert.equal(result.status, "uncertain");
+  assert.equal(seen.spawns[0].options.signal.aborted, true);
+});
+
+test("shutdown right after cancellation drains briefly so the stop terminal is consumed", async () => {
+  const bus = createEventBus();
+  const seen = releasedManager(bus, { terminal: "never" });
+  const runner = createSignalingReviewRunner(bus);
+  const handle = runner.start(request());
+  for (let i = 0; i < 20 && seen.spawns.length === 0; i++) await tick();
+  await tick();
+  handle.cancel();
+  await runner.dispose();
+  assert.deepEqual(seen.stops, ["agent-1"]);
+  assert.deepEqual(seen.consumed, ["agent-1"]);
+  assert.deepEqual(seen.notified, []);
 });
 
 test("lost acceptance at the deadline aborts without resend and consumes the late terminal", async () => {
