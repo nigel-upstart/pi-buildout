@@ -224,7 +224,7 @@ export function advisoryPhasePausedByOff(lifecycle: LeaseLifecycle | undefined):
 }
 
 export function routerReenabledNotice(phase: AdvisoryPhase): string {
-  return `The operator turned the model router back on. Advisory ${phase} guidance has resumed; follow the phase's recommended router step. The router does not block tools; follow the user's instructions and approvals.`;
+  return `The operator turned the model router back on. Advisory ${phase} guidance has resumed; follow the phase's recommended router step and user's instructions and guidance.`;
 }
 
 export function routerOffNotice(phase: AdvisoryPhase): string {
