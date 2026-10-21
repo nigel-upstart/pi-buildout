@@ -107,7 +107,6 @@ import type { ReviewRunner, ReviewHandle } from "./review-runner.ts";
 import { createSignalingReviewRunner } from "./signaling-runner.ts";
 
 const STATE_ENTRY = "model-router-state";
-/** One consumed logical-review slot per task, stage, and exact scope; survives reload in the branch. */
 const CONTEXT_MESSAGE = "model-router-context";
 
 type PendingInput = {
@@ -2092,12 +2091,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       controller: new AbortController(),
       cancelled: false,
     };
-    // Persist before asynchronous work: a reload must not let an exhausted plan monopolize settlement
-    // again, or rerun a completion review merely because its advice was consumed in a fresh instance.
-    const marked = { ...parent, reviewAttemptKeys: reviewAttemptHistory(parent, key) };
-    if (!leaseOwner.advance("EVIDENCE", marked, parent, review.epoch)) return;
+    // Reserve synchronously in memory during selection. Only launched or deterministically failed work
+    // consumes the persisted attempt; cancellation before launch must not strand an unchanged plan.
     pendingReview = review;
-    persistState();
+    let marked = false;
+    const markAttempt = () => {
+      if (marked || !reviewCurrent(review)) return;
+      const active = leaseOwner.state.active!;
+      const next = { ...active, reviewAttemptKeys: reviewAttemptHistory(active, key) };
+      if (leaseOwner.advance("EVIDENCE", next, active, review.epoch)) {
+        marked = true;
+        persistState();
+      }
+    };
     let delivered = false;
     const reviewGeneration = sessionGeneration;
     try {
@@ -2194,6 +2200,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const remaining = deadline - Date.now();
         if (remaining <= 0 || spent >= 1) break;
         const endpointFields = endpointFieldsFor(model);
+        markAttempt();
         review.handle = runner.start({
           cwd: ctx.cwd,
           registry: ctx.modelRegistry,
@@ -2329,6 +2336,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           "warning",
         );
     } catch {
+      markAttempt();
       if (reviewCurrent(review)) {
         ctx.ui.notify("Independent review could not start; tools remain available.", "warning");
         await record(
@@ -2339,6 +2347,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         );
       }
     } finally {
+      markAttempt();
       if (pendingReview === review) pendingReview = undefined;
       if (!delivered) void reviewSettledWorkAfterPlanReview(ctx, review, reviewGeneration);
     }

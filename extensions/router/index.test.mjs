@@ -6299,7 +6299,7 @@ describe("routerExtension", () => {
   it("never reopens a consumed review stage for unchanged scope, even after reload", async () => {
     const runner = controlledRunner();
     const first = await authorizationLifecycleFixture({ reviewRunner: runner });
-    let slots = [];
+    let state;
     try {
       await launchReview(first, runner);
       runner.calls[0].resolve({
@@ -6308,28 +6308,30 @@ describe("routerExtension", () => {
         usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
       });
       await waitForReview(() => first.sent.some((s) => /Independent review advice/.test(s.message.content)));
-      // The advice-triggered continuation resubmits the identical plan; it cannot schedule a rereview.
-      await first.tools
-        .get("submit_action_plan")
-        .execute("again", irreversibleActionPlan(), undefined, undefined, first.ctx);
+      // Consuming advice without an explicit plan resubmission cannot schedule another review.
       await first.hooks.get("agent_settled")({}, first.ctx);
       await new Promise((resolve) => setTimeout(resolve, 50));
       assert.equal(runner.calls.length, 1);
-      slots = first.appended.filter((entry) => entry.customType === "model-router-review-slot");
-      assert.equal(slots.length, 1);
+      assert.equal(first.latestLease().reviewAttemptKeys.length, 1);
+      state = restoreLeaseState(
+        JSON.parse(JSON.stringify(first.appended)).map((entry) => ({ type: "custom", ...entry })),
+        "active",
+      );
     } finally {
       first.restoreEnvironment();
     }
-    const reloaded = await authorizationLifecycleFixture({ reviewRunner: runner });
-    const branch = reloaded.ctx.sessionManager.getBranch;
-    reloaded.ctx.sessionManager.getBranch = () => [
-      ...branch(),
-      ...slots.map((entry) => ({ type: "custom", customType: entry.customType, data: entry.data })),
-    ];
+    const reloaded = await authorizationLifecycleFixture({ reviewRunner: runner }, state);
     try {
-      await launchReview(reloaded);
+      await reloaded.hooks.get("session_start")({ reason: "reload" }, reloaded.ctx);
+      await reloaded.hooks.get("agent_settled")({}, reloaded.ctx);
       await new Promise((resolve) => setTimeout(resolve, 50));
-      assert.equal(runner.calls.length, 1, "a reloaded instance reads the consumed slot from the branch");
+      assert.equal(runner.calls.length, 1, "a reloaded instance reads consumed attempts from the lease");
+      // Current main intentionally permits explicit plan resubmission, even for identical plan text.
+      await reloaded.tools
+        .get("submit_action_plan")
+        .execute("again", irreversibleActionPlan(), undefined, undefined, reloaded.ctx);
+      await reloaded.hooks.get("agent_settled")({}, reloaded.ctx);
+      await waitForReview(() => runner.calls.length === 2);
     } finally {
       reloaded.restoreEnvironment();
     }
@@ -6523,6 +6525,24 @@ describe("routerExtension", () => {
       assert.equal(runner.calls.length, 0);
     } finally {
       fixture.restoreEnvironment();
+    }
+    // No child launched, so restoring the same plan does not retain a consumed attempt.
+    assert.deepEqual(fixture.latestLease().reviewAttemptKeys ?? [], []);
+    const state = restoreLeaseState(
+      JSON.parse(JSON.stringify(fixture.appended)).map((entry) => ({ type: "custom", ...entry })),
+      "active",
+    );
+    state.mode = "active";
+    const reloaded = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+    }, state);
+    try {
+      await reloaded.hooks.get("session_start")({ reason: "reload" }, reloaded.ctx);
+      await reloaded.hooks.get("agent_settled")({}, reloaded.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+    } finally {
+      reloaded.restoreEnvironment();
     }
   });
 
