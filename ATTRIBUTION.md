@@ -551,27 +551,6 @@ MIT), which itself extends pi's skills configuration.
   `/skills` command surface, and the enabled-entry list shape. Router start mode is a single scalar preference per
   scope, not a list, and it is not settable from a slash command.
 
-## Codemode policy alternatives researched (not adopted)
-
-The following sources informed the comparison of advisory guidance, command classification, and isolated execution. No
-source code was copied or modified, no dependency was added, and none replaces the router's existing policy.
-
-- `tree-sitter-bash`: <https://github.com/tree-sitter/tree-sitter-bash>, revision
-  `a06c2e4415e9bc0346c6b86d401879ffb44058f7`, MIT. Reviewed as a Bash AST foundation, not an effect classifier or
-  authorization boundary. Its parser and Node binding were not adopted.
-- `tiny-shell-gate`: <https://github.com/bobbyhalljr/tiny-shell-gate>, revision
-  `f9952a2e733268bbc7b902acf84383c9e9cfe346`, MIT. Its teaching example distinguishes exact-command approval from
-  program-name allowlisting and explicitly does not execute commands. Neither its character filter nor its mock gate was
-  adopted.
-- `cc-skills` read-only detector: <https://github.com/terrylica/cc-skills>, revision
-  `4a40528e22c992e626311ae4c66c00c12dff6381`, MIT. Reviewed `plugins/itp-hooks/hooks/lib/readonly-command-detector.ts`
-  as a counterexample: its intentional remote-SSH exemption and broad command regexes do not establish read-only
-  authorization. No detector rules were adopted.
-- `just-bash`: <https://github.com/vercel-labs/just-bash>, revision `9ab0e0d34c1d24978cd40ae890a91ccb223cc606`,
-  Apache-2.0 for the package. Its virtual filesystem, explicit network capabilities, and documented host-hook trust
-  assumptions inform the distinction between classification and constrained execution. No interpreter, filesystem
-  adapter, or sandbox integration was adopted.
-
 ## `shell-quote` and `shlex` (router shell tokenizer dependencies)
 
 - Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.11.0`, MIT) and `shlex`
