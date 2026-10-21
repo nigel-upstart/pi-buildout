@@ -509,6 +509,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let lastRoute: LastRoute = {};
   let lastUpstream: string | undefined;
   let applyingSelection = false;
+  let applyingEffort = false;
   // Provider selection is asynchronous. Serialize router-owned switches so a stale
   // correction cannot finish after a newer fallback's selection.
   let selectionTail: Promise<unknown> = Promise.resolve();
@@ -1660,6 +1661,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return selection;
   }
 
+  function applyEffort(effort: EffortLevel): void {
+    applyingEffort = true;
+    try {
+      pi.setThinkingLevel(effort);
+    } finally {
+      applyingEffort = false;
+    }
+  }
+
   async function applyChoiceUnqueued(
     ctx: ExtensionContext,
     choice: Pick<RouteChoice, "provider" | "modelId" | "effort">,
@@ -1671,7 +1681,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     programmaticSelection = { provider: choice.provider, modelId: choice.modelId };
     try {
       if (ctx.model?.provider === choice.provider && ctx.model.id === choice.modelId) {
-        if (pi.getThinkingLevel() !== choice.effort) pi.setThinkingLevel(choice.effort);
+        if (pi.getThinkingLevel() !== choice.effort) applyEffort(choice.effort);
         return true;
       }
       const model = ctx.modelRegistry.find(choice.provider, choice.modelId);
@@ -1679,7 +1689,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const selected = await pi.setModel(model);
       if (!selected) return false;
       if (leaseOwner.epoch !== epoch) return false;
-      pi.setThinkingLevel(choice.effort);
+      applyEffort(choice.effort);
       return true;
     } catch {
       return false;
@@ -3215,7 +3225,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("thinking_level_select", async (event, ctx) => {
-    if (applyingSelection) return;
+    // Explicit effort setters emit synchronously. A model switch also emits its
+    // default effort after authentication, with ctx.model already set to its target.
+    // Neither echo is an operator choice; changes on the still-current model while
+    // authentication is pending are, and must advance the recovery revision even off.
+    if (
+      applyingEffort ||
+      (applyingSelection &&
+        ctx.model?.provider === programmaticSelection?.provider &&
+        ctx.model?.id === programmaticSelection?.modelId)
+    )
+      return;
     if (ctx.model) {
       operatorSelection = { provider: ctx.model.provider, modelId: ctx.model.id, effort: event.level };
       operatorSelectionRevision++;
