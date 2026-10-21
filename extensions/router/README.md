@@ -486,19 +486,26 @@ direct dispatch.
 `tool_call`/`tool_result` observation is read-only. The router never returns replacement content, details, or error
 state, and never trims wrappers. It accepts only the last nonce-tagged JSON block from the single, exact validated
 spawn. A companion call counts too, but only if it matches its validated template and carries a child id that the
-spawn's output actually returned. Fallback is decided when the delegation run settles. No spawn, or exactly one failed
-spawn, launched nothing, so the SDK may run. A successful spawn without a verdict, a second spawn, a deviating or
-unmatched companion call, a timeout, or cancellation is uncertain or stale, because a builder-launched child cannot be
-cancelled by the router; no replacement starts.
+spawn's output actually returned. The executed input reported by `tool_result` is rechecked, because later `tool_call`
+handlers may mutate it. Verdicts, quarantine evidence, and fallback are all provisional until the delegation run
+settles. A user abort (Escape) cancels the review. No spawn, or exactly one failed spawn, launched nothing, so the SDK
+may run. A successful spawn without a verdict, a second spawn, a deviating or unmatched companion call, a timeout, or
+cancellation is uncertain or stale, because a builder-launched child cannot be cancelled by the router; no replacement
+starts.
+
+Discovery publishes only a structurally bindable plan; anything else stays DIRTY for the next access. Argument paths
+named `__proto__`, `prototype`, or `constructor` are rejected. The isolation literal is matched case-sensitively with
+its sign and punctuation.
 
 Candidate quarantine records only high-confidence contract incompatibility: an exact single invocation whose error
 rejects a bound argument by name ("Unknown parameter: isolated"). Rejected values such as "Unknown model" and
 operational wording such as not found, auth, rate limit, timeout, or Pi validation never quarantine. It is keyed by
 source path, namespace, and tool name, plus the spawn and result-tool schemas with annotations stripped from schema
 nodes only (property names and literal data kept), and exposure. Help-text edits, unrelated tools, and disappearance do
-not clear it; a meaningful schema change does. The map holds 64 entries; when full it blocks every candidate rather than
-evicting evidence. Quarantined contracts are excluded from discovery input, so an answer repeating one cannot publish.
-Adding one aborts the flight and advances the generation without an eager refresh.
+not clear it; a meaningful schema change does. A missing companion keeps it only while the spawn contract is unchanged.
+The map holds 64 entries; when full it blocks every candidate rather than evicting evidence. Quarantined contracts are
+excluded from discovery input, so an answer repeating one cannot publish. Adding one aborts the flight and advances the
+generation without an eager refresh.
 
 The **SDK** runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an
 empty `ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget.
