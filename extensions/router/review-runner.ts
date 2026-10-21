@@ -161,6 +161,8 @@ export const inProcessReviewRunner: ReviewRunner = {
         // Wrap only this reviewer agent, never the shared parent runtime or its provider request function.
         const stream = session.agent.streamFunction;
         session.agent.streamFunction = (model, context, options) => {
+          // Cancellation can settle while prompt() still awaits authentication; never start a request afterwards.
+          if (isDone()) throw new Error("Review already settled");
           if (++turns > 8 || usage.cost >= request.maxCost) {
             terminal = "budget_exceeded";
             throw new Error("Review budget exhausted");

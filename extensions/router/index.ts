@@ -3100,11 +3100,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (check) deterministicCheckResults.set(check, !event.isError);
     if (leaseOwner.state.active && (check || (mutation && !event.isError))) {
       const now = new Date().toISOString();
+      const lifecycle = leaseOwner.state.active.lifecycle;
       leaseOwner.advance(
         "EVIDENCE",
         {
           ...leaseOwner.state.active,
           updatedAt: now,
+          // Out-of-band completion advice can land mid-continuation; newer mutations reopen completion review.
+          ...(mutation && !event.isError && lifecycle.phase === "completed" && leaseOwner.state.mode === "active"
+            ? { lifecycle: resumeCompletedLifecycle(lifecycle) }
+            : {}),
           safetyEvidence: {
             ...leaseOwner.state.active.safetyEvidence,
             checks: check

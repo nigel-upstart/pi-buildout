@@ -338,3 +338,29 @@ test("SDK reviewer reports usage from the final aborted message after cancellati
   assert.equal(timedOut.status, "timeout");
   assert.equal(timedOut.usage.cost, 0.03);
 });
+
+test("SDK reviewer starts no provider request when cancelled while prompt awaits authentication", async (t) => {
+  const f = await fixture(t);
+  let releaseAuth;
+  const authChecked = new Promise((resolve) => {
+    t.mock.method(f.runtime, "hasConfiguredAuth", () => false);
+    t.mock.method(f.runtime, "checkAuth", () => {
+      resolve();
+      return new Promise((release) => {
+        releaseAuth = () => release({ type: "api_key" });
+      });
+    });
+  });
+  let requests = 0;
+  f.runtime.streamSimple = (model) => {
+    requests++;
+    return streamMessage(model, []);
+  };
+  const handle = inProcessReviewRunner.start(request(f));
+  await authChecked;
+  handle.cancel();
+  assert.equal((await handle.result).status, "cancelled");
+  releaseAuth();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(requests, 0, "a settled review must not start a paid request after authentication resolves");
+});
