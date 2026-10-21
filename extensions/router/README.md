@@ -485,6 +485,10 @@ may run. A successful spawn without a verdict, a second spawn, a deviating or un
 cancellation is uncertain or stale, because a builder-launched child cannot be cancelled by the router; no replacement
 starts.
 
+The builder must copy the arguments exactly, in its own context and at builder output pricing, and any deviation blocks
+fallback. Tasks over 12,000 characters (most diff-carrying completion reviews) therefore skip the builder path and use
+the SDK.
+
 Discovery publishes only a structurally bindable plan; anything else stays DIRTY for the next access. Argument paths
 named `__proto__`, `prototype`, or `constructor` are rejected. The isolation literal is matched case-sensitively with
 its sign and punctuation.

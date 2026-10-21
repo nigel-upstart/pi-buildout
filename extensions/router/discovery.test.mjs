@@ -398,6 +398,10 @@ test("builder path is unavailable without a publication or supported isolation, 
     assert.equal((await h.runner.start(reviewRequest()).result).status, "unavailable");
     assert.deepEqual(h.sent, []);
   }
+  // A task too large to copy exactly would risk an uncertain, unrecoverable attempt: the SDK runs instead.
+  const large = builderHarness();
+  assert.equal((await large.runner.start(reviewRequest({ prompt: "x".repeat(12_001) })).result).status, "unavailable");
+  assert.deepEqual(large.sent, []);
 });
 
 test("echoed instructions and deviating calls never count as a verdict", async () => {

@@ -15,6 +15,11 @@ type ToolResultEvent = ToolCallEvent & { content: readonly { type: string; text?
 // rejected value such as "Unknown model: provider/id" and not an operational failure.
 const CONTRACT_REJECTION =
   /\b(unknown|unsupported|unrecognized|unexpected|invalid|disallowed)\s+(argument|parameter|option|property|field|key)s?\b|\badditional propert(y|ies)\b|\b(argument|parameter|option|property|field)s?\b[^\n]{0,60}\bnot (allowed|supported)\b/i;
+/**
+ * The builder must reproduce every argument exactly, at builder output pricing and in builder context. Larger tasks
+ * make exact reproduction unreliable, and a deviation blocks every fallback, so they use the SDK instead.
+ */
+const MAX_BUILDER_TASK_CHARS = 12_000;
 const OPERATIONAL =
   /(not found|api key|auth|rate.?limit|quota|timed? ?out|timeout|unavailable|overloaded|network|validation failed for tool)/i;
 
@@ -69,6 +74,12 @@ export function createBuilderReviewRunner(deps: {
     start(request) {
       if (open) return unavailable();
       const nonce = newReviewNonce();
+      const task = [
+        request.systemPrompt,
+        request.prompt,
+        reviewOutputContract(nonce, request.kind, request.scopeFingerprint),
+      ].join("\n\n");
+      if (task.length > MAX_BUILDER_TASK_CHARS) return unavailable();
       let call: BoundCall | undefined;
       try {
         const plan = deps.observe()?.plan;
@@ -76,11 +87,7 @@ export function createBuilderReviewRunner(deps: {
         // A published observation is not permission: recheck reachability, schema, and isolation now.
         call = plan
           ? bindPlan(plan, tools, {
-              task: [
-                request.systemPrompt,
-                request.prompt,
-                reviewOutputContract(nonce, request.kind, request.scopeFingerprint),
-              ].join("\n\n"),
+              task,
               model: `${request.model.provider}/${request.model.id}`,
               effort: request.effort,
             })
