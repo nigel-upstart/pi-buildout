@@ -36,6 +36,9 @@ export function createBuilderReviewRunner(deps: {
     spawnText?: string;
     resultCallId?: string;
     deviated: boolean;
+    /** Provisional until the run settles: a later duplicate or deviation can still invalidate it. */
+    verdict?: unknown;
+    rejection?: string;
     spawnFailed: boolean;
     finish(status: ReviewResult["status"], verdict?: unknown): void;
   };
@@ -161,41 +164,50 @@ export function createBuilderReviewRunner(deps: {
         attempt.exact = attempt.spawnCalls === 1 && isDeepStrictEqual(event.input, call.arguments);
       } else if (call.result?.tool.name === event.toolName) attempt.deviated = true;
     },
+    /** Record evidence only; every decision waits for the run to settle. */
     onToolResult(event: ToolResultEvent): void {
       const attempt = open;
       if (!attempt) return;
-      const trusted = attempt.exact && !attempt.deviated;
+      const { call } = attempt;
       if (event.toolCallId === attempt.resultCallId) {
-        const verdict = trusted && !event.isError ? parseReviewOutput(textOf(event), attempt.nonce) : undefined;
-        if (verdict !== undefined) attempt.finish("completed", verdict);
+        // Later tool_call handlers may mutate input; trust only what actually executed.
+        const executed = matchesResult(event.input, call.result?.arguments, attempt.spawnText ?? "");
+        if (!executed) attempt.deviated = true;
+        else if (!event.isError) attempt.verdict ??= parseReviewOutput(textOf(event), attempt.nonce);
         return;
       }
       if (event.toolCallId !== attempt.spawnCallId) return;
+      if (!isDeepStrictEqual(event.input, call.arguments)) attempt.exact = false;
       const text = textOf(event);
       if (event.isError) {
-        // Only an exact invocation whose rejection names a bound argument disproves the advertised contract.
-        const named = Object.keys(attempt.call.arguments).some((key) => text.includes(key));
-        if (attempt.exact && named && CONTRACT_REJECTION.test(text) && !OPERATIONAL.test(text))
-          deps.quarantine(attempt.call, "argument_rejected");
-        // Decided at settle: a retried or concurrent second spawn may still run.
         attempt.spawnFailed = true;
-        return;
+        attempt.rejection = text;
+      } else if (attempt.exact) {
+        attempt.verdict = parseReviewOutput(text, attempt.nonce);
+        attempt.spawnText = text;
       }
-      const verdict = trusted ? parseReviewOutput(text, attempt.nonce) : undefined;
-      if (verdict !== undefined) attempt.finish("completed", verdict);
-      // A successful spawn without a verdict may have started a background child: never fall forward.
-      else if (!trusted || !attempt.call.result) attempt.finish("uncertain");
-      else attempt.spawnText = text;
     },
     /**
-     * The delegation run settled. No spawn means nothing launched, and exactly one failed spawn means nothing of
-     * ours runs; both allow fallback. Anything else leaves ownership unknown.
+     * The delegation run settled (no more calls in it). A verdict counts only from one exact, undeviated spawn.
+     * No spawn, or exactly one failed spawn, launched nothing of ours and allows fallback; a user abort cancels.
+     * Anything else, including a successful spawn without a verdict, leaves ownership unknown.
      */
-    onSettled(): void {
+    onSettled(aborted = false): void {
       const attempt = open;
       if (!attempt) return;
-      if (attempt.spawnCalls === 0) attempt.finish("unavailable");
-      else attempt.finish(attempt.spawnCalls === 1 && attempt.spawnFailed ? "failed" : "uncertain");
+      const single = attempt.spawnCalls === 1;
+      const trusted = single && attempt.exact && !attempt.deviated;
+      if (aborted) attempt.finish("cancelled");
+      else if (attempt.spawnCalls === 0) attempt.finish("unavailable");
+      else if (trusted && attempt.verdict !== undefined) attempt.finish("completed", attempt.verdict);
+      else if (single && attempt.spawnFailed) {
+        // Only an exact invocation whose rejection names a bound argument disproves the advertised contract.
+        const text = attempt.rejection ?? "";
+        const named = Object.keys(attempt.call.arguments).some((key) => text.includes(key));
+        if (trusted && named && CONTRACT_REJECTION.test(text) && !OPERATIONAL.test(text))
+          deps.quarantine(attempt.call, "argument_rejected");
+        attempt.finish("failed");
+      } else attempt.finish("uncertain");
     },
   };
 }

@@ -105,9 +105,11 @@ function toolsFingerprint(tools: readonly ToolView[]): string {
   );
 }
 
+const UNSAFE_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
 function schemaAt(schema: unknown, path: string): Record<string, unknown> | undefined {
   let node = schema as Record<string, unknown> | undefined;
   for (const key of path.split(".")) {
+    if (!key || UNSAFE_SEGMENTS.has(key)) return undefined;
     const properties = node?.properties as Record<string, unknown> | undefined;
     if (!properties || !Object.hasOwn(properties, key)) return undefined;
     node = properties[key] as Record<string, unknown>;
@@ -119,6 +121,16 @@ function callable(tools: readonly ToolView[], name: string | undefined): ToolVie
   return tool?.active && (tool.exposure === "direct" || tool.exposure === "model-only") ? tool : undefined;
 }
 const normalized = (text: string) => text.replace(/\s+/g, " ").trim().toLowerCase();
+/** Case-sensitive occurrence not embedded in a longer word, number, or signed value. */
+function containsToken(text: string, token: string): boolean {
+  const word = /[\w+.-]/;
+  for (let at = text.indexOf(token); at >= 0; at = text.indexOf(token, at + 1)) {
+    const before = text.charAt(at - 1);
+    const after = text.charAt(at + token.length);
+    if (!(before && word.test(before)) && !(after && /[\w+-]/.test(after))) return true;
+  }
+  return false;
+}
 
 /** Schema-only answer check plus grounding against the published tools; untrusted model output. */
 export function planFromAnswer(answer: unknown, tools: readonly ToolView[]): DelegationPlan | null | undefined {
@@ -133,7 +145,9 @@ export function planFromAnswer(answer: unknown, tools: readonly ToolView[]): Del
     isolationArgument: value.isolationArgument,
     isolationEvidence: value.isolationEvidence,
   };
-  return isolationGrounded(plan, tools) ? plan : undefined;
+  // Publish only a structurally bindable plan; otherwise stay DIRTY so the next access can retry.
+  const structural = bindPlan(plan, tools, { task: "task", model: "provider/model", effort: "high" });
+  return structural ? plan : undefined;
 }
 
 /**
@@ -148,18 +162,15 @@ function isolationGrounded(plan: DelegationPlan, tools: readonly ToolView[]): bo
   if (!tool || !parameter || argument?.literal === undefined || argument.bind) return false;
   const quote = normalized(plan.isolationEvidence);
   if (quote.length < 12 || !/\bextensions?\b/.test(quote)) return false;
-  // The documented condition must name the exact literal sent ("If true, ..."), not merely the argument.
+  // The documented condition must name the exact literal sent ("If true, ..."), with case, sign, and punctuation.
   let literal: unknown;
   try {
     literal = JSON.parse(argument.literal) as unknown;
   } catch {
     return false;
   }
-  const words = (text: string) => text.split(/[^a-z0-9_]+/).filter(Boolean);
-  const token = words(normalized(typeof literal === "string" ? literal : JSON.stringify(literal)));
-  const said = words(quote);
-  const named = said.some((_, start) => token.every((word, offset) => said[start + offset] === word));
-  if (token.length === 0 || !named) return false;
+  const token = typeof literal === "string" ? literal : JSON.stringify(literal);
+  if (!token || !containsToken(plan.isolationEvidence.replace(/\s+/g, " "), token)) return false;
   const leaf = normalized(plan.isolationArgument.split(".").at(-1) ?? "");
   const parameterDocs = typeof parameter.description === "string" ? normalized(parameter.description) : "";
   const toolDocs = normalized([tool.description, ...(tool.promptGuidelines ?? [])].join(" "));
@@ -290,8 +301,10 @@ export function createQuarantine(limit = 64) {
       const entry = entries.get(identityOf(spawn));
       if (!entry) return overflow;
       const result = entry.resultTool ? tools.find((tool) => tool.name === entry.resultTool) : undefined;
-      if (entry.resultTool && !result) return true;
-      if (entry.spawn === contractOf(spawn) && (!result || contractOf(result) === entry.result)) return true;
+      // A missing companion retains evidence only while the spawn contract itself is unchanged.
+      const same =
+        entry.spawn === contractOf(spawn) && (!entry.resultTool || !result || contractOf(result) === entry.result);
+      if (same) return true;
       entries.delete(identityOf(spawn));
       return overflow;
     },
