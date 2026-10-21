@@ -374,14 +374,21 @@ test("wait preserves terminal errors and cancellation without stopping the child
   const { execute, id } = await waitHarness(t);
   fixture.snapshot.state = "failed";
   fixture.snapshot.error = "model failed";
-  delete fixture.snapshot.lastAssistantText;
+  fixture.snapshot.lastAssistantText = "stale-final-sentinel";
   const failed = await execute({ action: "wait", id });
   assert.equal(Reflect.get(failed.details, "child").state, "failed");
   assert.match(JSON.stringify(failed.content), /model failed/);
+  assert.doesNotMatch(JSON.stringify(failed), /stale-final-sentinel/);
   assert.doesNotMatch(JSON.stringify(failed), privateWaitText);
   fixture.snapshot.state = "stopped";
   const stopped = await execute({ action: "wait", id });
   assert.equal(Reflect.get(stopped.details, "child").state, "stopped");
+  assert.doesNotMatch(JSON.stringify(stopped), /stale-final-sentinel/);
+  fixture.snapshot.state = "idle";
+  fixture.snapshot.pendingMessages = 1;
+  delete fixture.snapshot.error;
+  const queued = await execute({ action: "wait", id });
+  assert.doesNotMatch(JSON.stringify(queued), /stale-final-sentinel/);
   const abort = new AbortController();
   fixture.wait = async (_timeoutMs, signal) => {
     assert.equal(signal, abort.signal);
