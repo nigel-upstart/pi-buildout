@@ -1860,8 +1860,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       };
     }
 
-    if (!options.passive) await applyChoice(ctx, original.selected);
-    if (options.passive) triggerContinuation = false;
+    const builderRestored = options.passive ? false : await applyChoice(ctx, original.selected);
+    if (options.passive || !builderRestored) triggerContinuation = false;
+    if (!options.passive && !builderRestored) {
+      revokedReviewStillRunning = true;
+      ctx.ui.notify("Builder model could not be restored after review; advice continuation is deferred.", "warning");
+    }
     if (leaseOwner.state.active !== owner) {
       // Another lease replaced the review during the model switch; it owns what happens next.
       reviewParentAttemptMetrics = undefined;
@@ -1871,7 +1875,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const settleEpoch = leaseOwner.epoch;
     if (settleEpoch !== leaseEpoch) triggerContinuation = false;
     // An epoch mismatch drops the verdict; it never reinstalls stale advice.
-    if (!leaseOwner.reviewBindingCurrent) {
+    if ((owner?.lifecycle.phase === "review" && !leaseOwner.reviewBindingCurrent) || settleEpoch !== leaseEpoch) {
       lifecycle = original.lifecycle;
       triggerContinuation = false;
     }
@@ -1916,7 +1920,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       },
       { taskId: parent.taskId, archetype: parent.archetype },
     );
-    if (triggerContinuation && leaseOwner.state.active === installed) {
+    if (triggerContinuation && leaseOwner.state.mode === "active" && leaseOwner.owns(installed, settleEpoch)) {
       pi.sendMessage(
         {
           customType: CONTEXT_MESSAGE,
