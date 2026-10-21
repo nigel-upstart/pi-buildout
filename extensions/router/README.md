@@ -432,15 +432,18 @@ one second per changed line, capped at four hours. Unknown, binary, or unmeasura
 provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each session also has at most eight
 model requests and 4,096 output tokens per request. A measured $1 cost threshold stops subsequent calls; it is not a
 provider-side billing limit and can overshoot by the final bounded request. Fallback sessions share the wall deadline
-and remaining measured cost budget. Usage/cost/status and `reviewRunner: "in_process"` are recorded in telemetry. No raw
-reviewer errors are logged.
+and remaining measured cost budget. Usage/cost/status and `reviewRunner: "in_process"` are recorded in telemetry. Each
+review attempt's cost is also added to its owning task's total and labeled `modelAndToolCost`; reviewer token counts
+stay out of builder cache metrics. No raw reviewer errors are logged.
 
 Valid verdicts are delivered as custom follow-up context plus a UI notification. Plan advice triggers a turn; completion
 findings are queued as follow-up context without manufacturing a new turn. Invalid output, timeout, and failure warn the
-human and record telemetry, but deliver no advice. New input, boundaries, overrides, off mode, and shutdown cancel the
-session with `abort()`; owner/epoch checks drop late results. The same unchanged evidence is scheduled at most once per
-attempt, so consuming completion advice cannot create an unbounded rereview loop. Ordinary task/model routing remains
-available if the router is loaded in some other reviewer child, but review work never schedules review-of-review.
+human and record telemetry, but deliver no advice. A session whose assistant ends with stop reason `error` or `aborted`
+is a failure even after a valid submission. New input, boundaries, overrides, off/shadow mode, reset, exhausted builder
+fallback, and shutdown cancel the session with `abort()`; owner/epoch checks drop late results. The same unchanged
+evidence is scheduled at most once per attempt, so consuming completion advice cannot create an unbounded rereview loop.
+Ordinary task/model routing remains available if the router is loaded in some other reviewer child, but review work
+never schedules review-of-review.
 
 `ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. A later adapter may resolve that
 promise from external event observation. No delegation adapter or manager protocol is implemented, and the router never

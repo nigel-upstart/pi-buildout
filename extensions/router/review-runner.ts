@@ -153,6 +153,8 @@ export const inProcessReviewRunner: ReviewRunner = {
           usage.cost += message.usage.cost.total;
           usage.inputTokens += message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
           usage.outputTokens += message.usage.output;
+          // Pi can end the run normally after a provider error or abort; an earlier verdict is not advice then.
+          if (message.stopReason === "error" || message.stopReason === "aborted") terminal ??= "failed";
           if (usage.cost >= request.maxCost) finish("budget_exceeded");
         });
         await session.prompt(request.prompt, { expandPromptTemplates: false });
