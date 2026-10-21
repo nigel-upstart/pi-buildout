@@ -6316,7 +6316,7 @@ describe("routerExtension", () => {
       { path: "isolated", literal: "true" },
     ],
     isolationArgument: "isolated",
-    isolationEvidence: "agent gets no extension/MCP tools",
+    isolationEvidence: "If true, agent gets no extension/MCP tools",
   });
 
   it("falls forward to a builder-steered discovered tool and observes its result without rewriting it", async () => {
@@ -6367,6 +6367,23 @@ describe("routerExtension", () => {
       assert.equal(runner.calls.length, 0, "the SDK fallback is unused");
       assert.equal(fixture.selectedModels.length, 0);
       assert.equal(fixture.ctx.model, model);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("still reaches the SDK when tool inventory access throws", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => {
+        throw new Error("inventory unavailable");
+      },
+    });
+    try {
+      await launchReview(fixture, runner);
+      assert.equal(runner.calls.length, 1);
     } finally {
       fixture.restoreEnvironment();
     }

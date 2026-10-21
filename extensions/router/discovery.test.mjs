@@ -42,7 +42,7 @@ const agentAnswer = (overrides = {}) => ({
     { path: "inherit_context", literal: "false" },
   ],
   isolationArgument: "isolated",
-  isolationEvidence: "agent gets no extension/MCP tools",
+  isolationEvidence: "If true, agent gets no extension/MCP tools",
   ...overrides,
 });
 const other = (name, description = "Unrelated") => ({
@@ -187,6 +187,29 @@ test("isolation needs verbatim published documentation, not a field name or mode
     ),
     undefined,
   );
+});
+
+test("the isolation literal must be the documented value, once, with no overlapping paths", () => {
+  const tools = [agentTool()];
+  const withArgs = (spawnArguments) => agentAnswer({ spawnArguments });
+  const base = agentAnswer().spawnArguments;
+  assert.equal(
+    planFromAnswer(
+      withArgs(base.map((entry) => (entry.path === "isolated" ? { ...entry, literal: "false" } : entry))),
+      tools,
+    ),
+    undefined,
+    "the documentation says true; false loads extensions",
+  );
+  assert.equal(
+    planFromAnswer(withArgs([...base, { path: "isolated", literal: "false" }]), tools),
+    undefined,
+    "a later duplicate cannot override the checked literal",
+  );
+  const plan = planFromAnswer(agentAnswer(), tools);
+  const overlapping = { ...plan, spawnArguments: [...plan.spawnArguments, { path: "description.x", literal: "1" }] };
+  assert.doesNotThrow(() => bindPlan(overlapping, tools, values));
+  assert.equal(bindPlan(overlapping, tools, values), undefined);
 });
 
 test("binding uses parent values and Pi validation; rejects invented, missing, or invalid arguments", () => {

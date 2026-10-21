@@ -464,10 +464,12 @@ direct dispatch.
   generation may publish, even when a provider ignores the abort.
 - **Timeout.** The discovery deadline is 60 seconds, separate from the review budget. Expiry aborts the flight, records
   telemetry, and leaves discovery DIRTY. Only the next access retries; there is no timer or catch/finally retry.
-- **Isolation.** Documentation must establish it. The cited argument needs a literal value, and a verbatim quote naming
-  extensions must appear in that parameter's published description, or in the tool docs alongside the argument name. A
-  field merely called `isolated` proves nothing, so this repository's `contextMode` cannot qualify. Without supported
-  isolation the SDK runs; no tool is blocked.
+- **Isolation.** Documentation must establish it. The cited argument needs exactly one literal value. A verbatim quote
+  naming both extensions and that exact literal (for example "If true, agent gets no extension/MCP tools") must appear
+  in that parameter's published description, or in the tool docs alongside the argument name. Duplicate or overlapping
+  argument paths are rejected. This is lexical grounding, not semantic proof. A field merely called `isolated` proves
+  nothing, so this repository's `contextMode` cannot qualify. Without supported isolation the SDK runs; no tool is
+  blocked.
 - **Dispatch.** Every dispatch rechecks that the tools are callable (active, direct/model-only) and re-validates the
   bound arguments with Pi's own `validateToolArguments`. Unpublished paths are rejected, and the plan can never choose
   the task, model, or effort. The builder receives the concrete arguments in a `router-review-delegation` follow-up and
