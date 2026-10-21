@@ -436,10 +436,13 @@ Acceptance is not completion. A manager error envelope means nothing launched, s
 invalid terminal result also falls forward with the remaining budget. A lost or malformed acceptance reply is
 **uncertain**: the router aborts the signal, keeps listening only to consume, and starts no replacement for that review.
 On cancellation or deadline expiry, the result is marked stale before the signal is aborted and `subagents:rpc:stop` is
-sent. A stop acknowledgement is not proof of exit. A ping with no reply, or a reply naming another protocol version, is
-verified absence/incompatibility. That negative result is cached for the extension instance only, and reload resets it.
-Error envelopes, spawn/provider errors, failed reviews, bad reviewer JSON, and cancellation never disable signaling; the
-next review probes again. There is no provider election or multi-manager support.
+sent. A stop acknowledgement is not proof of exit. Shutdown waits up to two seconds for those terminal events, so they
+can still be consumed, before it removes the listeners. An error envelope without a string `error` is malformed and
+treated as uncertain. Review cancellation also aborts the in-flight child-selection classifier. A ping with no reply, or
+a reply naming another protocol version, is verified absence/incompatibility. That negative result is cached for the
+extension instance only, and reload resets it. Error envelopes, spawn/provider errors, failed reviews, bad reviewer
+JSON, and cancellation never disable signaling; the next review probes again. There is no provider election or
+multi-manager support.
 
 Isolation is the manager's responsibility. Tintinweb agent frontmatter can override `isolated` to false for the generic
 type. Such a deployment is unsuitable for automatic reviews, and the router cannot detect or fix it. The router

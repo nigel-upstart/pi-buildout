@@ -552,6 +552,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     selected: TaskLease["selected"];
     evidence: TaskLease["safetyEvidence"];
     handle?: ReviewHandle;
+    /** Aborts parent-side child selection; runner handles cancel their own launches. */
+    controller: AbortController;
     cancelled: boolean;
   };
   let pendingReview: PendingReview | undefined;
@@ -579,6 +581,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   function cancelReview(): void {
     if (!pendingReview) return;
     pendingReview.cancelled = true;
+    pendingReview.controller.abort();
     pendingReview.handle?.cancel();
     pendingReview = undefined;
   }
@@ -2024,13 +2027,30 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   ) {
     const repository = await readRepositoryMetadata(pi, ctx.cwd);
     if (!reviewCurrent(review)) return undefined;
-    const invocation = await classifyWithTimeout(
+    const childSynopsis = synopsis(ctx, repository, true, registry);
+    const invocation = await runClassifierInvocation<ClassificationResult>({
+      purpose: "review_child",
+      timeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
+      stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
+      invoke: (signal, onAttempt) =>
+        classifyPrimaryTask({
+          ctx,
+          registry,
+          prompt,
+          synopsis: childSynopsis,
+          // Review cancellation aborts selection too, not only the stage deadline.
+          signal: AbortSignal.any([signal, review.controller.signal]),
+          onAttempt,
+        }),
+    });
+    if (!reviewCurrent(review)) return undefined;
+    await recordClassifierInvocation(
       ctx,
-      registry,
-      prompt,
-      synopsis(ctx, repository, true, registry),
-      "review_child",
-      classifyPrimaryTask,
+      invocation.status === "completed"
+        ? completeClassifierInvocation(invocation.summary, "classified", invocation.value.failedClosed)
+        : invocation.summary,
+      invocation.status === "completed" ? invocation.value : undefined,
+      parent.taskId,
     );
     if (!reviewCurrent(review)) return undefined;
     const classified = invocation.status === "completed" && !invocation.value.failedClosed;
@@ -2076,6 +2096,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       scope: scopeFingerprint,
       selected: parent.selected,
       evidence: parent.safetyEvidence,
+      controller: new AbortController(),
       cancelled: false,
     };
     pendingReview = review;
@@ -2611,7 +2632,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("session_shutdown", async (event, ctx) => {
     sessionGeneration++;
     cancelReview();
-    signalingRunner.dispose();
+    // Bounded drain so the cancelled child's terminal event can still be consumed.
+    await signalingRunner.dispose();
     clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
     if (event.reason === "new") modeForNextSession = leaseOwner.state.mode;
