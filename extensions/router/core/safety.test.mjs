@@ -169,7 +169,7 @@ describe("advisory lifecycle", () => {
         reviewKind: "plan",
         scopeFingerprint: "a".repeat(64),
       }),
-      /ending the turn and waiting/,
+      /call submit_safety_review with findings before finishing/,
     );
   });
   it("validates plan advice against the current review scope", () => {
