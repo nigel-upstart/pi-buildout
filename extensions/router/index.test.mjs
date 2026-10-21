@@ -6546,6 +6546,28 @@ describe("routerExtension", () => {
     }
   });
 
+  it("records an unroutable child selection as a selection outcome, not a runner failure", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+    });
+    fixture.models.splice(1);
+    const notes = [];
+    fixture.ctx.ui.notify = (message) => notes.push(message);
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => notes.some((note) => /could not start/.test(note)));
+      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
+      const failed = events.find((e) => e.kind === "outcome" && e.data.reviewStatus === "unroutable");
+      assert.equal(failed.data.reviewStage, "selection");
+      assert.equal(failed.data.reviewRunner, undefined);
+      assert.equal(runner.calls.length, 0);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("lets the child task, not the builder profile, determine the reviewer pair", async () => {
     const pairs = [];
     for (const expectedToolOutputTokens of [1_000, 400_000]) {
