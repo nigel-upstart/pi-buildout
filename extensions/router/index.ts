@@ -686,41 +686,64 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
   }
 
+  type TelemetryExtra = Partial<
+    Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
+  >;
+
+  function endpointFieldsFor(
+    model: { provider: string; cost: Parameters<typeof endpointTelemetryFields>[0]["costPerMillion"] } | undefined,
+  ) {
+    if (!model) return {};
+    try {
+      return endpointTelemetryFields(
+        { provider: model.provider, costPerMillion: model.cost },
+        providerWeightFor(model.provider, scope.providerWeights),
+      );
+    } catch {
+      // Endpoint diagnostics are best-effort and must never block the base audit event.
+      return {};
+    }
+  }
+
+  /** Appends with pre-captured session metadata so work that outlives its context never reads it. */
+  async function appendTelemetry(
+    sessionId: string,
+    endpointFields: object,
+    kind: RouterTelemetryEvent["kind"],
+    data: Record<string, unknown>,
+    extra: TelemetryExtra,
+  ): Promise<void> {
+    // Off records nothing, including events from routing work that was already in flight.
+    if (!telemetryHealthy || leaseOwner.state.mode === "off") return;
+    await telemetry.append({
+      version: 1,
+      eventId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      kind,
+      sessionId,
+      ...endpointFields,
+      ...extra,
+      data,
+    });
+  }
+
   async function record(
     ctx: ExtensionContext,
     kind: RouterTelemetryEvent["kind"],
     data: Record<string, unknown>,
-    extra: Partial<
-      Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
-    > = {},
+    extra: TelemetryExtra = {},
   ): Promise<void> {
-    // Off records nothing, including events from routing work that was already in flight.
     if (!telemetryHealthy || leaseOwner.state.mode === "off") return;
     try {
       let endpointFields = {};
       if (extra.provider && extra.modelId) {
         try {
-          const model = ctx.modelRegistry.find(extra.provider, extra.modelId);
-          if (model) {
-            endpointFields = endpointTelemetryFields(
-              { provider: model.provider, costPerMillion: model.cost },
-              providerWeightFor(model.provider, scope.providerWeights),
-            );
-          }
+          endpointFields = endpointFieldsFor(ctx.modelRegistry.find(extra.provider, extra.modelId));
         } catch {
           // Endpoint diagnostics are best-effort and must never block the base audit event.
         }
       }
-      await telemetry.append({
-        version: 1,
-        eventId: randomUUID(),
-        timestamp: new Date().toISOString(),
-        kind,
-        sessionId: ctx.sessionManager.getSessionId(),
-        ...endpointFields,
-        ...extra,
-        data,
-      });
+      await appendTelemetry(ctx.sessionManager.getSessionId(), endpointFields, kind, data, extra);
     } catch (error) {
       disableForTelemetryFailure(ctx, error);
     }
@@ -1963,6 +1986,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     pendingReview = review;
     lastReviewAttempt = { taskId: parent.taskId, key };
     try {
+      // A cancelled reviewer can settle after reload/session replacement invalidates ctx, so outcome
+      // telemetry uses metadata captured while ctx is still live.
+      const sessionId = ctx.sessionManager.getSessionId();
       const registry = buildRegistrySnapshot(ctx, scope);
       const builder = registry.find(
         (candidate) => candidate.provider === parent.selected.provider && candidate.modelId === parent.selected.modelId,
@@ -2059,6 +2085,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           );
           continue;
         }
+        const endpointFields = endpointFieldsFor(model);
         review.handle = reviewRunner.start({
           cwd: ctx.cwd,
           registry: ctx.modelRegistry,
@@ -2088,23 +2115,30 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           result.status === "completed"
             ? validateSafetyReview(result.verdict, reviewKind, scopeFingerprint)
             : undefined;
-        await record(
-          ctx,
-          "outcome",
-          {
-            reviewId: review.id,
-            reviewKind,
-            reviewRunner: "in_process",
-            staleVerdictDropped: stale,
-            reviewStatus: result.status,
-            reviewTimeoutMs: timeoutMs,
-            verdictValid: checked?.success === true,
-            reviewCost: spent,
-            inputTokens: result.usage.inputTokens,
-            outputTokens: result.usage.outputTokens,
-          },
-          { taskId: parent.taskId, provider: choice.provider, modelId: choice.modelId },
-        );
+        try {
+          await appendTelemetry(
+            sessionId,
+            endpointFields,
+            "outcome",
+            {
+              reviewId: review.id,
+              reviewKind,
+              reviewRunner: "in_process",
+              staleVerdictDropped: stale,
+              reviewStatus: result.status,
+              reviewTimeoutMs: timeoutMs,
+              verdictValid: checked?.success === true,
+              reviewCost: spent,
+              inputTokens: result.usage.inputTokens,
+              outputTokens: result.usage.outputTokens,
+            },
+            { taskId: parent.taskId, provider: choice.provider, modelId: choice.modelId },
+          );
+        } catch (error) {
+          // A stale owner may hold an invalidated ctx; only the current owner reports the failure.
+          if (reviewCurrent(review)) disableForTelemetryFailure(ctx, error);
+          return;
+        }
         if (!reviewCurrent(review)) return;
         if (result.status === "runtime_unavailable") {
           ctx.ui.notify("Pi model runtime unavailable; independent review skipped. Tools remain available.", "warning");
