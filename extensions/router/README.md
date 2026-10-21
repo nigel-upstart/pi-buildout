@@ -476,18 +476,21 @@ direct dispatch.
   runs them through its ordinary tools; event handlers have no public `executeTool`.
 
 `tool_call`/`tool_result` observation is read-only. The router never returns replacement content, details, or error
-state, and never trims wrappers. It accepts only the last nonce-tagged JSON block from the exact validated invocation or
-its result tool. A spawn error launched nothing, so the SDK may run. A settle without any spawn is also a safe
-non-launch. A successful spawn without a verdict, a deviating call, a timeout, or cancellation is uncertain or stale,
-because a builder-launched child cannot be cancelled by the router; no replacement starts.
+state, and never trims wrappers. It accepts only the last nonce-tagged JSON block from the single, exact validated
+spawn. A companion call counts too, but only if it matches its validated template and carries a child id that the
+spawn's output actually returned. Fallback is decided when the delegation run settles. No spawn, or exactly one failed
+spawn, launched nothing, so the SDK may run. A successful spawn without a verdict, a second spawn, a deviating or
+unmatched companion call, a timeout, or cancellation is uncertain or stale, because a builder-launched child cannot be
+cancelled by the router; no replacement starts.
 
-Candidate quarantine records only high-confidence contract incompatibility: an exact invocation whose error names a
-bound argument as unknown or unsupported, excluding operational wording such as not found, auth, rate limit, timeout, or
-Pi validation. It is keyed by source path, namespace, and tool name, plus the stripped spawn and result-tool schemas and
-exposure. Help-text edits, unrelated tools, and disappearance do not clear it; a meaningful schema change does. The map
-holds 64 entries; when full it blocks every candidate rather than evicting evidence. Quarantined contracts are excluded
-from discovery input, so an answer repeating one cannot publish. Adding one aborts the flight and advances the
-generation without an eager refresh.
+Candidate quarantine records only high-confidence contract incompatibility: an exact single invocation whose error
+rejects a bound argument by name ("Unknown parameter: isolated"). Rejected values such as "Unknown model" and
+operational wording such as not found, auth, rate limit, timeout, or Pi validation never quarantine. It is keyed by
+source path, namespace, and tool name, plus the spawn and result-tool schemas with annotations stripped from schema
+nodes only (property names and literal data kept), and exposure. Help-text edits, unrelated tools, and disappearance do
+not clear it; a meaningful schema change does. The map holds 64 entries; when full it blocks every candidate rather than
+evicting evidence. Quarantined contracts are excluded from discovery input, so an answer repeating one cannot publish.
+Adding one aborts the flight and advances the generation without an eager refresh.
 
 The **SDK** runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an
 empty `ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget.
