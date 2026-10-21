@@ -578,6 +578,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   }
 
+  /** Plan advice is pending while its review runs, and from plan submission until settlement starts that review. */
+  function planReviewAdvicePending(lifecycle: LeaseLifecycle): boolean {
+    return lifecycle.phase === "review"
+      ? lifecycle.reviewKind === "plan"
+      : lifecycle.phase === "planning" && !!lifecycle.plan;
+  }
+
   function invalidateLease(reason: string): void {
     leaseOwner.send({ type: "INVALIDATE", reason });
   }
@@ -1848,7 +1855,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         ...(accepted && source.phase === "planning" && source.plan ? { plan: source.plan } : {}),
         planReview: reviewOutcome,
       };
-      triggerContinuation = true;
+      // Only a validated verdict is advice worth a turn. An unavailable review would otherwise ask the builder to
+      // resubmit, start another unavailable review, and loop without bound; the outcome is still recorded.
+      triggerContinuation = submission !== undefined;
     } else {
       const source = original.lifecycle;
       lifecycle = {
@@ -3216,12 +3225,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         );
       }
       persistState();
-      if (
-        mutation &&
-        !event.isError &&
-        leaseOwner.state.active.lifecycle.phase === "review" &&
-        leaseOwner.state.active.lifecycle.reviewKind === "plan"
-      ) {
+      if (mutation && !event.isError && planReviewAdvicePending(leaseOwner.state.active.lifecycle)) {
         void noteSkippedStep(ctx, "plan_review_wait");
       }
     }

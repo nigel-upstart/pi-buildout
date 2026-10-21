@@ -5787,6 +5787,60 @@ describe("routerExtension", () => {
     }
   });
 
+  it("notes a mutation between plan submission and settlement once per lease", async () => {
+    const { hooks, tools, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    const pendingNotes = () => notes.filter((n) => n.level === "warning" && /advice was pending/.test(n.message));
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      assert.ok(latestLease().lifecycle.plan);
+      for (let i = 0; i < 2; i++) {
+        await hooks.get("tool_call")(
+          { toolName: "write", input: { path: "x", content: "x" }, toolCallId: `mutation-${i}` },
+          ctx,
+        );
+        await hooks.get("tool_execution_end")({ toolCallId: `mutation-${i}`, isError: false }, ctx);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(pendingNotes().length, 1);
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().lifecycle.phase, "review");
+      assert.equal(pendingNotes().length, 1);
+      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
+      assert.equal(
+        events.filter((e) => e.kind === "advisory_step_skipped" && e.data.step === "plan_review_wait").length,
+        1,
+      );
+      assert.deepEqual(latestLease().parentLease.advisoryStepsNoted, ["plan_review_wait"]);
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("does not queue a resubmission turn when every reviewer is unavailable", async () => {
+    const { hooks, tools, ctx, sent, latestLease, onBuilderSwitch, restoreEnvironment } =
+      await authorizationLifecycleFixture();
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      const builder = ctx.model;
+      // Reviewer selections all fail; restoring the builder succeeds.
+      onBuilderSwitch((model) => model.provider === builder.provider && model.id === builder.id);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      assert.match(latestLease().lifecycle.planReview.summary, /unavailable/);
+      assert.equal(
+        sent.some((s) => s.message.content?.includes("resubmitting")),
+        false,
+      );
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
   it("notes missing completion evidence once without repairing the builder", async () => {
     const fixture = await authorizationLifecycleFixture();
     fixture.parent.lifecycle = { phase: "building", policy: "completion_review", taskFingerprint: "task-fingerprint" };
