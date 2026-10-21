@@ -449,6 +449,44 @@ type. Such a deployment is unsuitable for automatic reviews, and the router cann
 restricts no builder tool, and ordinary user delegation is unaffected. A general-purpose child keeps the manager's
 built-in tools; the reviewer prompt asks for read-only inspection but is not a permission boundary.
 
+**Builder-steered delegation** is the second choice, after signaling and before the SDK. One stale-while-refresh
+discovery classifier lives in the extension closure and resets with reload. It sends a bounded, data-only inventory of
+active tools to the primary classifier tiers. The answer is one schema-grounded declarative call plan or `match:false`:
+published argument paths, JSON literals, and bindings for the parent's `task`, `model`, `effort` (or
+`model_with_effort`), and the result tool's `child_id`. There is no executable adapter, `eval`, invented protocol, or
+direct dispatch.
+
+- **Publication.** Each access returns the current publication immediately, including a published no-match. It starts at
+  most one background refresh, shared by concurrent accesses. The first review without a publication uses the SDK and
+  never waits.
+- **Generations.** A change in the tool fingerprint (name, docs, schema, exposure, source, active membership) aborts the
+  flight, including a retry, and advances the generation. Only a schema-valid answer from the current, un-aborted
+  generation may publish, even when a provider ignores the abort.
+- **Timeout.** The discovery deadline is 60 seconds, separate from the review budget. Expiry aborts the flight, records
+  telemetry, and leaves discovery DIRTY. Only the next access retries; there is no timer or catch/finally retry.
+- **Isolation.** Documentation must establish it. The cited argument needs a literal value, and a verbatim quote naming
+  extensions must appear in that parameter's published description, or in the tool docs alongside the argument name. A
+  field merely called `isolated` proves nothing, so this repository's `contextMode` cannot qualify. Without supported
+  isolation the SDK runs; no tool is blocked.
+- **Dispatch.** Every dispatch rechecks that the tools are callable (active, direct/model-only) and re-validates the
+  bound arguments with Pi's own `validateToolArguments`. Unpublished paths are rejected, and the plan can never choose
+  the task, model, or effort. The builder receives the concrete arguments in a `router-review-delegation` follow-up and
+  runs them through its ordinary tools; event handlers have no public `executeTool`.
+
+`tool_call`/`tool_result` observation is read-only. The router never returns replacement content, details, or error
+state, and never trims wrappers. It accepts only the last nonce-tagged JSON block from the exact validated invocation or
+its result tool. A spawn error launched nothing, so the SDK may run. A settle without any spawn is also a safe
+non-launch. A successful spawn without a verdict, a deviating call, a timeout, or cancellation is uncertain or stale,
+because a builder-launched child cannot be cancelled by the router; no replacement starts.
+
+Candidate quarantine records only high-confidence contract incompatibility: an exact invocation whose error names a
+bound argument as unknown or unsupported, excluding operational wording such as not found, auth, rate limit, timeout, or
+Pi validation. It is keyed by source path, namespace, and tool name, plus the stripped spawn and result-tool schemas and
+exposure. Help-text edits, unrelated tools, and disappearance do not clear it; a meaningful schema change does. The map
+holds 64 entries; when full it blocks every candidate rather than evicting evidence. Quarantined contracts are excluded
+from discovery input, so an answer repeating one cannot publish. Adding one aborts the flight and advances the
+generation without an eager refresh.
+
 The **SDK** runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an
 empty `ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget.
 It loads no extensions (including router/subagents), skills, templates, context files, or MCP servers. Its explicit
@@ -469,10 +507,10 @@ one second per changed line, capped at four hours. Unknown, binary, or unmeasura
 provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each SDK session also has at most
 eight model requests and 4,096 output tokens per request. A measured $1 cost threshold stops its subsequent calls; it is
 not a provider-side billing limit and can overshoot by the final bounded request. These request, token, and dollar caps
-apply only to SDK sessions. A signaling child runs under its manager's own limits; the router sees its usage only at
+apply only to SDK sessions. A signaling or builder-steered child runs under its manager's own limits; the router sees signaling usage only at
 termination, when reported, and enforces only the shared wall deadline. One logical deadline is computed before child
 selection. Selection and every runner share it and the remaining measured cost budget; fallback gets no fresh
-allocation. Usage/cost/status, `reviewRunner` (`signaling` or `in_process`), `reviewSelection`, `reviewEffort`, and any
+allocation. Usage/cost/status, `reviewRunner` (`signaling`, `builder`, or `in_process`), `reviewSelection`, `reviewEffort`, and any
 `signalingNegative` reason are recorded in telemetry. Each review attempt's cost is also added to its owning task's
 total and labeled `modelAndToolCost`; reviewer token counts stay out of builder cache metrics. No raw reviewer errors
 are logged.

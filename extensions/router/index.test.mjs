@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
 // than reading whatever the developer happens to have enabled.
@@ -249,7 +250,7 @@ async function authorizationLifecycleFixture(options = {}) {
     safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
     manualOverride: false,
   };
-  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
+  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review", ...(options.activeExtra ?? [])];
   const makeModel = (provider, id, api) => ({
     provider,
     id,
@@ -281,6 +282,7 @@ async function authorizationLifecycleFixture(options = {}) {
     appendEntry: (customType, data) => appended.push({ customType, data }),
     sendMessage: (message, options) => sent.push({ message, options }),
     ...(options.events ? { events: options.events } : {}),
+    getAllTools: () => options.allTools?.() ?? [],
     setModel: async (model) => {
       selectedModels.push(model);
       // The interruption can land while settlement awaits the switch back to the builder.
@@ -6280,6 +6282,113 @@ describe("routerExtension", () => {
       assert.equal(runner.calls.length, 1);
     } finally {
       reloaded.restoreEnvironment();
+    }
+  });
+
+  /** Released tintinweb `Agent` subset with its published isolation documentation. */
+  const agentTool = () => ({
+    name: "Agent",
+    description: "Launch a new agent to handle complex, multi-step tasks autonomously.",
+    exposure: "direct",
+    sourceInfo: { path: "/ext/pi-subagents/index.ts", source: "npm", scope: "user", origin: "package" },
+    parameters: Type.Object({
+      prompt: Type.String(),
+      description: Type.String(),
+      subagent_type: Type.String(),
+      model: Type.Optional(Type.String()),
+      thinking: Type.Optional(Type.String()),
+      run_in_background: Type.Optional(Type.Boolean()),
+      isolated: Type.Optional(
+        Type.Boolean({ description: "If true, agent gets no extension/MCP tools \u2014 only built-in tools." }),
+      ),
+    }),
+  });
+  const agentDiscovery = async () => ({
+    match: true,
+    spawnTool: "Agent",
+    spawnArguments: [
+      { path: "prompt", bind: "task" },
+      { path: "description", literal: '"router review"' },
+      { path: "subagent_type", literal: '"general-purpose"' },
+      { path: "model", bind: "model" },
+      { path: "thinking", bind: "effort" },
+      { path: "run_in_background", literal: "false" },
+      { path: "isolated", literal: "true" },
+    ],
+    isolationArgument: "isolated",
+    isolationEvidence: "agent gets no extension/MCP tools",
+  });
+
+  it("falls forward to a builder-steered discovered tool and observes its result without rewriting it", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+    });
+    const model = fixture.ctx.model;
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+      const dispatched = fixture.sent.find((s) => s.message.customType === "router-review-delegation");
+      assert.deepEqual(dispatched.options, { triggerTurn: true, deliverAs: "followUp" });
+      const args = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(dispatched.message.content)[1]);
+      assert.equal(args.isolated, true);
+      assert.match(args.model, /^(anthropic|google-vertex)\//, "the parent-selected reviewer, not the builder");
+      const nonce = /nonce="([a-f0-9]{32})"/.exec(args.prompt)[1];
+      const scopeFingerprint = /scopeFingerprint "([a-f0-9]{64})"/.exec(args.prompt)[1];
+      fixture.hooks.get("tool_call")({ toolCallId: "agent-call", toolName: "Agent", input: args }, fixture.ctx);
+      const advice = {
+        reviewKind: "plan",
+        scopeFingerprint,
+        verdict: "approve",
+        summary: "Builder-steered advice",
+        evidence: ["Read the plan"],
+        findings: ["Steered finding"],
+      };
+      const event = {
+        toolCallId: "agent-call",
+        toolName: "Agent",
+        input: args,
+        content: [
+          {
+            type: "text",
+            text: `Agent done\n<router-result nonce="${nonce}">${JSON.stringify(advice)}</router-result>`,
+          },
+        ],
+        isError: false,
+      };
+      const before = structuredClone(event);
+      assert.equal(await fixture.hooks.get("tool_result")(event, fixture.ctx), undefined);
+      assert.deepEqual(event, before, "the third-party tool result is never modified");
+      await waitForReview(() => fixture.sent.some((s) => /Steered finding/.test(s.message.content)));
+      assert.equal(runner.calls.length, 0, "the SDK fallback is unused");
+      assert.equal(fixture.selectedModels.length, 0);
+      assert.equal(fixture.ctx.model, model);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("uses the SDK when no discovery publication exists yet, without waiting for discovery", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: () => new Promise(() => {}),
+    });
+    try {
+      await launchReview(fixture, runner);
+      assert.equal(
+        fixture.sent.some((s) => s.message.customType === "router-review-delegation"),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
     }
   });
 
