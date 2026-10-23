@@ -187,7 +187,10 @@ export function createBuilderReviewRunner(deps: {
         attempt.spawnCalls++;
         attempt.spawnCallId ??= event.toolCallId;
         attempt.exact = attempt.spawnCalls === 1 && isDeepStrictEqual(event.input, call.arguments);
-      } else if (call.result?.tool.name === event.toolName) attempt.deviated = true;
+      } else {
+        // Any off-plan call (another agent tool, an early companion) may have launched something we cannot see.
+        attempt.deviated = true;
+      }
     },
     /** Record evidence only; every decision waits for the run to settle. */
     onToolResult(event: ToolResultEvent): void {
@@ -214,7 +217,7 @@ export function createBuilderReviewRunner(deps: {
     },
     /**
      * The delegation run settled (no more calls in it). A verdict counts only from one exact, undeviated spawn.
-     * No spawn, or exactly one failed spawn, launched nothing of ours and allows fallback; a user abort cancels.
+     * No calls, or exactly one verified failed spawn, allows fallback; a user abort always cancels.
      * Anything else, including a successful spawn without a verdict, leaves ownership unknown.
      */
     /** True from dispatch until the delegation run settles, regardless of the attempt's own outcome. */
@@ -228,15 +231,17 @@ export function createBuilderReviewRunner(deps: {
       const single = attempt.spawnCalls === 1;
       const trusted = single && attempt.exact && !attempt.deviated;
       if (aborted) attempt.finish("cancelled");
+      // A recorded deviation never authorizes fallback: something unverified may still be running.
+      else if (attempt.deviated) attempt.finish("uncertain");
       else if (attempt.spawnCalls === 0) attempt.finish("unavailable");
       // An invalid or foreign verdict from a launched child proves nothing about its termination: uncertain.
       else if (trusted && attempt.verdict !== undefined && attempt.valid(attempt.verdict))
         attempt.finish("completed", attempt.verdict);
-      else if (single && attempt.spawnFailed) {
+      else if (trusted && attempt.spawnFailed) {
         // Only an exact invocation whose error rejects one of our bound argument names disproves the contract.
         const text = attempt.rejection ?? "";
         const ours = new Set(boundPaths(attempt.call.arguments));
-        if (trusted && !OPERATIONAL.test(text) && rejectedArguments(text).some((name) => ours.has(name)))
+        if (!OPERATIONAL.test(text) && rejectedArguments(text).some((name) => ours.has(name)))
           deps.quarantine(attempt.call, "argument_rejected");
         attempt.finish("failed");
       } else attempt.finish("uncertain");
