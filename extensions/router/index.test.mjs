@@ -3524,21 +3524,30 @@ describe("routerExtension", () => {
     assert.equal(result.abortCount, 0);
   });
 
-  for (const changeAt of ["correction", "recovery"]) {
-    it(`records an off-mode operator effort change on the ${changeAt} target while model_select delivery is paused`, async () => {
+  for (const { changeAt, targetDefault } of ["correction", "recovery"].flatMap((changeAt) =>
+    ["changed", "unchanged"].map((targetDefault) => ({ changeAt, targetDefault })),
+  )) {
+    it(`records an off-mode operator effort change on the ${changeAt} target while model_select delivery is paused (${targetDefault} default effort)`, async () => {
       const secondary = deferred();
       const switching = deferred();
       const releaseSwitch = deferred();
       const committed = deferred();
       const releaseModelSelect = deferred();
       const pauseAt = changeAt === "correction" ? 1 : 2;
+      const pausedDefault = targetDefault === "changed" ? "medium" : "high";
       const result = await runAdapterTurn({
         classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
         classifySecondaryTask: async () => secondary.promise,
         models: standardRoutingModels(),
         mode: "active",
         prompt: "Implement one bounded repository change",
-        sessionId: `paused-model-select-operator-effort-${changeAt}`,
+        sessionId: `paused-model-select-operator-effort-${changeAt}-${targetDefault}`,
+      });
+      // Pi derives a switch's effort from these settings: the per-model level, else the default.
+      let pausedTarget;
+      result.pi.getSettings = () => ({
+        defaultThinkingLevel: "high",
+        modelThinkingLevels: pausedTarget ? { [`${pausedTarget.provider}/${pausedTarget.id}`]: pausedDefault } : {},
       });
       const latest = () => result.appended.findLast(({ customType }) => customType === "model-router-state").data;
       const original = latest().active;
@@ -3565,6 +3574,7 @@ describe("routerExtension", () => {
       let correctionModel;
       result.pi.setModel = async (model) => {
         const switchNumber = ++switchCount;
+        if (switchNumber === pauseAt) pausedTarget = model;
         if (switchNumber === 1) {
           correctionModel = model;
           switching.resolve();
@@ -3578,7 +3588,10 @@ describe("routerExtension", () => {
           modelId: model.id,
         });
         // Pi resets effort to the target's default synchronously after committing the target.
-        result.pi.setThinkingLevel(switchNumber === pauseAt ? "medium" : "high");
+        const settings = result.pi.getSettings();
+        result.pi.setThinkingLevel(
+          settings.modelThinkingLevels[`${model.provider}/${model.id}`] ?? settings.defaultThinkingLevel,
+        );
         if (switchNumber === pauseAt) {
           // An earlier model_select subscriber pauses delivery after Pi committed the target.
           committed.resolve();
@@ -3602,16 +3615,22 @@ describe("routerExtension", () => {
       await flushMicrotasks();
       const operatorModel = result.ctx.model;
       assert.equal(operatorModel.id, changeAt === "correction" ? correctionModel.id : original.selected.modelId);
-      assert.equal(result.pi.getThinkingLevel(), "medium");
+      assert.equal(result.pi.getThinkingLevel(), pausedDefault);
       const eventsWhileOff = result.events.length;
       const stateWhileOff = result.appended.length;
       // The operator lowers effort on the committed target before model_select reaches the router.
       result.pi.setThinkingLevel("low");
       await flushMicrotasks();
-      assert.deepEqual(delivered, [
-        { level: "medium", previousLevel: "high" },
-        { level: "low", previousLevel: "medium" },
-      ]);
+      // An unchanged default writes no effort entry, so the operator's change follows the model change.
+      assert.deepEqual(
+        delivered,
+        targetDefault === "changed"
+          ? [
+              { level: "medium", previousLevel: "high" },
+              { level: "low", previousLevel: "medium" },
+            ]
+          : [{ level: "low", previousLevel: "high" }],
+      );
       releaseModelSelect.resolve();
       await waitUntil(() => switchCount >= pauseAt);
       await flushMicrotasks();
@@ -3625,6 +3644,54 @@ describe("routerExtension", () => {
       assert.equal(result.abortCount, 0);
     });
   }
+
+  it("recovers an off-mode operator model selection made while custom-start preparation authenticates", async () => {
+    const active = adapterLease();
+    const models = standardRoutingModels();
+    const result = await runAdapterTurn({
+      active,
+      prepareTurn: false,
+      mode: "active",
+      models,
+      sessionId: "custom-start-authentication-race",
+    });
+    await result.commands.get("route").handler("off", result.ctx);
+    const earlierModel = models.find(({ id }) => id !== active.selected.modelId);
+    await result.pi.setModel(earlierModel);
+    await result.hooks.get("model_select")({ source: "set", model: earlierModel }, result.ctx);
+    await result.commands.get("route").handler("active", result.ctx);
+    const select = result.pi.setModel;
+    const authenticating = deferred();
+    const releaseAuthentication = deferred();
+    let switches = 0;
+    result.pi.setModel = async (model) => {
+      if (++switches === 1) {
+        authenticating.resolve();
+        await releaseAuthentication.promise;
+      }
+      const selected = await select(model);
+      await result.hooks.get("model_select")({ source: "set", model }, result.ctx);
+      return selected;
+    };
+    const preparing = result.hooks.get("before_agent_start")(
+      { messageType: "custom", systemPrompt: "system" },
+      result.ctx,
+    );
+    await authenticating.promise;
+    // Pi cannot cancel the pending switch to the lease's model; the operator turns routing off and picks a model.
+    await result.commands.get("route").handler("off", result.ctx);
+    const operatorModel = models.find(({ id }) => id !== active.selected.modelId && id !== earlierModel.id);
+    await select(operatorModel);
+    await result.hooks.get("model_select")({ source: "set", model: operatorModel }, result.ctx);
+    releaseAuthentication.resolve();
+    assert.equal(await preparing, undefined);
+    await flushMicrotasks();
+    assert.equal(result.ctx.model.id, operatorModel.id, "a stale custom-start switch must not override the operator");
+    assert.equal(result.ctx.model.provider, operatorModel.provider);
+    const latest = result.appended.findLast(({ customType }) => customType === "model-router-state").data;
+    assert.equal(latest.mode, "off");
+    assert.equal(result.abortCount, 0);
+  });
 
   it("prepares the dormant lease before compiling a re-enabled custom run", async () => {
     const active = adapterLease();
