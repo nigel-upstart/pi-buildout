@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import type { BeforeAgentStartUserEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
@@ -516,7 +518,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     | {
         before: { length: number; last: unknown };
         levelBefore: string;
-        target: Pick<RouteChoice, "provider" | "modelId">;
+        target: Model<Api>;
         echoed: boolean;
       }
     | undefined;
@@ -1697,7 +1699,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     ctx: ExtensionContext,
     before: { length: number; last: unknown },
     levelBefore: string,
-    target: Pick<RouteChoice, "provider" | "modelId">,
+    target: Model<Api>,
   ): { level: string; previousLevel: string } | undefined {
     const entries = ctx.sessionManager.getBranch() as readonly {
       type?: string;
@@ -1712,8 +1714,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     let switchIndex = entries.length - 1;
     for (; switchIndex >= start; switchIndex--) {
       const entry = entries[switchIndex];
-      if (entry?.type === "model_change" && entry.provider === target.provider && entry.modelId === target.modelId)
-        break;
+      if (entry?.type === "model_change" && entry.provider === target.provider && entry.modelId === target.id) break;
     }
     if (switchIndex < start) return undefined;
     let previousLevel = levelBefore;
@@ -1722,11 +1723,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (entry?.type === "thinking_level_change" && entry.thinkingLevel !== undefined)
         previousLevel = entry.thinkingLevel;
     }
+    // Pi writes an effort entry right after the model change only when the switch changes effort,
+    // so an adjacent entry is the switch's only when its default differs from the previous level;
+    // otherwise it is a later operator change.
+    if (modelSwitchDefaultEffort(target, previousLevel) === previousLevel)
+      return { level: previousLevel, previousLevel };
     const next = entries[switchIndex + 1];
     return {
       level: (next?.type === "thinking_level_change" ? next.thinkingLevel : undefined) ?? previousLevel,
       previousLevel,
     };
+  }
+
+  // Mirror Pi 1.3.0's model-switch effort: the per-model setting, else the default setting, else the
+  // current level, clamped to the target's supported levels. Undefined when settings are unavailable.
+  function modelSwitchDefaultEffort(target: Model<Api>, levelAtSwitch: string): string | undefined {
+    const settings = (pi as Partial<Pick<ExtensionAPI, "getSettings">>).getSettings?.();
+    if (!settings) return undefined;
+    const requested =
+      settings.modelThinkingLevels?.[`${target.provider}/${target.id}`] ??
+      settings.defaultThinkingLevel ??
+      (levelAtSwitch as EffortLevel);
+    return clampThinkingLevel(target, requested);
   }
 
   async function applyChoiceUnqueued(
@@ -1750,7 +1768,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const modelSwitch = {
         before: { length: branchBefore.length, last: branchBefore.at(-1) },
         levelBefore,
-        target: choice,
+        target: model,
         echoed: false,
       };
       modelSwitchInFlight = modelSwitch;
@@ -1759,7 +1777,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (!selected) return false;
       // The switch applied the target's default effort. Unless its echo already arrived while the
       // selection was in flight, expect it later like an explicit effort change.
-      const echo = modelSwitchEffortTransition(ctx, modelSwitch.before, levelBefore, choice) ?? {
+      const echo = modelSwitchEffortTransition(ctx, modelSwitch.before, levelBefore, model) ?? {
         level: pi.getThinkingLevel(),
         previousLevel: levelBefore,
       };
@@ -1779,10 +1797,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   async function applyWithAvailabilityFallback(
     ctx: ExtensionContext,
     lease: TaskLease,
+    ownsSelection?: () => boolean,
   ): Promise<TaskLease | undefined> {
     const epoch = leaseOwner.epoch;
     let candidate = lease;
-    while (!(await applyChoice(ctx, candidate.selected))) {
+    while (!(await applyChoice(ctx, candidate.selected, ownsSelection))) {
       if (leaseOwner.epoch !== epoch) return undefined;
       const fallback = resolveFallback(candidate, "availability", new Date().toISOString());
       await record(
@@ -2480,7 +2499,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       active = next;
     }
     if (!leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) return undefined;
-    const applied = await applyWithAvailabilityFallback(ctx, active);
+    // Pi cannot cancel a pending switch, so a mode change or operator choice during authentication
+    // must recover the newer selection rather than leave Pi on this stale preparation.
+    const applyEpoch = leaseOwner.epoch;
+    const applied = await applyWithAvailabilityFallback(ctx, active, () => leaseOwner.epoch === applyEpoch);
     if (!leaseOwner.owns(active, leaseEpoch)) return undefined;
     if (!applied) {
       if (!leaseOwner.advance("PREPARE", { ...active, executionFailed: true }, active, leaseEpoch)) return;
