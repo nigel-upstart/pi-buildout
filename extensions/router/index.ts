@@ -600,6 +600,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   }
 
+  /** Attempt keys bind a review to its kind, scope, builder attempt, and route; unchanged ones never rerun. */
+  function reviewAttemptKey(parent: TaskLease, reviewKind: SafetyReviewKind, scopeFingerprint: string): string {
+    return `${reviewKind}:${scopeFingerprint}:${String(parent.attemptIndex)}:${parent.selected.provider}/${parent.selected.modelId}/${parent.selected.effort}`;
+  }
+  function reviewAlreadyAttempted(parent: TaskLease, reviewKind: SafetyReviewKind, scopeFingerprint: string): boolean {
+    return (
+      lastReviewAttempt?.taskId === parent.taskId &&
+      lastReviewAttempt.key === reviewAttemptKey(parent, reviewKind, scopeFingerprint)
+    );
+  }
+
   /** Plan advice is pending while its review runs, and from plan submission until settlement starts that review. */
   function planReviewAdvicePending(active: TaskLease): boolean {
     if (pendingReview) return pendingReview.kind === "plan" && pendingReview.taskId === active.taskId;
@@ -1967,13 +1978,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     scopeFingerprint: string,
     evidenceInstructions: string,
   ): Promise<void> {
-    const key = `${reviewKind}:${scopeFingerprint}:${String(parent.attemptIndex)}:${parent.selected.provider}/${parent.selected.modelId}/${parent.selected.effort}`;
+    const key = reviewAttemptKey(parent, reviewKind, scopeFingerprint);
     if (
       pendingReview ||
       parent.archetype === "code_review" ||
       leaseOwner.state.mode !== "active" ||
       leaseOwner.state.active !== parent ||
-      (lastReviewAttempt?.taskId === parent.taskId && lastReviewAttempt.key === key)
+      reviewAlreadyAttempted(parent, reviewKind, scopeFingerprint)
     )
       return;
     const review: PendingReview = {
@@ -3152,8 +3163,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         {
           ...leaseOwner.state.active,
           updatedAt: now,
-          // Out-of-band completion advice can land mid-continuation; newer mutations reopen completion review.
-          ...(mutation && !event.isError && lifecycle.phase === "completed" && leaseOwner.state.mode === "active"
+          // Out-of-band completion advice can land mid-continuation; newer mutations or a failing check
+          // contradict the evidence that advice saw, so they reopen completion review.
+          ...(((mutation && !event.isError) || (check && event.isError)) &&
+          lifecycle.phase === "completed" &&
+          leaseOwner.state.mode === "active"
             ? { lifecycle: resumeCompletedLifecycle(lifecycle) }
             : {}),
           safetyEvidence: {
@@ -3383,7 +3397,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
       if (active.lifecycle.phase === "planning") {
         const plan = active.lifecycle.plan;
-        if (plan) {
+        if (plan && !pendingReview && reviewAlreadyAttempted(active, "plan", plan.planFingerprint)) {
+          // The unchanged plan's review already ended without advice (failure, timeout, exhaustion, or
+          // cancellation). Never rerun it or add a reminder turn, but executed work still gets completion review.
+          if (active.safetyEvidence.mutations.length > 0) await reviewCompletion(ctx, active, leaseEpoch);
+        } else if (plan) {
           void startIndependentReview(
             ctx,
             active,

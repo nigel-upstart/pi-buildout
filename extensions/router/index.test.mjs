@@ -5913,6 +5913,45 @@ describe("routerExtension", () => {
     }
   });
 
+  it("reopens a completed lifecycle when a check fails after completion advice", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      // A deterministic check starts before the completion advice lands and fails afterwards.
+      fixture.hooks.get("tool_call")(
+        { toolCallId: "late-check", toolName: "bash", input: { command: "npm test" } },
+        fixture.ctx,
+      );
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "completed");
+      fixture.hooks.get("tool_execution_end")({ toolCallId: "late-check", isError: true }, fixture.ctx);
+      const reopened = fixture.latestLease();
+      assert.equal(reopened.lifecycle.phase, "executing", "a failing check reopens completion review");
+      assert.equal(reopened.lifecycle.completionReview, undefined, "earlier advice is not kept for failing evidence");
+      assert.deepEqual(
+        reopened.safetyEvidence.checks.map((check) => [check.command, check.passed]),
+        [["npm test", false]],
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("skips unavailable Pi runtimes with a human note and telemetry", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
@@ -6104,6 +6143,60 @@ describe("routerExtension", () => {
       await hooks.get("tool_execution_end")({ toolCallId: "late", isError: false }, ctx);
       await flushMicrotasks();
       assert.equal(latestLease().advisoryStepsNoted?.includes("plan_review_wait") ?? false, false);
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("still reviews completed work after the plan review is exhausted", async () => {
+    const attempts = [];
+    const reviewRunner = {
+      start: (request) => {
+        attempts.push(request);
+        return {
+          result: Promise.resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } }),
+          cancel() {},
+        };
+      },
+    };
+    const { hooks, tools, ctx, sent, latestLease, restoreEnvironment } = await authorizationLifecycleFixture({
+      reviewRunner,
+    });
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    const settledAttempts = async () => {
+      const failures = () => notes.filter((n) => /did not return valid advice/.test(n.message)).length;
+      for (let stable = 0, i = 0; i < 400 && stable < 5; i++) {
+        const before = attempts.length;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stable = attempts.length === before && attempts.length > 0 && failures() === attempts.length ? stable + 1 : 0;
+      }
+      await flushMicrotasks();
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      await settledAttempts();
+      const planAttempts = attempts.length;
+      assert.ok(planAttempts >= 1);
+      assert.ok(attempts.every((request) => request.kind === "plan"));
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "late" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "late", isError: false }, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      await settledAttempts();
+      const later = attempts.slice(planAttempts);
+      assert.ok(later.length >= 1, "executed work still receives a completion review");
+      assert.ok(
+        later.every((request) => request.kind === "completion"),
+        "unchanged plan advice is never retried",
+      );
+      assert.equal(
+        sent.some((s) => s.options?.triggerTurn),
+        false,
+        "exhausted reviews create no reminder turns",
+      );
     } finally {
       restoreEnvironment();
     }
