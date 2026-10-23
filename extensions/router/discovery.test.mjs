@@ -104,6 +104,8 @@ test("old match and old none stay visible during refresh; newest generation wins
   assert.equal(published.plan.spawnTool, "Agent");
   h.setTools([agentTool(), other("grep3")]);
   assert.equal(h.discovery.observe(), published, "an old match also stays visible during refresh");
+  h.calls[2].resolve({ match: false });
+  await tick();
 });
 
 test("a tool change aborts the prior flight; an ignored abort cannot publish", async () => {
@@ -112,10 +114,15 @@ test("a tool change aborts the prior flight; an ignored abort cannot publish", a
   h.setTools([agentTool(), other("late")]);
   h.discovery.observe();
   assert.equal(h.calls[0].signal.aborted, true);
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 1, "an ignored abort still occupies the single flight slot");
+  h.setTools([agentTool(), other("newest")]);
+  h.discovery.observe();
+  assert.equal(h.calls.length, 1, "further tool changes cannot overlap the old request");
   h.calls[0].resolve(agentAnswer());
   await tick();
   assert.equal(h.discovery.observe(), undefined, "the superseded flight ignored abort but cannot publish");
+  assert.equal(h.calls.length, 2, "the next access refreshes only after settlement");
+  assert.equal(h.calls[1].tools.at(-1).name, "newest");
   h.calls[1].resolve({ match: false });
   await tick();
   assert.equal(h.discovery.observe().plan, null);
@@ -132,13 +139,22 @@ test("timeout aborts, records telemetry, stays DIRTY, and retries only on next a
   );
   assert.equal(h.calls.length, 1, "no timer or catch/finally retry");
   h.discovery.observe();
-  assert.equal(h.calls.length, 2, "the next access retries once");
+  assert.equal(h.calls.length, 1, "ignored timeout abort cannot open another flight");
+  h.calls[0].resolve(agentAnswer());
+  await tick();
+  assert.equal(h.calls.length, 1, "settlement itself does not eagerly retry");
+  assert.equal(h.discovery.observe(), undefined, "the timed-out flight cannot publish later");
+  assert.equal(h.calls.length, 2, "the next access retries once after settlement");
   h.setTools([agentTool(), other("x")]);
   h.discovery.observe();
   assert.equal(h.calls[1].signal.aborted, true, "a tool change cancels the retry too");
-  h.calls[0].resolve(agentAnswer());
+  assert.equal(h.calls.length, 2);
+  h.calls[1].resolve(agentAnswer());
   await tick();
-  assert.equal(h.discovery.observe(), undefined, "the timed-out flight cannot publish later");
+  h.discovery.observe();
+  assert.equal(h.calls.length, 3);
+  h.calls[2].resolve({ match: false });
+  await tick();
 });
 
 test("failures do not publish; the next access retries", async () => {
@@ -149,6 +165,8 @@ test("failures do not publish; the next access retries", async () => {
   assert.equal(h.discovery.observe(), undefined);
   assert.equal(h.calls.length, 2);
   assert.equal(h.events[0].kind, "failed");
+  h.calls[1].resolve({ match: false });
+  await tick();
 });
 
 test("isolation needs verbatim published documentation, not a field name or model claim", () => {
@@ -448,7 +466,11 @@ test("only an exact invocation's deterministic argument rejection quarantines th
     h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input });
     h.runner.onToolResult(resultEvent(message, true, "call-1", input));
     h.runner.onSettled();
-    assert.equal((await handle.result).status, "failed", "one failed spawn launched nothing: fallback is safe");
+    assert.equal(
+      (await handle.result).status,
+      exact ? "failed" : "uncertain",
+      "only a verified failure permits fallback",
+    );
     assert.deepEqual(h.quarantined, expected, message);
   }
 });
@@ -636,6 +658,8 @@ test("structurally invalid answers stay DIRTY; prototype paths and imprecise lit
   await tick();
   assert.equal(h.discovery.observe(), undefined);
   assert.equal(h.calls.length, 2, "the next access retries an unbindable answer");
+  h.calls[1].resolve({ match: false });
+  await tick();
 
   const tools = [agentTool()];
   const polluted = agentAnswer({
@@ -682,6 +706,140 @@ test("a missing companion retains quarantine only while the spawn contract is un
   assert.equal(quarantine.blocks(managerTool(), tools), true, "companion missing, spawn unchanged");
   const updated = agentTool({ name: "subagent", parameters: Type.Object({ task: Type.String() }) });
   assert.equal(quarantine.blocks(updated, [updated]), false, "an updated spawn is reconsidered");
+});
+
+test("publication validates fixed literals and nested required fields, leaving bad plans retryable", async () => {
+  const tools = [agentTool()];
+  const wrongLiteral = agentAnswer({
+    // Pi's own validator would coerce 123 to "123"; a non-boolean string for a boolean cannot be coerced.
+    spawnArguments: agentAnswer().spawnArguments.map((entry) =>
+      entry.path === "run_in_background" ? { ...entry, literal: '"sometimes"' } : entry,
+    ),
+  });
+  assert.equal(planFromAnswer(wrongLiteral, tools), undefined);
+  const nested = agentTool({
+    parameters: Type.Object({
+      prompt: Type.String(),
+      model: Type.String(),
+      effort: Type.String(),
+      options: Type.Object({
+        isolated: Type.Boolean({ description: "If true, the child loads no extensions." }),
+        mode: Type.String(),
+      }),
+    }),
+  });
+  const nestedAnswer = agentAnswer({
+    spawnArguments: [
+      { path: "prompt", bind: "task" },
+      { path: "model", bind: "model" },
+      { path: "effort", bind: "effort" },
+      { path: "options.isolated", literal: "true" },
+    ],
+    isolationArgument: "options.isolated",
+    isolationEvidence: "If true, the child loads no extensions.",
+  });
+  assert.equal(planFromAnswer(nestedAnswer, [nested]), undefined, "options.mode is required");
+  const complete = {
+    ...nestedAnswer,
+    spawnArguments: [...nestedAnswer.spawnArguments, { path: "options.mode", literal: '"fresh"' }],
+  };
+  assert.ok(planFromAnswer(complete, [nested]));
+  const h = harness(tools);
+  h.discovery.observe();
+  h.calls[0].resolve(wrongLiteral);
+  await tick();
+  h.discovery.observe();
+  assert.equal(h.calls.length, 2, "an invalid literal leaves discovery DIRTY");
+  h.calls[1].resolve(agentAnswer());
+  await tick();
+
+  const wrongType = agentAnswer({
+    spawnArguments: agentAnswer().spawnArguments.map((entry) =>
+      entry.path === "subagent_type" ? { ...entry, literal: "123" } : entry,
+    ),
+  });
+  assert.equal(planFromAnswer(wrongType, tools), undefined, "literal validation cannot silently coerce types");
+  const nestedDiscovery = harness([nested]);
+  nestedDiscovery.discovery.observe();
+  nestedDiscovery.calls[0].resolve(nestedAnswer);
+  await tick();
+  assert.equal(nestedDiscovery.discovery.observe(), undefined);
+  assert.equal(nestedDiscovery.calls.length, 2, "missing nested fields leave discovery DIRTY too");
+  nestedDiscovery.calls[1].resolve(complete);
+  await tick();
+  assert.ok(nestedDiscovery.discovery.observe().plan);
+
+  const companion = managerTool();
+  const invalidWait = {
+    ...managerAnswer,
+    resultArguments: [
+      { path: "action", literal: '"create-again"' },
+      { path: "id", bind: "child_id" },
+    ],
+  };
+  assert.equal(planFromAnswer(invalidWait, [companion]), undefined, "companion literals are checked too");
+});
+
+test("off-plan calls and unmatched companions are deviations that never authorize fallback", async () => {
+  const offPlan = builderHarness();
+  const first = offPlan.runner.start(reviewRequest());
+  offPlan.runner.onToolCall({ toolCallId: "other", toolName: "another_agent_tool", input: { task: "x" } });
+  offPlan.runner.onSettled();
+  assert.equal((await first.result).status, "uncertain", "another agent tool may have launched a child");
+
+  const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+  const second = h.runner.start(reviewRequest());
+  const args = argsFrom(h.sent[0]);
+  h.runner.onToolCall({ toolCallId: "spawn", toolName: "subagent", input: args });
+  h.runner.onToolResult({ ...resultEvent("Unknown parameter: isolated", true, "spawn", args), toolName: "subagent" });
+  h.runner.onToolCall({ toolCallId: "other", toolName: "subagent", input: { action: "create", task: "x" } });
+  h.runner.onSettled();
+  assert.equal((await second.result).status, "uncertain", "a later create is a second, unverified launch");
+  assert.deepEqual(h.quarantined, []);
+});
+
+test("unverified distinct companions prevent fallback before or after a failed spawn, while abort wins", async () => {
+  const spawn = agentTool();
+  const companion = { ...managerTool(), name: "companion" };
+  const answer = agentAnswer({ resultTool: "companion", resultArguments: managerAnswer.resultArguments });
+  for (const failedSpawn of [false, true]) {
+    for (const aborted of [false, true]) {
+      const separate = builderHarness({ tools: [spawn, companion], answer });
+      const handle = separate.runner.start(reviewRequest());
+      const planned = argsFrom(separate.sent[0]);
+      if (failedSpawn) {
+        separate.runner.onToolCall({ toolCallId: "spawn", toolName: "Agent", input: planned });
+        separate.runner.onToolResult(resultEvent("Unknown parameter: isolated", true, "spawn", planned));
+      }
+      // A different, multi-action companion can launch a child even with no successful planned spawn.
+      separate.runner.onToolCall({ toolCallId: "foreign", toolName: "companion", input: { action: "create" } });
+      separate.runner.onSettled(aborted);
+      assert.equal((await handle.result).status, aborted ? "cancelled" : "uncertain");
+      assert.deepEqual(separate.quarantined, [], "unverified companion calls cannot establish safe non-launch");
+    }
+  }
+});
+
+test("unrelated optional spawn and companion fields do not clear execution quarantine", () => {
+  const quarantine = createQuarantine();
+  const spawn = agentTool();
+  const companion = { ...managerTool(), name: "companion" };
+  const tools = [spawn, companion];
+  const answer = agentAnswer({ resultTool: "companion", resultArguments: managerAnswer.resultArguments });
+  quarantine.add(bindPlan(planFromAnswer(answer, tools), tools, values), "argument_rejected");
+  const updated = (tool) => ({
+    ...tool,
+    parameters: Type.Object({ ...tool.parameters.properties, cosmetic: Type.Optional(Type.String()) }),
+  });
+  const nextSpawn = updated(spawn);
+  const nextCompanion = updated(companion);
+  assert.equal(quarantine.blocks(nextSpawn, [nextSpawn, companion]), true, "unused optional spawn addition");
+  assert.equal(quarantine.blocks(spawn, [spawn, nextCompanion]), true, "unused optional companion addition");
+  const changed = {
+    ...nextSpawn,
+    parameters: Type.Object({ ...nextSpawn.parameters.properties, isolated: Type.String() }),
+  };
+  assert.equal(quarantine.blocks(changed, [changed, nextCompanion]), false, "used isolation constraint changed");
 });
 
 test("a timed-out attempt's run stays guarded until it settles, and no new attempt overlaps it", async () => {
