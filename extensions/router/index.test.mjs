@@ -3324,6 +3324,9 @@ describe("routerExtension", () => {
       await settleAgentRun(result, { stopReason: "aborted" });
       const select = result.pi.setModel;
       const setEffort = result.pi.setThinkingLevel;
+      // Pi records every model and effort change in the session transcript synchronously, in order.
+      const transcript = result.ctx.sessionManager.getBranch();
+      let entryId = 0;
       // Pi emits thinking_level_select without awaiting it and awaits each earlier handler, so even a
       // synchronous observer registered before the router delays the router's delivery.
       const deliverEffort = async (event) => {
@@ -3333,7 +3336,9 @@ describe("routerExtension", () => {
       result.pi.setThinkingLevel = (level) => {
         const previousLevel = result.pi.getThinkingLevel();
         setEffort(level);
-        if (level !== previousLevel) void deliverEffort({ level, previousLevel });
+        if (level === previousLevel) return;
+        transcript.push({ type: "thinking_level_change", id: `effort-${++entryId}`, thinkingLevel: level });
+        void deliverEffort({ level, previousLevel });
       };
       let switchCount = 0;
       let correctionModel;
@@ -3348,6 +3353,12 @@ describe("routerExtension", () => {
           await releaseRestore.promise;
         }
         const selected = await select(model);
+        transcript.push({
+          type: "model_change",
+          id: `model-${++entryId}`,
+          provider: model.provider,
+          modelId: model.id,
+        });
         // Pi also resets effort synchronously after authentication, before model_select.
         result.pi.setThinkingLevel("high");
         await result.hooks.get("model_select")({ source: "set", model }, result.ctx);
@@ -3374,6 +3385,12 @@ describe("routerExtension", () => {
       assert.ok(operatorModel);
       if (changeKind === "model") {
         await select(operatorModel);
+        transcript.push({
+          type: "model_change",
+          id: `model-${++entryId}`,
+          provider: operatorModel.provider,
+          modelId: operatorModel.id,
+        });
         await result.hooks.get("model_select")({ source: "set", model: operatorModel }, result.ctx);
       } else {
         assert.equal(result.pi.getThinkingLevel(), "high");
@@ -3506,6 +3523,108 @@ describe("routerExtension", () => {
     assert.equal(latest().mode, "off");
     assert.equal(result.abortCount, 0);
   });
+
+  for (const changeAt of ["correction", "recovery"]) {
+    it(`records an off-mode operator effort change on the ${changeAt} target while model_select delivery is paused`, async () => {
+      const secondary = deferred();
+      const switching = deferred();
+      const releaseSwitch = deferred();
+      const committed = deferred();
+      const releaseModelSelect = deferred();
+      const pauseAt = changeAt === "correction" ? 1 : 2;
+      const result = await runAdapterTurn({
+        classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+        classifySecondaryTask: async () => secondary.promise,
+        models: standardRoutingModels(),
+        mode: "active",
+        prompt: "Implement one bounded repository change",
+        sessionId: `paused-model-select-operator-effort-${changeAt}`,
+      });
+      const latest = () => result.appended.findLast(({ customType }) => customType === "model-router-state").data;
+      const original = latest().active;
+      startAgentRun(result);
+      await settleAgentRun(result, { stopReason: "aborted" });
+      // Pi records every model and effort change in the session transcript synchronously, in order.
+      const transcript = result.ctx.sessionManager.getBranch();
+      let entryId = 0;
+      const select = result.pi.setModel;
+      const setEffort = result.pi.setThinkingLevel;
+      const delivered = [];
+      result.pi.setThinkingLevel = (level) => {
+        const previousLevel = result.pi.getThinkingLevel();
+        setEffort(level);
+        if (level === previousLevel) return;
+        transcript.push({ type: "thinking_level_change", id: `effort-${++entryId}`, thinkingLevel: level });
+        void (async () => {
+          await (() => {})();
+          await result.hooks.get("thinking_level_select")({ level, previousLevel }, result.ctx);
+          delivered.push({ level, previousLevel });
+        })();
+      };
+      let switchCount = 0;
+      let correctionModel;
+      result.pi.setModel = async (model) => {
+        const switchNumber = ++switchCount;
+        if (switchNumber === 1) {
+          correctionModel = model;
+          switching.resolve();
+          await releaseSwitch.promise;
+        }
+        const selected = await select(model);
+        transcript.push({
+          type: "model_change",
+          id: `model-${++entryId}`,
+          provider: model.provider,
+          modelId: model.id,
+        });
+        // Pi resets effort to the target's default synchronously after committing the target.
+        result.pi.setThinkingLevel(switchNumber === pauseAt ? "medium" : "high");
+        if (switchNumber === pauseAt) {
+          // An earlier model_select subscriber pauses delivery after Pi committed the target.
+          committed.resolve();
+          await releaseModelSelect.promise;
+        }
+        await result.hooks.get("model_select")({ source: "set", model }, result.ctx);
+        return selected;
+      };
+      secondary.resolve(
+        classificationResult(2, {
+          confidence: 0.95,
+          risk: "critical",
+          verificationStrength: "security_and_policy",
+          independenceRequirement: "different_vendor_review",
+        }),
+      );
+      await switching.promise;
+      await result.commands.get("route").handler("off", result.ctx);
+      releaseSwitch.resolve();
+      await committed.promise;
+      await flushMicrotasks();
+      const operatorModel = result.ctx.model;
+      assert.equal(operatorModel.id, changeAt === "correction" ? correctionModel.id : original.selected.modelId);
+      assert.equal(result.pi.getThinkingLevel(), "medium");
+      const eventsWhileOff = result.events.length;
+      const stateWhileOff = result.appended.length;
+      // The operator lowers effort on the committed target before model_select reaches the router.
+      result.pi.setThinkingLevel("low");
+      await flushMicrotasks();
+      assert.deepEqual(delivered, [
+        { level: "medium", previousLevel: "high" },
+        { level: "low", previousLevel: "medium" },
+      ]);
+      releaseModelSelect.resolve();
+      await waitUntil(() => switchCount >= pauseAt);
+      await flushMicrotasks();
+      assert.equal(switchCount, pauseAt, "recovery must not switch away from the operator's choice");
+      assert.equal(result.ctx.model.id, operatorModel.id);
+      assert.equal(result.ctx.model.provider, operatorModel.provider);
+      assert.equal(result.pi.getThinkingLevel(), "low", "the operator's effort choice must win");
+      assert.equal(result.events.length, eventsWhileOff, "off-mode changes must not emit router telemetry");
+      assert.equal(result.appended.length, stateWhileOff, "off-mode changes must not persist routing state");
+      assert.equal(latest().mode, "off");
+      assert.equal(result.abortCount, 0);
+    });
+  }
 
   it("prepares the dormant lease before compiling a re-enabled custom run", async () => {
     const active = adapterLease();
