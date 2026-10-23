@@ -1680,6 +1680,46 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       expectedEffortEchoes.push({ level, previousLevel });
   }
 
+  // Pi authenticates inside setModel before it reads the effort it replaces, so an operator change
+  // during authentication moves the switch's previous level. Pi appends the model change and its
+  // default-effort change to the transcript synchronously at switch time, so derive the switch's
+  // own transition from the entries appended since the call began. Undefined means unavailable.
+  function modelSwitchEffortTransition(
+    ctx: ExtensionContext,
+    before: { length: number; last: unknown },
+    levelBefore: string,
+    target: Pick<RouteChoice, "provider" | "modelId">,
+  ): { level: string; previousLevel: string } | undefined {
+    const entries = ctx.sessionManager.getBranch() as readonly {
+      type?: string;
+      thinkingLevel?: string;
+      provider?: string;
+      modelId?: string;
+    }[];
+    const start = before.length;
+    // A navigated branch no longer extends the snapshot, so its entries say nothing about this switch.
+    if (start > 0 && entries[start - 1] !== before.last) return undefined;
+    // The router's own switch is the latest change to its target; an operator may pick it first.
+    let switchIndex = entries.length - 1;
+    for (; switchIndex >= start; switchIndex--) {
+      const entry = entries[switchIndex];
+      if (entry?.type === "model_change" && entry.provider === target.provider && entry.modelId === target.modelId)
+        break;
+    }
+    if (switchIndex < start) return undefined;
+    let previousLevel = levelBefore;
+    for (let index = start; index < switchIndex; index++) {
+      const entry = entries[index];
+      if (entry?.type === "thinking_level_change" && entry.thinkingLevel !== undefined)
+        previousLevel = entry.thinkingLevel;
+    }
+    const next = entries[switchIndex + 1];
+    return {
+      level: (next?.type === "thinking_level_change" ? next.thinkingLevel : undefined) ?? previousLevel,
+      previousLevel,
+    };
+  }
+
   async function applyChoiceUnqueued(
     ctx: ExtensionContext,
     choice: Pick<RouteChoice, "provider" | "modelId" | "effort">,
@@ -1697,14 +1737,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const model = ctx.modelRegistry.find(choice.provider, choice.modelId);
       if (!model) return false;
       const levelBefore = pi.getThinkingLevel();
+      const branchBefore = ctx.sessionManager.getBranch();
+      const transcriptBefore = { length: branchBefore.length, last: branchBefore.at(-1) };
       const switchEchoesBefore = modelSwitchEffortEchoes;
       const selected = await pi.setModel(model);
       if (!selected) return false;
       // The switch applied the target's default effort. Unless its echo already arrived while the
       // selection was in flight, expect it later like an explicit effort change.
-      const switchedLevel = pi.getThinkingLevel();
-      if (modelSwitchEffortEchoes === switchEchoesBefore && switchedLevel !== levelBefore)
-        expectedEffortEchoes.push({ level: switchedLevel, previousLevel: levelBefore });
+      const echo = modelSwitchEffortTransition(ctx, transcriptBefore, levelBefore, choice) ?? {
+        level: pi.getThinkingLevel(),
+        previousLevel: levelBefore,
+      };
+      if (modelSwitchEffortEchoes === switchEchoesBefore && echo.level !== echo.previousLevel)
+        expectedEffortEchoes.push(echo);
       if (leaseOwner.epoch !== epoch) return false;
       applyEffort(choice.effort);
       return true;

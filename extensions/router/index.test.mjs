@@ -3404,6 +3404,109 @@ describe("routerExtension", () => {
     });
   }
 
+  it("recognizes a correction's default-effort echo held through recovery authentication after an off-mode effort change", async () => {
+    const secondary = deferred();
+    const switching = deferred();
+    const releaseSwitch = deferred();
+    const restoring = deferred();
+    const releaseRestore = deferred();
+    const releaseEcho = deferred();
+    const result = await runAdapterTurn({
+      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+      classifySecondaryTask: async () => secondary.promise,
+      models: standardRoutingModels(),
+      mode: "active",
+      prompt: "Implement one bounded repository change",
+      sessionId: "held-correction-effort-echo-through-recovery",
+    });
+    const latest = () => result.appended.findLast(({ customType }) => customType === "model-router-state").data;
+    const original = latest().active;
+    startAgentRun(result);
+    await settleAgentRun(result, { stopReason: "aborted" });
+    // Pi records every model and effort change in the session transcript synchronously, in order.
+    const transcript = result.ctx.sessionManager.getBranch();
+    let entryId = 0;
+    const select = result.pi.setModel;
+    const setEffort = result.pi.setThinkingLevel;
+    const delivered = [];
+    let holdNextEcho = false;
+    result.pi.setThinkingLevel = (level) => {
+      const previousLevel = result.pi.getThinkingLevel();
+      setEffort(level);
+      if (level === previousLevel) return;
+      transcript.push({ type: "thinking_level_change", id: `effort-${++entryId}`, thinkingLevel: level });
+      const held = holdNextEcho;
+      holdNextEcho = false;
+      void (async () => {
+        // An earlier asynchronous subscriber holds only the correction's default-effort event.
+        if (held) await releaseEcho.promise;
+        else await (() => {})();
+        await result.hooks.get("thinking_level_select")({ level, previousLevel }, result.ctx);
+        delivered.push({ level, previousLevel });
+      })();
+    };
+    let switchCount = 0;
+    let correctionModel;
+    result.pi.setModel = async (model) => {
+      switchCount++;
+      if (switchCount === 1) {
+        correctionModel = model;
+        switching.resolve();
+        await releaseSwitch.promise;
+      } else if (switchCount === 2) {
+        restoring.resolve();
+        await releaseRestore.promise;
+      }
+      const selected = await select(model);
+      transcript.push({ type: "model_change", id: `model-${++entryId}`, provider: model.provider, modelId: model.id });
+      // Pi resets effort to the target's default synchronously after authentication.
+      holdNextEcho = switchCount === 1;
+      result.pi.setThinkingLevel("high");
+      holdNextEcho = false;
+      await result.hooks.get("model_select")({ source: "set", model }, result.ctx);
+      return selected;
+    };
+    secondary.resolve(
+      classificationResult(2, {
+        confidence: 0.95,
+        risk: "critical",
+        verificationStrength: "security_and_policy",
+        independenceRequirement: "different_vendor_review",
+      }),
+    );
+    await switching.promise;
+    await result.commands.get("route").handler("off", result.ctx);
+    const operatorModel = result.ctx.model;
+    assert.equal(operatorModel.id, original.selected.modelId);
+    assert.equal(result.pi.getThinkingLevel(), "high");
+    // The operator lowers effort on the current model while the correction authenticates.
+    result.pi.setThinkingLevel("low");
+    await flushMicrotasks();
+    const eventsWhileOff = result.events.length;
+    const stateWhileOff = result.appended.length;
+    releaseSwitch.resolve();
+    await restoring.promise;
+    assert.equal(result.ctx.model.id, correctionModel.id);
+    // The correction's low -> high default-effort echo lands while recovery is authenticating.
+    releaseEcho.resolve();
+    await flushMicrotasks();
+    assert.deepEqual(delivered, [
+      { level: "low", previousLevel: "high" },
+      { level: "high", previousLevel: "low" },
+    ]);
+    releaseRestore.resolve();
+    await waitUntil(() => switchCount >= 2);
+    await flushMicrotasks();
+    assert.equal(switchCount, 2, "recovery must not switch back to the rejected correction");
+    assert.equal(result.ctx.model.id, operatorModel.id);
+    assert.equal(result.ctx.model.provider, operatorModel.provider);
+    assert.equal(result.pi.getThinkingLevel(), "low");
+    assert.equal(result.events.length, eventsWhileOff, "off-mode changes must not emit router telemetry");
+    assert.equal(result.appended.length, stateWhileOff, "off-mode changes must not persist routing state");
+    assert.equal(latest().mode, "off");
+    assert.equal(result.abortCount, 0);
+  });
+
   it("prepares the dormant lease before compiling a re-enabled custom run", async () => {
     const active = adapterLease();
     const result = await runAdapterTurn({
