@@ -65,10 +65,11 @@ Safety is an explicit persisted **advisory** lease lifecycle, not an inference f
   working directory, and session, not a dispatch grant. Boundaries invalidate stale recommendations, never tools. Active
   routing exposes plan/discovery submissions only in preflight, and scoped verdict submission only during a generated
   review without a recorded verdict. Exposure updates at lifecycle transitions before generated messages are queued,
-  including custom starts for which the router skips user-prompt preparation in `before_agent_start`; shadow and off
-  hide all router tools. Stale submissions receive recovery instructions. Validation and phase guards protect lifecycle
-  records only. Rejection, missing evidence, reviewer failure, plan changes, boundaries, and manual overrides may change
-  advice or review state but never block ordinary calls.
+  including custom starts, which bypass user-prompt classification in `before_agent_start` and only re-prepare an active
+  lease (draining deferred corrections, switching model and effort, and compiling its prompt); shadow and off hide all
+  router tools. Stale submissions receive recovery instructions. Validation and phase guards protect lifecycle records
+  only. Rejection, missing evidence, reviewer failure, plan changes, boundaries, and manual overrides may change advice
+  or review state but never block ordinary calls.
 
 `submit_implementation_plan` validates implementation-plan DAGs throughout active routing, including a planning
 follow-up kept on a research lease. It preserves the task and model and grants no execution permission. Planning routes

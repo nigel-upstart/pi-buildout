@@ -230,8 +230,8 @@ const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
 /**
  * Advertise each safety validator only in the lifecycle phase that accepts it. Sync at every lifecycle transition,
- * including generated turns: Pi <=1.1.0 skipped before_agent_start, and the router deliberately skips
- * its user-prompt preparation for Pi 1.3.0 custom starts. Tool exposure must not depend on that hook.
+ * including generated turns: Pi <=1.1.0 skipped before_agent_start, and Pi 1.3.0 custom starts bypass
+ * user-prompt preparation, only re-preparing an active lease. Tool exposure must not depend on that hook.
  */
 export function activeToolsForSafetyLifecycle(
   activeTools: readonly string[],
@@ -2928,8 +2928,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   // Pi 1.1.0 fired this hook only for user prompts. Pi 1.3.0 also fires it for idle custom runs
-  // (`triggerTurn`, including the router's own generated follow-ups), which carry no prompt. Those runs
-  // are handled by the lifecycle code that queues them, so the router skips them to keep the 1.1.0 behavior.
+  // (`triggerTurn`, including the router's own and other extensions' follow-ups), which carry no prompt
+  // or new user intent. They bypass this path: the custom branch below drains deferred corrections,
+  // prepares the active lease (switching model and effort), and compiles its prompt profile.
   const handleUserPrompt = async (event: BeforeAgentStartUserEvent, ctx: ExtensionContext) => {
     agentRunPhase = "before_start";
     if (leaseOwner.state.mode === "off") {
@@ -3688,9 +3689,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
       if (leaseOwner.state.mode !== "active") return;
       if (revokedReviewStillRunning && !manualOverride) {
-        // Restore before queuing a follow-up: Pi <=1.1.0 skipped before_agent_start, and on Pi 1.3.0
-        // the router skips user-prompt preparation for custom starts. Keep submissions blocked through
-        // the asynchronous switch and after a failed switch.
+        // Restore before queuing a follow-up: Pi <=1.1.0 skipped before_agent_start, and on Pi 1.3.0 a
+        // custom start re-prepares the lease only while active routing still owns it. Keep submissions
+        // blocked through the asynchronous switch and after a failed switch.
         const revokedReviewRestored = await applyChoice(ctx, active.selected);
         if (!leaseOwner.owns(active, leaseEpoch)) return;
         if (!revokedReviewRestored) {
