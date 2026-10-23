@@ -364,7 +364,7 @@ ${catalog}`;
   }
 }
 
-function resolvePiInvocation(args: string[]): { command: string; args: string[] } {
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
   if (currentScript && !currentScript.startsWith("/$bunfs/root/") && existsSync(currentScript)) {
     return { command: process.execPath, args: [currentScript, ...args] };
@@ -608,7 +608,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             AUTH_BRIDGE_PATH,
             ctx.isProjectTrusted() ? "--approve" : "--no-approve",
           ];
-          const invocation = resolvePiInvocation(args);
+          const invocation = getPiInvocation(args);
           throwIfAborted(signal);
           const child = new ManagedSubagent({
             id,
