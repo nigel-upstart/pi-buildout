@@ -5694,6 +5694,35 @@ describe("routerExtension", () => {
     }
   });
 
+  it("cancels plan review before fallback telemetry so late advice cannot defeat the fallback", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      const before = fixture.latestLease();
+      const fallback = fixture.commands.get("route").handler("fail availability", fixture.ctx);
+      // Still inside fallback's first await (its telemetry write): the obsolete review is already cancelled.
+      assert.equal(runner.calls[0].cancelled, true);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await fallback;
+      await flushMicrotasks();
+      const after = fixture.latestLease();
+      assert.equal(after.attemptIndex, before.attemptIndex + 1, "fallback still advances the builder");
+      assert.notDeepEqual(after.selected, before.selected);
+      assert.equal(after.lifecycle.phase, "planning", "late advice for the failed attempt is dropped");
+      assert.equal(
+        fixture.sent.some((s) => s.message.customType && s.message.content?.includes("<review_advice>")),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("cancels obsolete builder reviews and schedules the same scope on a new attempt", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
@@ -6192,6 +6221,61 @@ describe("routerExtension", () => {
         false,
         "exhausted reviews create no reminder turns",
       );
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("keeps the retained plan when completion advice follows an exhausted plan review", async () => {
+    const attempts = [];
+    const reviewRunner = {
+      start: (request) => {
+        attempts.push(request);
+        const verdict =
+          request.kind === "completion"
+            ? {
+                reviewKind: "completion",
+                scopeFingerprint: request.scopeFingerprint,
+                verdict: "pass",
+                summary: "Bounded advice",
+                evidence: ["Inspected evidence"],
+                findings: [],
+              }
+            : undefined;
+        return {
+          result: Promise.resolve(
+            verdict
+              ? { status: "completed", verdict, usage: { cost: 0, inputTokens: 0, outputTokens: 0 } }
+              : { status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } },
+          ),
+          cancel() {},
+        };
+      },
+    };
+    const { hooks, tools, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture({
+      reviewRunner,
+    });
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      const plan = latestLease().lifecycle.plan;
+      assert.ok(plan);
+      await hooks.get("agent_settled")({}, ctx);
+      await waitForReview(
+        () => attempts.length > 0 && notes.filter((n) => /did not return valid advice/.test(n.message)).length > 0,
+      );
+      await flushMicrotasks();
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "w1" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "w1", isError: false }, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      await waitForReview(() => latestLease().lifecycle.phase === "completed");
+      assert.deepEqual(latestLease().lifecycle.plan, plan, "completion from planning keeps the retained plan");
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "y", content: "y" }, toolCallId: "w2" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "w2", isError: false }, ctx);
+      assert.equal(latestLease().lifecycle.phase, "executing");
+      assert.deepEqual(latestLease().lifecycle.plan, plan, "reopened work keeps the retained plan");
     } finally {
       restoreEnvironment();
     }
