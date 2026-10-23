@@ -6263,9 +6263,13 @@ describe("routerExtension", () => {
       const plan = latestLease().lifecycle.plan;
       assert.ok(plan);
       await hooks.get("agent_settled")({}, ctx);
-      await waitForReview(
-        () => attempts.length > 0 && notes.filter((n) => /did not return valid advice/.test(n.message)).length > 0,
-      );
+      // Wait until the whole plan-review ladder has failed and no further attempt starts.
+      const failures = () => notes.filter((n) => /did not return valid advice/.test(n.message)).length;
+      for (let stable = 0, i = 0; i < 400 && stable < 5; i++) {
+        const before = attempts.length;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stable = attempts.length === before && attempts.length > 0 && failures() === attempts.length ? stable + 1 : 0;
+      }
       await flushMicrotasks();
       await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "w1" }, ctx);
       await hooks.get("tool_execution_end")({ toolCallId: "w1", isError: false }, ctx);
