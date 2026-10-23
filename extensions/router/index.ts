@@ -358,6 +358,17 @@ function statusLabel(state: LeaseState): string {
   return `route:${state.mode}${lease.executionFailed ? ":failed" : ""}:${lease.lifecycle.phase} ${lease.selected.vendor}/${lease.selected.modelId} ${lease.selected.effort}`;
 }
 
+/** Plan context a completion verdict carries from its executing or planning source. */
+function retainedPlanContext(
+  source: LeaseLifecycle,
+): Pick<Extract<LeaseLifecycle, { phase: "completed" }>, "plan" | "planReview"> {
+  if (source.phase !== "executing" && source.phase !== "planning") return {};
+  return {
+    ...(source.plan ? { plan: source.plan } : {}),
+    ...(source.planReview ? { planReview: source.planReview } : {}),
+  };
+}
+
 export function resumeCompletedLifecycle(completed: Extract<LeaseLifecycle, { phase: "completed" }>): LeaseLifecycle {
   return completed.policy === "completion_review"
     ? { phase: "building", policy: completed.policy, taskFingerprint: completed.taskFingerprint }
@@ -1900,6 +1911,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     const leaseEpoch = leaseOwner.epoch;
     const active = leaseOwner.state.active;
     if (!active || leaseOwner.state.mode !== "active" || active.executionFailed) return;
+    // The failed attempt's review is obsolete. Cancel it before the first await, so advice landing during
+    // fallback telemetry cannot replace the lease, defeat the ownership checks below, and start a turn on
+    // the failed selection.
+    cancelReview();
     const fallback = resolveFallback(active, failure, new Date().toISOString(), options);
     await record(
       ctx,
@@ -2198,7 +2213,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
                 policy: source.policy === "ordinary" ? "completion_review" : source.policy,
                 taskFingerprint: source.taskFingerprint,
                 completionReview: outcome,
-                ...(source.phase === "executing" ? { plan: source.plan, planReview: source.planReview } : {}),
+                // Completion can follow an exhausted plan review straight from planning; keep the retained plan
+                // context either way so reopened work and later reviews still see it.
+                ...retainedPlanContext(source),
               };
         if (!leaseOwner.advance("EVIDENCE", { ...active, lifecycle }, active, review.epoch)) return;
         persistState();
