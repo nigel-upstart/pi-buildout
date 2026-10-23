@@ -846,7 +846,7 @@ registry.
 
 ## Decision: one advisory plan-review policy, no grants (C1)
 
-Owner: router maintainers. Status: implemented. Links: [spec](SPEC.md#explicit-safety-lifecycle),
+Owner: router maintainers. Status: implemented. Links: [spec](SPEC.md#explicit-advisory-safety-lifecycle),
 [router lifecycle](../../extensions/router/README.md#lease-lifecycle-state-machine).
 
 The router recommends a pre-action plan review for the union of the old authorization and advisory conditions. A verdict
