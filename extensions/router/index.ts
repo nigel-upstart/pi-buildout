@@ -510,7 +510,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let applyingSelection = false;
   let applyingEffort = false;
   let synchronousEffortEchoes = 0;
-  let modelSwitchEffortEchoes = 0;
+  // The router's in-flight model switch. Pi commits the target and its default effort before awaiting
+  // model_select subscribers, so that echo may arrive while the switch is still pending.
+  let modelSwitchInFlight:
+    | {
+        before: { length: number; last: unknown };
+        levelBefore: string;
+        target: Pick<RouteChoice, "provider" | "modelId">;
+        echoed: boolean;
+      }
+    | undefined;
   // Pi emits thinking_level_select without awaiting it, after every earlier handler, so a router
   // effort change can reach this handler after the setter returned. Each expected echo is consumed
   // by its matching event instead of relying on a synchronous flag window.
@@ -1738,18 +1747,23 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (!model) return false;
       const levelBefore = pi.getThinkingLevel();
       const branchBefore = ctx.sessionManager.getBranch();
-      const transcriptBefore = { length: branchBefore.length, last: branchBefore.at(-1) };
-      const switchEchoesBefore = modelSwitchEffortEchoes;
+      const modelSwitch = {
+        before: { length: branchBefore.length, last: branchBefore.at(-1) },
+        levelBefore,
+        target: choice,
+        echoed: false,
+      };
+      modelSwitchInFlight = modelSwitch;
       const selected = await pi.setModel(model);
+      modelSwitchInFlight = undefined;
       if (!selected) return false;
       // The switch applied the target's default effort. Unless its echo already arrived while the
       // selection was in flight, expect it later like an explicit effort change.
-      const echo = modelSwitchEffortTransition(ctx, transcriptBefore, levelBefore, choice) ?? {
+      const echo = modelSwitchEffortTransition(ctx, modelSwitch.before, levelBefore, choice) ?? {
         level: pi.getThinkingLevel(),
         previousLevel: levelBefore,
       };
-      if (modelSwitchEffortEchoes === switchEchoesBefore && echo.level !== echo.previousLevel)
-        expectedEffortEchoes.push(echo);
+      if (!modelSwitch.echoed && echo.level !== echo.previousLevel) expectedEffortEchoes.push(echo);
       if (leaseOwner.epoch !== epoch) return false;
       applyEffort(choice.effort);
       return true;
@@ -1758,6 +1772,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     } finally {
       applyingSelection = false;
       programmaticSelection = undefined;
+      modelSwitchInFlight = undefined;
     }
   }
 
@@ -3288,10 +3303,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("thinking_level_select", async (event, ctx) => {
     // Explicit effort setters may deliver their echo synchronously or, behind earlier handlers,
-    // later (see expectedEffortEchoes). A model switch also emits its
-    // default effort after authentication, with ctx.model already set to its target.
-    // Neither echo is an operator choice; changes on the still-current model while
-    // authentication is pending are, and must advance the recovery revision even off.
+    // later (see expectedEffortEchoes). A model switch also emits its default effort once Pi
+    // commits the target, possibly before the switch resolves; only that exact recorded transition
+    // is its echo. Neither echo is an operator choice; every other change, on either model and
+    // whether authentication or model_select delivery is pending, is, and must advance the
+    // recovery revision even off.
     if (applyingEffort) {
       synchronousEffortEchoes++;
       return;
@@ -3303,13 +3319,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       expectedEffortEchoes.splice(echo, 1);
       return;
     }
-    if (
-      applyingSelection &&
-      ctx.model?.provider === programmaticSelection?.provider &&
-      ctx.model?.id === programmaticSelection?.modelId
-    ) {
-      modelSwitchEffortEchoes++;
-      return;
+    const modelSwitch = modelSwitchInFlight;
+    if (modelSwitch && !modelSwitch.echoed) {
+      const transition = modelSwitchEffortTransition(
+        ctx,
+        modelSwitch.before,
+        modelSwitch.levelBefore,
+        modelSwitch.target,
+      );
+      if (transition?.level === event.level && transition.previousLevel === event.previousLevel) {
+        modelSwitch.echoed = true;
+        return;
+      }
     }
     if (ctx.model) {
       operatorSelection = { provider: ctx.model.provider, modelId: ctx.model.id, effort: event.level };
