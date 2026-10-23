@@ -227,8 +227,23 @@ export function restoreLeaseState(entries: readonly unknown[], defaultMode: Leas
       object(raw?.lifecycle)?.phase === "review" &&
       ["authorization", "advisory"].includes(String(object(raw?.lifecycle)?.reviewKind));
     const legacyParent = parent && migrateLifecycle(parent.lifecycle) !== parent.lifecycle;
-    const source = parent && (legacyReview || legacyParent) ? parent : raw;
-    const migrated = source ? { ...source, lifecycle: migrateLifecycle(source.lifecycle) } : undefined;
+    const unwrapped = Boolean(parent && (legacyReview || legacyParent));
+    const source = unwrapped ? parent : raw;
+    // Legacy reviewer tool results updated only the child, which starts from the parent's evidence, so the
+    // child's validated log is the task's newest evidence. Carry it onto the recovered builder, as hand-back does.
+    const childEvidence =
+      unwrapped &&
+      object(raw?.lifecycle)?.taskFingerprint === object(parent?.lifecycle)?.taskFingerprint &&
+      isSafetyEvidenceLog(raw?.safetyEvidence)
+        ? raw.safetyEvidence
+        : undefined;
+    const migrated = source
+      ? {
+          ...source,
+          lifecycle: migrateLifecycle(source.lifecycle),
+          ...(childEvidence ? { safetyEvidence: childEvidence } : {}),
+        }
+      : undefined;
     const active = isTaskLease(migrated) ? migrated : undefined;
     return {
       mode,
