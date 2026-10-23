@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai/compat";
 import type { ToolInfo } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { stringEnum } from "./core/safety.ts";
 
 /**
@@ -180,6 +181,30 @@ function isolationGrounded(plan: DelegationPlan, tools: readonly ToolView[]): bo
   return parameterDocs.includes(quote) || (toolDocs.includes(quote) && quote.toLowerCase().includes(leaf));
 }
 
+function literalValid(tool: ToolView, path: string, value: unknown): boolean {
+  try {
+    // Unlike Pi's dispatch validator, this must not coerce a fixed literal into a different value/type.
+    return Value.Check(schemaAt(tool.parameters, path) as typeof tool.parameters, value);
+  } catch {
+    return false;
+  }
+}
+/** Every object we build, at any depth, carries the fields its schema node requires. */
+function requiredPresent(schema: unknown, value: Record<string, unknown>): boolean {
+  const node = schema as { required?: unknown; properties?: Record<string, unknown> } | undefined;
+  const required = Array.isArray(node?.required) ? node.required : [];
+  if (required.some((name) => typeof name === "string" && !Object.hasOwn(value, name))) return false;
+  return Object.entries(value).every(([key, child]) =>
+    child &&
+    typeof child === "object" &&
+    !Array.isArray(child) &&
+    node?.properties &&
+    Object.hasOwn(node.properties, key)
+      ? requiredPresent(node.properties[key], child as Record<string, unknown>)
+      : true,
+  );
+}
+
 export type BoundCall = {
   tool: ToolView;
   arguments: Record<string, unknown>;
@@ -223,15 +248,15 @@ export function bindPlan(
         } catch {
           return undefined;
         }
+        // Fixed literals are fully known, so validate them against their own published sub-schema now.
+        if (!literalValid(tool, entry.path, value)) return undefined;
       }
       const keys = entry.path.split(".");
       let node = args;
       for (const key of keys.slice(0, -1)) node = (node[key] ??= {}) as Record<string, unknown>;
       node[keys.at(-1) ?? ""] = value;
     }
-    const required = (tool.parameters as { required?: unknown }).required;
-    if (Array.isArray(required) && required.some((name) => typeof name === "string" && !Object.hasOwn(args, name)))
-      return undefined;
+    if (!requiredPresent(tool.parameters, args)) return undefined;
     if (!validate) return { args, bound };
     try {
       const checked: unknown = validateToolArguments(
@@ -293,9 +318,42 @@ function stripDocs(schema: unknown): unknown {
     }),
   );
 }
-/** Meaningful contract only: cosmetic docs and unrelated tools cannot change it. */
-const contractOf = (tool: ToolView) => hash([stripDocs(tool.parameters), tool.exposure]);
 const identityOf = (tool: ToolView) => [tool.sourceInfo.path, tool.namespace?.name ?? "", tool.name].join("|");
+const argumentPaths = (value: Record<string, unknown>): string[] =>
+  Object.entries(value).flatMap(([key, child]) => [
+    key,
+    ...(child && typeof child === "object" && !Array.isArray(child)
+      ? argumentPaths(child as Record<string, unknown>).map((path) => `${key}.${path}`)
+      : []),
+  ]);
+/** Keep invoked fields and required siblings; unrelated optional additions cannot rehabilitate a failed contract. */
+function relevantSchema(schema: unknown, paths: readonly string[]): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const node = schema as Record<string, unknown>;
+  if (!node.properties || typeof node.properties !== "object") return node;
+  const required = Array.isArray(node.required) ? node.required : [];
+  return {
+    ...node,
+    properties: Object.fromEntries(
+      Object.entries(node.properties).flatMap(([key, child]) => {
+        if (!required.includes(key) && !paths.includes(key) && !paths.some((path) => path.startsWith(`${key}.`)))
+          return [];
+        return [
+          [
+            key,
+            relevantSchema(
+              child,
+              paths.filter((path) => path.startsWith(`${key}.`)).map((path) => path.slice(key.length + 1)),
+            ),
+          ],
+        ];
+      }),
+    ),
+  };
+}
+/** Meaningful contract only: cosmetic docs, unused optional fields, and unrelated tools cannot change it. */
+const contractOf = (tool: ToolView, paths: readonly string[]) =>
+  hash([identityOf(tool), stripDocs(relevantSchema(tool.parameters, paths)), tool.exposure]);
 
 /**
  * Bounded execution evidence per candidate identity (source, namespace, name), keyed to its spawn and companion
@@ -303,7 +361,17 @@ const identityOf = (tool: ToolView) => [tool.sourceInfo.path, tool.namespace?.na
  * that contract changes. A full map never evicts evidence: it blocks every candidate instead.
  */
 export function createQuarantine(limit = 64) {
-  const entries = new Map<string, { spawn: string; resultTool?: string; result?: string; reason: string }>();
+  const entries = new Map<
+    string,
+    {
+      spawn: string;
+      spawnPaths: string[];
+      resultTool?: string;
+      result?: string;
+      resultPaths?: string[];
+      reason: string;
+    }
+  >();
   let overflow = false;
   return {
     blocks(spawn: ToolView, tools: readonly ToolView[]): boolean {
@@ -312,7 +380,8 @@ export function createQuarantine(limit = 64) {
       const result = entry.resultTool ? tools.find((tool) => tool.name === entry.resultTool) : undefined;
       // A missing companion retains evidence only while the spawn contract itself is unchanged.
       const same =
-        entry.spawn === contractOf(spawn) && (!entry.resultTool || !result || contractOf(result) === entry.result);
+        entry.spawn === contractOf(spawn, entry.spawnPaths) &&
+        (!entry.resultTool || !result || contractOf(result, entry.resultPaths ?? []) === entry.result);
       if (same) return true;
       entries.delete(identityOf(spawn));
       return overflow;
@@ -323,9 +392,18 @@ export function createQuarantine(limit = 64) {
         overflow = true;
         return;
       }
+      const spawnPaths = argumentPaths(call.arguments);
+      const resultPaths = call.result ? argumentPaths(call.result.arguments) : undefined;
       entries.set(identity, {
-        spawn: contractOf(call.tool),
-        ...(call.result ? { resultTool: call.result.tool.name, result: contractOf(call.result.tool) } : {}),
+        spawn: contractOf(call.tool, spawnPaths),
+        spawnPaths,
+        ...(call.result && resultPaths
+          ? {
+              resultTool: call.result.tool.name,
+              result: contractOf(call.result.tool, resultPaths),
+              resultPaths,
+            }
+          : {}),
         reason,
       });
     },
@@ -354,7 +432,7 @@ export function createDiscovery(deps: {
   let flight: { generation: number; controller: AbortController } | undefined;
   const invalidate = () => {
     flight?.controller.abort();
-    flight = undefined;
+    // An ignored abort still occupies the slot until its promise settles; invalidate publication eligibility only.
     generation++;
     dirty = true;
   };
@@ -366,9 +444,9 @@ export function createDiscovery(deps: {
       deps.onEvent?.({ kind, generation: owned.generation, fingerprint: current });
     const timer = setTimeout(() => {
       if (!eligible()) return;
-      // Abort, stay DIRTY, and free the slot: only the next access may retry, even if abort is ignored.
+      // Abort and stay DIRTY, but retain the slot until settlement even if abort is ignored.
+      // Only an access after settlement may retry; neither the timer nor finally starts another flight.
       owned.controller.abort();
-      flight = undefined;
       report("timeout");
     }, timeoutMs);
     void deps

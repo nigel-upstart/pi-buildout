@@ -469,9 +469,11 @@ direct dispatch.
   never waits.
 - **Generations.** A change in the tool fingerprint (name, docs, schema, exposure, source, active membership) aborts the
   flight, including a retry, and advances the generation. Only a schema-valid answer from the current, un-aborted
-  generation may publish, even when a provider ignores the abort.
+  generation may publish. An ignored abort still occupies the single-flight slot until its promise settles; accesses
+  meanwhile retain the stale publication without starting overlapping classification.
 - **Timeout.** The discovery deadline is 60 seconds, separate from the review budget. Expiry aborts the flight, records
-  telemetry, and leaves discovery DIRTY. Only the next access retries; there is no timer or catch/finally retry.
+  telemetry, and leaves discovery DIRTY. Only an access after settlement retries; there is no timer or catch/finally
+  retry.
 - **Isolation.** Documentation must establish it. The cited argument needs exactly one literal value. A verbatim quote
   naming both extensions and that exact literal (for example "If true, agent gets no extension/MCP tools") must appear
   in that parameter's published description, or in the tool docs alongside the argument name. Duplicate or overlapping
@@ -488,20 +490,21 @@ state, and never trims wrappers. It accepts only the last nonce-tagged JSON bloc
 spawn. A companion call counts too, but only if it matches its validated template and carries a child id that the
 spawn's output actually returned. The executed input reported by `tool_result` is rechecked, because later `tool_call`
 handlers may mutate it. Verdicts, quarantine evidence, and fallback are all provisional until the delegation run
-settles. A user abort (Escape) cancels the review. No spawn, or exactly one failed spawn, launched nothing, so the SDK
-may run. A successful spawn without a verdict, a second spawn, a deviating or unmatched companion call, a timeout, or
-cancellation is uncertain or stale, because a builder-launched child cannot be cancelled by the router; no replacement
-starts.
+settles. A user abort (Escape) cancels the review. No calls, or exactly one verified failed spawn, permits SDK fallback.
+Any off-plan call or unverified companion makes ownership uncertain, even before a spawn or after a failed one. A
+successful spawn without a verdict, a second spawn, a deviating call, a timeout, or cancellation is uncertain or stale,
+because a builder-launched child cannot be cancelled by the router; no replacement starts.
 
 The builder must copy the arguments exactly, in its own context and at builder output pricing, and any deviation blocks
 fallback. Tasks over 12,000 characters (most diff-carrying completion reviews) therefore skip the builder path and use
 the SDK.
 
 Discovery publishes only a structurally bindable plan; anything else stays DIRTY for the next access. That check covers
-published paths, required fields, and bindings with placeholder values. Value constraints on bound fields are checked
-only at dispatch, with the parent's real values; the companion call is checked against its template once the child id
-exists. Argument paths named `__proto__`, `prototype`, or `constructor` are rejected. The isolation quote and literal
-are matched with case, sign, decimals, and punctuation preserved.
+published paths, required fields at every constructed object depth, fixed literals without type coercion, and bindings
+with placeholder values. Value constraints on bound fields are checked only at dispatch, with the parent's real values;
+the companion call is checked against its template once the child id exists. Argument paths named `__proto__`,
+`prototype`, or `constructor` are rejected. The isolation quote and literal are matched with case, sign, decimals, and
+punctuation preserved.
 
 A verdict completes only if it validates for the review's kind and exact scope. An invalid or foreign verdict from a
 launched child is uncertain, not a fallback. The delegation run itself never triggers planning repair or builder
@@ -511,12 +514,12 @@ Candidate quarantine records only high-confidence contract incompatibility: an e
 rejects a bound argument by name ("Unknown parameter: isolated"). The extracted name must be one of the bound argument
 paths. Rejected values ("Invalid parameter model: must be ...", "Unknown model"), unbound names, and operational wording
 such as not found, auth, rate limit, timeout, or Pi validation never quarantine. It is keyed by source path, namespace,
-and tool name, plus the spawn and result-tool schemas with annotations stripped from schema nodes only (property names
-and literal data kept), and exposure. Help-text edits, unrelated tools, and disappearance do not clear it; a meaningful
-schema change does. A missing companion keeps it only while the spawn contract is unchanged. The map holds 64 entries;
-when full it blocks every candidate rather than evicting evidence. Quarantined contracts are excluded from discovery
-input, so an answer repeating one cannot publish. Adding one aborts the flight and advances the generation without an
-eager refresh.
+and tool name, plus the invoked and required spawn/result argument schemas with annotations stripped from schema nodes
+only (property names and literal data kept), and exposure. Help-text edits, unused optional fields, unrelated tools, and
+disappearance do not clear it; a meaningful schema change does. A missing companion keeps it only while the spawn
+contract is unchanged. The map holds 64 entries; when full it blocks every candidate rather than evicting evidence.
+Quarantined contracts are excluded from discovery input, so an answer repeating one cannot publish. Adding one aborts
+the flight and advances the generation without an eager refresh.
 
 The **SDK** runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an
 empty `ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget.

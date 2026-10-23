@@ -6694,6 +6694,51 @@ describe("routerExtension", () => {
     }
   });
 
+  it("never starts SDK fallback after an off-plan call, including after a failed planned spawn", async () => {
+    for (const failedSpawn of [false, true]) {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        classifyPrimaryTask: childClassifier([]),
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+      });
+      const notes = [];
+      fixture.ctx.ui.notify = (message) => notes.push(message);
+      try {
+        const foreign = { toolCallId: "foreign", toolName: "another_agent_tool", input: { action: "create" } };
+        const original = structuredClone(foreign);
+        assert.equal(fixture.hooks.get("tool_call")(foreign, fixture.ctx), undefined, "ordinary calls stay allowed");
+        await launchReview(fixture);
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        if (failedSpawn) {
+          const content = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message.content;
+          const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
+          fixture.hooks.get("tool_call")({ toolCallId: "planned", toolName: "Agent", input }, fixture.ctx);
+          await fixture.hooks.get("tool_result")(
+            {
+              toolCallId: "planned",
+              toolName: "Agent",
+              input,
+              content: [{ type: "text", text: "Unknown parameter: isolated" }],
+              isError: true,
+            },
+            fixture.ctx,
+          );
+        }
+        assert.equal(fixture.hooks.get("tool_call")(foreign, fixture.ctx), undefined, "observation never blocks");
+        assert.deepEqual(foreign, original);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await waitForReview(() => notes.some((note) => /ownership is uncertain/.test(note)));
+        assert.equal(runner.calls.length, 0, "the unverified child must not overlap an SDK reviewer");
+        assert.equal(fixture.selectedModels.length, 0);
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    }
+  });
+
   it("still reaches the SDK when tool inventory access throws", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({
