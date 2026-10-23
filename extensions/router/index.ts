@@ -2069,6 +2069,47 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       : { reviewRunner: stage, reviewStatus: "failed" };
   }
 
+  /** Bounded review diff plus a numstat measurement only when no untracked files escape it. */
+  async function collectReviewDiff(
+    ctx: ExtensionContext,
+    parent: TaskLease,
+  ): Promise<{ diff: string; numstat: string | undefined }> {
+    let diff = "";
+    let numstat: string | undefined;
+    try {
+      const collected = await pi.exec(
+        "git",
+        ["-C", ctx.cwd, "diff", "--no-ext-diff", "--no-textconv", parent.safetyEvidence.baselineHead ?? "HEAD", "--"],
+        { timeout: 10_000 },
+      );
+      if (collected.code === 0) diff = collected.stdout.slice(0, 24_000);
+      const measured = await pi.exec(
+        "git",
+        [
+          "-C",
+          ctx.cwd,
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--numstat",
+          parent.safetyEvidence.baselineHead ?? "HEAD",
+          "--",
+        ],
+        { timeout: 10_000 },
+      );
+      if (measured.code === 0) {
+        // numstat cannot measure untracked files, so their presence keeps the conservative timeout cap.
+        const untracked = await pi.exec("git", ["-C", ctx.cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
+          timeout: 10_000,
+        });
+        if (untracked.code === 0 && untracked.stdout.length === 0) numstat = measured.stdout;
+      }
+    } catch {
+      /* Missing diff is explicit evidence, never permission. */
+    }
+    return { diff, numstat };
+  }
+
   async function startIndependentReview(
     ctx: ExtensionContext,
     parent: TaskLease,
@@ -2124,39 +2165,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         (candidate) => candidate.provider === parent.selected.provider && candidate.modelId === parent.selected.modelId,
       );
       if (!builder) throw new Error("Builder absent from scoped registry");
-      let diff = "";
-      let numstat: string | undefined;
-      try {
-        const collected = await pi.exec(
-          "git",
-          ["-C", ctx.cwd, "diff", "--no-ext-diff", "--no-textconv", parent.safetyEvidence.baselineHead ?? "HEAD", "--"],
-          { timeout: 10_000 },
-        );
-        if (collected.code === 0) diff = collected.stdout.slice(0, 24_000);
-        const measured = await pi.exec(
-          "git",
-          [
-            "-C",
-            ctx.cwd,
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--numstat",
-            parent.safetyEvidence.baselineHead ?? "HEAD",
-            "--",
-          ],
-          { timeout: 10_000 },
-        );
-        if (measured.code === 0) {
-          // numstat cannot measure untracked files, so their presence keeps the conservative timeout cap.
-          const untracked = await pi.exec("git", ["-C", ctx.cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
-            timeout: 10_000,
-          });
-          if (untracked.code === 0 && untracked.stdout.length === 0) numstat = measured.stdout;
-        }
-      } catch {
-        /* Missing diff is explicit evidence, never permission. */
-      }
+      const { diff, numstat } = await collectReviewDiff(ctx, parent);
       if (!reviewCurrent(review)) return;
       const taskEntries = normalizeSessionEntries(ctx.sessionManager.getBranch()).filter(
         (entry) => entry.kind === "user",
