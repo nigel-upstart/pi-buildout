@@ -176,6 +176,25 @@ test("each extension package stages only its own runtime files and host peers", 
   }
 });
 
+test("router-otel and subagents declare the supported Pi host range", () => {
+  const supported = ">=1.2.0 <2.0.0";
+  const parse = (version) => version.split(".").map(Number);
+  const compare = (left, right) => {
+    const [a, b] = [parse(left), parse(right)];
+    for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] - b[index];
+    return 0;
+  };
+  for (const { name, manifest } of manifests.filter(({ name }) => ["router-otel", "subagents"].includes(name))) {
+    const range = manifest.peerDependencies["@earendil-works/pi-coding-agent"];
+    assert.equal(range, supported, name);
+    // One inclusive floor and one exclusive next-major ceiling, with no other comparator.
+    const [, floor, ceiling] = /^>=(\d+\.\d+\.\d+) <(\d+\.\d+\.\d+)$/.exec(range) ?? [];
+    const accepts = (version) => compare(version, floor) >= 0 && compare(version, ceiling) < 0;
+    for (const version of ["1.2.0", "1.2.1", "1.3.0", "1.99.0"]) assert.equal(accepts(version), true, version);
+    for (const version of ["1.1.9", "1.0.0", "2.0.0", "2.1.0"]) assert.equal(accepts(version), false, version);
+  }
+});
+
 test("router and OTel share dependencies and keep the vendored license", () => {
   const { directory, manifest } = manifests.find(({ name }) => name === "router-otel");
   execFileSync(process.execPath, [join(root, "scripts", "stage-release-package.mjs"), "router-otel"]);
