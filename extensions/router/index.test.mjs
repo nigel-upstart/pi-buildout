@@ -19,6 +19,7 @@ import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
 import { validateActionPlan } from "./core/safety.ts";
 import { transportFromCandidates } from "./pi-classifier.ts";
+import { restoreLeaseState } from "./pi-state.ts";
 import { JsonlTelemetryStore, runClassifierInvocation } from "./telemetry.ts";
 import routerExtensionImpl, {
   CLASSIFICATION_STAGE_TIMEOUT_MS,
@@ -1217,7 +1218,7 @@ describe("advisory tool-call observation", () => {
 
   it("starts a completion review for work executed in preflight without an action plan", async () => {
     const fixture = await authorizationLifecycleFixture();
-    const { hooks, ctx, latestLease, sent, parent } = fixture;
+    const { hooks, tools, ctx, models, appended, latestLease, sent, parent } = fixture;
     try {
       await hooks.get("session_start")({ reason: "reload" }, ctx);
       hooks.get("agent_start")({}, ctx);
@@ -1235,6 +1236,110 @@ describe("advisory tool-call observation", () => {
         false,
         "executed work is reviewed rather than asked for a plan it no longer precedes",
       );
+      // Settle the planless completion review, then prove the result survives reload and continuation.
+      ctx.model = models.find(
+        (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
+      );
+      hooks.get("agent_start")({}, ctx);
+      await tools.get("submit_safety_review").execute(
+        "complete",
+        {
+          reviewKind: "completion",
+          scopeFingerprint: child.lifecycle.scopeFingerprint,
+          verdict: "pass",
+          summary: "The unplanned write matches the task.",
+          evidence: ["Inspected the recorded mutation."],
+          findings: [],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      await finishRun(hooks, ctx, child.selected);
+      const completed = latestLease();
+      assert.equal(completed.taskId, parent.taskId);
+      assert.equal(completed.lifecycle.phase, "completed");
+      assert.equal(completed.lifecycle.policy, "authorization_then_completion_review");
+      assert.equal(completed.lifecycle.plan, undefined);
+      assert.equal(completed.lifecycle.authorization, undefined);
+      const reloaded = restoreLeaseState(
+        appended
+          .filter((entry) => entry.customType === "model-router-state")
+          .map((entry) => ({ type: "custom", ...entry })),
+        "shadow",
+      );
+      assert.equal(reloaded.active?.taskId, parent.taskId, "planless completed state survives reload");
+      assert.deepEqual(reloaded.active.safetyEvidence, completed.safetyEvidence);
+      const resumed = resumeCompletedLifecycle(completed.lifecycle, "any-session");
+      assert.deepEqual(
+        resumed,
+        {
+          phase: "preflight",
+          policy: "authorization_then_completion_review",
+          taskFingerprint: completed.lifecycle.taskFingerprint,
+        },
+        "a continuation resumes the advisory workflow, not ordinary work",
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("reviews other recorded work while an unconsumed discovery recommendation is pending", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    const { hooks, tools, ctx, models, latestLease, parent } = fixture;
+    const request = {
+      purpose: "discovery",
+      objective: "Find the resource owner before planning deletion",
+      target: "resource inventory",
+      expectedEffects: ["List matching owners"],
+      preconditions: ["Use a bounded owner lookup"],
+      verification: ["Compare the returned identifiers"],
+      abortConditions: ["Stop if the command changes resources"],
+      toolName: "bash",
+      input: { command: "glean search owner --limit 5" },
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_discovery_request").execute("request", request, undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const discoveryReview = latestLease();
+      assert.equal(discoveryReview.lifecycle.reviewKind, "authorization");
+      ctx.model = models.find(
+        (model) =>
+          model.provider === discoveryReview.selected.provider && model.id === discoveryReview.selected.modelId,
+      );
+      hooks.get("agent_start")({}, ctx);
+      await tools.get("submit_safety_review").execute(
+        "verdict",
+        {
+          reviewKind: "authorization",
+          scopeFingerprint: discoveryReview.lifecycle.scopeFingerprint,
+          verdict: "approve",
+          summary: "Checked the exact discovery scope",
+          evidence: ["Single bounded lookup"],
+          findings: [],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      await finishRun(hooks, ctx, discoveryReview.selected);
+      assert.equal(latestLease().lifecycle.phase, "discovery_ready");
+      // The builder writes something else instead of spending the discovery recommendation.
+      ctx.model = models.find(
+        (model) => model.provider === parent.selected.provider && model.id === parent.selected.modelId,
+      );
+      hooks.get("agent_start")({}, ctx);
+      hooks.get("turn_start")({}, ctx);
+      const write = { toolCallId: "unrelated-write", toolName: "write", input: { path: "x", content: "y" } };
+      assert.equal(hooks.get("tool_call")(write, ctx), undefined);
+      hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
+      assert.equal(latestLease().lifecycle.phase, "discovery_ready", "a non-matching mutation spends nothing");
+      await finishRun(hooks, ctx, parent.selected);
+      const completion = latestLease();
+      assert.equal(completion.lifecycle.phase, "review");
+      assert.equal(completion.lifecycle.reviewKind, "completion", "the recorded work still gets completion review");
     } finally {
       fixture.restoreEnvironment();
     }

@@ -391,6 +391,10 @@ export function resumeCompletedLifecycle(
       advisory: completed.advisory,
     };
   }
+  if (completed.policy === "authorization_then_completion_review" && !completed.plan && !completed.authorization) {
+    // Planless completed work resumes the advisory workflow from an empty preflight, never as ordinary work.
+    return { phase: "preflight", policy: completed.policy, taskFingerprint: completed.taskFingerprint };
+  }
   if (completed.policy === "authorization_then_completion_review" && completed.plan && completed.authorization) {
     // An approval is scoped to the session that obtained it, exactly as the restore-time check in
     // session_start enforces. Resuming completed work elsewhere must re-earn authorization.
@@ -3787,6 +3791,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           safetyFingerprint({ taskFingerprint: active.lifecycle.taskFingerprint, features: active.features }),
           "Assess the high-risk reversible action before execution. Identify failure modes, safer sequencing, checks, and stop conditions. This is advice, not authorization.",
         );
+        return;
+      }
+
+      if (active.lifecycle.phase === "discovery_ready" && active.safetyEvidence.mutations.length > 0) {
+        // The unconsumed discovery recommendation does not cover other recorded work, which still gets review.
+        await reviewCompletion(ctx, active, leaseEpoch);
         return;
       }
 

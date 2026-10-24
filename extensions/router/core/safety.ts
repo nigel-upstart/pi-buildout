@@ -647,6 +647,8 @@ export function isLeaseLifecycle(value: unknown): value is LeaseLifecycle {
     case "completed": {
       if (lifecycle.policy === "ordinary" || !reviewOutcome(lifecycle.completionReview, "completion")) return false;
       if (lifecycle.policy === "authorization_then_completion_review") {
+        // Work executed without a plan (tools are never blocked) still completes review, with no authorization.
+        if (lifecycle.plan === undefined && lifecycle.authorization === undefined) return true;
         return (
           planEvidence(lifecycle.plan, taskFingerprint) &&
           authorizationEvidence(lifecycle.authorization, taskFingerprint, lifecycle.plan.planFingerprint)

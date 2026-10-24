@@ -467,7 +467,10 @@ is advisory; neither it nor any phase in the diagram controls tool dispatch. Com
 one that crosses new input or a boundary returns its parent to `preflight` instead of `completed` with the old
 authorization. New input, compaction, a manual override, or a session change invalidates an authorization. A resumed
 authorized task regains `authorized_execution` only in the session that obtained the approval; elsewhere it returns to
-`preflight`.
+`preflight`. Work executed without an action plan, including work recorded while an unconsumed discovery recommendation
+is pending, still receives a completion review; its `completed` state carries no plan or authorization, survives reload,
+and a continuation resumes in an empty `preflight`. Interrupting a discovery review keeps the reviewer's recorded
+evidence.
 
 The `completion_review` and `advisory_then_completion_review` policies govern high-risk reversible work. An advisory
 review's verdict is advice, never authorization:
