@@ -17,7 +17,7 @@ import { classifyTask } from "./classifier.ts";
 import { deriveArchetype } from "./core/archetype.ts";
 import { POLICY_VERSION } from "./core/policy.ts";
 import { conservativeFeatures } from "./core/features.ts";
-import { validateActionPlan } from "./core/safety.ts";
+import { consumeDiscoveryGrant, validateActionPlan } from "./core/safety.ts";
 import { transportFromCandidates } from "./pi-classifier.ts";
 import { restoreLeaseState } from "./pi-state.ts";
 import { JsonlTelemetryStore, runClassifierInvocation } from "./telemetry.ts";
@@ -1340,6 +1340,83 @@ describe("advisory tool-call observation", () => {
       const completion = latestLease();
       assert.equal(completion.lifecycle.phase, "review");
       assert.equal(completion.lifecycle.reviewKind, "completion", "the recorded work still gets completion review");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("persists missing-evidence repair for discovery-pending work across reload", async () => {
+    const fixture = await authorizationLifecycleFixture();
+    const { hooks, tools, ctx, models, appended, latestLease, sent, parent } = fixture;
+    // A code builder needs a repository delta and passing checks, which this fixture cannot supply.
+    parent.features = { ...parent.features, intent: "implement" };
+    const request = {
+      purpose: "discovery",
+      objective: "Find the resource owner before planning deletion",
+      target: "resource inventory",
+      expectedEffects: ["List matching owners"],
+      preconditions: ["Use a bounded owner lookup"],
+      verification: ["Compare the returned identifiers"],
+      abortConditions: ["Stop if the command changes resources"],
+      toolName: "bash",
+      input: { command: "glean search owner --limit 5" },
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_discovery_request").execute("request", request, undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const discoveryReview = latestLease();
+      assert.equal(discoveryReview.lifecycle.reviewKind, "authorization");
+      ctx.model = models.find(
+        (model) =>
+          model.provider === discoveryReview.selected.provider && model.id === discoveryReview.selected.modelId,
+      );
+      hooks.get("agent_start")({}, ctx);
+      await tools.get("submit_safety_review").execute(
+        "verdict",
+        {
+          reviewKind: "authorization",
+          scopeFingerprint: discoveryReview.lifecycle.scopeFingerprint,
+          verdict: "approve",
+          summary: "Checked the exact discovery scope",
+          evidence: ["Single bounded lookup"],
+          findings: [],
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      await finishRun(hooks, ctx, discoveryReview.selected);
+      assert.equal(latestLease().lifecycle.phase, "discovery_ready");
+      // The builder writes something else instead of spending the discovery recommendation.
+      ctx.model = models.find(
+        (model) => model.provider === parent.selected.provider && model.id === parent.selected.modelId,
+      );
+      hooks.get("agent_start")({}, ctx);
+      hooks.get("turn_start")({}, ctx);
+      const write = { toolCallId: "unrelated-write", toolName: "write", input: { path: "x", content: "y" } };
+      assert.equal(hooks.get("tool_call")(write, ctx), undefined);
+      hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
+      assert.equal(latestLease().lifecycle.phase, "discovery_ready", "a non-matching mutation spends nothing");
+      await finishRun(hooks, ctx, parent.selected);
+      const repaired = latestLease();
+      assert.equal(repaired.lifecycle.phase, "discovery_ready");
+      assert.equal(repaired.lifecycle.evidenceRepairAttempted, true);
+      assert.ok(sent.some(({ message }) => message.details?.repairReason === "missing_completion_evidence"));
+      const reloaded = restoreLeaseState(
+        appended
+          .filter((entry) => entry.customType === "model-router-state")
+          .map((entry) => ({ type: "custom", ...entry })),
+        "shadow",
+      );
+      assert.equal(reloaded.active?.taskId, parent.taskId, "the repaired lease and its evidence survive reload");
+      assert.deepEqual(reloaded.active.safetyEvidence, repaired.safetyEvidence);
+      const consumed = consumeDiscoveryGrant(reloaded.active.lifecycle, request.toolName, request.input, {
+        taskFingerprint: repaired.lifecycle.taskFingerprint,
+        cwd: ctx.cwd,
+        sessionId: ctx.sessionManager.getSessionId(),
+      });
+      assert.equal(consumed.allowed, true, "a matching discovery call can still consume the record");
     } finally {
       fixture.restoreEnvironment();
     }

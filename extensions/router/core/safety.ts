@@ -298,6 +298,8 @@ export type LeaseLifecycle =
       policy: "authorization_then_completion_review";
       taskFingerprint: string;
       grant: DiscoveryGrant;
+      /** Set once when other recorded work lacks completion evidence (see agent_settled). */
+      evidenceRepairAttempted?: boolean;
     }
   | {
       phase: "authorized_execution";
@@ -635,7 +637,10 @@ export function isLeaseLifecycle(value: unknown): value is LeaseLifecycle {
     case "discovery_ready":
       return (
         lifecycle.policy === "authorization_then_completion_review" &&
-        Object.keys(lifecycle).sort().join(",") === "grant,phase,policy,taskFingerprint" &&
+        Object.keys(lifecycle)
+          .filter((key) => key !== "evidenceRepairAttempted")
+          .sort()
+          .join(",") === "grant,phase,policy,taskFingerprint" &&
         discoveryGrant(lifecycle.grant, taskFingerprint)
       );
     case "authorized_execution":
