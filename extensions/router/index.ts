@@ -552,7 +552,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     cancelled: boolean;
   };
   let pendingReview: PendingReview | undefined;
-  let lastReviewAttempt: { taskId: string; key: string } | undefined;
+  // Every review attempt key for the active task. Completion attempts must not erase the record of a plan
+  // attempt, or exhausted plan and completion ladders would alternate on unchanged work.
+  let attemptedReviews: { taskId: string; keys: Set<string> } | undefined;
+  function attemptedReviewKeys(taskId: string): Set<string> {
+    if (attemptedReviews?.taskId !== taskId) attemptedReviews = { taskId, keys: new Set() };
+    return attemptedReviews.keys;
+  }
   const reviewRunner = options.reviewRunner ?? inProcessReviewRunner;
   function cancelReview(): void {
     if (!pendingReview) return;
@@ -617,8 +623,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
   function reviewAlreadyAttempted(parent: TaskLease, reviewKind: SafetyReviewKind, scopeFingerprint: string): boolean {
     return (
-      lastReviewAttempt?.taskId === parent.taskId &&
-      lastReviewAttempt.key === reviewAttemptKey(parent, reviewKind, scopeFingerprint)
+      attemptedReviews?.taskId === parent.taskId &&
+      attemptedReviews.keys.has(reviewAttemptKey(parent, reviewKind, scopeFingerprint))
     );
   }
 
@@ -633,8 +639,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return (
       planKey !== undefined &&
       !(
-        lastReviewAttempt?.taskId === active.taskId &&
-        (lastReviewAttempt.key === planKey || lastReviewAttempt.key.startsWith(`${planKey}:`))
+        attemptedReviews?.taskId === active.taskId &&
+        [...attemptedReviews.keys].some((key) => key === planKey || key.startsWith(`${planKey}:`))
       )
     );
   }
@@ -2014,7 +2020,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       cancelled: false,
     };
     pendingReview = review;
-    lastReviewAttempt = { taskId: parent.taskId, key };
+    const attempted = attemptedReviewKeys(parent.taskId);
+    // Bounded like other per-instance review state; the oldest attempt is forgotten first.
+    if (attempted.size >= 64) attempted.delete(attempted.values().next().value ?? "");
+    attempted.add(key);
     try {
       // A cancelled reviewer can settle after reload/session replacement invalidates ctx, so outcome
       // telemetry uses metadata captured while ctx is still live.
@@ -2451,7 +2460,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         throw new Error(`Invalid action plan: ${validation.errors.join("; ")}`);
       }
       cancelReview();
-      lastReviewAttempt = undefined;
+      attemptedReviews = undefined;
       const plan = {
         taskFingerprint: active.lifecycle.taskFingerprint,
         planFingerprint: validation.fingerprint,
