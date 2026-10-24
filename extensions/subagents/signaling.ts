@@ -76,7 +76,7 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
       type: "general-purpose",
       description: record.description,
       status,
-      result: status === "completed" ? (record.child.snapshot().lastAssistantText ?? "") : "",
+      result: status === "completed" ? (record.child.snapshot().finalAssistantText ?? "") : "",
       ...(error ? { error } : {}),
     });
   };
