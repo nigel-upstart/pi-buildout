@@ -243,6 +243,51 @@ test("interrupt aborts an active child without accepting its delayed answer", as
   assert.doesNotMatch(child.snapshot().transcriptTail, /answer-/);
 });
 
+test("only a completed non-empty response for the current operation is the final answer", async (t) => {
+  const working = new ManagedSubagent({
+    id: "final1",
+    name: "final-child",
+    task: "WORKING_THEN_EMPTY",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => working.stop());
+  await working.start();
+  assert.equal(await working.waitForIdle(2_000), true);
+  assert.equal(working.snapshot().lastAssistantText, "working-note", "diagnostic text is kept");
+  assert.equal(working.snapshot().finalAssistantText, undefined, "working text before an empty final is not final");
+
+  const followed = new ManagedSubagent({
+    id: "final2",
+    name: "followed-child",
+    task: "normal task",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => followed.stop());
+  await followed.start();
+  assert.equal(await followed.waitForIdle(2_000), true);
+  assert.equal(followed.snapshot().finalAssistantText, "answer-1");
+  await followed.followUp("SLOW_WAIT");
+  assert.equal(followed.snapshot().finalAssistantText, undefined, "new work clears the previous answer");
+  await followed.interrupt();
+  assert.equal(await followed.waitForIdle(500), true);
+  await sleep(200);
+  assert.equal(followed.snapshot().finalAssistantText, undefined, "an interrupted follow-up has no final answer");
+});
+
 test("wait times out without stopping the child", async (t) => {
   const child = new ManagedSubagent({
     id: "slow123",

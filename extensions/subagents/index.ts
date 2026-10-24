@@ -489,8 +489,8 @@ function waitSnapshot(snapshot: ChildSnapshot, settled: boolean) {
     stats: snapshot.stats,
     sessionFile: snapshot.sessionFile,
     ...(snapshot.error ? { error: snapshot.error } : {}),
-    ...(settled && snapshot.state === "idle" && snapshot.pendingMessages === 0 && snapshot.lastAssistantText?.trim()
-      ? { lastAssistantText: truncateMiddle(snapshot.lastAssistantText.trim(), MAX_WAIT_TEXT_CHARS) }
+    ...(settled && snapshot.state === "idle" && snapshot.pendingMessages === 0 && snapshot.finalAssistantText?.trim()
+      ? { lastAssistantText: truncateMiddle(snapshot.finalAssistantText.trim(), MAX_WAIT_TEXT_CHARS) }
       : {}),
   };
 }
