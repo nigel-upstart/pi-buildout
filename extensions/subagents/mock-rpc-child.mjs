@@ -132,6 +132,13 @@ input.on("line", (line) => {
             type: "message_end",
             message: { role: "assistant", content: [], stopReason: "error", errorMessage: "mock model failure" },
           });
+        } else if (String(command.message).includes("WORKING_THEN_EMPTY")) {
+          send({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "working-note" }], stopReason: "toolUse" },
+          });
+          send({ type: "message_end", message: { role: "assistant", content: [], stopReason: "stop" } });
+          send({ type: "turn_end" });
         } else if (String(command.message).includes("EMPTY_LENGTH")) {
           send({
             type: "message_end",

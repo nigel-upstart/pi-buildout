@@ -198,6 +198,8 @@ export type ChildSnapshot = {
   stats?: ChildSessionStats;
   sessionFile?: string;
   lastAssistantText?: string;
+  /** The current operation's successful final answer; absent while working, after interruption, or if empty. */
+  finalAssistantText?: string;
   transcriptTail: string;
   stderr?: string;
   error?: string;
@@ -242,6 +244,7 @@ export class ManagedSubagent {
   private stderr = "";
   private error: string | undefined;
   private lastAssistantText: string | undefined;
+  private finalAssistantText: string | undefined;
   private sessionFile: string | undefined;
   private pendingMessages = 0;
   private turns = 0;
@@ -301,6 +304,7 @@ export class ManagedSubagent {
   }
 
   async start(): Promise<void> {
+    this.finalAssistantText = undefined;
     await this.request({ type: "prompt", message: buildKickoffPrompt(this.task, this.options.contextSummary) });
     if (this.state === "starting") this.state = "running";
     this.touch();
@@ -312,6 +316,7 @@ export class ManagedSubagent {
       if (this.state === "running" || this.state === "interrupting") {
         await this.request({ type: "steer", message });
       } else {
+        this.finalAssistantText = undefined;
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -325,6 +330,7 @@ export class ManagedSubagent {
       if (this.state === "running" || this.state === "interrupting") {
         await this.request({ type: "follow_up", message });
       } else {
+        this.finalAssistantText = undefined;
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -338,6 +344,8 @@ export class ManagedSubagent {
       if (this.state === "idle") return;
       const previousState = this.state;
       this.state = "interrupting";
+      // Interrupted work has no final answer, even if the abort races a completed message.
+      this.finalAssistantText = undefined;
       this.touch();
       try {
         await this.request({ type: "abort" });
@@ -453,6 +461,7 @@ export class ManagedSubagent {
       ...(this.stats ? { stats: this.stats } : {}),
       ...(this.sessionFile ? { sessionFile: this.sessionFile } : {}),
       ...(this.lastAssistantText ? { lastAssistantText: this.lastAssistantText } : {}),
+      ...(this.finalAssistantText ? { finalAssistantText: this.finalAssistantText } : {}),
       transcriptTail: this.transcript,
       ...(this.stderr.trim() ? { stderr: this.stderr.trim() } : {}),
       ...(this.error ? { error: this.error } : {}),
@@ -653,6 +662,7 @@ export class ManagedSubagent {
     switch (event.type) {
       case "agent_start":
         this.state = "running";
+        this.finalAssistantText = undefined;
         break;
       case "agent_settled":
         this.activeTools.clear();
@@ -677,6 +687,12 @@ export class ManagedSubagent {
         if (message?.role === "assistant") {
           const text = extractTextContent(message.content);
           if (text) this.lastAssistantText = appendBoundedTail("", text, MAX_TRANSCRIPT_CHARS);
+          // Only a completed, non-empty response is the operation's answer; working text before a tool call,
+          // aborted partial text, and an empty final message are diagnostics.
+          this.finalAssistantText =
+            message.stopReason === "stop" && text.trim()
+              ? appendBoundedTail("", text, MAX_TRANSCRIPT_CHARS)
+              : undefined;
           if (message.stopReason === "error") {
             this.fail(
               typeof message.errorMessage === "string" ? message.errorMessage : "Child model returned an error.",
