@@ -39,12 +39,12 @@ reconstruct behavior from the historical export.
 `/route off` is an immediate bypass for this extension within the running session. It discards any pending route,
 removes every router-only tool (including `submit_implementation_plan`), and stops classification, prompt compilation,
 automatic model/effort changes, manual selection tracking, lifecycle advice and evidence collection, fallbacks/reviews,
-`/route accept|reject|fail`, and all router telemetry. It aborts pending secondary reconciliation, keeping any
-unresolved low-confidence classification status for the dormant lease. Other routing work already in flight is not
-cancelled, but its result is discarded: it installs no lease, applies no model or effort, returns no prompt, re-exposes
-no tools, and submits no new telemetry, even if routing is re-enabled before it finishes. Telemetry writes and spans
-already accepted before off may still finish. The last lease remains dormant so `/route active` can safely restore the
-existing lifecycle; while off, the router does not restrict models, reasoning efforts, ordinary tools, or turns.
+`/route accept|reject|fail`, and all router telemetry. It aborts pending secondary reconciliation, discarding stale
+corrections without retaining a safety latch. Other routing work already in flight is not cancelled, but its result is
+discarded: it installs no lease, applies no model or effort, returns no prompt, re-exposes no tools, and submits no new
+telemetry, even if routing is re-enabled before it finishes. Telemetry writes and spans already accepted before off may
+still finish. The last lease remains dormant so `/route active` can safely restore the existing lifecycle; while off,
+the router does not restrict models, reasoning efforts, ordinary tools, or turns.
 
 Planning routes must call `submit_implementation_plan`; the tool validates the PR dependency DAG, acceptance criteria,
 rollout, and rollback. A normal response that omits the tool gets one same-lease corrective follow-up before the bounded
@@ -65,10 +65,11 @@ Safety is an explicit persisted **advisory** lease lifecycle, not an inference f
   working directory, and session, not a dispatch grant. Boundaries invalidate stale recommendations, never tools. Active
   routing exposes plan/discovery submissions only in preflight, and scoped verdict submission only during a generated
   review without a recorded verdict. Exposure updates at lifecycle transitions before generated messages are queued,
-  including custom starts for which the router skips user-prompt preparation in `before_agent_start`; shadow and off
-  hide all router tools. Stale submissions receive recovery instructions. Validation and phase guards protect lifecycle
-  records only. Rejection, missing evidence, reviewer failure, plan changes, boundaries, and manual overrides may change
-  advice or review state but never block ordinary calls.
+  including custom starts, which bypass user-prompt classification in `before_agent_start` and only re-prepare an active
+  lease (draining deferred corrections, switching model and effort, and compiling its prompt); shadow and off hide all
+  router tools. Stale submissions receive recovery instructions. Validation and phase guards protect lifecycle records
+  only. Rejection, missing evidence, reviewer failure, plan changes, boundaries, and manual overrides may change advice
+  or review state but never block ordinary calls.
 
 `submit_implementation_plan` validates implementation-plan DAGs throughout active routing, including a planning
 follow-up kept on a research lease. It preserves the task and model and grants no execution permission. Planning routes
@@ -124,10 +125,10 @@ starts a fresh budget.
 
 There are two timeout owners, and changing one does not affect the other. Background fresh-task secondary reconciliation
 runs as a separate classifier invocation bounded by the configurable
-[`secondaryGracePolicy.secondaryDeadlineMs`](core/reconciliation.ts), not by `CLASSIFICATION_STAGE_TIMEOUT_MS`; the
-companion `maxGraceMs` bounds only how long the router pauses before releasing the first provider request, after which
-the secondary classifier keeps running until its own deadline and may reconcile at a later safe boundary. Because the
-two budgets differ, every `secondary_reconciliation` record states the budget it was running against in
+[`secondaryReconciliationPolicy.secondaryDeadlineMs`](core/reconciliation.ts), not by `CLASSIFICATION_STAGE_TIMEOUT_MS`.
+The primary is trusted immediately, including with cached context and low confidence: there is no secondary grace wait.
+The secondary runs in the background until its deadline and may reconcile at a later safe boundary. Because the two
+budgets differ, every `secondary_reconciliation` record states the budget it was running against in
 `secondaryDeadlineMs`; a run that did not succeed also records `secondaryOutcome`, `secondaryWallLatencyMs`, and the
 bounded `secondaryErrorCategory`, plus `secondaryEnforcedBudgetMs` and `secondaryDeadlineStage` when a router-owned
 deadline elapsed. A `secondary_timeout` is therefore attributable to a budget without cross-referencing the paired
@@ -138,10 +139,14 @@ failure the current lease, model, effort, and profile remain selected. On a fres
 create a route from synthetic evidence and keeps the current model/effort (and an existing lease, if present). Concrete
 timeout thresholds can be inspected directly in [`index.ts`](index.ts) and [`telemetry.ts`](telemetry.ts).
 
-A secondary correction that changes the prompt profile can intentionally stop and resume a continuing run. That
-router-owned interruption is bound to the task and run, recorded as
-`attempt_completed.interruptionReason: "prompt_profile_refresh"`, and does not consume a provider fallback even if Pi
-reports cancellation as `stopReason: "error"`. Errors on later runs still follow the normal fallback ladder.
+A material secondary correction is accepted only when its routing benefit exceeds the estimated cache-switch penalty.
+Model, effort, prompt profile, features, and archetype move together in one owner/epoch-guarded lease transition. Pi
+1.3.0 has no public setter for the router's run-scoped forced prompt, so the whole tuple waits while a run is active. It
+applies while idle or at the next run start, never aborting the run or generating an extra resume turn. New input,
+fallback, boundaries, overrides, and mode changes invalidate captured ownership and drop the correction. The bounded
+`secondary_reconciliation.swapBoundary` values are `idle`, `next_run`, `dropped`, and `rejected`; old events without
+this field still load. See
+[the runtime investigation](../../specs/routing-layer/decisions.md#decision-trust-first-classification-and-whole-tuple-async-correction).
 
 ### Classifier model selection
 
@@ -157,11 +162,9 @@ The concrete tier lists live in [`pi-classifier.ts`](pi-classifier.ts) (`PRIMARY
   different model **vendor** from the one that actually answered the primary; a different endpoint is not enough, so a
   Bedrock-served Claude is still an Anthropic secondary. Each primary vendor lists secondary tiers from every other
   supported vendor, so one rate-limited vendor cannot by itself leave the escalation unanswered.
-- A low-confidence primary records unresolved classification and requests a schema-valid, vendor-diverse secondary
-  answer. Pending, failed, timed-out, or cancelled secondary work never blocks tools; uncertainty remains visible in
-  advice and telemetry. Keep at least one endpoint for a primary tier and one for a secondary tier of a different vendor
-  in scope; a `classifier_invocation` whose secondary attempts all end in `error` means no such endpoint could be
-  reached.
+- A low-confidence primary proceeds without a secondary safety latch. Keep at least one endpoint for a primary tier and
+  one for a secondary tier of a different vendor in scope; a `classifier_invocation` whose secondary attempts all end in
+  `error` means no such endpoint could be reached. Failed secondary work retains the primary route.
 
 Generated authorization, advisory, and completion reviews have explicit `review` lifecycle state, a known tracked
 builder, and at least two eligible non-builder-vendor attempts; they never fall back to the builder for a verdict.
@@ -510,9 +513,9 @@ sequenceDiagram
   Note over Lease: the state guard rejects stale approval records, not tool calls
 ```
 
-A low-confidence secondary classification runs as a cancellable child actor of the task family, so it survives temporary
-review children. Its unresolved status stays visible until a valid, provider-diverse answer is reconciled: `RESOLVE`
-clears it, and `RETAIN` or a failed attempt keeps it pending. This status never blocks calls.
+A low-confidence secondary classification runs as a cancellable child actor of the task family. A result may replace
+only its captured owner at its captured epoch; even a same-family lifecycle advance invalidates that binding. There is
+no secondary safety latch. Legacy persisted latch fields are ignored rather than reconstructed.
 
 ```mermaid
 stateDiagram-v2
@@ -520,6 +523,9 @@ stateDiagram-v2
   [*] --> running
   running --> queued: classification settles
   running --> stopped: error
-  running --> stopped: ABORT (pending status kept when requested)
-  queued --> stopped: ABORT
+  running --> stopped: ABORT secondary work only
+  queued --> stopped: ABORT or stale owner/epoch
+  queued --> queued: active run, defer whole tuple
+  queued --> applied: idle or next run start, material benefit exceeds cost
+
 ```

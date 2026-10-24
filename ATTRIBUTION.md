@@ -91,6 +91,21 @@ of first resort.
 - Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
   custom-start preparation and busy-start semantics.
 
+Published Pi `1.3.0` (MIT; canonical repository above) was also inspected for async router correction boundaries:
+`dist/core/agent-session.js` tool hooks, next-turn refresh, forced-prompt projection, run preparation, and model/effort
+setters; and `docs/extensions.md` event and prompt/tool-delta contracts. This conceptual inspection established that
+model/effort can refresh between requests but the router's forced prompt has no public mid-run setter. The original
+router implementation therefore defers the whole tuple until idle or a new run start. Private setters, mutation of
+retained prompt event objects, abort/resume handoffs, and secondary safety latches were not adopted.
+
+The same published `1.3.0` model/effort setters and `ThinkingLevelSelectEvent` declaration were inspected for
+operator-effort recovery races. The original router guards distinguish its own effort echoes and the model switch's
+post-authentication default-effort echo from operator effort changes during authentication; no upstream setter
+implementation or private API was adopted. The published `1.3.0` `AgentSession.setThinkingLevel` and
+`ExtensionRunner.emit` were also inspected: the event is emitted without being awaited and each earlier handler is
+awaited, so the router records each expected effort echo, including the model switch's default-effort change, by its
+observed level transition and consumes it on arrival instead of relying on a synchronous flag window.
+
 No Pi code, issue prose, or documentation prose was copied or modified.
 
 ### Pi model catalog: GPT-6.1 Sol pricing

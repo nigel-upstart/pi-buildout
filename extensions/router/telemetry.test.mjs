@@ -70,6 +70,27 @@ function event(id) {
 }
 
 describe("JsonlTelemetryStore", () => {
+  it("round-trips legacy reconciliation telemetry alongside bounded swap boundaries", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "router-swap-telemetry-"));
+    temporaryDirectories.push(directory);
+    const store = new JsonlTelemetryStore(join(directory, "events.jsonl"));
+    const legacy = {
+      ...event("legacy-secondary"),
+      kind: "secondary_reconciliation",
+      data: { accepted: true, handoff: "clean_stop_resume", graceChosenMs: 400, safetyRelevant: true },
+    };
+    await store.append(legacy);
+    for (const swapBoundary of ["idle", "next_run", "dropped", "rejected"]) {
+      await store.append({ ...event(swapBoundary), kind: "secondary_reconciliation", data: { swapBoundary } });
+    }
+    const records = await store.read();
+    assert.deepEqual(records[0], legacy);
+    assert.deepEqual(
+      records.slice(1).map(({ data }) => data.swapBoundary),
+      ["idle", "next_run", "dropped", "rejected"],
+    );
+  });
+
   it("rejects persisted cache counts that are not finite and nonnegative", () => {
     // These reach aggregation through the store, so a persisted NaN would poison the token totals.
     const outcome = {
