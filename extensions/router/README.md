@@ -541,13 +541,13 @@ one second per changed line, capped at four hours. Unknown, binary, or unmeasura
 provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each SDK session also has at most
 eight model requests and 4,096 output tokens per request. A measured $1 cost threshold stops its subsequent calls; it is
 not a provider-side billing limit and can overshoot by the final bounded request. These request, token, and dollar caps
-apply only to SDK sessions. A signaling or builder-steered child runs under its manager's own limits; the router sees signaling usage only at
-termination, when reported, and enforces only the shared wall deadline. One logical deadline is computed before child
-selection. Selection and every runner share it and the remaining measured cost budget; fallback gets no fresh
-allocation. Usage/cost/status, `reviewRunner` (`signaling`, `builder`, or `in_process`), `reviewSelection`, `reviewEffort`, and any
-`signalingNegative` reason are recorded in telemetry. Each review attempt's cost is also added to its owning task's
-total and labeled `modelAndToolCost`; reviewer token counts stay out of builder cache metrics. No raw reviewer errors
-are logged.
+apply only to SDK sessions. A signaling or builder-steered child runs under its manager's own limits; the router sees
+signaling usage only at termination, when reported, and enforces only the shared wall deadline. One logical deadline is
+computed before child selection. Selection and every runner share it and the remaining measured cost budget; fallback
+gets no fresh allocation. Usage/cost/status, `reviewRunner` (`signaling`, `builder`, or `in_process`),
+`reviewSelection`, `reviewEffort`, and any `signalingNegative` reason are recorded in telemetry. Each review attempt's
+cost is also added to its owning task's total and labeled `modelAndToolCost`; reviewer token counts stay out of builder
+cache metrics. No raw reviewer errors are logged.
 
 Valid verdicts are delivered as custom follow-up context plus a UI notification. Plan advice triggers a turn; completion
 findings are queued as follow-up context without manufacturing a new turn. Invalid output, timeout, and failure warn the

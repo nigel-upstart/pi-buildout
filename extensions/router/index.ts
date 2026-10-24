@@ -618,6 +618,15 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       );
     },
   });
+  /** Warm SWR discovery without making its availability a prerequisite for the shared review lifecycle. */
+  function observeDelegationDiscovery(ctx: ExtensionContext): void {
+    discoveryCtx = ctx;
+    try {
+      discovery.observe();
+    } catch {
+      /* Discovery is best-effort; the builder runner then reports unavailable. */
+    }
+  }
   function cancelReview(): void {
     if (!pendingReview) return;
     pendingReview.cancelled = true;
@@ -2225,13 +2234,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       // telemetry uses metadata captured while ctx is still live.
       const sessionId = ctx.sessionManager.getSessionId();
       const generation = sessionGeneration;
-      // One access: return the current publication and start at most one background refresh, never awaited.
-      discoveryCtx = ctx;
-      try {
-        discovery.observe();
-      } catch {
-        /* Discovery is best-effort; the builder runner then reports unavailable. */
-      }
+      // One access starts at most one background refresh, never awaited.
+      observeDelegationDiscovery(ctx);
       const registry = buildRegistrySnapshot(ctx, scope);
       const builder = registry.find(
         (candidate) => candidate.provider === parent.selected.provider && candidate.modelId === parent.selected.modelId,
