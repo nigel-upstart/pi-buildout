@@ -465,6 +465,51 @@ test("signaling spawn rejects extension-only models before constructing a child"
   await lifecycle.session_shutdown?.({}, ctx);
 });
 
+/** A promise with its resolver; the tsconfig lib predates Promise.withResolvers. */
+function gate() {
+  /** @type {((value: unknown) => void) | undefined} */
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: (/** @type {unknown} */ value) => resolve?.(value) };
+}
+
+test("aborting a signaling spawn during child startup stops the new child at once", async (t) => {
+  const { ctx, lifecycle, events } = await harness(t, true);
+  const builtin = getModel("openai", "o3");
+  const originalAvailable = ctx.modelRegistry.getAvailable;
+  ctx.modelRegistry.getAvailable = () => [...originalAvailable(), builtin];
+  await lifecycle.session_start?.({}, ctx);
+  const startedGate = gate();
+  const releaseGate = gate();
+  fixture.start = async () => {
+    startedGate.resolve(undefined);
+    await releaseGate.promise;
+  };
+  const abort = new AbortController();
+  const reply = rpc(events, "spawn", {
+    type: "general-purpose",
+    prompt: "Generic TASK",
+    options: {
+      description: "held-start",
+      model: "openai/o3",
+      thinkingLevel: "high",
+      isolated: true,
+      inheritContext: false,
+      signal: abort.signal,
+    },
+  });
+  await startedGate.promise;
+  abort.abort();
+  assert.equal(fixture.stops, 1, "the child is stopped while its startup RPC is still pending");
+  releaseGate.resolve(undefined);
+  const result = await reply;
+  assert.equal(result.success, false);
+  fixture.start = undefined;
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
 test("signaling spawn launches an isolated task-only child with the explicit pair; tool defaults are unchanged", async (t) => {
   const { execute, ctx, lifecycle, events } = await harness(t, true);
   const builtin = getModel("openai", "o3");
