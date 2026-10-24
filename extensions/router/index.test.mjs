@@ -6226,6 +6226,13 @@ describe("routerExtension", () => {
         false,
         "exhausted reviews create no reminder turns",
       );
+      // With both ladders exhausted on unchanged work, further settlements restart neither review.
+      const exhausted = attempts.length;
+      for (let settle = 0; settle < 3; settle++) {
+        await hooks.get("agent_settled")({}, ctx);
+        await settledAttempts();
+      }
+      assert.equal(attempts.length, exhausted, "exhausted plan and completion ladders never alternate");
     } finally {
       restoreEnvironment();
     }
