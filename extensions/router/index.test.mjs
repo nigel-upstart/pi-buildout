@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
 // than reading whatever the developer happens to have enabled.
@@ -249,7 +250,7 @@ async function authorizationLifecycleFixture(options = {}) {
     safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
     manualOverride: false,
   };
-  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
+  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review", ...(options.activeExtra ?? [])];
   const makeModel = (provider, id, api) => ({
     provider,
     id,
@@ -281,6 +282,7 @@ async function authorizationLifecycleFixture(options = {}) {
     appendEntry: (customType, data) => appended.push({ customType, data }),
     sendMessage: (message, options) => sent.push({ message, options }),
     ...(options.events ? { events: options.events } : {}),
+    getAllTools: () => options.allTools?.() ?? [],
     setModel: async (model) => {
       selectedModels.push(model);
       // The interruption can land while settlement awaits the switch back to the builder.
@@ -6280,6 +6282,194 @@ describe("routerExtension", () => {
       assert.equal(runner.calls.length, 1);
     } finally {
       reloaded.restoreEnvironment();
+    }
+  });
+
+  /** Released tintinweb `Agent` subset with its published isolation documentation. */
+  const agentTool = () => ({
+    name: "Agent",
+    description: "Launch a new agent to handle complex, multi-step tasks autonomously.",
+    exposure: "direct",
+    sourceInfo: { path: "/ext/pi-subagents/index.ts", source: "npm", scope: "user", origin: "package" },
+    parameters: Type.Object({
+      prompt: Type.String(),
+      description: Type.String(),
+      subagent_type: Type.String(),
+      model: Type.Optional(Type.String()),
+      thinking: Type.Optional(Type.String()),
+      run_in_background: Type.Optional(Type.Boolean()),
+      isolated: Type.Optional(
+        Type.Boolean({ description: "If true, agent gets no extension/MCP tools \u2014 only built-in tools." }),
+      ),
+    }),
+  });
+  const agentDiscovery = async () => ({
+    match: true,
+    spawnTool: "Agent",
+    spawnArguments: [
+      { path: "prompt", bind: "task" },
+      { path: "description", literal: '"router review"' },
+      { path: "subagent_type", literal: '"general-purpose"' },
+      { path: "model", bind: "model" },
+      { path: "thinking", bind: "effort" },
+      { path: "run_in_background", literal: "false" },
+      { path: "isolated", literal: "true" },
+    ],
+    isolationArgument: "isolated",
+    isolationEvidence: "If true, agent gets no extension/MCP tools",
+  });
+
+  it("falls forward to a builder-steered discovered tool and observes its result without rewriting it", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+    });
+    const model = fixture.ctx.model;
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+      const dispatched = fixture.sent.find((s) => s.message.customType === "router-review-delegation");
+      assert.deepEqual(dispatched.options, { triggerTurn: true, deliverAs: "followUp" });
+      const args = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(dispatched.message.content)[1]);
+      assert.equal(args.isolated, true);
+      assert.match(args.model, /^(anthropic|google-vertex)\//, "the parent-selected reviewer, not the builder");
+      const nonce = /nonce="([a-f0-9]{32})"/.exec(args.prompt)[1];
+      const scopeFingerprint = /scopeFingerprint "([a-f0-9]{64})"/.exec(args.prompt)[1];
+      fixture.hooks.get("tool_call")({ toolCallId: "agent-call", toolName: "Agent", input: args }, fixture.ctx);
+      // The delegation run's own end never drives builder repair/fallback, even on a length stop.
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: "openai-codex",
+              model: "gpt-6-sol",
+              stopReason: "length",
+              content: [],
+              usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+      assert.equal(fixture.selectedModels.length, 0, "no builder fallback switch during delegation");
+      const advice = {
+        reviewKind: "plan",
+        scopeFingerprint,
+        verdict: "approve",
+        summary: "Builder-steered advice",
+        evidence: ["Read the plan"],
+        findings: ["Steered finding"],
+      };
+      const event = {
+        toolCallId: "agent-call",
+        toolName: "Agent",
+        input: args,
+        content: [
+          {
+            type: "text",
+            text: `Agent done\n<router-result nonce="${nonce}">${JSON.stringify(advice)}</router-result>`,
+          },
+        ],
+        isError: false,
+      };
+      const before = structuredClone(event);
+      assert.equal(await fixture.hooks.get("tool_result")(event, fixture.ctx), undefined);
+      assert.deepEqual(event, before, "the third-party tool result is never modified");
+      // The delegation run settles; only then is the provisional verdict accepted.
+      await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+      await waitForReview(() => fixture.sent.some((s) => /Steered finding/.test(s.message.content)));
+      assert.equal(runner.calls.length, 0, "the SDK fallback is unused");
+      assert.equal(fixture.selectedModels.length, 0);
+      assert.equal(fixture.ctx.model, model);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("never starts SDK fallback after an off-plan call, including after a failed planned spawn", async () => {
+    for (const failedSpawn of [false, true]) {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        classifyPrimaryTask: childClassifier([]),
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+      });
+      const notes = [];
+      fixture.ctx.ui.notify = (message) => notes.push(message);
+      try {
+        const foreign = { toolCallId: "foreign", toolName: "another_agent_tool", input: { action: "create" } };
+        const original = structuredClone(foreign);
+        assert.equal(fixture.hooks.get("tool_call")(foreign, fixture.ctx), undefined, "ordinary calls stay allowed");
+        await launchReview(fixture);
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        if (failedSpawn) {
+          const content = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message.content;
+          const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
+          fixture.hooks.get("tool_call")({ toolCallId: "planned", toolName: "Agent", input }, fixture.ctx);
+          await fixture.hooks.get("tool_result")(
+            {
+              toolCallId: "planned",
+              toolName: "Agent",
+              input,
+              content: [{ type: "text", text: "Unknown parameter: isolated" }],
+              isError: true,
+            },
+            fixture.ctx,
+          );
+        }
+        assert.equal(fixture.hooks.get("tool_call")(foreign, fixture.ctx), undefined, "observation never blocks");
+        assert.deepEqual(foreign, original);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await waitForReview(() => notes.some((note) => /ownership is uncertain/.test(note)));
+        assert.equal(runner.calls.length, 0, "the unverified child must not overlap an SDK reviewer");
+        assert.equal(fixture.selectedModels.length, 0);
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    }
+  });
+
+  it("still reaches the SDK when tool inventory access throws", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => {
+        throw new Error("inventory unavailable");
+      },
+    });
+    try {
+      await launchReview(fixture, runner);
+      assert.equal(runner.calls.length, 1);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("uses the SDK when no discovery publication exists yet, without waiting for discovery", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: () => new Promise(() => {}),
+    });
+    try {
+      await launchReview(fixture, runner);
+      assert.equal(
+        fixture.sent.some((s) => s.message.customType === "router-review-delegation"),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
     }
   });
 

@@ -92,6 +92,12 @@ correlation, synchronous consume, and stop. Test fixtures reproduce those releas
 was copied. Not adopted: steer, `subagents:ready`, the `Symbol.for` registry, compiled `structuredOutput`, workflows,
 scheduling, worktrees, resume, or any multi-manager election.
 
+Builder-steered discovery (`extensions/router/discovery.ts`, `builder-runner.ts`) is original code. Its test fixture
+reproduces the parameter shape and the published `isolated` description of tintinweb's normal `Agent` tool from the same
+`v0.22.0` release `src/index.ts` (MIT). Nothing tintinweb-specific is in the runtime: any tool qualifies only through
+its own published schema and documentation. Stale-while-refresh generations, declarative call plans, and candidate
+quarantine follow the approved design. No upstream code was copied.
+
 ## Routing layer (`extensions/router`)
 
 Full design provenance, including the historical conversation export the router's spec derives from and the public
