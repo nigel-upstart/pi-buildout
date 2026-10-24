@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import { buildKickoffPrompt } from "./rpc.ts";
 
 // Mock only the extension's external boundaries. Exercise its real create dispatcher,
@@ -437,8 +438,38 @@ test("wait preserves terminal errors and cancellation without stopping the child
   assert.equal(fixture.stops, 0);
 });
 
+test("signaling spawn rejects extension-only models before constructing a child", async (t) => {
+  const { ctx, lifecycle, events } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  for (const model of [
+    { ...getModel("openai", "o3"), provider: "test", id: "model" },
+    { ...getModel("openai", "o3"), id: "extension-only-model" },
+    { ...getModel("openai", "o3"), api: "extension-only-api" },
+  ]) {
+    ctx.modelRegistry.getAvailable = () => [model];
+    const reply = await rpc(events, "spawn", {
+      type: "general-purpose",
+      prompt: "Generic TASK",
+      options: {
+        description: "extension-only",
+        model: `${model.provider}/${model.id}`,
+        thinkingLevel: "high",
+        isolated: true,
+        inheritContext: false,
+      },
+    });
+    assert.equal(reply.success, false, JSON.stringify(reply));
+    assert.match(String(reply.error), /isolated.*built-in.*extension/i);
+    assert.equal(fixture.launches.length, 0, "reject before spawning any process");
+  }
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
 test("signaling spawn launches an isolated task-only child with the explicit pair; tool defaults are unchanged", async (t) => {
   const { execute, ctx, lifecycle, events } = await harness(t, true);
+  const builtin = getModel("openai", "o3");
+  const originalAvailable = ctx.modelRegistry.getAvailable;
+  ctx.modelRegistry.getAvailable = () => [...originalAvailable(), builtin];
   await lifecycle.session_start?.({}, ctx);
   assert.deepEqual(await rpc(events, "ping"), { success: true, data: { version: 2 } });
   const reply = await rpc(events, "spawn", {
@@ -446,7 +477,7 @@ test("signaling spawn launches an isolated task-only child with the explicit pai
     prompt: "Generic TASK",
     options: {
       description: "token-1",
-      model: "test/model",
+      model: "openai/o3",
       thinkingLevel: "high",
       isolated: true,
       inheritContext: false,
@@ -458,7 +489,7 @@ test("signaling spawn launches an isolated task-only child with the explicit pai
   assert.equal(fixture.utilityPrompts.length, 0, "explicit model+effort must skip the manager classifier");
   assert.equal(fixture.compactions, 0);
   assert.equal(isolated.classification, "explicit");
-  assert.equal(isolated.model, "test/model");
+  assert.equal(isolated.model, "openai/o3");
   assert.equal(isolated.effort, "high");
   assert.equal(isolated.contextMode, "none");
   assert.equal(buildKickoffPrompt(isolated.task, isolated.contextSummary), "Task:\nGeneric TASK");

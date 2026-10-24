@@ -81,7 +81,10 @@ release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`) and documentation
 results, and synchronous consumption. Not adopted: steer, workflow/profile systems, registry singleton, scheduling,
 worktrees, proactive parent notifications, or protocol dialect shims. Pi 1.2.0 source
 `06a466935536f8c9bcacb2d5efc0fc021be1bdff` and installed 1.3.0 CLI resource suppression flags establish the isolated
-launch behavior; no Pi code was copied.
+launch behavior; no Pi code was copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters and provider
+documentation informed the fail-closed isolated-model validation: only bundled provider/model/API entries are accepted,
+because the auth bridge does not reproduce parent extension registrations. This is conceptual API use, not copied code;
+custom model/provider configuration transport and ambient extension loading remain intentionally excluded.
 
 ## Routing layer (`extensions/router`)
 

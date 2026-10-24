@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { completeSimple, StringEnum } from "@earendil-works/pi-ai/compat";
+import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import {
   buildSessionContext,
@@ -91,6 +92,20 @@ const SubagentParameters = Type.Object({
 });
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
+
+// Parent extension registrations do not exist in the resource-isolated child.
+// The auth bridge carries credentials/headers, not model or stream definitions.
+function assertIsolatedModel(model: PiModel): void {
+  const provider = getBuiltinProviders().find((candidate) => candidate === model.provider);
+  if (
+    !provider ||
+    !getBuiltinModels(provider).some((candidate) => candidate.id === model.id && candidate.api === model.api)
+  ) {
+    throw new Error(
+      `Isolated spawn requires a built-in model; '${model.provider}/${model.id}' may depend on a parent extension or custom catalog that is not bridged.`,
+    );
+  }
+}
 
 type Selection = {
   model: PiModel;
@@ -570,6 +585,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       const selection = await selectModel(pi, ctx, task, routingContext, params.model, params.effort, signal);
       throwIfAborted(signal);
       assertCreationActive();
+      if (params.isolated) assertIsolatedModel(selection.model);
       // ExtensionContext exposes models as Model<any>, while the registry accepts Model<Api>.
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       const childAuth = await ctx.modelRegistry.getApiKeyAndHeaders(selection.model);

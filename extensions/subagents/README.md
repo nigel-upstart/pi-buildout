@@ -114,6 +114,8 @@ After session start, the manager answers the verified tintinweb 0.22.0 protocol-
 request requires a unique nonempty `requestId`. Spawn uses top-level `type: "general-purpose"`, `prompt`, and
 `options: {description, model, thinkingLevel, isolated: true, inheritContext: false, signal?}`. Both model and effort
 are explicit (no second classifier); unknown optional fields are ignored, invalid required fields return an error.
+Isolated signaling accepts only models in Pi's bundled catalog with the same API; extension-only models and custom
+catalog entries are rejected before launch. Model definitions and custom streaming implementations are not bridged.
 
 The isolated launch disables discovered/configured extensions, MCP, skills, templates, themes and context files, loading
 only the explicit minimal auth bridge. This is resource selection, not an OS/credential sandbox. Ordinary `subagent`
