@@ -107,6 +107,45 @@ test("a completed result carries only the operation's final answer, never diagno
   await close();
 });
 
+test("a failed child's terminal is published only after its cleanup finishes", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const terminal = [];
+  /** @type {((value?: unknown) => void) | undefined} */
+  let finishStop;
+  const stopped = new Promise((resolve) => {
+    finishStop = resolve;
+  });
+  let stopCalls = 0;
+  /** @type {any} */
+  const failedChild = {
+    id: "child",
+    async waitForIdle() {
+      return true;
+    },
+    async refresh() {},
+    stop() {
+      stopCalls++;
+      return stopped;
+    },
+    snapshot() {
+      return { state: "failed", error: "model failed", transcriptTail: "" };
+    },
+  };
+  const close = registerSignaling(events, ctx, async () => failedChild);
+  events.on("subagents:failed", (/** @type {Payload} */ value) => terminal.push(value));
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && stopCalls === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const publishedDuringCleanup = terminal.length;
+  finishStop?.();
+  for (let i = 0; i < 50 && terminal.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await close();
+  assert.equal(publishedDuringCleanup, 0, "no failure is published while process cleanup is pending");
+  assert.equal(terminal.length, 1);
+  assert.equal(terminal[0]?.status, "error");
+});
+
 test("shape errors and unknown ownership return error envelopes; missing requestId is ignored", async () => {
   const events = bus();
   let launches = 0;

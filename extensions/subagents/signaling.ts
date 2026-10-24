@@ -85,14 +85,16 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
       ...(error ? { error } : {}),
     });
   };
-  const settle = (record: RecordState, controller: AbortController) => {
+  type Terminal = [status: "completed" | "stopped" | "aborted" | "error", error?: string];
+  const outcome = (record: RecordState, controller: AbortController): Terminal => {
     const snapshot = record.child.snapshot();
-    if (controller.signal.aborted) emitTerminal(record, "aborted", "Aborted");
-    else if (record.stopRequested) emitTerminal(record, "stopped", "Stopped");
-    else if (snapshot.state === "idle") emitTerminal(record, "completed");
-    else emitTerminal(record, "error", snapshot.error ?? "Child failed");
+    if (controller.signal.aborted) return ["aborted", "Aborted"];
+    if (record.stopRequested) return ["stopped", "Stopped"];
+    if (snapshot.state === "idle") return ["completed"];
+    return ["error", snapshot.error ?? "Child failed"];
   };
   const watch = async (record: RecordState, controller: AbortController) => {
+    let terminal: Terminal | undefined;
     try {
       // Waiting timeout is not child termination. Repeat only the wait, never the launch.
       while (!isClosed() && !(await record.child.waitForIdle(3_600_000, controller.signal))) {
@@ -100,14 +102,16 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
       }
       if (isClosed()) return;
       await record.child.refresh();
-      if (!isClosed()) settle(record, controller);
+      if (!isClosed()) terminal = outcome(record, controller);
     } catch {
       const aborted = controller.signal.aborted;
-      if (!isClosed()) emitTerminal(record, aborted ? "aborted" : "error", aborted ? "Aborted" : "Child failed");
+      if (!isClosed()) terminal = aborted ? ["aborted", "Aborted"] : ["error", "Child failed"];
     } finally {
-      // Signaling spawn is a single task, unlike the ordinary interactive child tool.
+      // Signaling spawn is a single task, unlike the ordinary interactive child tool. Publish the terminal only
+      // after the process tree is cleaned up, so a caller's fallback can never overlap this child.
       await record.child.stop();
     }
+    if (terminal && !isClosed()) emitTerminal(record, ...terminal);
   };
   const spawn = async (raw: Record<string, unknown>) => {
     const request = spawnRequest(raw);
