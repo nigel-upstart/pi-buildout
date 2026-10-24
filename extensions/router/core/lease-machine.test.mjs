@@ -4,7 +4,7 @@ import fc from "fast-check";
 import { fastCheckOptions } from "../fast-check-options.mjs";
 import { conservativeFeatures } from "./features.ts";
 import { createTaskLease } from "./lease.ts";
-import { createLeaseOwner, revokeDiscovery } from "./lease-machine.ts";
+import { createLeaseOwner } from "./lease-machine.ts";
 
 function lease(taskId = "parent") {
   return createTaskLease({
@@ -27,13 +27,13 @@ function lease(taskId = "parent") {
     modelSnapshotId: "snapshot",
     policyVersion: "fixture",
     lastPromptFingerprint: "prompt",
-    lifecycle: { phase: "preflight", policy: "authorization_then_completion_review", taskFingerprint: "task" },
+    lifecycle: { phase: "planning", policy: "plan_review_then_completion_review", taskFingerprint: "task" },
   });
 }
 
 describe("XState lease owner", () => {
   for (const boundary of [{ type: "INTENT" }, { type: "BOUNDARY", boundary: "post_compaction" }]) {
-    it(`rejects authorization reviews started before ${boundary.type}, even with a fresh settlement epoch`, () => {
+    it(`marks advice stale after ${boundary.type} while allowing parent hand-back`, () => {
       const parent = lease();
       const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
       const child = {
@@ -45,118 +45,20 @@ describe("XState lease owner", () => {
           phase: "review",
           policy: "ordinary",
           taskFingerprint: "task",
-          reviewKind: "authorization",
+          reviewKind: "plan",
           scopeFingerprint: "scope",
         },
       };
       assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
       assert.equal(owner.advance("RECONCILE", { ...child }, child, owner.epoch), false);
-      const verdict = { ...child, lifecycle: { ...child.lifecycle, submission: { verdict: "approve" } } };
-      assert.equal(owner.advance("SUBMIT_REVIEW", verdict, child, owner.epoch), true);
-      assert.equal(owner.reviewBindingCurrent, true);
+      const epoch = owner.epoch;
       owner.send(boundary);
       assert.equal(owner.reviewBindingCurrent, false);
-      const authorized = {
-        ...parent,
-        lifecycle: {
-          phase: "authorized_execution",
-          policy: "authorization_then_completion_review",
-          taskFingerprint: "task",
-          plan: { planFingerprint: "plan" },
-          authorization: { taskFingerprint: "task", planFingerprint: "plan" },
-        },
-      };
-      const revoked = owner.state;
-      assert.equal(owner.advance("REVIEW_FINISHED", authorized, verdict, owner.epoch), false);
-      assert.equal(owner.state, revoked);
-      assert.equal(owner.state.pendingHardBoundary, boundary.boundary);
-      // Progress and settlement capture the current epoch, but must retain the review's start epoch.
-      const progressed = { ...verdict, attemptIndex: 1 };
-      assert.equal(owner.advance("FALLBACK", progressed, verdict, owner.epoch), true);
-      assert.equal(owner.reviewBindingCurrent, false);
-      const before = owner.state;
-      assert.equal(owner.advance("REVIEW_FINISHED", authorized, progressed, owner.epoch), false);
-      assert.equal(owner.state, before);
-    });
-
-    it(`hands a review stale after ${boundary.type} back without its grant, keeping any pending boundary`, () => {
-      const parent = lease();
-      const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
-      const child = {
-        ...parent,
-        taskId: "review",
-        parentTaskId: parent.taskId,
-        parentLease: parent,
-        lifecycle: {
-          phase: "review",
-          policy: "ordinary",
-          taskFingerprint: "task",
-          reviewKind: "authorization",
-          scopeFingerprint: "scope",
-          submission: { verdict: "approve" },
-        },
-      };
-      assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
-      owner.send(boundary);
-      // Without this hand-back the finished review would stay installed and block the task.
-      const withheld = {
-        ...parent,
-        lifecycle: { ...parent.lifecycle, lastAuthorizationReview: { kind: "authorization" } },
-      };
-      assert.equal(owner.advance("REVIEW_FINISHED", withheld, child, owner.epoch), true);
-      assert.equal(owner.state.active, withheld);
+      assert.equal(owner.advance("REVIEW_FINISHED", parent, child, epoch), false);
+      assert.equal(owner.advance("REVIEW_FINISHED", parent, child, owner.epoch), true);
       assert.equal(owner.state.pendingHardBoundary, boundary.boundary);
     });
   }
-
-  it("binds a completion review to its start epoch before it can return an authorized plan", () => {
-    const authorized = {
-      ...lease(),
-      lifecycle: {
-        phase: "authorized_execution",
-        policy: "authorization_then_completion_review",
-        taskFingerprint: "task",
-        plan: { planFingerprint: "plan" },
-        authorization: { taskFingerprint: "task", planFingerprint: "plan" },
-      },
-    };
-    const completedWith = (authorization) => ({
-      ...authorized,
-      lifecycle: {
-        phase: "completed",
-        policy: "authorization_then_completion_review",
-        taskFingerprint: "task",
-        completionReview: { kind: "completion", verdict: "pass" },
-        plan: { planFingerprint: "plan" },
-        ...(authorization ? { authorization: authorized.lifecycle.authorization } : {}),
-      },
-    });
-    for (const interrupted of [false, true]) {
-      const owner = createLeaseOwner({ mode: "active", active: authorized, manualOverride: false });
-      const child = {
-        ...authorized,
-        taskId: "completion-review",
-        parentTaskId: authorized.taskId,
-        parentLease: authorized,
-        lifecycle: {
-          phase: "review",
-          policy: "ordinary",
-          taskFingerprint: "task",
-          reviewKind: "completion",
-          scopeFingerprint: "evidence",
-        },
-      };
-      assert.equal(owner.advance("REVIEW_STARTED", child, authorized, owner.epoch), true);
-      if (interrupted) owner.send({ type: "INTENT" });
-      const withAuthorization = completedWith(true);
-      assert.equal(owner.advance("REVIEW_FINISHED", withAuthorization, child, owner.epoch), !interrupted);
-      if (!interrupted) continue;
-      // The stale review still hands back, but only to a parent that no longer carries the authorization.
-      const withheld = { ...authorized, lifecycle: { ...lease().lifecycle, plan: { planFingerprint: "plan" } } };
-      assert.equal(owner.advance("REVIEW_FINISHED", withheld, child, owner.epoch), true);
-      assert.equal(owner.state.active, withheld);
-    }
-  });
 
   it("ignores a redundant mode command so captured work and review bindings stay current", () => {
     const parent = lease();
@@ -170,7 +72,7 @@ describe("XState lease owner", () => {
         phase: "review",
         policy: "ordinary",
         taskFingerprint: "task",
-        reviewKind: "authorization",
+        reviewKind: "plan",
         scopeFingerprint: "scope",
       },
     };
@@ -237,34 +139,6 @@ describe("XState lease owner", () => {
     assert.equal(owner.advance("ROUTE", fresh, parent, owner.epoch), true);
     assert.equal("pendingHardBoundary" in owner.state, false, "the freshly routed lease consumes the boundary");
   });
-
-  for (const grant of ["discovery_ready", "authorized_execution"]) {
-    it(`installs the ${grant} lifecycle only from an authorization review bound to the current epoch`, () => {
-      const parent = lease();
-      const owner = createLeaseOwner({ mode: "active", active: parent, manualOverride: false });
-      const child = {
-        ...parent,
-        taskId: "review",
-        parentTaskId: parent.taskId,
-        parentLease: parent,
-        lifecycle: {
-          phase: "review",
-          policy: "ordinary",
-          taskFingerprint: "task",
-          reviewKind: "authorization",
-          scopeFingerprint: "scope",
-        },
-      };
-      assert.equal(owner.advance("REVIEW_STARTED", child, parent, owner.epoch), true);
-      const granted = {
-        ...parent,
-        lifecycle: { phase: grant, policy: "authorization_then_completion_review", taskFingerprint: "task" },
-      };
-      assert.equal(owner.advance("REVIEW_FINISHED", granted, child, owner.epoch), true);
-      assert.equal(owner.state.active, granted);
-      assert.equal(owner.reviewBindingCurrent, false, "the binding ends once the review settles");
-    });
-  }
 
   it("rejects stale completions across arbitrary revocation boundaries", async () => {
     await fc.assert(
@@ -364,7 +238,7 @@ describe("XState lease owner", () => {
                   phase: "review",
                   policy: "ordinary",
                   taskFingerprint: "task",
-                  reviewKind: "authorization",
+                  reviewKind: "plan",
                   scopeFingerprint: "scope",
                 },
               };
@@ -457,47 +331,13 @@ describe("XState lease owner", () => {
     assert.equal(signal.aborted, true);
   });
 
-  it("keeps a discovery reviewer's newer evidence when an interruption revokes the discovery", () => {
-    const parent = lease();
-    parent.lifecycle = { ...parent.lifecycle, discovery: { scopeFingerprint: "d".repeat(64) } };
-    const review = lease("review");
-    review.parentTaskId = parent.taskId;
-    review.parentLease = parent;
-    review.lifecycle = {
-      phase: "review",
-      policy: "ordinary",
-      taskFingerprint: "task",
-      reviewKind: "authorization",
-      scopeFingerprint: "d".repeat(64),
-    };
-    // Reviewer tool results update only the child; its log starts from the parent's and extends it.
-    review.safetyEvidence = {
-      ...parent.safetyEvidence,
-      checks: [{ command: "npm test", passed: false, recordedAt: "2026-10-07T00:00:02Z" }],
-      mutations: [{ toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "2026-10-07T00:00:01Z" }],
-    };
-    const revoked = revokeDiscovery(review);
-    assert.equal(revoked.taskId, parent.taskId);
-    assert.equal(revoked.parentLease, undefined);
-    assert.deepEqual(revoked.lifecycle, {
-      phase: "preflight",
-      policy: "authorization_then_completion_review",
-      taskFingerprint: "task",
-    });
-    assert.deepEqual(revoked.safetyEvidence, review.safetyEvidence);
-    // The same holds through the owner's INVALIDATE boundary (new input or compaction).
-    const owner = createLeaseOwner({ mode: "active", active: review, manualOverride: false });
-    owner.send({ type: "INVALIDATE", reason: "new input", discoveryOnly: true });
-    assert.deepEqual(owner.state.active?.safetyEvidence, review.safetyEvidence);
-  });
-
   it("rejects out-of-phase transitions and mutation through nested snapshots", () => {
     const active = lease();
     const owner = createLeaseOwner({ mode: "active", active, manualOverride: false });
     assert.equal(owner.advance("SUBMIT_REVIEW", active, active, owner.epoch), false);
     assert.equal(owner.advance("SPEND_DISCOVERY", active, active, owner.epoch), false);
     assert.throws(() => {
-      owner.state.active.lifecycle.phase = "discovery_ready";
+      owner.state.active.lifecycle.phase = "executing";
     }, TypeError);
     assert.throws(() => {
       owner.state.active.safetyEvidence.checks.push({});

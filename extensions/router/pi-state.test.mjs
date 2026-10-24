@@ -325,6 +325,86 @@ describe("lease restoration and context estimates", () => {
     }
   });
 
+  it("migrates persisted legacy discovery/grant state and both pre-action policies", () => {
+    for (const [phase, policy] of [
+      ["preflight", "authorization_then_completion_review"],
+      ["discovery_ready", "authorization_then_completion_review"],
+      ["authorized_execution", "authorization_then_completion_review"],
+      ["completed", "authorization_then_completion_review"],
+      ["advisory_pending", "advisory_then_completion_review"],
+      ["ready_after_advisory", "advisory_then_completion_review"],
+    ]) {
+      const active = {
+        ...leaseFixture(),
+        lifecycle: { phase, policy, taskFingerprint: "task", grant: {}, authorization: {} },
+      };
+      const restored = restoreLeaseState(
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: {
+              mode: "active",
+              active,
+              secondarySafetyPending: false,
+            },
+          },
+        ],
+        "shadow",
+      );
+      assert.deepEqual(restored.active.lifecycle, {
+        phase: "planning",
+        policy: "plan_review_then_completion_review",
+        taskFingerprint: "task",
+      });
+      assert.equal(restored.active.taskId, active.taskId);
+    }
+  });
+
+  it("keeps a legacy reviewer's accumulated safety evidence when recovering its builder", () => {
+    for (const reviewKind of ["authorization", "advisory"]) {
+      const parent = {
+        ...leaseFixture(),
+        lifecycle: {
+          phase: "authorized_execution",
+          policy: "authorization_then_completion_review",
+          taskFingerprint: "task",
+          grant: {},
+        },
+        safetyEvidence: {
+          baselineChangedFiles: [],
+          checks: [{ command: "npm test", passed: true, recordedAt: "2026-07-17T00:00:01.000Z" }],
+          mutations: [],
+        },
+      };
+      const child = {
+        ...structuredClone(parent),
+        taskId: "task-review",
+        parentTaskId: parent.taskId,
+        parentLease: structuredClone(parent),
+        lifecycle: { phase: "review", policy: "ordinary", taskFingerprint: "task", reviewKind },
+        // Legacy reviewer tool results updated only the child, never its stored parent.
+        safetyEvidence: {
+          baselineChangedFiles: [],
+          checks: [{ command: "npm test", passed: false, recordedAt: "2026-07-17T00:00:03.000Z" }],
+          mutations: [{ toolName: "edit", inputFingerprint: "b".repeat(64), recordedAt: "2026-07-17T00:00:02.000Z" }],
+        },
+      };
+      const restored = restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: child } }],
+        "shadow",
+      );
+      assert.equal(restored.active?.taskId, parent.taskId, reviewKind);
+      assert.equal(restored.active.parentLease, undefined);
+      assert.deepEqual(restored.active.lifecycle, {
+        phase: "planning",
+        policy: "plan_review_then_completion_review",
+        taskFingerprint: "task",
+      });
+      assert.deepEqual(restored.active.safetyEvidence, child.safetyEvidence, reviewKind);
+    }
+  });
+
   it("restores only router-authored state entries", () => {
     const state = restoreLeaseState(
       [
