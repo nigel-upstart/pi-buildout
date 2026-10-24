@@ -286,6 +286,27 @@ test("only a completed non-empty response for the current operation is the final
   assert.equal(await followed.waitForIdle(500), true);
   await sleep(200);
   assert.equal(followed.snapshot().finalAssistantText, undefined, "an interrupted follow-up has no final answer");
+
+  const racing = new ManagedSubagent({
+    id: "final3",
+    name: "racing-child",
+    task: "SLOW_WAIT LATE_FINAL",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => racing.stop());
+  await racing.start();
+  await racing.interrupt();
+  assert.equal(await racing.waitForIdle(500), true);
+  await sleep(50);
+  assert.equal(racing.snapshot().lastAssistantText, "late-answer", "the racing message is still a diagnostic");
+  assert.equal(racing.snapshot().finalAssistantText, undefined, "a message racing the abort is not the answer");
 });
 
 test("wait times out without stopping the child", async (t) => {

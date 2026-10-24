@@ -245,6 +245,9 @@ export class ManagedSubagent {
   private error: string | undefined;
   private lastAssistantText: string | undefined;
   private finalAssistantText: string | undefined;
+  // An interrupted operation can still deliver its start and final messages; until new work is sent, no message
+  // becomes the answer. Only sending new work clears it, because the interrupted run's agent_start may arrive late.
+  private interruptedOperation = false;
   private sessionFile: string | undefined;
   private pendingMessages = 0;
   private turns = 0;
@@ -305,6 +308,7 @@ export class ManagedSubagent {
 
   async start(): Promise<void> {
     this.finalAssistantText = undefined;
+    this.interruptedOperation = false;
     await this.request({ type: "prompt", message: buildKickoffPrompt(this.task, this.options.contextSummary) });
     if (this.state === "starting") this.state = "running";
     this.touch();
@@ -317,6 +321,7 @@ export class ManagedSubagent {
         await this.request({ type: "steer", message });
       } else {
         this.finalAssistantText = undefined;
+        this.interruptedOperation = false;
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -331,6 +336,7 @@ export class ManagedSubagent {
         await this.request({ type: "follow_up", message });
       } else {
         this.finalAssistantText = undefined;
+        this.interruptedOperation = false;
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -346,6 +352,7 @@ export class ManagedSubagent {
       this.state = "interrupting";
       // Interrupted work has no final answer, even if the abort races a completed message.
       this.finalAssistantText = undefined;
+      this.interruptedOperation = true;
       this.touch();
       try {
         await this.request({ type: "abort" });
@@ -486,6 +493,8 @@ export class ManagedSubagent {
   }
 
   private restoreInterrupt(previousState: ChildState): void {
+    // The abort failed, so the operation continues and its answer is genuine.
+    this.interruptedOperation = false;
     if (this.state === "interrupting") this.state = previousState;
   }
 
@@ -690,7 +699,7 @@ export class ManagedSubagent {
           // Only a completed, non-empty response is the operation's answer; working text before a tool call,
           // aborted partial text, and an empty final message are diagnostics.
           this.finalAssistantText =
-            message.stopReason === "stop" && text.trim()
+            message.stopReason === "stop" && text.trim() && !this.interruptedOperation
               ? appendBoundedTail("", text, MAX_TRANSCRIPT_CHARS)
               : undefined;
           if (message.stopReason === "error") {
