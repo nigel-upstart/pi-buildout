@@ -301,6 +301,23 @@ test("cancellation stops the owned child, ignores its stale result, and consumes
   assert.deepEqual(seen.notified, []);
 });
 
+test("cancellation and timeout keep the stale status but report the stop terminal's billed usage", async () => {
+  for (const ending of ["cancelled", "timeout"]) {
+    const bus = createEventBus();
+    const seen = releasedManager(bus, { terminal: "never" });
+    const handle = createSignalingReviewRunner(bus).start(request(ending === "timeout" ? { timeoutMs: 60 } : {}));
+    for (let i = 0; i < 20 && seen.spawns.length === 0; i++) await tick();
+    await tick();
+    if (ending === "cancelled") handle.cancel();
+    const result = await handle.result;
+    assert.equal(result.status, ending);
+    assert.equal(result.verdict, undefined, "stale advice is never delivered");
+    assert.deepEqual(seen.stops, ["agent-1"]);
+    assert.equal(result.usage.cost, 0.03, `${ending} keeps the spend reported at termination`);
+    assert.equal(seen.spawns.length, 1, "never relaunched");
+  }
+});
+
 test("contract: this repository's P2 handler serves the router adapter with an isolated child", async () => {
   const bus = createEventBus();
   const launches = [];

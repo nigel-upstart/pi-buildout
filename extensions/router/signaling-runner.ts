@@ -19,6 +19,8 @@ const CONTROL_WAIT_MS = 5_000;
 const SPAWN_WAIT_MS = 120_000;
 /** Shutdown waits this long for cancelled children's terminal events so they can still be consumed. */
 const DRAIN_WAIT_MS = 2_000;
+/** A cancelled or timed-out review waits this long for its child's terminal event to report billed usage. */
+const USAGE_GRACE_MS = 1_000;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -118,8 +120,12 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         resolveResult = resolve;
       });
       let finished = false;
+      // Cancellation or the deadline makes the attempt stale at once; its result waits briefly for usage.
+      let stale: "timeout" | "cancelled" | undefined;
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+      let spawnRequested = false;
       // Read through a function: cancellation and deadlines mutate this across awaits.
-      const isFinished = () => finished;
+      const isFinished = () => finished || stale !== undefined;
       let childId: string | undefined;
       let early: Terminal | undefined;
       let observed = false;
@@ -133,7 +139,8 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        resolveResult({ status, usage: zero, ...extra });
+        clearTimeout(graceTimer);
+        resolveResult({ usage: zero, ...extra, status: stale ?? status });
         if (observed || status === "unavailable") close();
       };
       const stop = () => {
@@ -141,6 +148,11 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         if (bus && childId && !observed) void rpc(bus, waiters, "stop", { agentId: childId }, CONTROL_WAIT_MS);
       };
       const settle = (terminal: Terminal) => {
+        if (stale) {
+          // Stale advice is never delivered, but the spend it reports is still the task's.
+          finish(stale, { usage: terminal.usage });
+          return;
+        }
         if (!terminal.completed) {
           finish("failed", { usage: terminal.usage });
           return;
@@ -168,11 +180,21 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         if (childId) settle(terminal);
         else early = terminal;
       };
+      const expire = (status: "timeout" | "cancelled") => {
+        if (finished || stale) return;
+        // Stale before cancellation; stop acknowledgement is not proof of physical exit.
+        stale = status;
+        clearTimeout(timer);
+        stop();
+        if (!spawnRequested || observed) finish(status);
+        else
+          graceTimer = setTimeout(() => {
+            finish(status);
+          }, USAGE_GRACE_MS);
+      };
       const timer = setTimeout(
         () => {
-          // Stale before cancellation; stop acknowledgement is not proof of physical exit.
-          finish("timeout");
-          stop();
+          expire("timeout");
         },
         Math.max(1, request.timeoutMs),
       );
@@ -201,6 +223,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         live.add(close);
         offTerminal.push(bus.on("subagents:completed", onTerminal(true)));
         offTerminal.push(bus.on("subagents:failed", onTerminal(false)));
+        spawnRequested = true;
         const spawn = await rpc(
           bus,
           waiters,
@@ -249,8 +272,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
       return {
         result,
         cancel: () => {
-          finish("cancelled");
-          stop();
+          expire("cancelled");
         },
       };
     },
