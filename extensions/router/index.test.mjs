@@ -6172,6 +6172,50 @@ describe("routerExtension", () => {
     }
   });
 
+  it("notes a mutation awaiting the fallback attempt's plan review after an exhausted one", async () => {
+    const attempts = [];
+    const reviewRunner = {
+      start: (request) => {
+        attempts.push(request);
+        return {
+          result: Promise.resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } }),
+          cancel() {},
+        };
+      },
+    };
+    const fixture = await authorizationLifecycleFixture({ reviewRunner });
+    const { hooks, tools, ctx, commands, latestLease, restoreEnvironment } = fixture;
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const failures = () => notes.filter((n) => /did not return valid advice/.test(n.message)).length;
+      for (let stable = 0, i = 0; i < 400 && stable < 5; i++) {
+        const before = attempts.length;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stable = attempts.length === before && attempts.length > 0 && failures() === attempts.length ? stable + 1 : 0;
+      }
+      await flushMicrotasks();
+      const exhaustedAttempt = latestLease().attemptIndex;
+      // The builder falls back; the new attempt's plan review has not run yet.
+      await commands.get("route").handler("fail availability", ctx);
+      assert.equal(latestLease().attemptIndex, exhaustedAttempt + 1);
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "early" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "early", isError: false }, ctx);
+      await flushMicrotasks();
+      assert.equal(
+        latestLease().advisoryStepsNoted?.includes("plan_review_wait"),
+        true,
+        "an earlier attempt's exhausted review does not hide the new attempt's pending one",
+      );
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
   it("still reviews completed work after the plan review is exhausted", async () => {
     const attempts = [];
     const reviewRunner = {

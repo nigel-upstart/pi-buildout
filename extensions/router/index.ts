@@ -632,16 +632,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   function planReviewAdvicePending(active: TaskLease): boolean {
     if (pendingReview) return pendingReview.kind === "plan" && pendingReview.taskId === active.taskId;
     const lifecycle = active.lifecycle;
-    // A plan whose review already ran without valid advice is no longer awaiting it. Attempt keys extend the
-    // kind and scope with the builder attempt and route, so match the plan's key prefix.
-    const planKey =
-      lifecycle.phase === "planning" && lifecycle.plan ? `plan:${lifecycle.plan.planFingerprint}` : undefined;
+    // A plan whose review already ran without valid advice for this builder attempt and route is no longer
+    // awaiting it. A fallback attempt has its own review still to come, so earlier attempts do not count.
     return (
-      planKey !== undefined &&
-      !(
-        attemptedReviews?.taskId === active.taskId &&
-        [...attemptedReviews.keys].some((key) => key === planKey || key.startsWith(`${planKey}:`))
-      )
+      lifecycle.phase === "planning" &&
+      lifecycle.plan !== undefined &&
+      !reviewAlreadyAttempted(active, "plan", lifecycle.plan.planFingerprint)
     );
   }
 
