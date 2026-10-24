@@ -644,14 +644,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       });
       throwIfAborted(signal);
       children.set(id, child);
+      // A startup RPC can be held indefinitely; cancellation must not wait for it to stop the new process.
+      let stopping: Promise<void> | undefined;
+      const stopOnAbort = () => {
+        stopping ??= child.stop();
+      };
+      signal?.addEventListener("abort", stopOnAbort, { once: true });
       try {
         throwIfAborted(signal);
         await child.start();
         throwIfAborted(signal);
         assertCreationActive();
       } catch (error) {
-        await child.stop();
+        await (stopping ?? child.stop());
         throw error;
+      } finally {
+        signal?.removeEventListener("abort", stopOnAbort);
       }
       return { child, contextMode, compactionFallback: compacted.fallback };
     } finally {
