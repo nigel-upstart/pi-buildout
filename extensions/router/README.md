@@ -445,8 +445,9 @@ request's final usage before settling, and owner/epoch checks drop late results.
 scheduled at most once per attempt, so consuming completion advice cannot create an unbounded rereview loop. A
 successful mutation or a failing deterministic check that finishes after completion advice reopens the completed
 lifecycle, so the newer evidence is reviewed at the next settlement. A plan review that ends without valid advice is not
-retried for the unchanged plan, but work executed afterwards still receives completion review. Ordinary task/model
-routing remains available if the router is loaded in some other reviewer child, but review work never schedules
+retried for the unchanged plan, but work executed afterwards (including work that settled while it ran) still receives
+completion review. Advice never applies during an in-flight custom-start preparation. Ordinary task/model routing
+remains available if the router is loaded in some other reviewer child, but review work never schedules
 review-of-review.
 
 `ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. A later adapter may resolve that

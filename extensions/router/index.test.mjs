@@ -5575,6 +5575,84 @@ describe("routerExtension", () => {
     await fixture.hooks.get("agent_settled")({}, fixture.ctx);
     await flushMicrotasks();
   }
+  it("defers plan advice until an in-flight custom-start preparation finishes", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => runner.calls.length === 1);
+      let releaseMetadata = () => {};
+      let metadataHeld = false;
+      const held = new Promise((resolve) => {
+        releaseMetadata = resolve;
+      });
+      fixture.onExec(async () => {
+        fixture.onExec(undefined);
+        metadataHeld = true;
+        await held;
+        return undefined;
+      });
+      const started = fixture.hooks.get("before_agent_start")(
+        { messageType: "custom", systemPrompt: "system" },
+        fixture.ctx,
+      );
+      await waitForReview(() => metadataHeld);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      // Give the reviewer outcome time to apply; it must wait for the preparation instead.
+      for (let i = 0; i < 40 && fixture.latestLease().lifecycle.phase === "planning"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const phaseDuringPreparation = fixture.latestLease().lifecycle.phase;
+      releaseMetadata();
+      const prepared = await started;
+      assert.ok(prepared?.systemPrompt, "the custom start still receives the routed system prompt");
+      assert.equal(phaseDuringPreparation, "planning", "advice waits for the preparation");
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "executing");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("reviews work that settled before the plan-review ladder failed", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const { hooks, ctx } = fixture;
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => runner.calls.length === 1);
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "w" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "w", isError: false }, ctx);
+      // The builder settles while the plan review is still running, so settlement cannot review the work.
+      await hooks.get("agent_settled")({}, ctx);
+      await flushMicrotasks();
+      assert.ok(runner.calls.every((call) => call.request.kind === "plan"));
+      // Every plan reviewer then fails.
+      for (let i = 0; i < 400 && !runner.calls.some((call) => call.request.kind === "completion"); i++) {
+        const open = runner.calls.filter((call) => call.request.kind === "plan" && !call.settled);
+        for (const call of open) {
+          call.settled = true;
+          call.resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.ok(
+        runner.calls.some((call) => call.request.kind === "completion"),
+        "the settled work gets completion review once the plan ladder ends without advice",
+      );
+      assert.equal(
+        fixture.sent.some((s) => s.options?.triggerTurn),
+        false,
+        "no model turn is started",
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("delivers out-of-band plan advice without changing builder model or effort", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });

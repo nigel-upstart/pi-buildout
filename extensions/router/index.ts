@@ -539,6 +539,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   // The advisory phase paused by `/route off`, until re-enabling resumes its guidance.
   let offNoticePhase: AdvisoryPhase | undefined;
   let agentRunPhase: AgentRunPhase = "before_start";
+  // A custom start prepares the lease across awaits and checks ownership by identity, so advice waits for it.
+  let customPreparation: Promise<unknown> | undefined;
   type PendingReview = {
     id: string;
     taskId: string;
@@ -2016,6 +2018,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       cancelled: false,
     };
     pendingReview = review;
+    let delivered = false;
+    const reviewGeneration = sessionGeneration;
     const attempted = attemptedReviewKeys(parent.taskId);
     // Bounded like other per-instance review state; the oldest attempt is forgotten first.
     if (attempted.size >= 64) attempted.delete(attempted.values().next().value ?? "");
@@ -2193,6 +2197,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           );
           continue;
         }
+        if (!(await adviceMayApply(review))) return;
+        delivered = true;
         const active = leaseOwner.state.active;
         const outcome = {
           kind: reviewKind,
@@ -2257,7 +2263,45 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
     } finally {
       if (pendingReview === review) pendingReview = undefined;
+      if (!delivered) void reviewSettledWorkAfterPlanReview(ctx, review, reviewGeneration);
     }
+  }
+
+  /** Applying advice replaces the lease, so it never happens under an in-flight custom-start preparation. */
+  async function adviceMayApply(review: PendingReview): Promise<boolean> {
+    while (customPreparation) await customPreparation.catch(() => undefined);
+    return reviewCurrent(review);
+  }
+
+  /**
+   * A builder that settled while the plan ladder was still running could not start completion review then.
+   * Once that ladder ends without advice, review the already-settled work without starting a model turn.
+   */
+  async function reviewSettledWorkAfterPlanReview(
+    ctx: ExtensionContext,
+    review: PendingReview,
+    generation: number,
+  ): Promise<void> {
+    const active = leaseOwner.state.active;
+    if (
+      review.kind !== "plan" ||
+      review.cancelled ||
+      generation !== sessionGeneration ||
+      agentRunPhase !== "settled" ||
+      pendingReview ||
+      active?.taskId !== review.taskId ||
+      leaseOwner.epoch !== review.epoch ||
+      leaseOwner.state.mode !== "active" ||
+      leaseOwner.state.manualOverride ||
+      active.manualOverride ||
+      active.executionFailed ||
+      active.lifecycle.phase !== "planning" ||
+      !active.lifecycle.plan ||
+      active.safetyEvidence.mutations.length === 0 ||
+      !reviewAlreadyAttempted(active, "plan", active.lifecycle.plan.planFingerprint)
+    )
+      return;
+    await reviewCompletion(ctx, active, leaseOwner.epoch);
   }
 
   async function reviewCompletion(ctx: ExtensionContext, active: TaskLease, leaseEpoch: number): Promise<void> {
@@ -2997,29 +3041,42 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (event.messageType === "custom") {
       agentRunPhase = "before_start";
       if (leaseOwner.state.mode !== "active" || leaseOwner.state.manualOverride) return;
-      const epoch = leaseOwner.epoch;
-      await drainSecondaryReconciliation(ctx, { kind: "before_first_request" });
-      let active = leaseOwner.state.active;
-      if (!active || active.executionFailed || active.manualOverride || leaseOwner.epoch !== epoch) return;
-      active = await prepareActiveLeaseForTurn(ctx, active, undefined);
-      if (!active || active.executionFailed || !leaseOwner.owns(active, epoch)) return;
-      const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
-      if (!profile) return;
-      const repository = await readRepositoryMetadata(pi, ctx.cwd);
-      if (!leaseOwner.owns(active, epoch)) return;
-      const currentSynopsis = synopsis(ctx, repository, false, buildRegistrySnapshot(ctx, scope));
-      const safetyContext = lifecycleAdvice(active);
-      const compiled = compilePrompt({
-        baseSystemPrompt: safetyContext ? `${event.systemPrompt}\n\n${safetyContext}` : event.systemPrompt,
-        profile,
-        synopsis: currentSynopsis,
-        userRequest: "",
-        archetype: active.archetype,
-      });
-      return { systemPrompt: compiled.systemPrompt };
+      const preparation = prepareCustomStart(event, ctx);
+      customPreparation = preparation;
+      try {
+        return await preparation;
+      } finally {
+        if (customPreparation === preparation) customPreparation = undefined;
+      }
     }
     return handleUserPrompt(event, ctx);
   });
+
+  async function prepareCustomStart(
+    event: { systemPrompt: string },
+    ctx: ExtensionContext,
+  ): Promise<{ systemPrompt: string } | undefined> {
+    const epoch = leaseOwner.epoch;
+    await drainSecondaryReconciliation(ctx, { kind: "before_first_request" });
+    let active = leaseOwner.state.active;
+    if (!active || active.executionFailed || active.manualOverride || leaseOwner.epoch !== epoch) return;
+    active = await prepareActiveLeaseForTurn(ctx, active, undefined);
+    if (!active || active.executionFailed || !leaseOwner.owns(active, epoch)) return;
+    const profile = PROMPT_PROFILES.find((candidate) => candidate.id === active.promptProfileId);
+    if (!profile) return;
+    const repository = await readRepositoryMetadata(pi, ctx.cwd);
+    if (!leaseOwner.owns(active, epoch)) return;
+    const currentSynopsis = synopsis(ctx, repository, false, buildRegistrySnapshot(ctx, scope));
+    const safetyContext = lifecycleAdvice(active);
+    const compiled = compilePrompt({
+      baseSystemPrompt: safetyContext ? `${event.systemPrompt}\n\n${safetyContext}` : event.systemPrompt,
+      profile,
+      synopsis: currentSynopsis,
+      userRequest: "",
+      archetype: active.archetype,
+    });
+    return { systemPrompt: compiled.systemPrompt };
+  }
 
   pi.on("model_select", async (event, ctx) => {
     if (event.source === "restore") return;
