@@ -145,8 +145,7 @@ function isRouteChoice(value: unknown, archetype: Archetype): boolean {
   );
 }
 
-function isTaskLease(value: unknown, depth = 0): value is TaskLease {
-  if (depth > 1) return false;
+function isTaskLease(value: unknown): value is TaskLease {
   const lease = object(value);
   if (!lease || typeof lease.archetype !== "string" || !ARCHETYPES.includes(lease.archetype as Archetype)) return false;
   const archetype = lease.archetype as Archetype;
@@ -169,10 +168,7 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     lease.reviewCompleted !== undefined ||
     !isLeaseLifecycle(lease.lifecycle) ||
     !isSafetyEvidenceLog(lease.safetyEvidence) ||
-    (lease.lifecycle.phase === "review" &&
-      (archetype !== "code_review" || lease.parentLease === undefined || lease.parentTaskId === undefined)) ||
-    (lease.lifecycle.phase !== "review" && lease.parentLease !== undefined) ||
-    (archetype === "code_review" && lease.lifecycle.phase !== "review" && lease.parentTaskId !== undefined) ||
+    lease.parentLease !== undefined ||
     typeof lease.promptProfileId !== "string" ||
     object(lease.selected)?.profileId !== lease.promptProfileId ||
     typeof lease.modelSnapshotId !== "string" ||
@@ -181,6 +177,8 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     // next user turn create a fresh lease rather than degrading silently.
     lease.policyVersion !== POLICY_VERSION ||
     typeof lease.lastPromptFingerprint !== "string" ||
+    (lease.reviewTaskContext !== undefined &&
+      (typeof lease.reviewTaskContext !== "string" || lease.reviewTaskContext.length > 6000)) ||
     typeof lease.manualOverride !== "boolean" ||
     (lease.advisoryStepsNoted !== undefined &&
       (!Array.isArray(lease.advisoryStepsNoted) ||
@@ -194,13 +192,7 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
   }
   const candidate = lease as unknown as TaskLease;
   if (validateFallbackTopology(candidate).length > 0) return false;
-  if (lease.parentLease === undefined) return lease.parentTaskId === undefined || depth === 0;
-  return (
-    isTaskLease(lease.parentLease, depth + 1) &&
-    lease.parentTaskId === lease.parentLease.taskId &&
-    lease.lifecycle.taskFingerprint === lease.parentLease.lifecycle.taskFingerprint &&
-    lease.parentLease.lifecycle.phase !== "review"
-  );
+  return true;
 }
 
 /**
@@ -223,9 +215,7 @@ export function restoreLeaseState(entries: readonly unknown[], defaultMode: Leas
     const raw = object(data?.active);
     // A legacy generated review cannot resume safely; recover its builder and discard grant state.
     const parent = object(raw?.parentLease);
-    const legacyReview =
-      object(raw?.lifecycle)?.phase === "review" &&
-      ["authorization", "advisory"].includes(String(object(raw?.lifecycle)?.reviewKind));
+    const legacyReview = object(raw?.lifecycle)?.phase === "review";
     const legacyParent = parent && migrateLifecycle(parent.lifecycle) !== parent.lifecycle;
     const unwrapped = Boolean(parent && (legacyReview || legacyParent));
     const source = unwrapped ? parent : raw;

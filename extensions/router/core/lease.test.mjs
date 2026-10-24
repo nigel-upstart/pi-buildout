@@ -424,62 +424,6 @@ describe("task boundary gate", () => {
       cache,
     );
     assert.equal(relaxed.action, "continue", "a relaxed policy keeps the stricter lease and its preflight");
-
-    // A generated review child carries the ordinary policy; its task family's policy is what continues.
-    const review = {
-      ...authorized,
-      taskId: "review",
-      parentLease: authorized,
-      lifecycle: {
-        phase: "review",
-        policy: "ordinary",
-        taskFingerprint: "task",
-        reviewKind: "plan",
-        scopeFingerprint: "scope",
-      },
-    };
-    const sameFamily = resolveContinuity(
-      review,
-      { ...external, risk: "high", taskContinuity: "clear_continuation" },
-      cache,
-    );
-    assert.equal(sameFamily.action, "continue");
-    // The child's reviewer archetype and read-only action mode do not make the parent's own work look riskier.
-    const reviewerChild = {
-      ...review,
-      archetype: "code_review",
-      features: { ...review.features, actionMode: "local_read", intent: "review", workflowType: "code_review" },
-    };
-    assert.equal(
-      resolveContinuity(reviewerChild, { ...external, risk: "high", taskContinuity: "clear_continuation" }, cache)
-        .action,
-      "continue",
-      "continuity is judged against the task family, not the reviewer child",
-    );
-
-    // Leaving code work for high-risk reversible non-code work adds the advisory phase's pre-action gate.
-    const codeFeatures = {
-      ...lease().features,
-      intent: "implement",
-      workflowType: "coding_implementation",
-      actionMode: "reversible_mutation",
-      risk: "high",
-    };
-    const nonCodeFeatures = { ...codeFeatures, intent: "operate", workflowType: "incident_or_operations" };
-    const completion = {
-      ...lease(),
-      features: codeFeatures,
-      lifecycle: { phase: "building", policy: "completion_review", taskFingerprint: "task" },
-    };
-    const advisory = resolveContinuity(completion, { ...nonCodeFeatures, taskContinuity: "clear_continuation" }, cache);
-    assert.equal(advisory.action, "new_task", "completion review alone does not satisfy the advisory gate");
-    const advising = {
-      ...completion,
-      features: nonCodeFeatures,
-      lifecycle: { phase: "planning", policy: "plan_review_then_completion_review", taskFingerprint: "task" },
-    };
-    const backToCode = resolveContinuity(advising, { ...codeFeatures, taskContinuity: "clear_continuation" }, cache);
-    assert.equal(backToCode.action, "continue", "the stricter advisory lease is kept");
   });
 
   it("starts a fresh lease when an information-only continuation leaves either planning route", () => {

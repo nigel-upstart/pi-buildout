@@ -863,3 +863,54 @@ Missing recommended plans, possible mutations while advice is pending, and missi
 and emit an enum-only skipped-step event once per step per lease. Mutation evidence is heuristic; the UI says so. These
 notes do not queue model reminders. The implementation-plan validator repair and deterministic check-failure fallback
 remain intact. In-session review transport is retained in C1; its replacement is a separate change.
+
+## Decision: independent in-process SDK reviewer sessions (C2)
+
+Owner: router maintainers. Status: implemented. Links:
+[SDK](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/sdk.md),
+[runner](../../extensions/router/review-runner.ts).
+
+Switching the builder to a reviewer changes its provider conversation prefix and can rebill cached context. Reviews now
+run in disposable in-memory SDK sessions. The builder lease, model, effort, prompt profile, and conversation stay in
+place. Valid advice is an asynchronous custom follow-up plus a UI note; plan advice triggers a turn and completion
+findings do not manufacture one. Invalid results produce only human warnings and telemetry.
+
+Pi 1.3.0 investigation (published package paths, not assumptions):
+
+- `dist/core/sdk.d.ts:16` accepts `modelRuntime`, not `ctx.modelRegistry`. The registry's runtime is private
+  (`dist/core/model-registry.d.ts:22`). Its public `getProviderAuth` and `streamSimple` methods delegate to parent
+  request-time auth (`dist/core/model-registry.js:73–75,102–103`). The operator accepted private runtime reuse: a
+  guarded read verifies `instanceof ModelRuntime` before passing it to `createAgentSession`. Missing/mismatched runtimes
+  produce a human note and telemetry instead of throwing or spawning RPC. Real SDK tests exercise reuse; the shared
+  runtime's request function remains untouched.
+- `resourceLoader` is the isolation option (`dist/core/sdk.d.ts:58`); an empty implementation follows the conceptual
+  pattern in `examples/sdk/12-full-control.ts`. It returns no extensions, skills, templates, themes, or context files,
+  so router recursion is impossible. Normal discovery and the subagents extension are not loaded.
+- `createReadOnlyTools` returns read/grep/find/ls (`dist/core/tools/index.js:109–115`). The SDK accepts tool **names**
+  plus `customTools` (`dist/core/sdk.d.ts:49,56`), so the runner selects those native tools and a verdict tool.
+  `session.abort()` is public (`dist/core/agent-session.d.ts:650`); assistant `message_end` usage supplies cost/tokens.
+  A provisional isolated budget helper grants five minutes plus one second per changed line, capped at four hours;
+  unknown/binary/unmeasurable scope gets four hours. This slope is documented for later Design E adoption, not scattered
+  through transport code. Eight requests per session, 4,096 output tokens per request, and a measured $1 threshold bound
+  work. The dollar threshold can overshoot by the final bounded request; it is not a billing guarantee.
+- `ctx.executeTool` belongs to `ExtensionToolContext`, not event-handler `ExtensionContext`
+  (`dist/core/extensions/types.d.ts:254–280`). Router event handlers collect bounded git evidence with `pi.exec`; the
+  reviewer has no bash tool.
+
+Reviewer settings explicitly disable cache warming: Pi 1.3.0 defaults to streaming warming, whose direct runtime
+requests and `entry_appended` usage otherwise bypass the agent request wrapper and assistant usage counter. Original
+task requirements are bounded and persisted on the lease; legacy leases can recover them by prompt fingerprint. The
+separate reviewer also receives the retained plan and latest continuation, all delimited as untrusted data. Router-owned
+context bounds never trim or replace third-party tool-result content.
+
+Owner/task identity, attempt, selection, evidence revision, and epoch reject stale results. Invalidating mode and
+builder-selection changes cancel sessions promptly, including telemetry-triggered shadow mode. Input, boundaries, mode
+changes, overrides, and shutdown cancel the reviewer. Each unchanged review scope is scheduled at most once per attempt,
+preventing completion-advice rereview loops without gating tools. Review work never schedules review-of-review; the SDK
+child loads no extensions by construction, and ordinary routing is not disabled in other reviewer children. Legacy
+review-child persistence unwraps the builder instead of resuming a reviewer model. `REVIEW_STARTED`/`REVIEW_FINISHED`
+and grant-oriented child-lease restoration are removed.
+
+The small `ReviewRunner.start(request)` contract returns a result promise and cancellation handle. Its promise may be
+resolved by later event observation, but the only shipped implementation is in-process. Delegation is deferred pending
+operator approval; there is no invented manager protocol or subagents runtime dependency.

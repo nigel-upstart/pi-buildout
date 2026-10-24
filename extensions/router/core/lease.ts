@@ -15,9 +15,8 @@ export type RouterMode = "off" | "shadow" | "active";
 export type TaskLease = {
   version: 2;
   taskId: string;
-  /** Parent linkage is valid only for a router-generated lifecycle review. */
+  /** Fork provenance only; reviewers never replace the builder lease. */
   parentTaskId?: string;
-  parentLease?: TaskLease;
   lifecycle: LeaseLifecycle;
   safetyEvidence: SafetyEvidenceLog;
   startedAt: string;
@@ -32,6 +31,8 @@ export type TaskLease = {
   modelSnapshotId: string;
   policyVersion: string;
   lastPromptFingerprint: string;
+  /** Bounded original requirements for isolated reviews; never an instruction-policy source. */
+  reviewTaskContext?: string;
   manualOverride: boolean;
   repositoryLanguageBucket?: string;
   contextSizeBucket?: string;
@@ -169,10 +170,9 @@ export function resolveContinuity(
   // A continuation keeps the lease's tool policy, so it must not absorb work that needs a different one:
   // entering or leaving planning (whose validator only accepts planning leases), a riskier action mode, or a
   // broader review policy. Risk alone can call for plan advice at an unchanged action mode. A relaxed policy
-  // retains the existing review coverage rather than resetting an in-flight consultation. A generated
-  // review child carries reviewer attributes (code_review, local_read, ordinary), so every comparison uses its
-  // task family: the work that continues is the parent's.
-  const family = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
+  // retains the existing review coverage rather than resetting an in-flight consultation. Separate reviewer sessions
+  // never replace this builder lease.
+  const family = lease;
   if (
     isPlanningArchetype(deriveArchetype(features).archetype) !== isPlanningArchetype(family.archetype) ||
     ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[family.features.actionMode] ||
