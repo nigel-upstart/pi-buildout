@@ -56,6 +56,11 @@ export function isolatedChildArgs(authBridge: string): string[] {
     "--no-prompt-templates",
     "--no-themes",
     "--no-context-files",
+    // SYSTEM.md and APPEND_SYSTEM.md are discovered separately from context files; empty values suppress both.
+    "--system-prompt",
+    "",
+    "--append-system-prompt",
+    "",
     "--extension",
     authBridge,
   ];

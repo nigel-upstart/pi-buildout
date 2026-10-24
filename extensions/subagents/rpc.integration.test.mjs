@@ -202,6 +202,9 @@ test("isolated launch excludes ambient project/global extensions and context fil
   await writeFile(configuredPath, routerShaped(configuredSentinel));
   await writeFile(join(agentDir, "settings.json"), JSON.stringify({ extensions: [configuredPath] }));
   await writeFile(join(tempDir, "AGENTS.md"), "AMBIENT_CONTEXT_FILE_MARKER\n");
+  // Pi discovers these prompt files separately from context files.
+  await writeFile(join(tempDir, ".pi", "SYSTEM.md"), "AMBIENT_SYSTEM_PROMPT_MARKER\n");
+  await writeFile(join(agentDir, "APPEND_SYSTEM.md"), "AMBIENT_APPEND_PROMPT_MARKER\n");
 
   /** @param {string} id @param {string[]} resourceArgs */
   const runOnce = async (id, resourceArgs) => {
@@ -254,6 +257,8 @@ test("isolated launch excludes ambient project/global extensions and context fil
   assert.equal(await exists(globalSentinel), true, "control should load the global extension");
   assert.equal(await exists(configuredSentinel), true, "control should load the configured extension");
   assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_CONTEXT_FILE_MARKER/);
+  assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_SYSTEM_PROMPT_MARKER/);
+  assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_APPEND_PROMPT_MARKER/);
   await rm(projectSentinel);
   await rm(globalSentinel);
   await rm(configuredSentinel);
@@ -263,4 +268,6 @@ test("isolated launch excludes ambient project/global extensions and context fil
   assert.equal(await exists(globalSentinel), false, "isolated child must not load global extensions");
   assert.equal(await exists(configuredSentinel), false, "isolated child must not load configured extensions");
   assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_CONTEXT_FILE_MARKER/);
+  assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_SYSTEM_PROMPT_MARKER/);
+  assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_APPEND_PROMPT_MARKER/);
 });
