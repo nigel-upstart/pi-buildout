@@ -276,6 +276,7 @@ async function waitHarness(t) {
     classificationRationale: "task-echo-sentinel",
     currentTool: { name: "bash", argsPreview: "tool-call-sentinel", startedAt: 1 },
     lastAssistantText: "final-answer",
+    finalAssistantText: "final-answer",
     stats: { tokens: { input: 10, output: 20, total: 30, cacheRead: 0, cacheWrite: 0 }, cost: 0.01 },
   };
   return { ...harnessed, id: launch.id };
@@ -324,7 +325,7 @@ test("settled wait returns only metadata and final text; status retains transcri
 
 test("wait bounds final text in content and details and never falls back to transcript", async (t) => {
   const { execute, id } = await waitHarness(t);
-  fixture.snapshot.lastAssistantText = `begin-${"x".repeat(60_000)}-end`;
+  fixture.snapshot.finalAssistantText = `begin-${"x".repeat(60_000)}-end`;
   const result = await execute({ action: "wait", id });
   const final = Reflect.get(result.details, "child").lastAssistantText;
   assert.ok(final.length <= 45_000);
@@ -333,19 +334,30 @@ test("wait bounds final text in content and details and never falls back to tran
   assert.ok(JSON.stringify(result.content).length < 46_000);
   assert.doesNotMatch(JSON.stringify(result), privateWaitText);
   for (const finalText of [undefined, "", "   "]) {
-    if (finalText === undefined) delete fixture.snapshot.lastAssistantText;
-    else fixture.snapshot.lastAssistantText = finalText;
+    if (finalText === undefined) delete fixture.snapshot.finalAssistantText;
+    else fixture.snapshot.finalAssistantText = finalText;
     const empty = await execute({ action: "wait", id });
     assert.equal(Reflect.get(empty.details, "child").lastAssistantText, undefined);
     assert.doesNotMatch(JSON.stringify(empty), privateWaitText);
   }
 });
 
+test("settled wait never presents diagnostic-only assistant text as the final answer", async (t) => {
+  const { execute, id } = await waitHarness(t);
+  // Working text before a tool call, aborted partial text, or an earlier operation's answer.
+  fixture.snapshot.lastAssistantText = "working-note-sentinel";
+  delete fixture.snapshot.finalAssistantText;
+  const result = await execute({ action: "wait", id });
+  assert.equal(Reflect.get(result.details, "settled"), true);
+  assert.equal(Reflect.get(result.details, "child").lastAssistantText, undefined);
+  assert.doesNotMatch(JSON.stringify(result), /working-note-sentinel/);
+});
+
 test("timeout suppresses all partial text and a repeated wait can return the final answer", async (t) => {
   const { execute, id, tool } = await waitHarness(t);
   const abort = new AbortController();
   fixture.snapshot.state = "running";
-  fixture.snapshot.lastAssistantText = "partial-answer-sentinel";
+  fixture.snapshot.finalAssistantText = "partial-answer-sentinel";
   fixture.wait = async (timeoutMs, signal) => {
     assert.equal(timeoutMs, 123);
     assert.equal(signal, abort.signal);
@@ -364,7 +376,7 @@ test("timeout suppresses all partial text and a repeated wait can return the fin
     return true;
   };
   fixture.snapshot.state = "idle";
-  fixture.snapshot.lastAssistantText = "final-answer";
+  fixture.snapshot.finalAssistantText = "final-answer";
   const final = await execute({ action: "wait", id });
   assert.equal(Reflect.get(final.details, "settled"), true);
   assert.match(JSON.stringify(final.content), /final-answer/);
@@ -374,7 +386,7 @@ test("wait preserves terminal errors and cancellation without stopping the child
   const { execute, id } = await waitHarness(t);
   fixture.snapshot.state = "failed";
   fixture.snapshot.error = "model failed";
-  fixture.snapshot.lastAssistantText = "stale-final-sentinel";
+  fixture.snapshot.finalAssistantText = "stale-final-sentinel";
   const failed = await execute({ action: "wait", id });
   assert.equal(Reflect.get(failed.details, "child").state, "failed");
   assert.match(JSON.stringify(failed.content), /model failed/);
