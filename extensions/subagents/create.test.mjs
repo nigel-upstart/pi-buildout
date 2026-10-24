@@ -382,6 +382,22 @@ test("timeout suppresses all partial text and a repeated wait can return the fin
   assert.match(JSON.stringify(final.content), /final-answer/);
 });
 
+test("wait reports a failed child's error without its stderr diagnostics", async (t) => {
+  const { execute, id } = await waitHarness(t);
+  fixture.snapshot.state = "failed";
+  fixture.snapshot.error =
+    'Subagent process closed unexpectedly (child=x, pid=1, model=test/model, exitCode=17, signal=none, stderr="stderr-sentinel \\"quoted\\" detail").';
+  const failed = await execute({ action: "wait", id });
+  const error = Reflect.get(failed.details, "child").error;
+  assert.equal(
+    error,
+    "Subagent process closed unexpectedly (child=x, pid=1, model=test/model, exitCode=17, signal=none).",
+  );
+  assert.doesNotMatch(JSON.stringify(failed), /stderr-sentinel/);
+  const status = await execute({ action: "status", id });
+  assert.match(JSON.stringify(status), /stderr-sentinel/, "status keeps the full diagnostic");
+});
+
 test("wait preserves terminal errors and cancellation without stopping the child", async (t) => {
   const { execute, id } = await waitHarness(t);
   fixture.snapshot.state = "failed";

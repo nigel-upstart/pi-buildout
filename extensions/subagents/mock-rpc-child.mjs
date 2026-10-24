@@ -6,6 +6,7 @@ let streaming = false;
 let prompts = 0;
 let activeOperation = 0;
 let abortFails = false;
+let lateFinal = false;
 
 /** @param {unknown} value */
 function send(value) {
@@ -21,6 +22,25 @@ const UNEXPECTED_EXITS = [
     exit: () => process.kill(process.pid, "SIGKILL"),
   },
 ];
+
+/** @param {{ id: unknown }} command */
+function handleAbort(command) {
+  if (abortFails) {
+    send({ id: command.id, type: "response", command: "abort", success: false, error: "mock abort failure" });
+    return;
+  }
+  streaming = false;
+  activeOperation++;
+  if (lateFinal) {
+    // A completed message can race the abort and arrive after the parent started interrupting.
+    send({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "late-answer" }], stopReason: "stop" },
+    });
+  }
+  send({ id: command.id, type: "response", command: "abort", success: true });
+  send({ type: "agent_settled" });
+}
 
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
@@ -51,14 +71,7 @@ input.on("line", (line) => {
     return;
   }
   if (command.type === "abort") {
-    if (abortFails) {
-      send({ id: command.id, type: "response", command: "abort", success: false, error: "mock abort failure" });
-      return;
-    }
-    streaming = false;
-    activeOperation++;
-    send({ id: command.id, type: "response", command: "abort", success: true });
-    send({ type: "agent_settled" });
+    handleAbort(command);
     return;
   }
   if (command.type === "steer" || command.type === "follow_up") {
@@ -80,6 +93,7 @@ input.on("line", (line) => {
     const operation = ++activeOperation;
     streaming = true;
     abortFails = String(command.message).includes("ABORT_FAIL");
+    lateFinal = String(command.message).includes("LATE_FINAL");
     send({ id: command.id, type: "response", command: "prompt", success: true });
     send({ type: "agent_start" });
     if (String(command.message).includes("SLOW_WAIT")) {

@@ -468,6 +468,11 @@ function formatSnapshot(snapshot: ChildSnapshot): string {
   return lines.join("\n");
 }
 
+/** Process diagnostics embed the child's stderr as a JSON string; wait keeps the summary, status keeps all. */
+function withoutStderr(error: string): string {
+  return error.replace(/, stderr="(?:[^"\\]|\\.)*"/g, "");
+}
+
 // Deliberately select metadata rather than spreading the diagnostic snapshot:
 // wait must not return task echoes, tool arguments, stderr, or transcript previews.
 function waitSnapshot(snapshot: ChildSnapshot, settled: boolean) {
@@ -488,7 +493,7 @@ function waitSnapshot(snapshot: ChildSnapshot, settled: boolean) {
     compactions: snapshot.compactions,
     stats: snapshot.stats,
     sessionFile: snapshot.sessionFile,
-    ...(snapshot.error ? { error: snapshot.error } : {}),
+    ...(snapshot.error ? { error: withoutStderr(snapshot.error) } : {}),
     ...(settled && snapshot.state === "idle" && snapshot.pendingMessages === 0 && snapshot.finalAssistantText?.trim()
       ? { lastAssistantText: truncateMiddle(snapshot.finalAssistantText.trim(), MAX_WAIT_TEXT_CHARS) }
       : {}),
