@@ -461,6 +461,8 @@ test("signaling spawn rejects extension-only models before constructing a child"
     { ...getModel("openai", "o3"), provider: "test", id: "model" },
     { ...getModel("openai", "o3"), id: "extension-only-model" },
     { ...getModel("openai", "o3"), api: "extension-only-api" },
+    // Same provider, id, and API, but an extension-overridden endpoint.
+    { ...getModel("openai", "o3"), baseUrl: "https://extension-proxy.invalid/v1" },
   ]) {
     ctx.modelRegistry.getAvailable = () => [model];
     const reply = await rpc(events, "spawn", {
@@ -563,6 +565,8 @@ test("signaling spawn launches an isolated task-only child with the explicit pai
     "--no-context-files",
   ])
     assert.ok(isolated.args.includes(flag), flag);
+  for (const flag of ["--system-prompt", "--append-system-prompt"])
+    assert.equal(isolated.args[isolated.args.indexOf(flag) + 1], "", `${flag} is overridden with an empty value`);
   const loaded = isolated.args.flatMap((arg, index) => (isolated.args[index - 1] === "--extension" ? [arg] : []));
   assert.equal(loaded.length, 1);
   assert.match(loaded[0] ?? "", /auth-bridge\.ts$/);

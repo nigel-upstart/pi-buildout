@@ -97,12 +97,15 @@ type PiModel = NonNullable<ExtensionContext["model"]>;
 // The auth bridge carries credentials/headers, not model or stream definitions.
 function assertIsolatedModel(model: PiModel): void {
   const provider = getBuiltinProviders().find((candidate) => candidate === model.provider);
+  // An extension can also override a bundled model's endpoint, which the child cannot reproduce.
   if (
     !provider ||
-    !getBuiltinModels(provider).some((candidate) => candidate.id === model.id && candidate.api === model.api)
+    !getBuiltinModels(provider).some(
+      (candidate) => candidate.id === model.id && candidate.api === model.api && candidate.baseUrl === model.baseUrl,
+    )
   ) {
     throw new Error(
-      `Isolated spawn requires a built-in model; '${model.provider}/${model.id}' may depend on a parent extension or custom catalog that is not bridged.`,
+      `Isolated spawn requires a built-in model at its bundled endpoint; '${model.provider}/${model.id}' may depend on a parent extension, custom catalog, or endpoint override that is not bridged.`,
     );
   }
 }
