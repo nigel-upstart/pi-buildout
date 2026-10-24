@@ -140,6 +140,9 @@ export function revokeDiscovery(lease: TaskLease): TaskLease {
   return {
     ...base,
     updatedAt: new Date().toISOString(),
+    // A discovery reviewer starts from the parent's evidence and tools stay available, so its newer mutations
+    // and checks belong to the task, exactly as review hand-back keeps them.
+    safetyEvidence: lease.safetyEvidence,
     lifecycle: {
       phase: "preflight",
       policy: "authorization_then_completion_review",

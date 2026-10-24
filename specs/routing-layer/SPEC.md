@@ -63,8 +63,8 @@ change, or implement/fix `it`). The operation path is enabled only for a mutatio
 archetype is declared repository-mutating. Within the ordinary nonqueued interactive path, hard boundaries, explicit
 discontinuities, planning-to-implementation transitions, incompatible planning/review/read-only leases, and
 topic-bearing additions take precedence and therefore do not use the operation shortcut. A shortcut can only retain the
-current lease; it cannot create a lease, broaden task scope, grant safety authorization, or bypass lifecycle tool
-enforcement.
+current lease; it cannot create a lease, broaden task scope, grant execution permission, or bypass Pi's configured tool
+controls. Router safety phases never enforce tool permissions.
 
 ## Classification pipeline
 
@@ -141,8 +141,9 @@ arguments — never accept free-form JSON parsed out of prose.
 - If the primary transport fails but the provider-diverse secondary returns a schema-valid result, use that validated
   result as a classifier failover; never merge it with synthetic conservative defaults, which would manufacture high
   risk and a program horizon without task evidence.
-- If the required classifier stages do not yield sufficient validated output, fail closed by declining automatic routing
-  and retaining the current selection. In particular, classifier failure is never positive evidence for the premium
+- If the required classifier stages do not yield sufficient validated output, decline automatic routing and retain the
+  current selection. This is a routing fail-safe, not a tool-call gate: pending, failed, timed-out, or cancelled
+  secondary classification never blocks calls. Classifier failure is never positive evidence for the premium
   large-program or highest-risk routes.
 
 ### Deadline, cancellation, and fail-safe selection
@@ -240,10 +241,10 @@ the task while another configured provider remains healthy. Only after that chai
 Review routing has two deliberately separate forms:
 
 - A generated authorization, advisory, or completion review has a tracked parent/builder lease. It tries the eligible
-  non-builder reviewer vendors sequentially (with a floor of two) and is read-only. It never falls back to the builder:
-  a builder cannot independently authorize its own plan, and a non-independent verdict must not be mislabeled as
-  completion review. Exhaustion restores the parent with an explicit unavailable/skipped outcome; for authorization,
-  execution remains blocked.
+  non-builder reviewer vendors sequentially (with a floor of two) and is instructed to inspect without mutation. It
+  never falls back to the builder: a builder cannot independently review its own plan, and a non-independent verdict
+  must not be mislabeled as completion review. Exhaustion restores the parent with an explicit unavailable/skipped
+  outcome and cautionary guidance; execution is never blocked by the router.
 - A standalone user-requested review has no parent and no assumed builder. Before model selection, the router gathers a
   bounded non-mutating view of the local delta or referenced pull request and classifies the delta's scope, languages,
   complexity, risk, horizon, context, and tool needs. It then uses the ordinary feature-based `code_review` policy and
@@ -252,7 +253,8 @@ Review routing has two deliberately separate forms:
 
 These are sequential attempts, never a panel. Deterministic tests, type checks, linters, scanners, and policy gates
 outrank an LLM verdict. An LLM verdict is accepted only through the scoped review tool and only has the lifecycle
-meaning of its explicit kind: authorization, advice, or completion findings.
+meaning of its explicit kind: plan/discovery recommendation (`authorization`), advice, or completion findings. No kind
+grants execution permission.
 
 ### Bootstrap archetype → model priors
 
@@ -312,66 +314,98 @@ and thrashing tiers are excluded outright, repository-mutating archetypes enforc
 per-language ceiling can lower the cap further. Ambiguous, complex work additionally authorizes a hard-task escalation
 candidate as a retry, never as a first attempt.
 
-### Explicit safety lifecycle
+### Explicit advisory safety lifecycle
+
+Router safety is **advisory-only**. It never blocks tool calls in any mode or phase. Plans, risk classification,
+reviewer verdicts, unresolved secondary classification, and discovery scope inform prompts, status, telemetry, and
+lifecycle transitions, not execution permissions. There is no router shell parser, read-only dispatch allowlist,
+plan-tool-name enforcement, or single-use execution grant in this contract.
 
 Every v2 task lease persists a discriminated lifecycle. Parent linkage alone has no safety meaning and is valid only on
 an explicit generated `review` lifecycle. Restored v1, malformed, implicitly parent-linked, wrong-policy, stale-plan, or
-wrong-scope states are discarded rather than inferred.
+wrong-scope states are discarded rather than inferred. Discarding state never withdraws ordinary tools.
 
 The policy derived once at task creation is one of:
 
-1. `ordinary` — no automatic lifecycle review or mutation gate;
+1. `ordinary` — no automatic lifecycle review;
 2. `completion_review` — high-risk code building, followed by independent review after implementation evidence exists;
 3. `advisory_then_completion_review` — high-risk reversible non-code work, with a pre-action advisor and post-action
    reviewer; or
 4. `authorization_then_completion_review` — high/critical-risk `external_side_effect` or `destructive` work, plus
-   autonomous program-unknown external-effect loops, with hard pre-execution authorization and post-action review.
+   autonomous program-unknown external-effect loops, with preflight plan/discovery recommendations and post-action
+   review.
 
-Only the fourth policy is an approval gate. It begins in `preflight`, where deterministic tool enforcement allows
-bounded inspection, `submit_action_plan`, and `submit_discovery_request` but blocks editing, arbitrary shell
-composition, subagents, and unknown tools. While routing is active, `submit_action_plan` and `submit_discovery_request`
-are declared only in `preflight`, and `submit_safety_review` only in a generated `review` without a recorded verdict. A
-revoked review still running suppresses preflight submissions until it settles. Tool exposure synchronizes when lease
-state is persisted, before generated continuations are queued; it does not depend on `before_agent_start`, which
-generated turns skip. Each validator retains execution-time guards for stale calls, with actionable recovery
-instructions. Exposure alone never authorizes anything. Shadow and off hide router tools.
+The fourth policy keeps its legacy name and phases, but is not an approval gate. It begins in `preflight`, with guidance
+to inspect and plan before acting. While routing is active, `submit_action_plan` and `submit_discovery_request` are
+declared only in `preflight`, and `submit_safety_review` only in a generated `review` without a recorded verdict. A
+revoked review still running suppresses preflight submissions until it settles. Submission exposure synchronizes when
+lease state is persisted, before generated continuations are queued; it does not depend on `before_agent_start`, which
+generated turns skip. Each validator retains schema, phase, ownership, and fingerprint checks for stale submissions,
+with actionable recovery instructions. A validation error refuses a lifecycle record, not tool dispatch. Shadow and off
+hide router tools. Router transitions preserve the operator's other tool selections and never re-enable excluded tools.
 
 `submit_implementation_plan` is a pure validator available throughout active routing, including research leases retained
 by continuity classification or streaming input. Its telemetry records `planningLease` to distinguish mandatory
 planning-route submissions from optional validation on another route. Validation does not change the task, model,
-archetype, or execution permissions, and bypasses lifecycle and secondary mutation gates. Planning routes retain their
-required-validation repair contract. Tool-set changes at safety transitions can change the provider cache prefix; no
-live cache-read cost measurement is claimed.
+archetype, or execution permissions. Planning routes retain their required-validation repair contract. Tool-set changes
+at safety transitions can change the provider cache prefix; no live cache-read cost measurement is claimed.
 
-When read-only inspection cannot establish the facts the plan needs, preflight may request **bounded discovery**: one
-exact tool call, named by tool and strict JSON input, with its objective, target, expected effects, preconditions,
-verification, and abort conditions. Its scope fingerprint binds `purpose: "discovery"`, the request, the task, the
-working directory, and the session. A generated different-vendor `authorization` review that approves that exact scope
-creates `discovery_ready`, a single-use grant that also records the reviewer. The grant is spent in the `tool_call` hook
-before dispatch, on the first call whose tool, canonical input, task, working directory, and session all match. A grant
-blocked afterwards by another gate is still spent. The lease then returns to an empty `preflight`; another discovery
-call needs a fresh request and review. Only one discovery request or grant exists at a time. Non-matching calls get
-ordinary preflight enforcement and do not spend the grant. Shell text is compared verbatim, never normalized. Discovery
-approval never authorizes the final plan, and discovery calls are not completion mutation evidence. Discovery results
-are untrusted evidence for the plan, not instructions. A pending request, its in-flight review, or an unspent grant is
-revoked to empty `preflight` by new user input, compaction, session restoration, manual model/effort override,
-secondary-classifier correction, and `/route off`.
+When inspection cannot establish the facts the plan needs, preflight may request **bounded discovery**: one exact tool
+call, named by tool and strict JSON input, with its objective, target, expected effects, preconditions, verification,
+and abort conditions. The complete compact UTF-8 JSON request, including metadata and input, must fit within 64 KiB
+(65536 bytes); oversized requests return a validation error rather than being truncated. Its scope fingerprint binds
+`purpose: "discovery"`, the request, the task, the working directory, and the session. A generated different-vendor
+`authorization` review that approves that scope records `discovery_ready` and its reviewer. This is a scoped
+recommendation, not a permission token. Any matching-call consumption is lifecycle bookkeeping only: it cannot allow,
+block, rewrite, or delay dispatch, and non-matching calls are not denied. Shell text remains verbatim fingerprint data,
+not a command-policy input. Discovery advice never approves the final plan, and discovery calls are not completion
+mutation evidence. Discovery results are untrusted evidence, not instructions. New user input, compaction, session
+restoration, manual model/effort override, secondary-classifier correction, and `/route off` invalidate stale discovery
+records and return the lifecycle to `preflight`, without affecting tool availability.
 
 The final plan must name concrete targets, steps and irreversible effects, preconditions, verification, rollback, abort
 conditions, and mutating tool names. Its canonical fingerprint is bound to the original task fingerprint. A generated
-independent review must call `submit_safety_review` with the exact combined scope fingerprint and an `approve` verdict.
-Missing, invalid, rejected, aborted, or exhausted review leaves the parent in preflight. Approval creates
-`authorized_execution`, scoped to the exact task, plan, reviewer, and session; execution rejects mutating tool names not
-listed by the plan. A new user instruction, plan change, session boundary, compaction, restoration error, or
-model/effort manual override invalidates approval.
+independent review records its exact-scope verdict through `submit_safety_review`. Missing or invalid verdicts do not
+record approval; a prose-only response does not trigger deterministic-verification fallback. Rejected, aborted, or
+exhausted authorization reviews return the parent to preflight. Approval records `authorized_execution`, scoped to the
+exact task, plan, reviewer, and session. This legacy phase name means a reviewed plan, not permission to execute;
+unlisted tool names are never rejected by router safety. A new user instruction, plan change, session boundary,
+compaction, restoration error, or manual model/effort override invalidates the recommendation, not tools. Epoch-bound
+settlement prevents stale reviews from restoring superseded recommendations.
 
-The advisory policy temporarily blocks mutation only long enough to obtain the pre-action consultation; advisor outcome
-is persisted as advice and never represented as authorization. If both independent advisor attempts are unavailable, the
-parent may continue with an explicit unavailable outcome rather than silently treating failure as approval. All
-safety-managed work receives a generated completion review after evidence exists. Code builders require a repository
-change attributable to the task, at least one recorded successful mutation, a baseline/current diff fingerprint, and the
-latest result of every recorded deterministic check to pass. Failed checks may be repaired and rerun; stale failures do
-not override a later pass of the same command. A prose-only reviewer response is not a completed review.
+The advisory policy obtains pre-action consultation without a mutation block; advisor outcome is persisted as advice.
+Unavailable independent advisors produce an explicit unavailable outcome rather than silent approval. All safety-managed
+work receives a generated completion review after evidence exists. Code builders require a repository change
+attributable to the task, at least one recorded successful mutation, a baseline/current diff fingerprint, and the latest
+result of every recorded deterministic check to pass before that review is generated. Failed checks may be repaired and
+rerun; stale failures do not override a later pass of the same command. Missing evidence affects review readiness, not
+tool permissions. Generated reviewers are instructed not to mutate; that instruction is not a security boundary. A
+prose-only reviewer response is not a completed review: the run hands back to the parent as unavailable, without
+fallback. Evidence recorded during a review stays with the task after hand-back. Work executed in preflight without an
+action plan still receives a completion review. Calls made by a reviewed discovery call, such as codemode nested calls,
+are discovery rather than completion evidence.
+
+### Enforcement outside the router
+
+Operators configure tool availability through Pi's native `--tools`, `--exclude-tools`, and `defaultTools`. Plain
+`--tools` names replace the default selection; additive/subtractive entries modify it. `--exclude-tools` applies after
+selection and can remove MCP tools by pattern. A plain `--tools` list without an `mcp__` entry does not filter MCP
+reachability, and `defaultTools: []` disables built-ins but not all extension or SDK tools. Review codemode, tool
+search, MCP exposure, and other indirect paths when constructing a restricted toolset. Router submission visibility is
+separate from these controls and never overrides them.
+
+Tool selection limits available operations, not the operating-system authority of the Pi process. Extensions and child
+processes retain that process's permissions. Run the whole Pi process in a container, VM, or sandbox for enforced
+filesystem, process, credential, and network limits, exposing only necessary mounts, credentials, and destinations.
+Tool-only isolation leaves host Pi and non-delegating extensions outside the boundary; project trust and working-folder
+selection do not provide isolation.
+
+Reference behavior is Pi 1.3.0:
+[security](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/security.md),
+[containerization](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/containerization.md),
+[CLI tools](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/cli.md#tools), and
+[default tools](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/settings.md#tools). Check
+installed-host help for version-specific availability; this does not raise the router's minimum host version.
 
 The PR-count bands in the table above (`1 PR`, `2–10 PRs`, `11–100 PRs`) are the `HORIZONS` enum in
 [`core/features.ts`](../../extensions/router/core/features.ts) — a coarse classification taxonomy, not tunable
@@ -423,20 +457,20 @@ pass untrusted context as system instructions.
 
 ## Deterministic vs. LLM-assisted responsibilities
 
-| Responsibility                                              |                          Deterministic |            LLM-assisted |
-| ----------------------------------------------------------- | -------------------------------------: | ----------------------: |
-| Token counts, context-window feasibility                    |                                    Yes |                      No |
-| Session state, builder identity, tool inventory/permissions |                                    Yes |                      No |
-| Prompt archetype, semantic ambiguity                        |                               Validate |                   Infer |
-| Planning horizon                                            | Validate against repo/program evidence |                Estimate |
-| Risk and action mode                                        |                     Enforce hard flags | Infer missing semantics |
-| Model eligibility, secondary-provider rule                  |                                    Yes |                      No |
-| Model ranking, effort limits                                |                                    Yes |                      No |
-| Prompt-profile selection                                    |                                    Yes |                      No |
-| Prompt compilation and ordering                             |                                    Yes |                      No |
-| Task decomposition / plan content                           |                               Validate |                Generate |
-| Coding, tool use, synthesis, semantic review                |                                  Guard |                 Perform |
-| Escalation authorization                                    |                                    Yes |          Recommend only |
+| Responsibility                                   |                          Deterministic |            LLM-assisted |
+| ------------------------------------------------ | -------------------------------------: | ----------------------: |
+| Token counts, context-window feasibility         |                                    Yes |                      No |
+| Session state, builder identity, tool inventory  |                                    Yes |                      No |
+| Prompt archetype, semantic ambiguity             |                               Validate |                   Infer |
+| Planning horizon                                 | Validate against repo/program evidence |                Estimate |
+| Risk and action mode                             |                     Enforce hard flags | Infer missing semantics |
+| Model eligibility, secondary-provider rule       |                                    Yes |                      No |
+| Model ranking, effort limits                     |                                    Yes |                      No |
+| Prompt-profile selection                         |                                    Yes |                      No |
+| Prompt compilation and ordering                  |                                    Yes |                      No |
+| Task decomposition / plan content                |                               Validate |                Generate |
+| Coding, tool use, synthesis, semantic review     |       Observe; Pi/environment controls |                 Perform |
+| Safety review state (never execution permission) |                               Validate |               Recommend |
 
 ## Telemetry
 
@@ -516,16 +550,18 @@ under another model family's prompt profile.
 
 ## Hard policy invariants
 
-- High-risk code builders require post-completion independent review with diff and passing deterministic-check evidence.
-- High/critical-risk irreversible actions require a validated concrete plan and exact-scope different-vendor approval
-  before mutating execution; advisory and completion verdicts cannot authorize. Autonomous, program-unknown loops that
-  repeatedly create external side effects across repositories or services deterministically receive the same gate even
-  if classifier risk is only medium.
-- Bounded discovery in preflight authorizes exactly one independently approved, exact-input tool call bound to task,
-  working directory, and session. It is spent before dispatch, revoked at every task/runtime boundary, and never
-  authorizes the final action plan.
-- High-risk reversible non-code work receives pre-action advice and post-action review without misrepresenting advice as
-  hard authorization.
+- Router safety is advisory-only and never blocks calls, including during preflight, pending advice, generated reviews,
+  missing/rejected plans, discovery mismatch, and pending or failed secondary classification. Pi-native tool controls
+  determine availability; container/VM/sandbox policy supplies isolation. Router transitions never broaden those
+  controls.
+- High-risk code builders receive independent completion review with diff and passing deterministic-check evidence;
+  evidence requirements govern review readiness, not tool dispatch.
+- High/critical-risk irreversible actions receive concrete-plan guidance and exact-scope different-vendor review.
+  Autonomous, program-unknown loops that repeatedly create external side effects across repositories or services receive
+  the same advisory workflow even if classifier risk is only medium. No verdict grants execution authority.
+- Bounded discovery preserves exact-input, task, working-directory, and session-scoped recommendations and lifecycle
+  invalidation; it is never a permission grant or prerequisite for a tool call and never approves the final plan.
+- High-risk reversible non-code work receives pre-action advice and post-action review, without a mutation block.
 - Standalone review is parentless, feature-routed from its delta, and excluded from recursive automatic review.
 - Premium large-program and highest-risk routes require positive, schema-valid semantic evidence; a failed-closed
   classifier cannot select them.
@@ -534,15 +570,15 @@ under another model family's prompt profile.
 - Explicit manual model or effort selection bypasses automatic model selection until the next task boundary or until the
   user re-enables it; it does not pin semantic continuity. A nontrivial later request is still continuity-classified,
   and a newly detected task receives a fresh lease while preserving the explicitly selected model/effort. Manual
-  selection does not bypass preflight/review tool enforcement and invalidates any existing authorization.
+  selection invalidates stale review recommendations but does not change tool permissions.
 - Effort changes inside a lease preserve task ID, model ID, and prompt-profile ID and are recorded.
-- `/route off` takes effect immediately within an active session and bypasses all adapter routing and blocking behavior:
+- `/route off` takes effect immediately within an active session and bypasses all adapter routing and advisory behavior:
   no classification, prompt compilation, model/effort application or tracking, router-only tool exposure (lifecycle
-  validators and `submit_implementation_plan`), lifecycle tool enforcement, fallback, review, attempt labeling, evidence
-  collection, or router telemetry. Off aborts pending secondary reconciliation (retaining any low-confidence safety
-  latch for the dormant lease) and applies no correction that settles afterwards. Other routing work already in flight
-  may run to completion, but its result is discarded rather than applied, including when routing is re-enabled before it
-  finishes. The dormant lease may be reused only after routing is explicitly re-enabled.
+  validators and `submit_implementation_plan`), lifecycle advice, fallback, review, attempt labeling, evidence
+  collection, or router telemetry. Off aborts pending secondary reconciliation (retaining unresolved low-confidence
+  classification status for the dormant lease) and applies no correction that settles afterwards. Other routing work
+  already in flight may run to completion, but its result is discarded rather than applied, including when routing is
+  re-enabled before it finishes. The dormant lease may be reused only after routing is explicitly re-enabled.
 - A task model cannot be reconsidered during a non-user tool/model loop. Fallback attempts and child reviews are
   explicit lease transitions, not fresh classifications.
 - Classifier work is bounded by router-owned per-stage deadlines; abort/timeout is terminal across attempts within that
@@ -560,6 +596,8 @@ under another model family's prompt profile.
   registry stabilize).
 - Replacing manual override — a user must still be able to force a model/effort directly (e.g. via `/effort`), bypassing
   the router.
+- Enforcing tool permissions or sandboxing commands. Router safety is guidance and review bookkeeping, never a security
+  boundary or a replacement for Pi-native tool selection and operating-system isolation.
 
 ## Implementation sequence (completed)
 
@@ -577,6 +615,8 @@ under another model family's prompt profile.
 
 - Unit tests for the deterministic core against the invariants in this spec: lease semantics, boundary-only
   reevaluation, headroom feasibility, secondary-provider rule, planning-horizon routing, cache-preservation thresholds.
+- Advisory-safety regression checks: no phase, verdict, discovery mismatch, stale state, or secondary failure blocks
+  tool dispatch.
 - Golden-corpus regression suite (fixtures authored from the archetype table above with expected route decisions).
 - Shadow-mode run inside a real pi session: install, drive real sessions, confirm logged decisions are sane before
   enabling live routing.

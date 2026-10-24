@@ -4,7 +4,7 @@ import fc from "fast-check";
 import { fastCheckOptions } from "../fast-check-options.mjs";
 import { conservativeFeatures } from "./features.ts";
 import { createTaskLease } from "./lease.ts";
-import { createLeaseOwner } from "./lease-machine.ts";
+import { createLeaseOwner, revokeDiscovery } from "./lease-machine.ts";
 
 function lease(taskId = "parent") {
   return createTaskLease({
@@ -393,6 +393,40 @@ describe("XState lease owner", () => {
     assert.equal(owner.secondaryGated, true);
     owner.settleSecondary(key, true);
     assert.equal(owner.secondaryGated, false);
+  });
+
+  it("keeps a discovery reviewer's newer evidence when an interruption revokes the discovery", () => {
+    const parent = lease();
+    parent.lifecycle = { ...parent.lifecycle, discovery: { scopeFingerprint: "d".repeat(64) } };
+    const review = lease("review");
+    review.parentTaskId = parent.taskId;
+    review.parentLease = parent;
+    review.lifecycle = {
+      phase: "review",
+      policy: "ordinary",
+      taskFingerprint: "task",
+      reviewKind: "authorization",
+      scopeFingerprint: "d".repeat(64),
+    };
+    // Reviewer tool results update only the child; its log starts from the parent's and extends it.
+    review.safetyEvidence = {
+      ...parent.safetyEvidence,
+      checks: [{ command: "npm test", passed: false, recordedAt: "2026-10-07T00:00:02Z" }],
+      mutations: [{ toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "2026-10-07T00:00:01Z" }],
+    };
+    const revoked = revokeDiscovery(review);
+    assert.equal(revoked.taskId, parent.taskId);
+    assert.equal(revoked.parentLease, undefined);
+    assert.deepEqual(revoked.lifecycle, {
+      phase: "preflight",
+      policy: "authorization_then_completion_review",
+      taskFingerprint: "task",
+    });
+    assert.deepEqual(revoked.safetyEvidence, review.safetyEvidence);
+    // The same holds through the owner's INVALIDATE boundary (new input or compaction).
+    const owner = createLeaseOwner({ mode: "active", active: review, manualOverride: false });
+    owner.send({ type: "INVALIDATE", reason: "new input", discoveryOnly: true });
+    assert.deepEqual(owner.state.active?.safetyEvidence, review.safetyEvidence);
   });
 
   it("rejects out-of-phase transitions and mutation through nested snapshots", () => {

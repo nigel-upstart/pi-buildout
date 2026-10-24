@@ -10,7 +10,7 @@ import {
   initialLifecycle,
   isLeaseLifecycle,
   isPotentiallyMutatingTool,
-  lifecycleToolBlockReason,
+  lifecycleRequiresCompletionReview,
   safetyContextForLifecycle,
   safetyFingerprint,
   validateActionPlan,
@@ -325,12 +325,8 @@ describe("single-call discovery grants", () => {
   it("consumes an exact call once without accepting same-name/different-input or changed shell text", () => {
     const lifecycle = ready();
     assert.match(safetyContextForLifecycle(lifecycle), /one exact/);
-    assert.match(
-      lifecycleToolBlockReason(lifecycle, "bash", lifecycle.grant.request.input),
-      /exact approved discovery/,
-    );
-    assert.equal(lifecycleToolBlockReason(lifecycle, "read", { path: "README.md" }), undefined);
     for (const [toolName, input, caller] of [
+      ["read", { path: "README.md" }, context],
       ["edit", lifecycle.grant.request.input, context],
       ["bash", { command: "glean search 'key rotation'" }, context],
       ["bash", { command: "glean search 'key rotation'  ", extra: true }, context],
@@ -338,8 +334,10 @@ describe("single-call discovery grants", () => {
       ["bash", lifecycle.grant.request.input, { ...context, sessionId: "other" }],
       ["bash", lifecycle.grant.request.input, { ...context, taskFingerprint: "other" }],
     ]) {
+      const before = structuredClone(lifecycle);
       assert.equal(consumeDiscoveryGrant(lifecycle, toolName, input, caller).allowed, false);
-      assert.equal(isLeaseLifecycle(lifecycle), true, "a mismatch must not mutate or consume the grant");
+      assert.deepEqual(lifecycle, before, "a non-matching observation must not mutate or consume the grant");
+      assert.equal(isLeaseLifecycle(lifecycle), true);
     }
     const allowed = consumeDiscoveryGrant(lifecycle, "bash", { command: "glean search 'key rotation'  " }, context);
     assert.equal(allowed.allowed, true);
@@ -348,34 +346,47 @@ describe("single-call discovery grants", () => {
       consumeDiscoveryGrant(allowed.lifecycle, "bash", lifecycle.grant.request.input, context).allowed,
       false,
     );
-    assert.match(lifecycleToolBlockReason(allowed.lifecycle, "bash", lifecycle.grant.request.input), /preflight/);
+    assert.equal(isLeaseLifecycle(allowed.lifecycle), true);
+    assert.equal(lifecycle.phase, "discovery_ready", "consumption returns a new lifecycle");
   });
 });
 
-describe("deterministic safety tool gate", () => {
-  it("blocks mutation in preflight and advisory while allowing bounded inspection", () => {
-    const preflight = initialLifecycle("authorization_then_completion_review", "task");
-    assert.equal(lifecycleToolBlockReason(preflight, "read", { path: "README.md" }), undefined);
-    assert.equal(lifecycleToolBlockReason(preflight, "bash", { command: "git diff --stat" }), undefined);
-    assert.match(lifecycleToolBlockReason(preflight, "edit", { path: "README.md" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "git status; rm -rf out" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "git diff --output=/tmp/leak" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -delete" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprintf out %p" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprint0 out" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fls out" }), /preflight/);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "find . -fprint out" }), /preflight/);
-    assert.equal(lifecycleToolBlockReason(preflight, "bash", { command: "find . -name '*.ts'" }), undefined);
-    assert.match(lifecycleToolBlockReason(preflight, "bash", { command: "rg --pre mutate pattern" }), /preflight/);
-    assert.equal(lifecycleToolBlockReason(preflight, "submit_action_plan", {}), undefined);
-    // The chained inspection refused in session 01a0ebc8 is read-only in every segment.
-    assert.equal(
-      lifecycleToolBlockReason(preflight, "bash", {
-        command: "cd ~/repo && git status && git branch -vv | head -20; git stash list | head",
-      }),
-      undefined,
-    );
+describe("mutation evidence observation", () => {
+  it("conservatively records every bash call as potentially mutating without parsing commands", () => {
+    for (const input of [
+      { command: "git diff --stat HEAD" },
+      { command: "rg -n pattern src" },
+      { command: "npm test" },
+      { command: "git status && git checkout main" },
+      { command: "" },
+      { command: null },
+      {},
+    ]) {
+      assert.equal(isPotentiallyMutatingTool("bash", input), true);
+    }
+  });
 
+  it("distinguishes known inspection and submission tools from mutations and unknown tools", () => {
+    for (const toolName of [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "submit_action_plan",
+      "submit_discovery_request",
+      "submit_safety_review",
+      "submit_implementation_plan",
+    ]) {
+      assert.equal(isPotentiallyMutatingTool(toolName, {}), false, toolName);
+    }
+    for (const toolName of ["write", "edit", "subagent", "custom_mutator", "unknown_tool"]) {
+      assert.equal(isPotentiallyMutatingTool(toolName, {}), true, toolName);
+    }
+  });
+});
+
+describe("safety lifecycle evidence and advisory context", () => {
+  it("preserves plan-bound authorization evidence validation", () => {
     const validated = validateActionPlan(actionPlan());
     assert.equal(validated.success, true);
     const authorized = {
@@ -397,8 +408,6 @@ describe("deterministic safety tool gate", () => {
         approvedAt: "2026-07-28T00:01:00.000Z",
       },
     };
-    assert.equal(lifecycleToolBlockReason(authorized, "bash", { command: "deploy production" }), undefined);
-    assert.match(lifecycleToolBlockReason(authorized, "custom_mutator", {}), /outside.*reviewed action plan/);
     assert.equal(isLeaseLifecycle(authorized), true);
     assert.equal(
       isLeaseLifecycle({
@@ -408,81 +417,51 @@ describe("deterministic safety tool gate", () => {
       false,
       "restoration must reject authorization not bound to the persisted plan",
     );
-
-    const advisory = initialLifecycle("advisory_then_completion_review", "task");
-    assert.match(lifecycleToolBlockReason(advisory, "custom_mutator", {}), /advisory/);
   });
 
-  it("explains a refused command so the model does not conclude bash is unavailable", () => {
-    const preflight = initialLifecycle("authorization_then_completion_review", "task");
-    const refused = lifecycleToolBlockReason(preflight, "bash", { command: "git status && git checkout main" });
-    assert.match(refused, /git checkout is not a read-only subcommand/);
-    assert.match(refused, /Read-only bash still runs/);
-    assert.match(refused, /call submit_action_plan/);
-    const edit = lifecycleToolBlockReason(preflight, "edit", { path: "README.md" });
-    assert.doesNotMatch(edit, /Read-only bash/, "non-bash refusals carry no shell detail");
-    assert.match(edit, /call submit_action_plan/);
-    const advisoryLifecycle = initialLifecycle("advisory_then_completion_review", "task");
-    assert.match(
-      lifecycleToolBlockReason(advisoryLifecycle, "bash", { command: "npm test" }),
-      /npm is not a read-only command/,
-    );
-    assert.match(safetyContextForLifecycle(preflight), /read-only bash/);
-  });
-
-  it("keeps the read-only classifier and the mutation classifier inverses of each other", () => {
-    // A command the read-only gate refuses must count as potentially mutating, so a classifier gap
-    // can only ever narrow what runs, never widen what is recorded as a mutation.
-    const preflight = initialLifecycle("authorization_then_completion_review", "task");
-    for (const command of [
-      "git diff --stat HEAD",
-      "rg -n pattern src",
-      "find . -name '*.ts'",
-      "find . -exec rm {} +",
-      "git diff --output=/tmp/leak",
-      "npm test",
-      "ls\nrm -rf /",
-      "",
-    ]) {
-      const blocked = lifecycleToolBlockReason(preflight, "bash", { command }) !== undefined;
-      assert.equal(
-        isPotentiallyMutatingTool("bash", { command }),
-        blocked,
-        `${JSON.stringify(command)} must be blocked in preflight exactly when it counts as mutating`,
-      );
-    }
-  });
-
-  it("maps only constrained phases to a lifecycle prompt", () => {
-    assert.match(
+  it("describes review phases as non-blocking advice rather than tool restrictions", () => {
+    const scope = "a".repeat(64);
+    const contexts = [
       safetyContextForLifecycle(initialLifecycle("authorization_then_completion_review", "t")),
-      /preflight|non-mutating/,
-    );
-    assert.match(safetyContextForLifecycle(initialLifecycle("advisory_then_completion_review", "t")), /advisor/);
-    assert.equal(safetyContextForLifecycle(initialLifecycle("completion_review", "t")), undefined);
-    assert.equal(safetyContextForLifecycle(initialLifecycle("ordinary", "t")), undefined);
-    assert.match(
+      safetyContextForLifecycle(initialLifecycle("advisory_then_completion_review", "t")),
+      safetyContextForLifecycle({ phase: "discovery_ready" }),
+      safetyContextForLifecycle({
+        phase: "authorized_execution",
+        plan: { planFingerprint: scope },
+      }),
       safetyContextForLifecycle({
         phase: "review",
         policy: "ordinary",
         taskFingerprint: "t",
         reviewKind: "completion",
-        scopeFingerprint: "a".repeat(64),
+        scopeFingerprint: scope,
       }),
-      /read-only completion review scoped to a{64}/,
-    );
+    ];
+    for (const context of contexts) {
+      assert.match(context, /^Safety advisory: /);
+      assert.doesNotMatch(context, /non-blocking|tools remain available/i);
+      assert.doesNotMatch(context, /must|required|read-only|remain non-mutating|execute only|requires.*approval/i);
+    }
+    assert.match(contexts[0], /submit_action_plan/);
+    assert.match(contexts[1], /advisor/);
+    assert.match(contexts[2], /one exact discovery call/);
+    assert.match(contexts[3], /plan a{64}/);
+    assert.match(contexts[4], /completion review on scope a{64}.*submit_safety_review/);
   });
 
-  it("keeps generated reviews read-only except for the scoped verdict tool", () => {
-    const review = {
-      phase: "review",
-      policy: "ordinary",
-      taskFingerprint: "task",
-      reviewKind: "authorization",
-      scopeFingerprint: "a".repeat(64),
-    };
-    assert.equal(lifecycleToolBlockReason(review, "submit_safety_review", {}), undefined);
-    assert.match(lifecycleToolBlockReason(review, "write", {}), /read-only/);
+  it("omits phase advice where no pre-action or review context applies", () => {
+    for (const phase of ["ordinary", "building", "ready_after_advisory", "completed"]) {
+      assert.equal(safetyContextForLifecycle({ phase }), undefined, phase);
+    }
+  });
+
+  it("preserves completion-review observation for execution phases", () => {
+    for (const phase of ["building", "ready_after_advisory", "authorized_execution"]) {
+      assert.equal(lifecycleRequiresCompletionReview({ phase }), true, phase);
+    }
+    for (const phase of ["ordinary", "preflight", "advisory_pending", "discovery_ready", "review", "completed"]) {
+      assert.equal(lifecycleRequiresCompletionReview({ phase }), false, phase);
+    }
   });
 });
 

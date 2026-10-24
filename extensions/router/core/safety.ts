@@ -5,7 +5,6 @@ import type { Static, TUnsafe } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { isCodeBuilder, isStandaloneReviewWork } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
-import { isReadOnlyShellCommand, readOnlyShellCommandRejection } from "./shell.ts";
 
 function stringEnum<const TValues extends readonly string[]>(values: TValues): TUnsafe<TValues[number]> {
   return Type.Unsafe<TValues[number]>({ type: "string", enum: [...values] });
@@ -299,6 +298,8 @@ export type LeaseLifecycle =
       policy: "authorization_then_completion_review";
       taskFingerprint: string;
       grant: DiscoveryGrant;
+      /** Set once when other recorded work lacks completion evidence (see agent_settled). */
+      evidenceRepairAttempted?: boolean;
     }
   | {
       phase: "authorized_execution";
@@ -439,19 +440,19 @@ export function initialLifecycle(policy: SafetyPolicy, taskFingerprint: string):
   }
 }
 
-/** The lifecycle instruction added to the system prompt, or undefined where no phase constraint applies. */
+/** Advisory phase context; lifecycle state does not restrict tool availability. */
 export function safetyContextForLifecycle(lifecycle: LeaseLifecycle): string | undefined {
   switch (lifecycle.phase) {
     case "preflight":
-      return "Safety lifecycle: remain non-mutating. read and read-only bash (git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, including && and | chains of them) stay available for inspection. Inspect targets, then call submit_action_plan with a concrete irreversible-action plan. If read-only inspection cannot establish the facts needed for that plan, call submit_discovery_request with one exact bounded tool invocation for independent review first. Discovery approval is single-use and never authorizes final execution; the final plan requires its own independent approval.";
+      return "Safety advisory: inspect targets, then submit a concrete irreversible-action plan with submit_action_plan for independent feedback. If more discovery would help, submit_discovery_request can describe one exact bounded tool invocation for review.";
     case "advisory_pending":
-      return "Safety lifecycle: remain non-mutating while gathering bounded context for a pre-action advisor.";
+      return "Safety advisory: gather bounded context for a pre-action advisor to assess risks and suggest precautions.";
     case "discovery_ready":
-      return "Safety lifecycle: remain non-mutating except for the one exact, independently approved discovery call. The discovery grant does not authorize final execution.";
+      return "Safety advisory: feedback is recorded for one exact discovery call. Next step: perform that discovery, then call submit_action_plan for review of the final action.";
     case "authorized_execution":
-      return `Safety lifecycle: execute only authorized plan ${lifecycle.plan.planFingerprint}; changed targets, steps, or preconditions require a new preflight and review.`;
+      return `Safety advisory: independent feedback is recorded for plan ${lifecycle.plan.planFingerprint}. Seek further review if targets, steps, or preconditions change.`;
     case "review":
-      return `Safety lifecycle: read-only ${lifecycle.reviewKind} review scoped to ${lifecycle.scopeFingerprint}; submit the verdict with submit_safety_review.`;
+      return `Safety advisory: focus the ${lifecycle.reviewKind} review on scope ${lifecycle.scopeFingerprint} and submit findings with submit_safety_review. Prefer inspection over changing the reviewed work.`;
     case "ordinary":
     case "building":
     case "ready_after_advisory":
@@ -466,48 +467,6 @@ export function lifecycleRequiresCompletionReview(lifecycle: LeaseLifecycle): bo
     lifecycle.phase === "ready_after_advisory" ||
     lifecycle.phase === "authorized_execution"
   );
-}
-
-export function lifecycleToolBlockReason(
-  lifecycle: LeaseLifecycle | undefined,
-  toolName: string,
-  input: Record<string, unknown>,
-): string | undefined {
-  if (!lifecycle) return undefined;
-  if (
-    lifecycle.phase === "authorized_execution" &&
-    isPotentiallyMutatingTool(toolName, input) &&
-    !lifecycle.plan.plan.authorizedToolNames.includes(toolName)
-  ) {
-    return `Tool ${toolName} is outside the independently reviewed action plan`;
-  }
-  const restricted =
-    lifecycle.phase === "review" ||
-    lifecycle.phase === "preflight" ||
-    lifecycle.phase === "discovery_ready" ||
-    lifecycle.phase === "advisory_pending";
-  if (!restricted) return undefined;
-  if (toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls") return undefined;
-  const shellRejection =
-    toolName === "bash"
-      ? readOnlyShellCommandRejection(typeof input.command === "string" ? input.command : "")
-      : undefined;
-  if (toolName === "bash" && shellRejection === undefined) return undefined;
-  if (lifecycle.phase === "review" && toolName === "submit_safety_review") return undefined;
-  if (lifecycle.phase === "preflight" && (toolName === "submit_action_plan" || toolName === "submit_discovery_request"))
-    return undefined;
-  // A bare refusal reads as "bash is unavailable", and the model stops inspecting. Say which part
-  // of the command was refused, that read-only bash still works, and how to leave the phase.
-  const detail = shellRejection
-    ? ` (${shellRejection}). Read-only bash still runs: git status/diff/log/show/branch, rg, grep, find, ls, head, tail, wc, joined with && ; || or |`
-    : "";
-  if (lifecycle.phase === "review") return `Independent safety review lease is read-only${detail}`;
-  if (lifecycle.phase === "discovery_ready")
-    return `Only the exact approved discovery call may bypass this gate${detail}`;
-  if (lifecycle.phase === "preflight") {
-    return `Irreversible-action preflight is non-mutating until its plan is approved${detail}. To perform mutating steps, call submit_action_plan`;
-  }
-  return `High-risk advisory must complete before mutating tools are used${detail}`;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -594,9 +553,9 @@ function discoveryGrant(value: unknown, taskFingerprint: string): value is Disco
 }
 
 /**
- * Pure, fail-closed single-use transition. The caller must persist the returned lifecycle before
- * dispatch: Pi runs every `tool_call` hook in an assistant message before executing any of them,
- * so a grant cleared only when a call ends would let two identical calls in one message both pass.
+ * Pure single-use observation transition. Persist the returned lifecycle when a matching call is
+ * observed so repeated calls are not attributed to the same discovery record. The legacy `allowed`
+ * result indicates a scope match, not permission to execute; a mismatch does not deny the tool call.
  */
 export function consumeDiscoveryGrant(
   lifecycle: LeaseLifecycle | undefined,
@@ -678,7 +637,10 @@ export function isLeaseLifecycle(value: unknown): value is LeaseLifecycle {
     case "discovery_ready":
       return (
         lifecycle.policy === "authorization_then_completion_review" &&
-        Object.keys(lifecycle).sort().join(",") === "grant,phase,policy,taskFingerprint" &&
+        Object.keys(lifecycle)
+          .filter((key) => key !== "evidenceRepairAttempted")
+          .sort()
+          .join(",") === "grant,phase,policy,taskFingerprint" &&
         discoveryGrant(lifecycle.grant, taskFingerprint)
       );
     case "authorized_execution":
@@ -690,6 +652,8 @@ export function isLeaseLifecycle(value: unknown): value is LeaseLifecycle {
     case "completed": {
       if (lifecycle.policy === "ordinary" || !reviewOutcome(lifecycle.completionReview, "completion")) return false;
       if (lifecycle.policy === "authorization_then_completion_review") {
+        // Work executed without a plan (tools are never blocked) still completes review, with no authorization.
+        if (lifecycle.plan === undefined && lifecycle.authorization === undefined) return true;
         return (
           planEvidence(lifecycle.plan, taskFingerprint) &&
           authorizationEvidence(lifecycle.authorization, taskFingerprint, lifecycle.plan.planFingerprint)
@@ -750,7 +714,10 @@ export function isSafetyEvidenceLog(value: unknown): value is SafetyEvidenceLog 
   );
 }
 
+/** Conservative evidence observation only; this does not authorize or block tool calls. */
 export function isPotentiallyMutatingTool(toolName: string, input: Record<string, unknown>): boolean {
+  // Keep the observation API stable without interpreting command text or tool arguments.
+  void input;
   if (
     toolName === "submit_action_plan" ||
     toolName === "submit_discovery_request" ||
@@ -759,6 +726,6 @@ export function isPotentiallyMutatingTool(toolName: string, input: Record<string
   )
     return false;
   if (toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls") return false;
-  if (toolName === "bash") return !isReadOnlyShellCommand(typeof input.command === "string" ? input.command : "");
+  // Without interpreting shell syntax, every bash invocation may have side effects.
   return true;
 }
