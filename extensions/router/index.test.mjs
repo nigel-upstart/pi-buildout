@@ -2564,40 +2564,45 @@ describe("routerExtension", () => {
     assert.deepEqual(result.sentMessages, []);
   });
 
-  it("prices a deferred correction against the cache accumulated by the primary run", async () => {
-    const secondary = deferred();
-    const result = await runAdapterTurn({
-      classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
-      classifySecondaryTask: async () => secondary.promise,
-      secondaryReconciliationPolicy: { secondaryDeadlineMs: 15_000, materialCorrectionBenefitUsd: 0.000_001 },
-      models: standardRoutingModels(),
-      mode: "active",
-      prompt: "Implement one bounded repository change",
-      sessionId: "async-secondary-cost-after-primary-cache",
-    });
-    const original = result.appended.findLast(({ customType }) => customType === "model-router-state").data.active;
-    startAgentRun(result);
-    // The task was routed without cached context; the primary run then builds it on the incumbent.
-    result.ctx.sessionManager.getBranch().push(cachedAssistantEntry());
-    await settleAgentRun(result, { stopReason: "aborted" });
+  for (const [shape, usage] of [
+    ["partly cached", {}],
+    ["fully cached (input 0)", { input: 0, cacheRead: 80_000 }],
+  ]) {
+    it(`prices a deferred correction against the cache accumulated by the primary run (${shape})`, async () => {
+      const secondary = deferred();
+      const result = await runAdapterTurn({
+        classifyPrimaryTask: async () => primaryClassificationResult({ confidence: 0.6 }),
+        classifySecondaryTask: async () => secondary.promise,
+        secondaryReconciliationPolicy: { secondaryDeadlineMs: 15_000, materialCorrectionBenefitUsd: 0.000_001 },
+        models: standardRoutingModels(),
+        mode: "active",
+        prompt: "Implement one bounded repository change",
+        sessionId: `async-secondary-cost-after-primary-cache-${shape}`,
+      });
+      const original = result.appended.findLast(({ customType }) => customType === "model-router-state").data.active;
+      startAgentRun(result);
+      // The task was routed without cached context; the primary run then builds it on the incumbent.
+      result.ctx.sessionManager.getBranch().push(cachedAssistantEntry(usage));
+      await settleAgentRun(result, { stopReason: "aborted" });
 
-    secondary.resolve(
-      classificationResult(2, {
-        confidence: 0.95,
-        risk: "critical",
-        verificationStrength: "security_and_policy",
-        independenceRequirement: "different_vendor_review",
-      }),
-    );
-    await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
-    const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
-    assert.equal(reconciliation.data.accepted, false);
-    assert.equal(reconciliation.data.reason, "cache_penalty_exceeds_benefit");
-    assert.ok(reconciliation.data.estimatedCachePenaltyUsd > reconciliation.data.expectedBenefitUsd);
-    const active = result.appended.findLast(({ customType }) => customType === "model-router-state").data.active;
-    assert.equal(active, original);
-    assert.equal(result.abortCount, 0);
-  });
+      secondary.resolve(
+        classificationResult(2, {
+          confidence: 0.95,
+          risk: "critical",
+          verificationStrength: "security_and_policy",
+          independenceRequirement: "different_vendor_review",
+        }),
+      );
+      await waitUntil(() => result.events.some(({ kind }) => kind === "secondary_reconciliation"));
+      const reconciliation = result.events.findLast(({ kind }) => kind === "secondary_reconciliation");
+      assert.equal(reconciliation.data.accepted, false);
+      assert.equal(reconciliation.data.reason, "cache_penalty_exceeds_benefit");
+      assert.ok(reconciliation.data.estimatedCachePenaltyUsd > reconciliation.data.expectedBenefitUsd);
+      const active = result.appended.findLast(({ customType }) => customType === "model-router-state").data.active;
+      assert.equal(active, original);
+      assert.equal(result.abortCount, 0);
+    });
+  }
 
   it("cancels stale secondary work at compaction without adding a tool block", async () => {
     const secondary = deferred();

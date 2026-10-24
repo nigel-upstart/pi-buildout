@@ -708,7 +708,8 @@ export function cacheEstimate(entries: readonly unknown[]): { cachedTokens: numb
     const input = typeof usage?.input === "number" ? Math.max(0, usage.input) : 0;
     return {
       cachedTokens,
-      expectedReuseRatio: input > 0 ? Math.min(1, cachedTokens / input) : 0,
+      // Input and cache-read tokens are counted separately: a fully cached prompt reports input 0.
+      expectedReuseRatio: input > 0 ? Math.min(1, cachedTokens / input) : cachedTokens > 0 ? 1 : 0,
     };
   }
   return { cachedTokens: 0, expectedReuseRatio: 0 };

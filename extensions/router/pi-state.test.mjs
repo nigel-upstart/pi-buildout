@@ -547,6 +547,13 @@ describe("lease restoration and context estimates", () => {
     ];
     assert.deepEqual(cacheEstimate(entries), { cachedTokens: 25_000, expectedReuseRatio: 0.625 });
     assert.equal(latestReportedContextTokens(entries), 67_000);
+    // A fully cached prompt reports no uncached input; its cache is still reusable.
+    const fullyCached = [{ type: "message", message: { role: "assistant", usage: { input: 0, cacheRead: 80_000 } } }];
+    assert.deepEqual(cacheEstimate(fullyCached), { cachedTokens: 80_000, expectedReuseRatio: 1 });
+    assert.deepEqual(
+      cacheEstimate([{ type: "message", message: { role: "assistant", usage: { input: 0, cacheRead: 0 } } }]),
+      { cachedTokens: 0, expectedReuseRatio: 0 },
+    );
   });
 });
 
