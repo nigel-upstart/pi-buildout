@@ -40,8 +40,11 @@ const request = () => ({
     inheritContext: false,
   },
 });
-/** @returns {any} */
-function child() {
+/**
+ * @param {{ lastAssistantText?: string, finalAssistantText?: string }} texts
+ * @returns {any}
+ */
+function child(texts = { lastAssistantText: "FINAL", finalAssistantText: "FINAL" }) {
   let stopped = false;
   return {
     id: "child",
@@ -53,7 +56,7 @@ function child() {
       stopped = true;
     },
     snapshot() {
-      return { state: stopped ? "stopped" : "idle", lastAssistantText: "FINAL", transcriptTail: "SECRET" };
+      return { state: stopped ? "stopped" : "idle", ...texts, transcriptTail: "SECRET" };
     },
   };
 }
@@ -86,6 +89,21 @@ test("protocol 2 ping is microtask replied; early final event is consumable sync
   assert.equal(terminal[0]?.result, "FINAL");
   assert.equal(JSON.stringify(terminal).includes("SECRET"), false);
   assert.deepEqual(await rpc(events, "consume", { agentId: "child" }), { success: true });
+  await close();
+});
+
+test("a completed result carries only the operation's final answer, never diagnostic text", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const terminal = [];
+  // Working text before a tool call, then an empty final message: no final answer exists.
+  const close = registerSignaling(events, ctx, async () => child({ lastAssistantText: "WORKING" }));
+  events.on("subagents:completed", (/** @type {Payload} */ value) => terminal.push(value));
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && terminal.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(terminal.length, 1);
+  assert.equal(terminal[0]?.result, "");
+  assert.equal(JSON.stringify(terminal).includes("WORKING"), false);
   await close();
 });
 
