@@ -179,7 +179,7 @@ function irreversibleActionPlan() {
 
 // Mirrors the irreversible-action authorization fixture: a parent lease in authorization preflight,
 // with a builder and an independent reviewer from different vendors.
-async function authorizationLifecycleFixture(options = {}) {
+async function authorizationLifecycleFixture(options = {}, restoredState) {
   const hooks = new Map();
   const commands = new Map();
   const tools = new Map();
@@ -267,7 +267,7 @@ async function authorizationLifecycleFixture(options = {}) {
     {
       type: "custom",
       customType: "model-router-state",
-      data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
+      data: restoredState ?? { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
     },
   ];
   const pi = {
@@ -1224,6 +1224,106 @@ describe("advisory tool-call observation", () => {
       fixture.restoreEnvironment();
     }
   });
+
+  for (const verdict of [undefined, "reject"]) {
+    for (const reload of [false, true]) {
+      it(`reviews executed work after ${verdict ?? "missing"} plan advice${reload ? " across reload" : ""}`, async () => {
+        const fixture = await authorizationLifecycleFixture();
+        let resumed;
+        try {
+          const { hooks, tools, ctx, models, parent } = fixture;
+          await hooks.get("session_start")({ reason: "reload" }, ctx);
+          hooks.get("agent_start")({}, ctx);
+          hooks.get("turn_start")({}, ctx);
+          await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+          const write = { toolCallId: "planned-write", toolName: "write", input: { path: "x", content: "y" } };
+          assert.equal(hooks.get("tool_call")(write, ctx), undefined);
+          hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
+          await finishRun(hooks, ctx, parent.selected);
+          const planReview = fixture.latestLease();
+          assert.equal(planReview.lifecycle.reviewKind, "plan");
+          ctx.model = models.find(
+            (model) => model.provider === planReview.selected.provider && model.id === planReview.selected.modelId,
+          );
+          hooks.get("agent_start")({}, ctx);
+          hooks.get("turn_start")({}, ctx);
+          if (verdict) {
+            await tools.get("submit_safety_review").execute(
+              "plan-verdict",
+              {
+                reviewKind: "plan",
+                scopeFingerprint: planReview.lifecycle.scopeFingerprint,
+                verdict,
+                summary: "The submitted plan needs revision.",
+                evidence: ["Inspected the plan and recorded work."],
+                findings: ["Strengthen rollback verification."],
+              },
+              undefined,
+              undefined,
+              ctx,
+            );
+          }
+          await finishRun(hooks, ctx, planReview.selected);
+          const returned = fixture.latestLease();
+          assert.equal(returned.lifecycle.phase, "planning");
+          assert.equal(returned.lifecycle.planReview.verdict, verdict);
+          assert.equal(returned.lifecycle.plan, undefined, "an unaccepted plan cannot monopolize later settlement");
+          assert.equal(returned.safetyEvidence.mutations.length, 1);
+          if (reload) {
+            // A fresh extension instance sees only the serialized entries, not any in-memory retry marker.
+            const entries = JSON.parse(JSON.stringify(fixture.appended)).map((entry) => ({ type: "custom", ...entry }));
+            const state = restoreLeaseState(entries, "active");
+            assert.equal(state.active?.taskId, parent.taskId);
+            assert.deepEqual(state.active.safetyEvidence, returned.safetyEvidence);
+            resumed = await authorizationLifecycleFixture({}, state);
+            await resumed.hooks.get("session_start")({ reason: "reload" }, resumed.ctx);
+          }
+          const runner = resumed ?? fixture;
+          runner.ctx.model = runner.models.find(
+            (model) => model.provider === parent.selected.provider && model.id === parent.selected.modelId,
+          );
+          runner.hooks.get("agent_start")({}, runner.ctx);
+          runner.hooks.get("turn_start")({}, runner.ctx);
+          await finishRun(runner.hooks, runner.ctx, parent.selected);
+          const completion = runner.latestLease();
+          assert.equal(
+            completion.lifecycle.reviewKind,
+            "completion",
+            "recorded work gets review, not another plan review",
+          );
+          assert.equal(completion.parentLease.taskId, parent.taskId);
+          assert.deepEqual(completion.parentLease.safetyEvidence, returned.safetyEvidence);
+          runner.ctx.model = runner.models.find(
+            (model) => model.provider === completion.selected.provider && model.id === completion.selected.modelId,
+          );
+          runner.hooks.get("agent_start")({}, runner.ctx);
+          await runner.tools.get("submit_safety_review").execute(
+            "completion-verdict",
+            {
+              reviewKind: "completion",
+              scopeFingerprint: completion.lifecycle.scopeFingerprint,
+              verdict: "pass",
+              summary: "The recorded work matches the task.",
+              evidence: ["Inspected the recorded mutation."],
+              findings: [],
+            },
+            undefined,
+            undefined,
+            runner.ctx,
+          );
+          await finishRun(runner.hooks, runner.ctx, completion.selected);
+          assert.equal(runner.latestLease().lifecycle.phase, "completed");
+          const reviewCount = runner.sent.length;
+          await runner.hooks.get("agent_settled")({}, runner.ctx);
+          assert.equal(runner.latestLease().lifecycle.phase, "completed");
+          assert.equal(runner.sent.length, reviewCount, "settlement cannot reopen completed or failed plan advice");
+        } finally {
+          resumed?.restoreEnvironment();
+          fixture.restoreEnvironment();
+        }
+      });
+    }
+  }
 
   it("notes and reviews work executed during planning without an action plan", async () => {
     const fixture = await authorizationLifecycleFixture();
