@@ -28,7 +28,7 @@ already exposes every hook this spec's pipeline needs:
 | Model eligibility, context window, cost, API keys        | `ctx.modelRegistry` / `ModelRegistry`                     |
 | Builder identity (for independent review routing)        | `ctx.model`                                               |
 | Apply the lease (model + effort)                         | `setModel(model)`, `setThinkingLevel(level)`              |
-| Keep lifecycle validators declared while routing         | `getActiveTools()` / `setActiveTools()`                   |
+| Expose lifecycle validators at valid phase transitions   | `getActiveTools()` / `setActiveTools()`                   |
 | Inject the compiled model-specific prompt profile        | `before_agent_start` → `systemPrompt` result              |
 | Resolve exact policy IDs against live endpoints          | `ctx.modelRegistry.getAll()` / `.getAvailable()`          |
 | Persist/reevaluate the lease across turns                | `appendEntry` + re-check on `input`                       |
@@ -65,10 +65,31 @@ pi's bundled packages already cover nearly the entire runtime surface. Reuse the
 | Telemetry store              | append-only **JSONL** (pi's own `JsonlSessionStorage` idiom) — not sqlite; nothing in pi's dependency tree uses sqlite.                                                                                      |
 | OTel spans                   | Optional **`pi-telemetry-otel`** Symbol registries — see the Telemetry section below.                                                                                                                        |
 
-There are **no new extension runtime dependencies**. `pi-telemetry-otel` remains a separately installed companion: the
-router consumes its global Symbol registries when present and no-ops when absent. Everything else above is exported by
-pi's bundled packages. This removes extension-local `node_modules` installation without reducing schema validation,
-inference, or tracing behavior.
+Runtime dependencies may be added when they are popular, maintained, have small dependency trees, and have a tested
+installation and release path. The router uses exact-pinned XState v5 (5.33.2, no runtime dependencies) for lease
+ownership and task-family secondary actors, plus the shell tokenizers recorded in ATTRIBUTION.md. The installer already
+installs each extension's runtime manifest in its staged tree before the atomic swap; the router/OTel release package
+ships the union of both runtime manifests. XState v6 alpha is intentionally excluded.
+
+The lease actor owns enablement, boundaries, review/authorization phases, and every installed lease. Synchronous
+transitions validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger
+append. Every generated review is bound to the epoch in which it started: after new input, compaction, a reload, or a
+mode or override change, its settlement still restores the parent, but never with authority, whether a discovery grant
+or plan authorization the review would grant or an earlier authorization a completion review would return; the parent
+resumes in preflight with its plan, and a pending hard boundary is not consumed. More generally, only the routing
+transition that installs a freshly selected lease consumes a pending hard boundary; evidence, fallback, repair,
+preparation, and review transitions on the same task family leave it pending. Low-confidence secondary work is a
+cancellable promise actor under the parent task family, surviving temporary review children. Reconciliation drains
+before settlement lifecycle changes and after parent restoration; lifecycle progress alone does not invalidate a
+secondary answer. Input/registry mismatch, overrides, and revoked task families still invalidate it. An unanswered
+safety question remains latched after failure or cancellation. Ledger writes remain awaited and telemetry failure still
+switches routing to shadow. Persistence stores the validated version-2 lease shape, never an XState snapshot. The
+persisted state also records an unresolved secondary safety latch. Malformed leases and legacy low-confidence leases
+without a resolved/pending marker are discarded instead of silently dropping the latch.
+
+Scope-specific fast-check properties and scheduled handler races run in `npm test`, pre-push, and CI. The default is 50
+runs with fixed seed 730100; CI runs 500. `FC_NUM_RUNS`, `FC_SEED`, and `FC_PATH` control the budget and failure replay.
+The external `pi-telemetry-otel` Symbol-registry companion remains optional.
 
 ## Framework
 
@@ -263,12 +284,20 @@ cannot recursively trigger completion review.
 
 The irreversible preflight tool allowlist is deterministic. Unknown tools and shell composition are denied; after
 approval, mutating tool names are limited to those in the reviewed plan. The plan and verdict schemas, canonical
-fingerprints, lifecycle validation, and boundary invalidation are implemented locally. While routing is active, all
-three validators (`submit_action_plan`, `submit_discovery_request`, `submit_safety_review`) stay declared through Pi's
-active-tool API, because extension-generated review turns skip `before_agent_start`. Each validator checks the active
-mode and lifecycle phase when it executes, so declaration never grants permission. None are declared in shadow or off
-mode. No external safety-state-machine implementation or code was consulted or adapted for this decision; the Pi API
-provenance is recorded in the root attribution file.
+fingerprints, lifecycle validation, and boundary invalidation are implemented locally. Issue #108 supersedes the earlier
+decisions in issues #91 and #104, which declared all three safety validators throughout active mode. Each validator is
+now exposed only in the phase that accepts it: the plan and discovery validators in preflight, and the verdict validator
+in a generated review until its one verdict is recorded. Exposure is synchronized at state persistence before generated
+messages are queued, and whenever the builder-restore latch changes, so a revoked review's pending restore also
+withholds the preflight validators. Execution guards still protect against stale calls and invalid fingerprints. The
+implementation-plan validator accepts any active-mode call without requiring a planning archetype; its pure validation
+neither changes the lease nor grants execution permissions. Shadow and off hide router tools.
+
+Checkpoint B: an in-memory provider-request experiment exercises Pi's actual active-tool selection, generated-message
+path, and Agent tool dispatch on published 0.87.1 and 1.1.0. The generated request declares and executes the refreshed
+review tool without `before_agent_start`. The pinned-version experiment is a repository regression test; no live
+cache-read measurement or provider-cost conclusion is asserted. No external safety-state-machine implementation or code
+was copied or adapted; the Pi API provenance is recorded in the root attribution file.
 
 ## Decision: bounded discovery authorization inside preflight
 

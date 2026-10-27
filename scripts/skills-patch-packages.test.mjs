@@ -7,12 +7,12 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { findCleanPackage, patchVersions, readBaselineManifest } from "./skills-patch-packages.mjs";
+import { findCleanPackage, patchVersions, readBaselineManifest, repositoryRoot } from "./skills-patch-packages.mjs";
 
 /** A directory that looks like a package but whose `package.json` cannot be parsed. */
 async function malformedCandidate() {
@@ -48,6 +48,23 @@ describe("findCleanPackage", () => {
       assert.ok(problem.includes("node_modules"), `the repository candidate should still be reported, got: ${problem}`);
     } else {
       assert.ok(!packageRoot.startsWith(candidate), "the malformed candidate must not be selected");
+    }
+  });
+
+  it("selects the clean package installed through each root npm alias", async () => {
+    // A broken alias lookup would turn that version's runtime patch tests back into skips while CI still passed.
+    const manifest = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+    const prefix = "npm:@earendil-works/pi-coding-agent@";
+    const aliases = Object.entries(manifest.devDependencies ?? {}).filter(
+      ([, specifier]) => typeof specifier === "string" && specifier.startsWith(prefix),
+    );
+    assert.ok(aliases.length > 0, "package.json must declare at least one clean pi package alias");
+
+    for (const [alias, specifier] of aliases) {
+      const version = specifier.slice(prefix.length);
+      assert.ok(patchVersions().includes(version), `${alias} must name a version with a patch, got ${version}`);
+      const { packageRoot, problem } = await withTestPackages("", () => findCleanPackage(version));
+      assert.equal(packageRoot, join(repositoryRoot, "node_modules", alias), problem);
     }
   });
 

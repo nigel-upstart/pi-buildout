@@ -1,6 +1,8 @@
 # Model-aware router
 
-A task-leased, model-aware routing extension for pi. It classifies semantic task features, applies deterministic
+A task-leased, model-aware routing extension for Pi **1.2.0 or newer**. Pi 1.2.0 introduced custom-start
+`before_agent_start` preparation and busy-start semantics that this router relies on. The installer refuses older hosts,
+and the router also rejects them when loaded directly. It classifies semantic task features, applies deterministic
 eligibility/ranking policy, selects a versioned model prompt profile, and records an audit trail.
 
 The extension starts in **shadow mode**: it logs and displays the route but does not change the model, effort, or system
@@ -60,11 +62,17 @@ Safety is an explicit persisted lease lifecycle, not an inference from archetype
   entire request must fit within 64 KiB (65536 bytes) of compact UTF-8 JSON, including metadata and input. Oversized
   requests are rejected at submission with a validation error; inputs are never truncated. Approval yields a single-use
   `discovery_ready` grant bound to task, working directory, and session. The grant is spent before dispatch, revoked at
-  task/runtime boundaries, and never authorizes the final plan. The validators remain model-facing while routing is
-  active because Pi's extension-generated review turns skip `before_agent_start`; they are hidden in shadow and off
-  modes. Each tool validates the active mode and lifecycle phase at execution time, and the read-only review gate still
-  blocks wrong-phase calls. Exposure alone never authorizes execution. Rejection, missing evidence, reviewer failure,
-  plan change, new user input, compaction, session change, or manual model/effort override cannot authorize execution.
+  task/runtime boundaries, and never authorizes the final plan. Active routing exposes plan/discovery submissions only
+  in preflight, and scoped verdict submission only during a generated review without a recorded verdict. Exposure
+  updates at lifecycle transitions before generated messages are queued, including custom starts for which the router
+  skips user-prompt preparation in `before_agent_start`; shadow and off hide all router tools. Stale calls receive
+  recovery instructions. Exposure alone never authorizes execution. Rejection, missing evidence, reviewer failure, plan
+  change, new user input, compaction, session change, or manual model/effort override cannot authorize execution.
+
+`submit_implementation_plan` validates implementation-plan DAGs throughout active routing, including a planning
+follow-up kept on a research lease. It preserves the task and model and grants no execution permission. Planning routes
+still require validation; telemetry records `planningLease` to distinguish other routes' optional submissions.
+
 - Other high-risk reversible non-code work consults a read-only advisor before acting and receives a completion review
   afterward. Advice is explicitly not authorization; cautionary advice is carried back to the tracked worker.
 - Unattended or indefinite loops that repeatedly execute external or destructive actions (deploys, applies, publishes,
@@ -125,6 +133,11 @@ terminal, so the classifier does not retry the attempt or advance to another end
 failure the current lease, model, effort, and profile remain selected. On a fresh-task failure the router does not
 create a route from synthetic evidence and keeps the current model/effort (and an existing lease, if present). Concrete
 timeout thresholds can be inspected directly in [`index.ts`](index.ts) and [`telemetry.ts`](telemetry.ts).
+
+A secondary correction that changes the prompt profile can intentionally stop and resume a continuing run. That
+router-owned interruption is bound to the task and run, recorded as
+`attempt_completed.interruptionReason: "prompt_profile_refresh"`, and does not consume a provider fallback even if Pi
+reports cancellation as `stopReason: "error"`. Errors on later runs still follow the normal fallback ladder.
 
 ### Classifier model selection
 
@@ -384,3 +397,109 @@ logical model and effort still precedes every different-model fallback.
 - A validated provider-diverse classifier result may serve as failover, but complete classification failure retains the
   current selection instead of manufacturing evidence for a premium route.
 - The request remains a native user message and is never paraphrased into system policy.
+
+### Lease lifecycle state machine
+
+A single XState v5 actor (`core/lease-machine.ts`) owns the router mode, pending hard boundaries, and the installed
+lease. The actor is deliberately flat: every accepted event is handled at the root and re-enters the transient
+`selecting` state, which projects the current mode and lifecycle phase onto one of the states below.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> selecting
+  selecting --> off: mode is off
+  selecting --> idle: no active lease
+  selecting --> review: phase review
+  selecting --> preflight: phase preflight
+  selecting --> discovery: phase discovery_ready
+  selecting --> completed: phase completed
+  selecting --> execution: any other phase
+```
+
+Lease advances (`ROUTE`, `SUBMIT_*`, `REVIEW_*`, `FALLBACK`, `REPAIR`, and the rest) must name the current owner lease
+and routing epoch. `INTENT`, `BOUNDARY`, `INVALIDATE`, `MODE`, `OVERRIDE`, `RESET`, and `RESTORE` bump the epoch, so
+work captured before them can no longer advance the lease. Only `ROUTE`, which installs the lease freshly selected for a
+boundary, consumes a pending hard boundary; same-task advances leave it pending for the next ordinary input.
+
+The safety workflow lives in the lease's lifecycle phase. Each task starts in the phase its safety policy selects.
+Generated reviews run as read-only child leases that hold their parent: `REVIEW_STARTED` installs the child,
+`SUBMIT_REVIEW` records its verdict, and `REVIEW_FINISHED` restores the parent with the outcome.
+
+The `authorization_then_completion_review` policy governs irreversible actions:
+
+```mermaid
+stateDiagram-v2
+  state "authorization review" as auth_review
+  state "completion review" as completion_review
+  [*] --> preflight
+  preflight --> preflight: SUBMIT_PLAN or SUBMIT_DISCOVERY
+  preflight --> auth_review: REVIEW_STARTED
+  auth_review --> authorized_execution: plan approved
+  auth_review --> discovery_ready: discovery approved
+  auth_review --> preflight: rejected or withheld
+  discovery_ready --> preflight: SPEND_DISCOVERY or INVALIDATE
+  authorized_execution --> preflight: INVALIDATE
+  authorized_execution --> completion_review: REVIEW_STARTED
+  completion_review --> completed: REVIEW_FINISHED
+  completed --> preflight: new user input
+```
+
+Approval requires a reviewer from a different vendor than the builder, an exact scope fingerprint, a restored builder
+model, and an authorization review bound to the epoch in which it started. Completion reviews are bound the same way:
+one that crosses new input or a boundary returns its parent to `preflight` instead of `completed` with the old
+authorization. New input, compaction, a manual override, or a session change invalidates an authorization. A resumed
+authorized task regains `authorized_execution` only in the session that obtained the approval; elsewhere it returns to
+`preflight`.
+
+The `completion_review` and `advisory_then_completion_review` policies govern high-risk reversible work. An advisory
+review's verdict is advice, never authorization:
+
+```mermaid
+stateDiagram-v2
+  state "advisory review" as advisory_review
+  state "completion review" as completion_review
+  [*] --> ordinary: ordinary policy
+  [*] --> building: completion_review
+  [*] --> advisory_pending: advisory_then_completion_review
+  advisory_pending --> advisory_review: REVIEW_STARTED
+  advisory_review --> ready_after_advisory: REVIEW_FINISHED
+  building --> completion_review: REVIEW_STARTED
+  ready_after_advisory --> completion_review: REVIEW_STARTED
+  completion_review --> completed: REVIEW_FINISHED
+  completed --> building: resumed
+  completed --> ready_after_advisory: resumed
+```
+
+The epoch binding closes a race between a verdict and its settlement. If new input, compaction, a reload, or a mode or
+override change arrives after `REVIEW_STARTED`, the review can still finish, but only by handing control back without
+the grant. The pending hard boundary survives the hand-back.
+
+```mermaid
+sequenceDiagram
+  participant Builder as Builder turn
+  participant Lease as Lease actor
+  participant Reviewer as Reviewer turn
+  Builder->>Lease: SUBMIT_PLAN (epoch n)
+  Lease->>Reviewer: REVIEW_STARTED, review bound to epoch n
+  Reviewer->>Lease: SUBMIT_REVIEW (approve)
+  Note over Lease: user input or compaction: INTENT or BOUNDARY, epoch n+1
+  Note over Reviewer: settlement sees the binding is stale and computes a preflight parent
+  Reviewer->>Lease: REVIEW_FINISHED with preflight, approval withheld
+  Lease-->>Builder: parent restored with plan kept, no execution continuation
+  Note over Lease: the guard would reject an authorized parent from this stale review
+```
+
+A low-confidence secondary classification runs as a cancellable child actor of the task family, so it survives temporary
+review children. Its safety latch stays closed until a valid, provider-diverse answer is reconciled: `RESOLVE` releases
+it, and `RETAIN` or a failed attempt keeps it closed.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> running
+  running --> queued: classification settles
+  running --> stopped: error
+  running --> stopped: ABORT (latch kept when requested)
+  queued --> stopped: ABORT
+```

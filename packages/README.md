@@ -12,7 +12,7 @@ Choose either method before a `pi install npm:@upstart/...` command below.
 
 ```bash
 umt artifacts --tools npm
-pi install npm:@upstart/pi-router-otel@0.1.1-alpha.1
+pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
 ```
 
 The [UMT artifacts command](https://github.com/teamupstart/umt/blob/main/cmd/umt-go/artifacts.go) uses read-only SSO
@@ -50,12 +50,12 @@ write-capable SSO role are a separate, later checkpoint below.
 
 | Package                                        | Contents                                                         | Activation                                                                      |
 | ---------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `@upstart/pi-router-otel@0.1.1-alpha.1`        | Router and OTel together, with their shared runtime dependencies | `pi install npm:@upstart/pi-router-otel@0.1.1-alpha.1`                          |
+| `@upstart/pi-router-otel@0.1.1-alpha.4`        | Router and OTel together, with their shared runtime dependencies | `pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4`                          |
 | `@upstart/pi-clear@0.1.0-alpha.0`              | Clear                                                            | `pi install npm:@upstart/pi-clear@0.1.0-alpha.0`                                |
 | `@upstart/pi-effort@0.1.0-alpha.0`             | Effort                                                           | `pi install npm:@upstart/pi-effort@0.1.0-alpha.0`                               |
 | `@upstart/pi-markdown-backlinks@0.1.0-alpha.0` | Backlinks                                                        | `pi install npm:@upstart/pi-markdown-backlinks@0.1.0-alpha.0`                   |
-| `@upstart/pi-subagents@0.1.0-alpha.0`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.0`                            |
-| `@upstart/pi-skills-patch@0.1.0-alpha.0`       | Versioned `/skills` patch and patch-only CLI                     | `npm install -g @upstart/pi-skills-patch@0.1.0-alpha.0`, then `pi-skills-patch` |
+| `@upstart/pi-subagents@0.1.0-alpha.1`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.1`                            |
+| `@upstart/pi-skills-patch@0.1.0-alpha.2`       | Versioned `/skills` patch and patch-only CLI                     | `npm install -g @upstart/pi-skills-patch@0.1.0-alpha.2`, then `pi-skills-patch` |
 
 The packages can advance independently: increment `alpha.N` for each changed package, then use `-beta.N`, `-rc.N`, or
 stable SemVer after validation. Always publish prereleases with `--tag alpha` so they do **not** become npm `latest`.
@@ -77,8 +77,9 @@ a no-op compatibility alias, and `--without-otel` opts out.
    Test each package in a disposable Pi installation. Package dependencies are resolved by Pi's package manager; do not
    load a package alongside copies of its individual extensions installed by the checkout script.
 3. **Human checkpoint — publish identity/version:** establish an AWS SSO CLI profile with the `CodeArtifact-Prod-RW`
-   permission set for domain owner `801997600626`; this machine currently only lists a read-only CodeArtifact profile.
-   Authenticate that profile and check that each alpha version is unused. Do not assume a read-only token can publish.
+   permission set for domain owner `801997600626`. Authenticate that profile, verify the active account and role with
+   `aws sts get-caller-identity`, and check that each alpha version is unused. Do not assume a read-only token can
+   publish.
 
 ## Release CLI and manual publish (only after the checkpoints)
 
@@ -139,6 +140,6 @@ package version has an `-alpha.N` suffix, `--tag alpha` is present, and `PI_CODE
 against publishing accidentally to the repository's public npm registry; **it does not replace a human check of the
 artifact and identity**. The token expires after roughly 12 hours.
 
-After a publish, use `npm view @upstart/pi-router-otel@0.1.1-alpha.1 --registry "$REGISTRY"` (or the chosen package) and
+After a publish, use `npm view @upstart/pi-router-otel@0.1.1-alpha.4 --registry "$REGISTRY"` (or the chosen package) and
 test a fresh consumer install with the scoped registry/token configured. Re-run Pi's `/reload` if already running. Do
 not publish the same version to JFrog as well.

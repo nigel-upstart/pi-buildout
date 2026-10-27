@@ -329,12 +329,19 @@ The policy derived once at task creation is one of:
 
 Only the fourth policy is an approval gate. It begins in `preflight`, where deterministic tool enforcement allows
 bounded inspection, `submit_action_plan`, and `submit_discovery_request` but blocks editing, arbitrary shell
-composition, subagents, and unknown tools. While routing is active, Pi's active tool set declares `submit_action_plan`,
-`submit_discovery_request`, and `submit_safety_review` on every turn. Extension-generated review turns skip
-`before_agent_start`, so per-phase exposure cannot be relied on. Each validator instead checks the active mode and
-lifecycle phase when it executes. `submit_action_plan` and `submit_discovery_request` accept only in `preflight`, and
-`submit_safety_review` only in a generated `review` phase. Exposure alone never authorizes anything, and none of the
-validators are declared in shadow or off mode.
+composition, subagents, and unknown tools. While routing is active, `submit_action_plan` and `submit_discovery_request`
+are declared only in `preflight`, and `submit_safety_review` only in a generated `review` without a recorded verdict. A
+revoked review still running suppresses preflight submissions until it settles. Tool exposure synchronizes when lease
+state is persisted, before generated continuations are queued; it does not depend on `before_agent_start`, which
+generated turns skip. Each validator retains execution-time guards for stale calls, with actionable recovery
+instructions. Exposure alone never authorizes anything. Shadow and off hide router tools.
+
+`submit_implementation_plan` is a pure validator available throughout active routing, including research leases retained
+by continuity classification or streaming input. Its telemetry records `planningLease` to distinguish mandatory
+planning-route submissions from optional validation on another route. Validation does not change the task, model,
+archetype, or execution permissions, and bypasses lifecycle and secondary mutation gates. Planning routes retain their
+required-validation repair contract. Tool-set changes at safety transitions can change the provider cache prefix; no
+live cache-read cost measurement is claimed.
 
 When read-only inspection cannot establish the facts the plan needs, preflight may request **bounded discovery**: one
 exact tool call, named by tool and strict JSON input, with its objective, target, expected effects, preconditions,

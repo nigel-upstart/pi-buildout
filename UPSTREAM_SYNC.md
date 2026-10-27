@@ -15,7 +15,7 @@ recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this
 | Last sync date      | 2026-09-29                                              |
 | Previous sync point | `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22) |
 | Sync branch         | `chore/sync-upstream-zew1me`                            |
-| Outbound fixes owed | pi 0.87.1 `/skills` patch (see [Outbound](#outbound))   |
+| Outbound fixes owed | None from the current support update                    |
 
 To find the next batch of upstream work:
 
@@ -23,6 +23,19 @@ To find the next batch of upstream work:
 git fetch zew1me
 git log --oneline 867d931ee84de52e46e1b456d95338c236a804d5..zew1me/main
 ```
+
+## 2026-10-08 supported Pi baseline (#109)
+
+- Root Pi development packages and the vendored OTel dev pin now use 1.1.0. Router registry assertions were refreshed
+  against that exact package: Azure no longer publishes GPT-5.6 Sol; the remaining required Sol routes retain their
+  priced cache writes. Runtime routing policy is unchanged.
+- The 1.1.0 skills patch is already included through local PR #106 (`cbeb426`), incorporating the patch from `9807b015e`
+  with this fork's project-trust fix preserved.
+- Installation requires Pi >=1.0.1, including extension-only installs. Managed launchers resolve through
+  `install/current-version` and `install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`.
+- Pre-1.0.1 patch sets, overlay versions, bundled-entrypoint tests, and the old effort-picker version fallback are
+  removed. Remaining exact-version skills patches are 1.0.3, 1.0.4, and 1.1.0. The earlier sync entries below are
+  historical; they do not describe current supported artifacts or dev pins.
 
 ## 2026-09-29 sync (`867d931e`)
 
@@ -106,11 +119,6 @@ matches upstream's development package versions, and `scripts/skills-catalog.tes
 ## Outbound
 
 Fixes made here that should be proposed upstream: none from this sync.
-
-- `feat(patches): add pi 0.87.1 skills patch generated from the TypeScript overlay` adds `pi-overlay/versions/0.87.1`,
-  `patches/pi-0.87.1`, the pipeline's `--all` mode, and version-parametrized patch tests. It should be proposed to
-  `zew1me/pi-buildout`. The fork-only parts (the catalog test's real-`HOME` installer environment and the
-  router-registry reason for keeping the development packages at 0.85.1) need adapting there.
 
 - `fix(test): keep the real HOME for the installer in the catalog test` is fork-only. The fork's installer runs `npm ci`
   for the router's runtime dependencies, and with the fixture `HOME` a mise `npm` shim fails on untrusted configuration.

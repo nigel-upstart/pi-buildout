@@ -101,6 +101,46 @@ export default tseslint.config(
     },
   },
   {
+    files: ["extensions/router/**/*.ts"],
+    ignores: ["extensions/router/core/lease-machine.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "AssignmentExpression[left.type='MemberExpression'][left.property.name=/^(active|lifecycle|parentLease)$/]",
+          message: "Lease snapshots are immutable; send a transition to the lease owner.",
+        },
+        {
+          selector:
+            "AssignmentExpression[left.type='MemberExpression'][left.property.value=/^(active|lifecycle|parentLease)$/]",
+          message: "Lease snapshots are immutable; send a transition to the lease owner.",
+        },
+        {
+          selector:
+            "AssignmentExpression > MemberExpression.left MemberExpression[property.name=/^(active|lifecycle|parentLease|safetyEvidence)$/]",
+          message: "Nested lease snapshots are immutable; send a transition to the lease owner.",
+        },
+        {
+          selector: "AssignmentExpression[left.type='MemberExpression'][left.object.name='active']",
+          message: "Active lease snapshots are immutable; send a transition to the lease owner.",
+        },
+        {
+          selector: "AssignmentExpression[left.type='Identifier'][left.name='state']",
+          message: "The XState lease owner is the only mutable lease store.",
+        },
+        {
+          selector: "VariableDeclaration[kind='let'] > VariableDeclarator[id.name='state']",
+          message: "Read lease state from the XState owner instead of maintaining a second store.",
+        },
+        {
+          selector: "CallExpression[callee.name=/^(installLease|markManualOverride|setHardBoundary)$/]",
+          message: "Lease updates belong in the XState lease machine.",
+        },
+      ],
+    },
+  },
+  {
     files: ["extensions/**/*.test.mjs"],
     rules: {
       "sonarjs/no-duplicate-string": "off",

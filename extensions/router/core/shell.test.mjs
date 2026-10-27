@@ -76,6 +76,26 @@ describe("tokenizeShellCommand", () => {
 });
 
 describe("isReadOnlyShellCommand", () => {
+  it("permits only worktree listing and rejects worktree mutation or unsupported options", () => {
+    for (const command of [
+      "git worktree add /tmp/other",
+      "git worktree remove /tmp/other",
+      "git worktree prune",
+      "git worktree lock /tmp/other",
+      "git worktree move old new",
+      "git worktree repair",
+      "git worktree list --expire=now",
+      "git worktree list extra",
+    ]) {
+      assert.match(readOnlyShellCommandRejection(command), /read-only only as list/);
+    }
+    assert.equal(
+      readOnlyShellCommandRejection(
+        "git rev-parse --abbrev-ref HEAD; git worktree list | grep main; git branch -r --contains HEAD",
+      ),
+      undefined,
+    );
+  });
   it("permits the read-only inspection commands agents actually use", () => {
     for (const command of [
       "git diff --stat HEAD",
@@ -87,6 +107,9 @@ describe("isReadOnlyShellCommand", () => {
       "git log --since '2 days ago' --author 'nobody'",
       "git show HEAD:extensions/router/index.ts",
       "git rev-parse --abbrev-ref HEAD",
+      "git worktree list",
+      "git worktree list --porcelain -z",
+      "git worktree list --verbose",
       "git ls-files --others --exclude-standard",
       "rg -n 'safetyFingerprint' extensions",
       "rg --files -g '*.ts'",

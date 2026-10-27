@@ -351,6 +351,176 @@ describe("task boundary gate", () => {
     assert.equal(discontinuity.reason, "explicit semantic discontinuity");
   });
 
+  it("starts a fresh lease when a continuation changes routing or action requirements", () => {
+    const active = {
+      ...lease(),
+      archetype: "fast_classification",
+      features: {
+        ...lease().features,
+        intent: "research",
+        workflowType: "research_or_analysis",
+        actionMode: "local_read",
+        horizon: "one_response",
+        contextShape: "multi_file_repository",
+        expectedToolOutputTokens: 3_000,
+      },
+    };
+    const planning = resolveContinuity(
+      active,
+      {
+        ...active.features,
+        intent: "plan",
+        workflowType: "implementation_planning",
+        taskContinuity: "clear_continuation",
+      },
+      { cachedTokens: 100_000, expectedReuseRatio: 1 },
+    );
+    assert.equal(planning.action, "new_task");
+    assert.match(planning.reason, /routing or action requirements/);
+
+    const mutation = resolveContinuity(
+      active,
+      { ...active.features, actionMode: "reversible_mutation", taskContinuity: "clear_continuation" },
+      { cachedTokens: 100_000, expectedReuseRatio: 1 },
+    );
+    assert.equal(mutation.action, "new_task");
+
+    const sameRoute = resolveContinuity(
+      active,
+      { ...active.features, actionMode: "information_only", taskContinuity: "clear_continuation" },
+      { cachedTokens: 0, expectedReuseRatio: 0 },
+    );
+    assert.equal(sameRoute.action, "continue", "a less privileged continuation keeps the lease");
+  });
+
+  it("starts a fresh lease when a continuation needs a stricter safety policy at the same action mode", () => {
+    const external = {
+      ...lease().features,
+      intent: "operate",
+      workflowType: "incident_or_operations",
+      actionMode: "external_side_effect",
+      risk: "medium",
+    };
+    const active = { ...lease(), features: external };
+    assert.equal(active.lifecycle.policy, "ordinary");
+    const cache = { cachedTokens: 100_000, expectedReuseRatio: 1 };
+    // Raising risk at an unchanged action mode moves an external side effect into authorization preflight.
+    const escalated = resolveContinuity(
+      active,
+      { ...external, risk: "high", taskContinuity: "clear_continuation" },
+      cache,
+    );
+    assert.equal(escalated.action, "new_task");
+    assert.match(escalated.reason, /routing or action requirements/);
+
+    const authorized = {
+      ...active,
+      features: { ...external, risk: "high" },
+      lifecycle: { phase: "preflight", policy: "authorization_then_completion_review", taskFingerprint: "task" },
+    };
+    const relaxed = resolveContinuity(
+      authorized,
+      { ...external, risk: "low", taskContinuity: "clear_continuation" },
+      cache,
+    );
+    assert.equal(relaxed.action, "continue", "a relaxed policy keeps the stricter lease and its preflight");
+
+    // A generated review child carries the ordinary policy; its task family's policy is what continues.
+    const review = {
+      ...authorized,
+      taskId: "review",
+      parentLease: authorized,
+      lifecycle: {
+        phase: "review",
+        policy: "ordinary",
+        taskFingerprint: "task",
+        reviewKind: "authorization",
+        scopeFingerprint: "scope",
+      },
+    };
+    const sameFamily = resolveContinuity(
+      review,
+      { ...external, risk: "high", taskContinuity: "clear_continuation" },
+      cache,
+    );
+    assert.equal(sameFamily.action, "continue");
+    // The child's reviewer archetype and read-only action mode do not make the parent's own work look riskier.
+    const reviewerChild = {
+      ...review,
+      archetype: "code_review",
+      features: { ...review.features, actionMode: "local_read", intent: "review", workflowType: "code_review" },
+    };
+    assert.equal(
+      resolveContinuity(reviewerChild, { ...external, risk: "high", taskContinuity: "clear_continuation" }, cache)
+        .action,
+      "continue",
+      "continuity is judged against the task family, not the reviewer child",
+    );
+
+    // Leaving code work for high-risk reversible non-code work adds the advisory phase's pre-action gate.
+    const codeFeatures = {
+      ...lease().features,
+      intent: "implement",
+      workflowType: "coding_implementation",
+      actionMode: "reversible_mutation",
+      risk: "high",
+    };
+    const nonCodeFeatures = { ...codeFeatures, intent: "operate", workflowType: "incident_or_operations" };
+    const completion = {
+      ...lease(),
+      features: codeFeatures,
+      lifecycle: { phase: "building", policy: "completion_review", taskFingerprint: "task" },
+    };
+    const advisory = resolveContinuity(completion, { ...nonCodeFeatures, taskContinuity: "clear_continuation" }, cache);
+    assert.equal(advisory.action, "new_task", "completion review alone does not satisfy the advisory gate");
+    const advising = {
+      ...completion,
+      features: nonCodeFeatures,
+      lifecycle: { phase: "advisory_pending", policy: "advisory_then_completion_review", taskFingerprint: "task" },
+    };
+    const backToCode = resolveContinuity(advising, { ...codeFeatures, taskContinuity: "clear_continuation" }, cache);
+    assert.equal(backToCode.action, "continue", "the stricter advisory lease is kept");
+  });
+
+  it("starts a fresh lease when an information-only continuation leaves either planning route", () => {
+    for (const archetype of ["implementation_planning", "large_program_planning"]) {
+      const active = {
+        ...lease(),
+        archetype,
+        features: {
+          ...lease().features,
+          intent: "plan",
+          workflowType: "implementation_planning",
+          actionMode: "local_read",
+          horizon: archetype === "large_program_planning" ? "program_unknown_size" : "single_pr",
+        },
+      };
+      for (const taskContinuity of ["clear_continuation", "possible_continuation"]) {
+        const result = resolveContinuity(
+          active,
+          {
+            ...active.features,
+            intent: "summarize",
+            workflowType: "research_or_analysis",
+            actionMode: "information_only",
+            horizon: "one_response",
+            taskContinuity,
+          },
+          { cachedTokens: 100_000, expectedReuseRatio: 1 },
+        );
+        assert.equal(result.action, "new_task", `${archetype}: ${taskContinuity}`);
+        assert.match(result.reason, /routing or action requirements/);
+      }
+
+      const sameRoute = resolveContinuity(
+        active,
+        { ...active.features, taskContinuity: "clear_continuation" },
+        { cachedTokens: 100_000, expectedReuseRatio: 1 },
+      );
+      assert.equal(sameRoute.action, "continue", `${archetype}: continued planning keeps the lease`);
+    }
+  });
+
   it("lets strong discontinuity override cache but resists a marginal switch", () => {
     const active = lease();
     const marginal = resolveContinuity(

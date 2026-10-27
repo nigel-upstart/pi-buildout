@@ -138,6 +138,50 @@
         }
       }
     },
+    "gpt-6.1-sol": {
+      "sourceModelId": "gpt-5.6-sol",
+      "rates": {
+        "input": 2.0,
+        "cacheRead": 0.1,
+        "output": 10.0,
+        "source": "bundled Pi 1.1.0 OpenAI Codex catalog",
+        "retrieved": "2026-10-13"
+      },
+      "sourceRates": {
+        "input": 4.0,
+        "cacheRead": 0.4,
+        "output": 20.0,
+        "source": "https://artificialanalysis.ai/models/gpt-5-6-sol",
+        "retrieved": "2026-09-09"
+      },
+      "sourceTokenMix": {
+        "low": {
+          "uncachedInput": 41098029,
+          "cacheRead": 271158784,
+          "output": 4781772
+        },
+        "medium": {
+          "uncachedInput": 55519604,
+          "cacheRead": 625099264,
+          "output": 8328198
+        },
+        "high": {
+          "uncachedInput": 125717478,
+          "cacheRead": 1099147776,
+          "output": 12862722
+        },
+        "xhigh": {
+          "uncachedInput": 132042077,
+          "cacheRead": 1795639296,
+          "output": 18428674
+        },
+        "max": {
+          "uncachedInput": 220238625,
+          "cacheRead": 3344424960,
+          "output": 27133255
+        }
+      }
+    },
     "claude-opus-5-5": {
       "sourceModelId": "claude-opus-5",
       "rates": {

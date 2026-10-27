@@ -1,3 +1,4 @@
+import { deriveArchetype } from "./archetype.ts";
 import type { Archetype } from "./archetype.ts";
 import { isCodeBuilder } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
@@ -6,7 +7,7 @@ import { findPromptProfile } from "./profiles.ts";
 import type { EffortLevel } from "./profiles.ts";
 import type { RouteChoice } from "./routing.ts";
 import { deriveSafetyPolicy, initialLifecycle } from "./safety.ts";
-import type { LeaseLifecycle, SafetyEvidenceLog } from "./safety.ts";
+import type { LeaseLifecycle, SafetyEvidenceLog, SafetyPolicy } from "./safety.ts";
 
 export type HardBoundary = "new_session" | "post_compaction" | "post_push" | "subagent";
 export type RouterMode = "off" | "shadow" | "active";
@@ -43,6 +44,8 @@ export type LeaseState = {
   active?: TaskLease;
   pendingHardBoundary?: HardBoundary;
   manualOverride: boolean;
+  /** Validated persistence marker; live decisions read the family actor's latch. */
+  secondarySafetyPending?: boolean;
 };
 
 export type BoundaryInput = {
@@ -140,11 +143,46 @@ export function deterministicBoundaryGate(state: LeaseState, input: BoundaryInpu
   };
 }
 
+const ACTION_MODE_RANK: Record<TaskFeatures["actionMode"], number> = {
+  information_only: 0,
+  local_read: 1,
+  reversible_mutation: 2,
+  external_side_effect: 3,
+  destructive: 4,
+};
+
+// Safety policies ordered by the gates they impose. Each adds to the one before it: a completion review after
+// mutation, then a non-mutating advisory phase before it, then a preflight that needs an independently approved plan.
+const SAFETY_POLICY_RANK: Record<SafetyPolicy, number> = {
+  ordinary: 0,
+  completion_review: 1,
+  advisory_then_completion_review: 2,
+  authorization_then_completion_review: 3,
+};
+
+function isPlanningArchetype(archetype: Archetype): boolean {
+  return archetype === "implementation_planning" || archetype === "large_program_planning";
+}
+
 export function resolveContinuity(
   lease: TaskLease,
   features: TaskFeatures,
   cache: { cachedTokens: number; expectedReuseRatio: number },
 ): BoundaryGateResult {
+  // A continuation keeps the lease's tool policy, so it must not absorb work that needs a different one:
+  // entering or leaving planning (whose validator only accepts planning leases), a riskier action mode, or a
+  // stricter safety policy. Risk alone can demand authorization at an unchanged action mode. A relaxed policy
+  // keeps the stricter lease rather than letting a reclassification escape an in-flight preflight. A generated
+  // review child carries reviewer attributes (code_review, local_read, ordinary), so every comparison uses its
+  // task family: the work that continues is the parent's.
+  const family = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
+  if (
+    isPlanningArchetype(deriveArchetype(features).archetype) !== isPlanningArchetype(family.archetype) ||
+    ACTION_MODE_RANK[features.actionMode] > ACTION_MODE_RANK[family.features.actionMode] ||
+    SAFETY_POLICY_RANK[deriveSafetyPolicy(features)] > SAFETY_POLICY_RANK[family.lifecycle.policy]
+  ) {
+    return { action: "new_task", reason: "continuity classification changed routing or action requirements" };
+  }
   if (features.taskContinuity === "clear_continuation") {
     return { action: "continue", reason: "continuity classifier found a clear continuation", lease };
   }

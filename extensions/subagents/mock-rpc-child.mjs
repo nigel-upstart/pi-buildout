@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 let streaming = false;
 let prompts = 0;
@@ -10,6 +11,16 @@ let abortFails = false;
 function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
+
+/** Prompt markers that make the mock die after writing a stderr diagnostic. */
+const UNEXPECTED_EXITS = [
+  { marker: "EXIT_UNEXPECTED", stderr: "mock child fatal diagnostic\n", exit: () => process.exit(17) },
+  {
+    marker: "SIGNAL_UNEXPECTED",
+    stderr: "mock child signal diagnostic\n",
+    exit: () => process.kill(process.pid, "SIGKILL"),
+  },
+];
 
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
@@ -54,7 +65,16 @@ input.on("line", (line) => {
     send({ id: command.id, type: "response", command: command.type, success: true });
     return;
   }
+  if (command.type === "timeout") {
+    process.stderr.write("mock timeout diagnostic\n");
+    return;
+  }
   if (command.type === "prompt") {
+    const unexpectedExit = UNEXPECTED_EXITS.find(({ marker }) => String(command.message).includes(marker));
+    if (unexpectedExit) {
+      process.stderr.write(unexpectedExit.stderr, unexpectedExit.exit);
+      return;
+    }
     prompts++;
     const promptNumber = prompts;
     const operation = ++activeOperation;
@@ -87,18 +107,26 @@ input.on("line", (line) => {
           });
           send({ type: "turn_end" });
         } else if (String(command.message).includes("SPAWN_DESCENDANT")) {
+          const port = process.env.PI_TEST_DESCENDANT_PORT;
+          const token = process.env.PI_TEST_DESCENDANT_TOKEN;
+          if (!port || !token) throw new Error("Missing descendant test observer");
           const descendant = spawn(
             process.execPath,
-            ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
-            { stdio: "ignore" },
+            [fileURLToPath(new URL("./mock-rpc-descendant.mjs", import.meta.url)), port, token],
+            { stdio: ["ignore", "ignore", "ignore", "ipc"] },
           );
-          const text = `descendant:${descendant.pid}`;
-          send({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
-          send({
-            type: "message_end",
-            message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" },
+          descendant.once("message", () => {
+            const text = `descendant:${descendant.pid}`;
+            send({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
+            send({
+              type: "message_end",
+              message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" },
+            });
+            send({ type: "turn_end" });
+            streaming = false;
+            send({ type: "agent_settled" });
           });
-          send({ type: "turn_end" });
+          return;
         } else if (String(command.message).includes("FAIL_MODEL")) {
           send({
             type: "message_end",

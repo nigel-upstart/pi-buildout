@@ -71,6 +71,63 @@ include named/default agent types, custom agent frontmatter, proactive completio
 scheduling, event-bus RPC, persistent memory, worktree isolation, skill preloading, and its three-tool Claude
 Code-compatible surface.
 
+## Subagent delegation design (`specs/subagents/modern-layer-design.md`, DRAFT)
+
+The draft manager-first router delegation design studied the sources below. Operator design decisions select one shared
+tintinweb-compatible signaling subset, then classifier-found builder-steered delegation, then SDK fallback. This remains
+a design document; P0/P2/P3/P4 implementation is now authorized on separate branches/draft PRs. This section records
+research and intended reuse, not a claim that code has landed. No upstream code was copied into this document.
+
+- `nicobailon/pi-subagents` — <https://github.com/nicobailon/pi-subagents>, revision
+  `d48d580954086a426d31f1c7b8d793a1d26ad184` (`0.79.2`), MIT. Conceptual inspiration only: the structured delegation
+  API's exact-tuple attempt identity, single terminal response, cancel-before-start, explicit text vs structured result
+  mode, and usage with effective model/thinking; `context: "fresh"` defaulting. Its ordinary tool remains a possible
+  builder-steered target only. Neither its signaling nor structured-delegation API is supported, deferred, or planned.
+  Not adopted: workflows, missions, schedules, agent frontmatter, management APIs, watchdog/intercom, Herdr/fleet UI,
+  worktrees.
+- `tintinweb/pi-subagents` — <https://github.com/tintinweb/pi-subagents>, revision
+  `ca93a5247e72e7053fcd10bea7125d6c4205f949` (reviewed source snapshot, package version `0.22.0`) and released `v0.22.0`
+  source `85a704cb8f35c96c0cabfa665b572bab296942e5`, MIT. Release/package `0.22.0` and ping protocol `2` are distinct.
+  This is the minimum verified release baseline; earlier compatibility is unverified. Conceptual inspiration only:
+  final-result-by-default with verbose opt-in, `inherit_context: false` as the fresh default, per-call model/thinking,
+  and consuming a result to suppress redundant notifications. Proposed compatibility adoption: the documented protocol-2
+  ping/spawn/stop/consume request/reply subset and completed/failed events, as documented in `docs/rpc.md` and
+  implemented in `src/cross-extension-rpc.ts` and `src/index.ts`. Our manager would answer that generic subset; one
+  router adapter would serve both. This is a planned compatible reimplementation, not copied code or a new review
+  protocol. Not adopted: steer, global `Symbol.for` registry, compiled `structuredOutput`, scheduling, workflows,
+  FleetView, memory, worktree isolation, protocol dialect shims, or competing-manager arbitration. The approved
+  final-only wait uses our existing action and bounds; no third-party result rewriting is proposed. The parent
+  separately owns any factual upstream discovery/generic-compatibility feature request; none is filed by this design
+  task.
+- `elpapi42/pi-minimal-subagent` — revision `4c847a37b7d675470a8c5eb50d736d11ceac910a`; `package.json` declares MIT, the
+  repository has no LICENSE file. Re-reviewed; no new ideas adopted.
+- `earendil-works/pi` — <https://github.com/earendil-works/pi>, MIT; v1.2.0 `06a466935536f8c9bcacb2d5efc0fc021be1bdff`,
+  v1.3.0 `71023aec1546d6d677a65669c5665c0927ce0dd0`, main `16f5f0af4d85ca583d045ceb5ed6d646fcaf7761`. Studied
+  `packages/coding-agent` extension/SDK declarations and docs (API-boundary evidence) and `packages/durable` README and
+  `test/examples/22`, `23`, `26`, `28` at release `71023aec1546d6d677a65669c5665c0927ce0dd0`, plus associated
+  `src/harness/types.ts`, `src/types.ts` submission records, and `src/tools/index.ts`. The actual durable-based coding
+  agent is a forward-looking conceptual reference, not a runtime-adoption request or evidence of a future Pi roadmap.
+  Concrete comparisons: foreground versus background child ownership, accepted submission versus settled answer handle,
+  cancellation of a wait versus child termination, explicit tools/configuration versus transcript construction,
+  model/structured/UI result channels, and application-owned model selection. The examples return prose; their tool
+  types support structured results separately. Their extension-removal recursion shortcut and prose-sentinel reviewer
+  continuation are not substitutes for our no-router isolation and bounded parent review-attempt scheduling. The draft
+  strengthens tests in existing PRs without copying code or adding a new framework. Not adopted: durable `Harness`,
+  storage, task runtime, replay/restart/idempotency guarantees, background reporters, example review loop, or any
+  durable dependency. The private `ModelRegistry.runtime` access is accepted in the draft with a runtime guard and
+  proposed floor/latest-released contract canary; pinned Pi remains in normal CI. The router/subagents supported host
+  range `>=1.2.0 <2.0.0` is operator-approved, with metadata/tests coordinator-owned and floor execution checks required
+  before release. This is not npm runtime enforcement or a new installer upper gate; future latest 2.x must flag an
+  unsupported-upgrade investigation rather than imply support. The draft audits SDK imports, extension/auth APIs, CLI
+  flags, and RPC operations against recorded 1.2.0 sources; no live floor-runtime execution is claimed. Pi session
+  custom entries support parent scheduling state; explicit resource loading supports router-free children. Child-task
+  classification/model-effort selection runs in the parent before spawn, reusing existing routing and explicit override
+  precedence without switching the builder. No child lineage, opaque startup metadata API, or child-router factory is
+  adopted. These are API references and original design, not copied upstream implementation. Stale-while-refresh
+  discovery and delta-scaled review budgets are operator-directed original design, not attributed upstream behavior.
+  Workflow layout draws from this repository’s `.github/workflows/patch-drift.yml`; new action versions and org
+  allowlist compatibility remain implementation-time checks. No networked pre-commit hook is proposed.
+
 ## Routing layer (`extensions/router`)
 
 Full design provenance, including the historical conversation export the router's spec derives from and the public
@@ -82,25 +139,30 @@ of first resort.
 
 ### Pi extension event semantics
 
-- Sources: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581); the `ToolExecutionMode`
-  declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and concurrency" section of
-  `@earendil-works/pi-coding-agent` `docs/extensions.md`
+- Sources: [`earendil-works/pi` issue #5581](https://github.com/earendil-works/pi/issues/5581), including
+  [our reproduction comment](https://github.com/earendil-works/pi/issues/5581#issuecomment-6009314962), and its fix
+  [PR #10739](https://github.com/earendil-works/pi/pull/10739) (merge `a447ba11f3e7760fcff91e924bda8c20033953ea`); the
+  `ToolExecutionMode` declaration in `@earendil-works/pi-agent-core` (`dist/types.d.ts`); and the "Events and
+  concurrency" section of `@earendil-works/pi-coding-agent` `docs/extensions.md`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/agent-core`)
-- Revisions reviewed: published `1.0.3` for the issue behavior and `1.0.4` for tool-execution ordering; no Git commit
-  was pinned
-- License declared by the packages: MIT
-
-Use, generated turns: idle `sendMessage({ triggerTurn: true })` turns skip `before_agent_start`. The router therefore
-keeps its safety validator tools (`submit_action_plan`, `submit_discovery_request`, and `submit_safety_review`) declared
-throughout active mode, and checks the actual mode, lease phase, and review fingerprint when a tool executes. Shadow and
-off modes hide all three. We did not adopt the upstream proposed shared turn-preflight patch, fake user messages,
-prose-only safety verdicts, or permanent tool exposure when routing is disabled.
-
-Use, tool-execution ordering: in the default `parallel` mode, Pi runs the `tool_call` hooks for every call in one
-assistant message sequentially, then executes the allowed calls concurrently. The router therefore spends a single-use
-discovery grant in its `tool_call` handler, not at `tool_execution_end`.
+- Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
+  custom-start preparation and busy-start semantics.
 
 No Pi code, issue prose, or documentation prose was copied or modified.
+
+### Pi model catalog: GPT-6.1 Sol pricing
+
+- Source: bundled `@earendil-works/pi-ai` provider catalog shipped with `@earendil-works/pi-coding-agent`
+  (`dist/providers/data/openai-codex.json`, model `gpt-6.1-sol`)
+- Canonical repository: <https://github.com/earendil-works/pi>
+- Revision reviewed: published `1.1.0`, read 2026-10-13; no Git commit was pinned
+- License declared by the package: MIT
+
+Use: the router's `gpt-6.1-sol` generation proxy (`extensions/router/core/evidence.ts` and
+`specs/routing-layer/generation-evidence-2026-09-22.json`) takes its list rates from that catalog entry (input 2, cache
+read 0.1, output 10 USD per million tokens). Only those numeric facts were used; no catalog file or Pi code was copied.
+The behavioral prior is intentionally not taken from Pi: it remains a temporary proxy from the router's existing
+measured GPT-5.6/6.0 Sol evidence until GPT-6.1 Sol has rollout evidence of its own.
 
 ### `maximhq/bifrost`
 
@@ -115,18 +177,6 @@ configures models through it. No Bifrost source was copied; the router only depe
 contract and its Bedrock model-path naming, documented in
 [`specs/routing-layer/decisions.md`](specs/routing-layer/decisions.md).
 
-### `pi-telemetry-otel`
-
-- Package: <https://www.npmjs.com/package/pi-telemetry-otel>
-- Revision reviewed: not pinned; it is an optional, separately installed companion package, not an extension runtime
-  dependency
-- License: not verified in this repository; see the npm listing for its declared license
-
-Use: `extensions/router/telemetry.ts` studies and consumes this package's public, documented integration contract — the
-`Symbol.for("pi.telemetry-otel.runtimeRegistry.v1")` and `Symbol.for("pi.telemetry-otel.activeSpanContextRegistry.v1")`
-global registries — to emit optional parented OTel spans without a static dependency, and no-ops cleanly when the
-package is absent. No `pi-telemetry-otel` source was copied.
-
 ### Amazon Bedrock pricing and prompt caching
 
 - Sources: [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/),
@@ -135,13 +185,7 @@ package is absent. No `pi-telemetry-otel` source was copied.
 - Revision reviewed: live documentation on 2026-08-11
 - License: no documentation license was identified; no source code or documentation text was copied
 
-Use: published per-token input and output list rates now drive cost-first endpoint ordering. Cache read/write semantics
-establish the related cost classifications; the sources also establish default and one-hour TTL behavior, GPT-5.6's
-explicit-breakpoint, minimum-prefix, and cache-usage-reporting behavior, and the exclusion of cache-read tokens from
-input-token rate-limit quotas. The repository's operator-supplied `1.00001` Bedrock preference, which slightly
-prioritizes first-party endpoints when list rates match, remains separate from and was not derived from AWS
-documentation; the public pricing page supplies only its list-price basis. Provisioned-throughput and commitment pricing
-were intentionally not adopted.
+Use: published per-token input and output list rates now drive cost-first endpoint ordering.
 
 ### Amazon Bedrock Converse tool choice and extended thinking
 
@@ -311,20 +355,21 @@ scale, because the cost-bearing Verified population tops out at a prior-generati
 router's cost-to-done model requires and single-attempt submissions cannot measure were not estimated or defaulted, and
 the data is structurally barred from that model rather than down-weighted within it. No model became routable.
 
-## Pi 0.85.1 `/skills` runtime patch
+## Pi 0.85.1 `/skills` runtime patch (retired)
+
+Historical attribution retained for the shared overlay. Its versioned artifacts were removed in #109.
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revision reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`)
 - License declared by the package: MIT
 
-[`patches/pi-0.85.1/skills.patch`](patches/pi-0.85.1/skills.patch) is a modified-code patch against Pi's published,
-generated runtime and documentation. It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`,
-`dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
-`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
-from the MIT-licensed Pi package. The bundled entrypoints become thin wrappers so the patched unbundled runtime handles
-CLI and RPC execution. The added `dist/core/skill-management.js` is primarily an original implementation for this
-repository, informed by Pi's resource-loading and command conventions.
+`patches/pi-0.85.1/skills.patch` is a modified-code patch against Pi's published, generated runtime and documentation.
+It modifies upstream `dist/bundle/cli.js`, `dist/bundle/rpc-entry.js`, `dist/core/resource-loader.js`,
+`dist/core/slash-commands.js`, `dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their
+unchanged context and modified lines derive from the MIT-licensed Pi package. The bundled entrypoints become thin
+wrappers so the patched unbundled runtime handles CLI and RPC execution. The added `dist/core/skill-management.js` is
+primarily an original implementation for this repository, informed by Pi's resource-loading and command conventions.
 
 The persisted-skill locking helpers are modified adaptations of the synchronous `proper-lockfile` retry and guaranteed
 release pattern in Pi's MIT-licensed `dist/core/trust-manager.js`; the integration around the complete skill
@@ -336,20 +381,22 @@ precedence and project-trust behavior. It intentionally does not adopt automatic
 configured-path confinement, new public resource-loader mutator APIs, or changes to Pi's unrelated extension, prompt,
 theme, package, trust, and provider behavior.
 
-## Pi 0.87.1 `/skills` runtime patch
+## Pi 0.87.1 `/skills` runtime patch (retired)
+
+Historical attribution retained for the shared overlay. Its versioned artifacts were removed in #109.
 
 - Source: `@earendil-works/pi-coding-agent@0.87.1`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revision reviewed: `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`)
 - License declared by the package: MIT
 
-[`patches/pi-0.87.1/skills.patch`](patches/pi-0.87.1/skills.patch) is a modified-code patch against Pi's published,
-generated runtime and documentation, generated from the TypeScript overlay below. It modifies upstream
-`dist/bundle/cli-runtime.js`, `dist/bundle/rpc-entry.js`, `dist/core/resource-loader.js`, `dist/core/slash-commands.js`,
-`dist/main.js`, `dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified
-lines derive from the MIT-licensed Pi package. The bundled runtime and RPC entrypoints become thin wrappers so the
-patched unbundled runtime handles CLI and RPC execution; upstream's `dist/bundle/cli.js` compile-cache loader is left
-unchanged and is only pinned by checksum in both manifests. The added `dist/core/skill-management.js` and
+`patches/pi-0.87.1/skills.patch` is a modified-code patch against Pi's published, generated runtime and documentation,
+generated from the TypeScript overlay below. It modifies upstream `dist/bundle/cli-runtime.js`,
+`dist/bundle/rpc-entry.js`, `dist/core/resource-loader.js`, `dist/core/slash-commands.js`, `dist/main.js`,
+`dist/modes/interactive/interactive-mode.js`, and `docs/skills.md`; their unchanged context and modified lines derive
+from the MIT-licensed Pi package. The bundled runtime and RPC entrypoints become thin wrappers so the patched unbundled
+runtime handles CLI and RPC execution; upstream's `dist/bundle/cli.js` compile-cache loader is left unchanged and is
+only pinned by checksum in both manifests. The added `dist/core/skill-management.js` and
 `dist/core/skill-management-core.js` are compiled from this repository's original overlay code and are byte-identical to
 the 0.85.1 patch's copies.
 
@@ -362,7 +409,7 @@ intentionally does not adopt Pi 0.87.1's automatic loading of every discovered s
 extension, prompt, theme, package, trust, provider, compile-cache, or bundled-chunk behavior. The `docs/skills.md`
 changes were rewritten against 0.87.1's restructured skills page rather than carried over from 0.85.1.
 
-`scripts/skills-patch-entrypoint.test.mjs` writes a five-line stand-in for upstream 0.87.1's `dist/bundle/cli.js`
+The retired 0.87.1 entrypoint test wrote a five-line stand-in for upstream 0.87.1's `dist/bundle/cli.js`
 (`enableCompileCache()` followed by `createRequire(import.meta.url)("./cli-runtime.js")`). That shape is adapted from
 the MIT-licensed Pi package so the test can exercise the same `require()` dispatch the published loader performs.
 
@@ -426,24 +473,47 @@ loading or its skill implementation. The original `cli-runtime.js` wrapper reuse
 `rpc-entry.js` wrapper also preserves Pi 1.1.0's process markers and HTTP-dispatcher setup. The published
 `dist/bundle/cli.js` loader remains unchanged and checksum-pinned. No complete Pi source checkout is committed.
 
+## Pi 1.3.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.3.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`), the commit the lightweight release
+  tag points to; the npm registry publishes no `gitHead` for this release, and the commit is unsigned
+- Source archive: `pi-1.3.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.3.0.tgz`, pinned by SHA-256 and registry integrity
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.3.0/integration.patch`](pi-overlay/versions/1.3.0/integration.patch) is the 1.1.0 seam rebased
+onto Pi 1.3.0's MIT-licensed TypeScript sources and documentation: the added and removed lines are unchanged, and only
+hunk positions and blob indexes differ. The generated [`skills.patch`](patches/pi-1.3.0/skills.patch) modifies the
+published resource loader, slash-command list, CLI and interactive entry points, and skill documentation, within the
+same 48-line seam budget. It adds this repository's original skill-management modules, which compile byte-identically to
+the 1.1.0 output, and reuses Pi's package/resource discovery, project-trust, and `proper-lockfile` APIs. It keeps
+catalog skills inactive until explicitly enabled, preserves explicit `--skill` paths with `--no-skills`, and does not
+copy Pi's automatic skill loading or its skill implementation. The original `cli-runtime.js` and `rpc-entry.js` wrappers
+are reused byte-for-byte from 1.1.0 because Pi 1.3.0's `src/cli.ts`, `src/rpc-entry.ts`, and `src/cli/setup.ts` are
+unchanged. The published `dist/bundle/cli.js` loader remains unchanged and checksum-pinned. Upstream changes elsewhere
+in 1.3.0, including those near the seams, were not adopted. No complete Pi source checkout is committed.
+
 ## Pi `/skills` TypeScript overlay
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`,
-  `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`, and
-  `@earendil-works/pi-coding-agent@1.1.0`
+  `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`,
+  `@earendil-works/pi-coding-agent@1.1.0`, and `@earendil-works/pi-coding-agent@1.3.0`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
   `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`),
   `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), and `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`),
-  taken from the corresponding signed release tag
+  taken from the corresponding signed release tag, and `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`), taken from
+  its lightweight, unsigned release tag
 - Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
-  `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, and `pi-1.1.0-source.tar.gz`, each verified against upstream's
-  published `SHA256SUMS` for that release
+  `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, `pi-1.1.0-source.tar.gz`, and `pi-1.3.0-source.tar.gz`, each
+  verified against upstream's published `SHA256SUMS` for that release
 - License declared by the package: MIT
 
 [`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
-`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, and `patches/pi-1.1.0/` are
-generated from it.
+`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, `patches/pi-1.1.0/`, and
+`patches/pi-1.3.0/` are generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
@@ -486,8 +556,8 @@ pinned, checksum-verified inputs, and is not committed here.
 Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
-- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to keep all three safety
-  validators declared throughout active routing; each validator enforces its mode and lease phase at execution time.
+- Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
+  at valid lifecycle phases, including generated review turns; stale calls retain execution-time guards.
 - The Pi 0.85.1 and 0.87.1 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
   metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
   The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
@@ -496,6 +566,12 @@ Ideas and API patterns used:
   pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
+- Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
+  `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
+  `dist/core/extensions/types.d.ts`. `extensions/subagents/rpc.integration.test.mjs` uses these to launch the pinned Pi
+  CLI in RPC mode, and `rpc.integration-provider.mjs` registers a test-only `openai-completions` provider that points at
+  a local deterministic fixture. The test asserts Pi's observable `prompt`, `follow_up` (queued while streaming),
+  `get_state`, `get_session_stats`, and shutdown behavior. No Pi code was copied.
 - Model-registry authentication, fuzzy CLI-equivalent model resolution, thinking-level capability maps, and normal child
   resource inheritance.
 - The `@earendil-works/pi-ai@0.80.7` generated registry's endpoint rates and capabilities, plus its `calculateCost`
@@ -510,15 +586,15 @@ Ideas and API patterns used:
   bounds, and compaction setup.
 
 Major pieces intentionally not adopted include Pi's full interactive mode, session-replacement runtime, prompt-template
-workflows, custom provider implementations, and bundled role-based subagent profiles. No Pi source file or example was
-copied verbatim; the extension is original code using Pi's published APIs and adapting the documented architectural
-patterns.
+workflows, custom provider implementations (beyond the test-only integration fixture above), and bundled role-based
+subagent profiles. No Pi source file or example was copied verbatim; the extension is original code using Pi's published
+APIs and adapting the documented architectural patterns.
 
 ### Router start-mode scoping (`extensions/router/core/start-mode.ts`)
 
 The router's start-mode configuration reuses the repository-identity scoping mechanism introduced by this repository's
-version-pinned pi skills patch ([`patches/pi-0.83.0/skills.patch`](patches/pi-0.83.0/skills.patch), applied to
-`@earendil-works/pi-coding-agent@0.83.0`, MIT), which itself extends pi's skills configuration.
+version-pinned pi skills patch (`patches/pi-0.83.0/skills.patch`, applied to `@earendil-works/pi-coding-agent@0.83.0`,
+MIT), which itself extends pi's skills configuration.
 
 - Adopted as **modified code**: the git-remote normalization and repository-key resolution algorithm — remote preference
   order `upstream`, `origin`, then the first configured remote; normalization of SCP-style, HTTPS, `git+`, and `ssh://`
@@ -688,3 +764,39 @@ time and size and to confirm the `effect/testing` `TestClock` export; it is not 
 Effect source code or documentation text has been copied. See
 [`specs/effect-adoption-evaluation.md`](specs/effect-adoption-evaluation.md) for the evaluation and the intentionally
 unadopted parts of the library.
+
+## Pi 1.1.0 supported-install discovery and registry refresh
+
+- Source: [Pi installer](https://pi.dev/install.sh) and `@earendil-works/pi-coding-agent@1.1.0` /
+  `@earendil-works/pi-ai@1.1.0`
+- Canonical repository: <https://github.com/earendil-works/pi>
+- Package revision reviewed: `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`); installer fetched 2026-10-08
+- Declared package license: MIT; the fetched standalone installer does not declare a separate license
+
+Conceptual use: `scripts/install-extensions.sh` independently follows the managed launcher's `install/current-version`
+and `install/releases/<version>/node_modules/@earendil-works/pi-coding-agent` layout. The layout was checked against Pi
+1.1.0's published `dist/package-manager-cli.js`. Package identity and the minimum supported version are checked before
+installation. No installer code was copied; Pi's downloads, installation, self-update, release retention, runtime
+marker, and shell-profile machinery were not adopted.
+
+The router registry tests use the published 1.1.0 catalog's Azure Sol absence and existing cache-write rates as
+observations, without copying generated registry code or changing routing policy. The entrypoint test's five-line
+compile-cache loader is adapted from Pi 1.1.0's MIT-licensed `dist/bundle/cli.js` and verified byte-for-byte against its
+baseline checksum; the runtime and RPC behavior exercised comes from this repository's existing wrappers. Pre-1.0.1
+patch artifacts and overlays were removed; historical attribution above remains for shared ideas and code.
+
+## XState v5 and fast-check (router lease ownership and race testing)
+
+- XState: <https://github.com/statelyai/xstate>, npm `xstate@5.33.2`, MIT; reviewed the installed package's declarations
+  and [actor](https://stately.ai/docs/actors) / [invocation](https://stately.ai/docs/invoke) documentation on
+  2026-10-07. Consumed as an ordinary runtime dependency, with no upstream source copied or modified.
+- fast-check: <https://github.com/dubzzz/fast-check>, npm `fast-check@4.10.2`, MIT; reviewed installed scheduler/model
+  runner declarations and [race testing documentation](https://fast-check.dev/docs/advanced/race-conditions/) on
+  2026-10-07. Consumed as a development dependency, with no upstream source copied or modified.
+
+Conceptual use: XState's synchronous actor transitions, guarded statecharts, and cancellable promise children provide
+one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates JSON inputs,
+state-transition sequences, and adversarial schedules for actual router handlers and their ledger/model waits. The
+machine, adapter integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6
+alpha APIs, a global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check
+examples or its implementation; the existing Node test runner remains in place.

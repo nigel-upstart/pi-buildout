@@ -1,6 +1,6 @@
 {
   "name": "@upstart/pi-router-otel",
-  "version": "0.1.1-alpha.1",
+  "version": "0.1.1-alpha.4",
   "type": "module",
   "description": "Upstart Pi router and OpenTelemetry extensions bundled together",
   "license": "SEE LICENSE IN dist/LICENSE",
@@ -49,6 +49,7 @@
     "@opentelemetry/sdk-logs": "0.222.0",
     "@opentelemetry/sdk-metrics": "2.11.0",
     "@opentelemetry/sdk-trace-base": "2.11.0",
-    "@opentelemetry/semantic-conventions": "1.43.0"
+    "@opentelemetry/semantic-conventions": "1.43.0",
+    "xstate": "5.33.2"
   }
 }

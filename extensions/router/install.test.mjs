@@ -33,7 +33,11 @@ describe("extension installer", () => {
     await writeFile(stale, "stale", "utf8");
     await execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch"], {
       cwd: root,
-      env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+      env: {
+        ...process.env,
+        PI_AGENT_DIR: agentDirectory,
+        PI_PACKAGE_DIR: join(root, "node_modules", "@earendil-works", "pi-coding-agent"),
+      },
     });
     const router = join(agentDirectory, "extensions", "router");
     assert.equal(await exists(stale), false);
@@ -48,7 +52,11 @@ describe("extension installer", () => {
     temporaryDirectories.push(agentDirectory);
     await execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch"], {
       cwd: root,
-      env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+      env: {
+        ...process.env,
+        PI_AGENT_DIR: agentDirectory,
+        PI_PACKAGE_DIR: join(root, "node_modules", "@earendil-works", "pi-coding-agent"),
+      },
     });
     const router = join(agentDirectory, "extensions", "router");
     const manifest = JSON.parse(await readFile(join(router, "package.json"), "utf8"));

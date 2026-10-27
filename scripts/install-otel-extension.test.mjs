@@ -30,7 +30,11 @@ async function install(args) {
   temporaryDirectories.push(agentDirectory);
   await execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch", ...args], {
     cwd: root,
-    env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+    env: {
+      ...process.env,
+      PI_AGENT_DIR: agentDirectory,
+      PI_PACKAGE_DIR: join(root, "node_modules", "@earendil-works", "pi-coding-agent"),
+    },
   });
   return agentDirectory;
 }
@@ -47,7 +51,11 @@ describe("vendored OTel extension installation", () => {
 
     await execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch", "--without-otel"], {
       cwd: root,
-      env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+      env: {
+        ...process.env,
+        PI_AGENT_DIR: agentDirectory,
+        PI_PACKAGE_DIR: join(root, "node_modules", "@earendil-works", "pi-coding-agent"),
+      },
     });
     assert.equal(await exists(join(agentDirectory, "extensions", "otel")), false);
   });
@@ -64,7 +72,11 @@ describe("vendored OTel extension installation", () => {
       await assert.rejects(
         execute(join(root, "scripts", "install-extensions.sh"), ["--skip-skill-loading-patch", ...args], {
           cwd: root,
-          env: { ...process.env, PI_AGENT_DIR: agentDirectory },
+          env: {
+            ...process.env,
+            PI_AGENT_DIR: agentDirectory,
+            PI_PACKAGE_DIR: join(root, "node_modules", "@earendil-works", "pi-coding-agent"),
+          },
         }),
         /not the managed OTel extension/,
       );

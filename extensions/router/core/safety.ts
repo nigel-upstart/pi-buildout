@@ -754,7 +754,8 @@ export function isPotentiallyMutatingTool(toolName: string, input: Record<string
   if (
     toolName === "submit_action_plan" ||
     toolName === "submit_discovery_request" ||
-    toolName === "submit_safety_review"
+    toolName === "submit_safety_review" ||
+    toolName === "submit_implementation_plan"
   )
     return false;
   if (toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls") return false;

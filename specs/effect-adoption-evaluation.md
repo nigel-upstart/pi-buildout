@@ -4,10 +4,14 @@ Status: **proposed — bounded pilot recommended, broad adoption rejected**. Ana
 `b99cd68`. Tracked by Traffic Control session `9708a77d` in `sardine-run-stack`. Source research: the vault note
 `resources/research/effect-v4-when-to-use.md`, whose sources are listed at the end of this record.
 
+Revalidated 2026-10-27 against `origin/main` at `d17663d7`: the classifier deadline runner and its 11-test oracle are
+unchanged. The lease machine from #100 has since landed with XState and fast-check; it remains outside the Effect pilot.
+The startup measurements and package-version claims below are the original 2026-10-08 snapshot.
+
 ## Question
 
-Should pi-buildout adopt Effect v4 (`effect@4.0.2`, the current `latest`, MIT) for its TypeScript extensions, and if so,
-which single piece of code should carry Phase 0?
+Should pi-buildout adopt Effect v4 (`effect@4.0.2`, npm `latest` at analysis time, MIT) for its TypeScript extensions,
+and if so, which single piece of code should carry Phase 0?
 
 ## Verdict
 
@@ -26,16 +30,17 @@ which single piece of code should carry Phase 0?
 
 ## Evidence from the code
 
-Measured on `origin/main` (non-test TypeScript only; counts are approximate).
+Measured on the original `origin/main` snapshot (non-test TypeScript only; counts are approximate). Lease-state and
+dependency facts below are updated to the revalidation revision.
 
-| Area                                                      | What is hand-rolled                                                                                                                                                                                                         | Effect fit                                                                                                                    |
-| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `router/telemetry.ts` `runClassifierInvocation` (171–290) | Overall and per-stage `setTimeout`s on the global timer, `AbortController` abort on overrun, a `Settled` race between result, error, and deadline, and timer clearing after the race. No injectable clock.                  | **High.** This is the timeout/abort/race structure Effect expresses directly (`Effect.timeout`, `Effect.race`, interruption). |
-| `router/telemetry.ts` `JsonlTelemetryStore` append        | A 250 ms append timeout behind an injected `deadline` adapter (`set`/`clear`, ~570). This is the only injected timer seam in the router today.                                                                              | Low. Best-effort persistence; the existing seam is the pattern Phase 0 copies.                                                |
-| `router/index.ts` grace timers (~1150–1175)               | Grace-period `setTimeout` with a resolve-or-timeout race.                                                                                                                                                                   | Medium. Would move with Phase 0 only if it shares the same helper.                                                            |
-| `router/pi-classifier.ts` endpoint fallthrough (~110–210) | Any thrown error falls through to the next endpoint; cancellation is the single exception. This is an error-classification rule written as an `if`.                                                                         | Medium. Typed errors make the cancellation exception explicit. Small code, so low payoff alone.                               |
-| `subagents/rpc.ts` termination (~400–740)                 | Pending-request timers, a SIGTERM → poll → SIGKILL → terminal-cleanup state machine using `setInterval`, `setTimeout`, and Windows `taskkill` counters, plus a process-tree monitor.                                        | **High in principle, highest risk in practice** (process trees, cross-platform). Phase 1 at the earliest.                     |
-| `router/core/fallback.ts`, `routing.ts`, lease state      | Pure policy functions with unit tests. Issue #100 proposes moving lease state into an `xstate` machine with `fast-check` race tests (branch `feat/100-router-lease-machine`, unmerged); neither library is on `main` today. | **Low.** Pure functions need no runtime, and Effect would compete with the `xstate` direction in #100. Not adopted.           |
+| Area                                                      | What is hand-rolled                                                                                                                                                                                        | Effect fit                                                                                                                    |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `router/telemetry.ts` `runClassifierInvocation` (171–290) | Overall and per-stage `setTimeout`s on the global timer, `AbortController` abort on overrun, a `Settled` race between result, error, and deadline, and timer clearing after the race. No injectable clock. | **High.** This is the timeout/abort/race structure Effect expresses directly (`Effect.timeout`, `Effect.race`, interruption). |
+| `router/telemetry.ts` `JsonlTelemetryStore` append        | A 250 ms append timeout behind an injected `deadline` adapter (`set`/`clear`, ~570). This is the only injected timer seam in the router today.                                                             | Low. Best-effort persistence; the existing seam is the pattern Phase 0 copies.                                                |
+| `router/index.ts` grace timers (~1150–1175)               | Grace-period `setTimeout` with a resolve-or-timeout race.                                                                                                                                                  | Medium. Would move with Phase 0 only if it shares the same helper.                                                            |
+| `router/pi-classifier.ts` endpoint fallthrough (~110–210) | Any thrown error falls through to the next endpoint; cancellation is the single exception. This is an error-classification rule written as an `if`.                                                        | Medium. Typed errors make the cancellation exception explicit. Small code, so low payoff alone.                               |
+| `subagents/rpc.ts` termination (~400–740)                 | Pending-request timers, a SIGTERM → poll → SIGKILL → terminal-cleanup state machine using `setInterval`, `setTimeout`, and Windows `taskkill` counters, plus a process-tree monitor.                       | **High in principle, highest risk in practice** (process trees, cross-platform). Phase 1 at the earliest.                     |
+| `router/core/fallback.ts`, `routing.ts`, lease state      | Pure policy functions with unit tests. The lease machine from #100 now uses `xstate`, with `fast-check` race tests.                                                                                        | **Low.** Pure functions need no runtime, and Effect would compete with the existing `xstate` lease machine. Not adopted.      |
 
 Other facts that bear on the decision:
 
@@ -48,9 +53,8 @@ Other facts that bear on the decision:
 - **Scale.** The router is ~14.7k non-test lines of TypeScript and the subagent extension ~1.9k. Both are large enough
   for timer and cancellation bugs to matter, and not so large that a single pilot module is hard to review.
 - **Dependency precedent.** `extensions/router/package.json` already ships runtime dependencies (`shell-quote`, `shlex`)
-  that the installer materialises next to the extension; #100 proposes adding `xstate` the same way. Adding `effect`
-  there follows an existing path rather than inventing one. The `otel` fork carries its own manifest for the same
-  reason.
+  that the installer materialises next to the extension; `xstate` is now shipped the same way. Adding `effect` there
+  follows an existing path rather than inventing one. The `otel` fork carries its own manifest for the same reason.
 - **Toolchain.** Root `typescript` is `^5.9.3`, which meets Effect v4's stated floor.
 
 ## Startup and size measurement
@@ -101,8 +105,8 @@ done
   result was ignored, and no timer outlived the invocation. Today the tests use real timers with short budgets, because
   the function has no clock seam.
 - **Adoption can be incremental.** One module, one exported function, and an `Effect.tryPromise` boundary around the
-  existing Promise-based `invoke`. Nothing above the function changes; both production call sites (`index.ts:322`,
-  `index.ts:1024`) keep the same signature.
+  existing Promise-based `invoke`. Nothing above the function changes; both production call sites in `index.ts` keep the
+  same signature.
 - **The cost of finding out is bounded.** The change is one module plus one manifest entry, and it is reversible with a
   flag and a revert.
 
@@ -111,7 +115,7 @@ done
 - **The Pi extension API is Promise and callback based.** Every hook (`pi.on`, tool execution, RPC) needs a boundary.
   The research note's warning applies directly: typed-error guarantees weaken when a codebase mixes Effect and plain
   Promise code inconsistently.
-- **The routing core does not need it.** Policy is pure functions, and the lease-state direction in #100 is `xstate`.
+- **The routing core does not need it.** Policy is pure functions, and the lease-state machine from #100 uses `xstate`.
   Effect would add a second state and concurrency vocabulary rather than improve either.
 - **Shipping a runtime library into every user's Pi install is a measured cost.** ~41–153 ms to load and ~50 MB on disk
   (see [Startup and size measurement](#startup-and-size-measurement)). A repo-wide adoption could not be lazy-loaded the
@@ -130,7 +134,7 @@ done
 | Classifier stage deadline (`runClassifierInvocation`) | High       | Medium. On the turn path; a timeout keeps the current model, a bug could hang or cancel early. | `telemetry.test.mjs` (8 tests), `index.test.mjs` (3) | `invoke` callback only; timers are global | **Phase 0**                                   |
 | Classifier endpoint fallthrough (`pi-classifier.ts`)  | Medium     | Medium. Changes which endpoint answers.                                                        | `pi-classifier.test.mjs`                             | Partial                                   | Phase 0 runner-up; revisit after Phase 0 gate |
 | Subagent RPC termination (`subagents/rpc.ts`)         | High       | High. Process trees, Windows `taskkill`, user-visible kill semantics.                          | `rpc.test.mjs`, `mock-rpc-child.mjs`                 | Partial                                   | Phase 1, conditional                          |
-| Lease, fallback, routing policy                       | Low        | High. Core decisions.                                                                          | Unit tests; `fast-check` proposed in #100            | Pure functions                            | Not adopted                                   |
+| Lease, fallback, routing policy                       | Low        | High. Core decisions.                                                                          | Unit tests and `fast-check` race tests from #100     | Pure policy; XState lease machine         | Not adopted                                   |
 | Telemetry JSONL persistence                           | Low        | Low                                                                                            | `telemetry.test.mjs`                                 | Injected `deadline` and `persist`         | Not adopted                                   |
 
 **Why the classifier deadline runner is Phase 0, and why not the others:**
@@ -209,14 +213,15 @@ dependency, and keep this record with the findings. Either outcome is a valid re
   every child is reaped on every path. Go/no-go gates:
   - Phase 0 passed its go criteria, including the flag-on startup gate.
   - A cross-platform test plan that covers Windows `taskkill` and process-tree kills.
-  - A decision on whether `mock-rpc-child.mjs` is sufficient or a real child fixture is needed.
+  - Extend the existing `mock-rpc-child.mjs` and real-Pi `rpc.integration.test.mjs` fixtures to prove cleanup on every
+    completion, cancellation, and timeout path; identify any remaining process-tree coverage gaps.
   - The subagent extension can load Effect lazily the same way, or the measured eager-load cost is accepted explicitly.
 - **Phase 2 — services layer.** Reconsider `Layer`/`Context` only if Phase 1 shows the injectable-seam pattern breaking
   down across more than one extension. Otherwise keep the manual seams.
 
 ## Explicitly out of scope
 
-- Lease, fallback, and routing policy (`router/core/*`). Pure policy stays, and lease state follows #100.
+- Lease, fallback, and routing policy (`router/core/*`). Pure policy and the XState lease machine from #100 stay.
 - The vendored `extensions/otel` fork. It has its own manifest and is excluded from typechecking.
 - The `pi-overlay` skill-patch pipeline and `scripts/`.
 - Changing the Pi extension entry points. They stay Promise-based.

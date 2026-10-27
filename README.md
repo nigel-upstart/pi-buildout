@@ -11,8 +11,8 @@ Local pi customizations and supporting notes used to make pi the desired coding-
 | `extensions/subagents`                 | Natural-language creation and control of isolated, recursively nestable Pi subagents        | [`extensions/subagents/README.md`](extensions/subagents/README.md)                   |
 | `extensions/otel`                      | Vendored OpenTelemetry fork: GenAI spans, metrics, and logs over OTLP (opt-out)             | [`extensions/otel/README.md`](extensions/otel/README.md)                             |
 | `.agents/skills/installed-pi-patching` | Notes for patching the installed pi skill-loading behavior                                  | [skill README](.agents/skills/installed-pi-patching/README.md)                       |
-| `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-1.1.0/README.md`](patches/pi-1.1.0/README.md)                           |
-| `pi-overlay`                           | Authored TypeScript the generated `/skills` patches (0.85.1 and later) come from            | [`pi-overlay/README.md`](pi-overlay/README.md)                                       |
+| `patches/pi-<version>`                 | Versioned runtime snapshots for the opt-in `/skills` behavior, one per supported pi version | [`patches/pi-1.3.0/README.md`](patches/pi-1.3.0/README.md)                           |
+| `pi-overlay`                           | Authored TypeScript the generated `/skills` patches come from                               | [`pi-overlay/README.md`](pi-overlay/README.md)                                       |
 
 ## Installation
 
@@ -58,17 +58,16 @@ checkpoints, and the exact publish commands. Nothing is published by the reposit
 
 ### Where the `/skills` patch comes from
 
-From pi 0.85.1 the patch is **generated, not hand-authored**. Reviewed TypeScript in [`pi-overlay`](pi-overlay) is the
-source of truth, and `patches/pi-0.85.1/*`, `patches/pi-0.87.1/*`, `patches/pi-1.0.3/*`, `patches/pi-1.0.4/*`, and
-`patches/pi-1.1.0/*` are produced from it:
+The patch is **generated, not hand-authored**. Reviewed TypeScript in [`pi-overlay`](pi-overlay) is the source of truth,
+and `patches/pi-1.0.3/*`, `patches/pi-1.0.4/*`, `patches/pi-1.1.0/*`, and `patches/pi-1.3.0/*` are produced from it:
 
 ```bash
-npm run patches:build                                    # regenerate every version's patch and checksum manifests
-npm run patches:check                                    # fail if any version's committed artifacts are stale
-node scripts/build-pi-patch.mjs --version 0.87.1 --check # check the 0.87.1 patch
-node scripts/build-pi-patch.mjs --version 1.0.3 --check  # check the 1.0.3 patch
-node scripts/build-pi-patch.mjs --version 1.0.4 --check  # check the 1.0.4 patch
-node scripts/build-pi-patch.mjs --version 1.1.0 --check  # check the 1.1.0 patch
+npm run patches:build                                   # regenerate every version's patch and checksum manifests
+npm run patches:check                                   # fail if any version's committed artifacts are stale
+node scripts/build-pi-patch.mjs --version 1.0.3 --check # check the 1.0.3 patch
+node scripts/build-pi-patch.mjs --version 1.0.4 --check # check the 1.0.4 patch
+node scripts/build-pi-patch.mjs --version 1.1.0 --check # check the 1.1.0 patch
+node scripts/build-pi-patch.mjs --version 1.3.0 --check # check the 1.3.0 patch
 ```
 
 The pipeline fetches the pinned upstream release source archive and npm tarball, verifies both against checksums
@@ -79,10 +78,16 @@ workspace packages, so it runs in its own scheduled CI job rather than on every 
 
 ## Development and quality checks
 
-Use Node.js 22.19 or newer. The authored extensions and test suite pin the Pi `0.85.1` development packages, and the
-router's cost tests pin that model registry; compatibility with older Pi versions is not guaranteed. The `/skills` patch
-tests run for every supported pi version; for a version other than the pinned one, the tests that apply the patch to a
-real package skip unless `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
+Use Node.js 22.19 or newer and Pi **1.2.0 or newer** to install the authored extensions (the router requires the
+custom-run preparation semantics introduced in 1.2.0). The test suite pins Pi `1.3.0` development packages, and the
+router's cost tests pin that model registry. The vendored OTel extension keeps its own Pi `1.1.0` development pin. The
+installer rejects older Pi versions for extension installation even with `--skip-skill-loading-patch`; patch-only mode
+(`--skip-extensions`) retains its Pi 1.0.1 minimum. It discovers managed installs through the launcher's
+`install/current-version` file, as well as npm bins, Homebrew wrappers, and npm-backed shims. Only the exact Pi versions
+`1.0.3`, `1.0.4`, `1.1.0`, and `1.3.0` have checksum-verified `/skills` patches; for other compatible versions, use
+`--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every supported pi version; for a
+version other than the pinned or aliased one, the tests that apply the patch to a real package skip unless
+`PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
 [`patches/pi-1.0.4/README.md`](patches/pi-1.0.4/README.md#runtime-behavior-tests)). Install
 [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
 hooks:

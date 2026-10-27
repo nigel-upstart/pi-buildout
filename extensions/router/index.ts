@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartUserEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
 import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
 import { compilePrompt, escapeXml } from "./core/compiler.ts";
@@ -14,12 +14,17 @@ import {
   changeEffortWithinLease,
   createTaskLease,
   deterministicBoundaryGate,
-  installLease,
-  markManualOverride,
   resolveContinuity,
-  setHardBoundary,
 } from "./core/lease.ts";
 import type { BoundaryGateResult, LeaseState, RouterMode, TaskLease } from "./core/lease.ts";
+import {
+  createLeaseOwner,
+  grantsAuthority,
+  holdsDiscovery,
+  invalidateAuthorization,
+  leaseFamily,
+  revokeDiscovery,
+} from "./core/lease-machine.ts";
 import { ProgramPlanSchema, validateProgramPlan } from "./core/planning.ts";
 import {
   ActionPlanSchema,
@@ -228,12 +233,30 @@ export function routerOffNotice(phase: RestrictedPhase): string {
 }
 const PLANNING_VALIDATOR_TOOL_NAME = "submit_implementation_plan";
 
-/** Keep both validators declared across generated turns, but only while routing is active. */
-export function activeToolsForSafetyLifecycle(activeTools: readonly string[], mode: RouterMode): string[] {
-  if (mode !== "active") return activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name));
-  const next = [...activeTools];
+/**
+ * Advertise each safety validator only in the lifecycle phase that accepts it. Sync at every lifecycle transition,
+ * including generated turns: Pi <=1.1.0 skipped before_agent_start, and the router deliberately skips
+ * its user-prompt preparation for Pi 1.3.0 custom starts. Tool exposure must not depend on that hook.
+ */
+export function activeToolsForSafetyLifecycle(
+  activeTools: readonly string[],
+  mode: RouterMode,
+  lifecycle?: LeaseLifecycle,
+  revokedReviewStillRunning = false,
+  manualOverride = false,
+): string[] {
+  const available = new Set<string>();
+  if (mode === "active" && !manualOverride) {
+    if (lifecycle?.phase === "preflight" && !revokedReviewStillRunning) {
+      available.add("submit_action_plan");
+      available.add("submit_discovery_request");
+    } else if (lifecycle?.phase === "review" && !lifecycle.submission) {
+      available.add("submit_safety_review");
+    }
+  }
+  const next = activeTools.filter((name) => !SAFETY_LIFECYCLE_TOOL_NAMES.has(name) || available.has(name));
   for (const name of SAFETY_LIFECYCLE_TOOL_NAMES) {
-    if (!next.includes(name)) next.push(name);
+    if (available.has(name) && !next.includes(name)) next.push(name);
   }
   return next;
 }
@@ -276,6 +299,8 @@ export function safetyToolBlockReason(
   toolName: string,
   input: Record<string, unknown>,
 ): string | undefined {
+  // Pure plan validation grants nothing, so no lifecycle blocks it.
+  if (toolName === PLANNING_VALIDATOR_TOOL_NAME) return undefined;
   if (lease?.manualOverride && (lease.lifecycle.policy !== "ordinary" || lease.lifecycle.phase === "review")) {
     return "Manual model/effort override invalidated the active safety lifecycle; re-enable active routing or start a new task";
   }
@@ -441,7 +466,20 @@ type RouterExtensionOptions = {
   secondaryGracePolicy?: SecondaryGracePolicy;
 };
 
+export function supportsRouterPiVersion(version: string): boolean {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(version);
+  if (!match) return false;
+  const [, major = "0", minor = "0", patch = "0", prerelease] = match;
+  return (
+    BigInt(major) > 1n ||
+    (BigInt(major) === 1n && (BigInt(minor) > 2n || (BigInt(minor) === 2n && (BigInt(patch) > 0n || !prerelease))))
+  );
+}
+
 export default function routerExtension(pi: ExtensionAPI, options: RouterExtensionOptions = {}): void {
+  if (!supportsRouterPiVersion(VERSION)) {
+    throw new Error(`The model-aware router requires Pi >=1.2.0 (found ${VERSION})`);
+  }
   /**
    * The operator's model scope and last probe results, read once per session. Routing derives its
    * candidate endpoints from this rather than from a table in the repository, so enabling or disabling
@@ -465,7 +503,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     ? undefined
     : (options.classifySecondaryTask ?? classifyTaskSecondaryWithPi);
   const secondaryGracePolicy = options.secondaryGracePolicy ?? DEFAULT_SECONDARY_GRACE_POLICY;
-  let state: LeaseState = { mode: provisionalMode(), manualOverride: false };
+  const leaseOwner = createLeaseOwner({ mode: provisionalMode(), manualOverride: false });
   // The replacement session has a new branch, so carry only the enablement mode
   // across /clear. The task lease must still be discarded at the new-session
   // boundary.
@@ -476,6 +514,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let repoKey: string | undefined;
   let repoKeyCwd: string | undefined;
   let recordedExitMode: RouterMode | undefined;
+  // Only idle input awaiting user-run preparation belongs here. Queued steering/follow-up input
+  // stays inside the current run and must never become a later start's routing decision.
   let pendingInput: PendingInput | undefined;
   let nextParentTaskId: string | undefined;
   let lastRoute: LastRoute = {};
@@ -488,6 +528,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let attemptTurns = 0;
   let attemptToolCalls = 0;
   let agentRunSequence = 0;
+  // A clean profile handoff intentionally aborts the current run. Some providers report that
+  // cancellation as stopReason=error, so bind its cause to the run rather than parsing error text.
+  let profileRefreshAbort: { taskId: string; runSequence: number } | undefined;
   const deterministicCheckCalls = new Map<string, string>();
   const deterministicCheckResults = new Map<string, boolean>();
   const potentiallyMutatingCalls = new Map<string, { toolName: string; inputFingerprint: string }>();
@@ -508,20 +551,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    */
   const secondaryTasks = new Set<SecondaryReconciliationTask>();
   let queuedSecondaryReconciliation: QueuedSecondaryReconciliation | undefined;
-  let pendingSecondarySafetyGate: SecondaryReconciliationTask | undefined;
-  /**
-   * A gated low-confidence primary keeps its mutation latch until a schema-valid, provider-diverse
+
+  /*
+   * The family actor owns the safety latch. A gated low-confidence primary keeps its mutation latch until a schema-valid, provider-diverse
    * secondary answer has actually been reconciled. A timeout, transport error, schema-invalid
    * answer, vendor-diversity failure, or unroutable correction leaves that safety question
    * unresolved, so the latch is retained for the task rather than released when the attempt
    * settles. A manual override, a new task boundary, or shutdown clears it via `abortSecondaryWork`.
    */
-  let unresolvedSecondarySafetyGate: SecondaryReconciliationTask | undefined;
+
   let telemetryHealthy = true;
   let attemptDisposition: AttemptDisposition = "unknown";
-  // Bumped by `/route off`. Routing work already in flight still runs to completion, but a hook that
-  // started under an earlier generation discards its result instead of applying it.
-  let routingGeneration = 0;
+  // The routing epoch when the latest run ended; agent_settled uses it to detect a superseded run.
+  let runEndEpoch: number | undefined;
   // Inactive modes hide the always-registered planning validator. Remembering that the router hid it lets
   // re-enabling restore the tool without overriding an operator who removed it deliberately.
   let planningValidatorHiddenWhileInactive = false;
@@ -530,16 +572,39 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   let agentRunPhase: AgentRunPhase = "before_start";
   /**
    * Set when a discovery review is revoked while its run is still active. The parent lease is installed at once, but the
-   * reviewer model keeps running until that run settles, so preflight submissions stay blocked until then.
+   * reviewer model keeps running until that run settles, so preflight submissions stay blocked until the builder is restored.
    */
   let revokedReviewStillRunning = false;
+  /** The revoked review's own run is still in progress, as opposed to a later turn awaiting the builder's restoration. */
+  let revokedReviewRunActive = false;
+
+  /** Explains why a submission is blocked: the revoked reviewer is still running, or its builder was never restored. */
+  function revokedReviewSubmissionError(): Error {
+    return new Error(
+      revokedReviewRunActive
+        ? "A revoked independent review is still running; submit after this run ends and the builder model is restored"
+        : "The builder model was not restored after a revoked independent review; submit on a later turn once the router restores it",
+    );
+  }
   let insideProviderTurn = false;
   let activeToolExecutions = 0;
 
+  function clearPendingInput(ctx: ExtensionContext): void {
+    if (!pendingInput) return;
+    pendingInput = undefined;
+    ctx.ui.setWorkingMessage();
+  }
+
   function syncRouterTools(): void {
     const current = pi.getActiveTools();
-    let next = activeToolsForSafetyLifecycle(current, state.mode);
-    if (state.mode !== "active") {
+    let next = activeToolsForSafetyLifecycle(
+      current,
+      leaseOwner.state.mode,
+      leaseOwner.state.active?.lifecycle,
+      revokedReviewStillRunning,
+      leaseOwner.state.manualOverride || leaseOwner.state.active?.manualOverride,
+    );
+    if (leaseOwner.state.mode !== "active") {
       if (next.includes(PLANNING_VALIDATOR_TOOL_NAME)) {
         next = next.filter((name) => name !== PLANNING_VALIDATOR_TOOL_NAME);
         planningValidatorHiddenWhileInactive = true;
@@ -553,71 +618,22 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   }
 
-  /** Whether the lease holds a pending discovery request, an unspent grant, or a review of one. */
-  function holdsDiscovery(lease: TaskLease): boolean {
-    const lifecycle = lease.lifecycle;
-    if (lifecycle.phase === "discovery_ready") return true;
-    if (lifecycle.phase === "preflight") return lifecycle.discovery !== undefined;
-    return (
-      lifecycle.phase === "review" &&
-      lease.parentLease?.lifecycle.phase === "preflight" &&
-      lease.parentLease.lifecycle.discovery !== undefined
-    );
-  }
-
-  /**
-   * Drop any discovery request, review, or unspent grant back to an empty preflight. Final-plan
-   * authorization is untouched; `invalidateAuthorization` handles that at its own boundaries.
-   */
-  function revokeDiscovery(lease: TaskLease): TaskLease {
-    if (!holdsDiscovery(lease)) return lease;
-    const base = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
-    if (base !== lease && agentRunPhase === "active") revokedReviewStillRunning = true;
-    return {
-      ...base,
-      updatedAt: new Date().toISOString(),
-      lifecycle: {
-        phase: "preflight",
-        policy: "authorization_then_completion_review",
-        taskFingerprint: base.lifecycle.taskFingerprint,
-      },
-    };
-  }
-
-  function invalidateAuthorization(lease: TaskLease, reason: string): TaskLease {
-    if (holdsDiscovery(lease)) return revokeDiscovery(lease);
-    const authorizationLifecycle =
-      lease.lifecycle.phase === "authorized_execution"
-        ? lease.lifecycle
-        : lease.lifecycle.phase === "completed" &&
-            lease.lifecycle.policy === "authorization_then_completion_review" &&
-            lease.lifecycle.plan
-          ? lease.lifecycle
-          : undefined;
-    if (!authorizationLifecycle?.plan) return lease;
-    const now = new Date().toISOString();
-    return {
-      ...lease,
-      updatedAt: now,
-      lifecycle: {
-        phase: "preflight",
-        policy: "authorization_then_completion_review",
-        taskFingerprint: authorizationLifecycle.taskFingerprint,
-        plan: authorizationLifecycle.plan,
-        lastAuthorizationReview: {
-          kind: "authorization",
-          summary: `Authorization invalidated at ${reason}; the exact plan requires a fresh independent review.`,
-          completedAt: now,
-        },
-      },
-    };
+  function invalidateLease(reason: string, discoveryOnly = false): void {
+    const active = leaseOwner.state.active;
+    if (active && holdsDiscovery(active) && active.lifecycle.phase === "review" && agentRunPhase === "active") {
+      revokedReviewStillRunning = true;
+      revokedReviewRunActive = true;
+    }
+    leaseOwner.send({ type: "INVALIDATE", reason, discoveryOnly });
   }
 
   function persistState(): void {
+    syncRouterTools();
     pi.appendEntry(STATE_ENTRY, {
-      mode: state.mode,
-      manualOverride: state.manualOverride,
-      active: state.active,
+      mode: leaseOwner.state.mode,
+      manualOverride: leaseOwner.state.manualOverride,
+      active: leaseOwner.state.active,
+      secondarySafetyPending: leaseOwner.secondaryGated,
     });
   }
 
@@ -638,18 +654,21 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   function updateStatus(ctx: ExtensionContext): void {
-    ctx.ui.setStatus("model-router", ctx.ui.theme.fg(state.mode === "active" ? "accent" : "muted", statusLabel(state)));
+    ctx.ui.setStatus(
+      "model-router",
+      ctx.ui.theme.fg(leaseOwner.state.mode === "active" ? "accent" : "muted", statusLabel(leaseOwner.state)),
+    );
   }
 
   function disableForTelemetryFailure(ctx: ExtensionContext, error: unknown): void {
     if (!telemetryHealthy) return;
     telemetryHealthy = false;
-    if (state.mode === "active") {
-      state = { ...state, mode: "shadow" };
+    if (leaseOwner.state.mode === "active") {
+      leaseOwner.send({ type: "MODE", mode: "shadow" });
       syncRouterTools();
       persistState();
       updateStatus(ctx);
-      void rememberMode(state.mode);
+      void rememberMode(leaseOwner.state.mode);
     }
     ctx.ui.notify(
       `Router telemetry failed; automatic routing is disabled for this session: ${error instanceof Error ? error.message : String(error)}`,
@@ -666,7 +685,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     > = {},
   ): Promise<void> {
     // Off records nothing, including events from routing work that was already in flight.
-    if (!telemetryHealthy || state.mode === "off") return;
+    if (!telemetryHealthy || leaseOwner.state.mode === "off") return;
     try {
       let endpointFields = {};
       if (extra.provider && extra.modelId) {
@@ -771,14 +790,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   function secondaryStaleReason(task: SecondaryReconciliationTask): string | undefined {
-    const active = state.active;
+    const active = leaseFamily(leaseOwner.state.active);
     if (!active) return "no_active_lease";
     if (active.taskId !== task.binding.taskId) return "superseded_task";
     if (active.lastPromptFingerprint !== task.binding.inputFingerprint) return "input_fingerprint_mismatch";
     if (active.modelSnapshotId !== task.binding.registrySnapshotId) return "registry_snapshot_mismatch";
-    if (state.manualOverride || active.manualOverride) return "manual_override";
-    if (leaseRevision(active) !== task.binding.provisionalLeaseRevision) return "lease_revision_changed";
+    if (leaseOwner.state.manualOverride || active.manualOverride) return "manual_override";
     return undefined;
+  }
+
+  function secondaryTaskDiscarded(task: SecondaryReconciliationTask): boolean {
+    return task.abandoned === true || Boolean(secondaryStaleReason(task));
   }
 
   /**
@@ -816,7 +838,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       Omit<RouterTelemetryEvent, "version" | "eventId" | "timestamp" | "kind" | "sessionId" | "data">
     > = {},
   ): Promise<void> {
-    const active = state.active?.taskId === queued.task.binding.taskId ? state.active : undefined;
+    const active = leaseOwner.state.active?.taskId === queued.task.binding.taskId ? leaseOwner.state.active : undefined;
     await record(
       ctx,
       "secondary_reconciliation",
@@ -881,7 +903,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     reason: string,
   ): Promise<void> {
     const now = Date.now();
-    const active = state.active?.taskId === task.binding.taskId ? state.active : undefined;
+    const active = leaseOwner.state.active?.taskId === task.binding.taskId ? leaseOwner.state.active : undefined;
     await record(
       ctx,
       "secondary_reconciliation",
@@ -941,32 +963,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   ): Promise<void> {
     const queued = queuedSecondaryReconciliation;
     queuedSecondaryReconciliation = undefined;
-    // Compaction keeps the lease and lets a running turn finish, so discarding the stale request
-    // must not also re-enable mutating tools for a low-confidence primary that was never
-    // reconciled. Other abort paths (override, new task, shutdown) do resolve the question.
-    const latched = options.retainSafetyLatch
-      ? (pendingSecondarySafetyGate ??
-        unresolvedSecondarySafetyGate ??
-        (queued?.task.pendingSafetyGate ? queued.task : undefined) ??
-        [...secondaryTasks].find((task) => task.pendingSafetyGate))
-      : undefined;
-    if (pendingSecondarySafetyGate && pendingSecondarySafetyGate !== latched) {
-      pendingSecondarySafetyGate.pendingSafetyGate = false;
-    }
-    pendingSecondarySafetyGate = undefined;
-    if (unresolvedSecondarySafetyGate && unresolvedSecondarySafetyGate !== latched) {
-      unresolvedSecondarySafetyGate.pendingSafetyGate = false;
-    }
-    unresolvedSecondarySafetyGate = latched;
-    if (ctx && queued) await rejectQueuedSecondary(ctx, queued, reason);
-    for (const task of [...secondaryTasks]) {
-      if (task !== latched) task.pendingSafetyGate = false;
+    leaseOwner.send({ type: "ABORT_SECONDARY", retain: options.retainSafetyLatch ?? false });
+    const abandoned = [...secondaryTasks];
+    for (const task of abandoned) {
+      if (!options.retainSafetyLatch) task.pendingSafetyGate = false;
       task.settled = true;
       task.abandoned = true;
       task.controller.abort();
       secondaryTasks.delete(task);
-      if (ctx) await recordAbortedSecondaryTask(ctx, task, reason);
     }
+    // Cancellation must be visible to every continuation before the first ledger wait.
+    if (ctx && queued) await rejectQueuedSecondary(ctx, queued, reason);
+    if (ctx) for (const task of abandoned) await recordAbortedSecondaryTask(ctx, task, reason);
   }
 
   async function settleSecondaryReconciliation(
@@ -996,7 +1004,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     secondaryTasks.delete(task);
     const staleReason = secondaryStaleReason(task);
     if (staleReason) {
-      if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
       settleSecondarySafetyGate(queued, staleReasonResolvesSafetyGate(staleReason));
       await rejectQueuedSecondary(ctx, queued, staleReason);
       return;
@@ -1004,8 +1011,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     if (queuedSecondaryReconciliation) {
       await rejectQueuedSecondary(ctx, queuedSecondaryReconciliation, "superseded_secondary_result");
     }
+    if (secondaryTaskDiscarded(task)) return;
     queuedSecondaryReconciliation = queued;
-    if (pendingSecondarySafetyGate === task) pendingSecondarySafetyGate = undefined;
     // Drain eagerly only once the run has settled. A result that lands after `before_agent_start`
     // released the run but before `agent_start` stays queued for the run's own turn boundaries.
     if (task.agentStartReleasedAtMs !== undefined && agentRunPhase === "settled" && attemptDisposition !== "pending") {
@@ -1092,34 +1099,53 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         input.classification.primaryFeatures.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD,
       settled: false,
     };
-    task.promise = classifySecondaryWithTimeout(input.ctx, task);
+    // The ledger write before scheduling may have replaced this lease without changing the
+    // routing epoch. Never track a task whose actor will reject START_SECONDARY.
+    if (leaseOwner.state.active !== input.lease) return undefined;
     secondaryTasks.add(task);
-    if (task.pendingSafetyGate) pendingSecondarySafetyGate = task;
-    void task.promise.then(
-      (run) => {
-        void beginSecondarySettlement(input.ctx, task, run);
+    leaseOwner.send({
+      type: "START_SECONDARY",
+      owner: input.lease,
+      input: {
+        key: task.binding,
+        gated: task.pendingSafetyGate,
+        work: async (signal) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              controller.abort();
+            },
+            { once: true },
+          );
+          task.promise = classifySecondaryWithTimeout(input.ctx, task);
+          await task.promise.then(
+            (run) => {
+              return beginSecondarySettlement(input.ctx, task, run);
+            },
+            (error: unknown) => {
+              return beginSecondarySettlement(input.ctx, task, {
+                status: "failed",
+                error,
+                summary: {
+                  purpose: "secondary_reconciliation",
+                  outcome: "error",
+                  resolution: "none",
+                  wallLatencyMs: 0,
+                  timedOut: false,
+                  cancelled: controller.signal.aborted,
+                  attemptCount: 0,
+                  completedAttemptCount: 0,
+                  validAttemptCount: 0,
+                  stages: [],
+                  attempts: [],
+                  errorCategory: controller.signal.aborted ? "cancelled" : "unexpected",
+                },
+              });
+            },
+          );
+        },
       },
-      (error: unknown) => {
-        void beginSecondarySettlement(input.ctx, task, {
-          status: "failed",
-          error,
-          summary: {
-            purpose: "secondary_reconciliation",
-            outcome: "error",
-            resolution: "none",
-            wallLatencyMs: 0,
-            timedOut: false,
-            cancelled: controller.signal.aborted,
-            attemptCount: 0,
-            completedAttemptCount: 0,
-            validAttemptCount: 0,
-            stages: [],
-            attempts: [],
-            errorCategory: controller.signal.aborted ? "cancelled" : "unexpected",
-          },
-        });
-      },
-    );
+    });
     return task;
   }
 
@@ -1210,23 +1236,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   function settleSecondarySafetyGate(queued: QueuedSecondaryReconciliation, resolved: boolean): void {
     if (!queued.task.pendingSafetyGate) return;
-    if (resolved) {
-      queued.task.pendingSafetyGate = false;
-      if (unresolvedSecondarySafetyGate === queued.task) unresolvedSecondarySafetyGate = undefined;
-      return;
-    }
-    unresolvedSecondarySafetyGate = queued.task;
+    leaseOwner.settleSecondary(queued.task.binding, resolved);
+    persistState();
+    if (resolved) queued.task.pendingSafetyGate = false;
   }
 
   function secondarySafetyBlockReason(toolName: string, input: Record<string, unknown>): string | undefined {
-    const pending =
-      pendingSecondarySafetyGate ??
-      queuedSecondaryReconciliation?.task ??
-      unresolvedSecondarySafetyGate ??
-      [...secondaryTasks].find((task) => !task.settled);
-    if (!pending?.pendingSafetyGate || state.active?.taskId !== pending.binding.taskId) return undefined;
-    if (!isPotentiallyMutatingTool(toolName, input)) return undefined;
-    return "Secondary safety classification is pending after a low-confidence primary; mutating tools are blocked until reconciliation reaches a safe boundary";
+    if (!leaseOwner.secondaryGated || !isPotentiallyMutatingTool(toolName, input)) return undefined;
+    return "Secondary safety classification is pending after a low-confidence primary; this potentially mutating call is blocked until reconciliation reaches a safe boundary. Read-only inspection still works; retry after the next turn boundary reconciles the classification.";
   }
 
   /**
@@ -1253,10 +1270,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
    * task should be asked to cleanly stop and resume under the refreshed route.
    */
   async function drainSecondaryReconciliation(ctx: ExtensionContext, boundary: ReconciliationBoundary): Promise<void> {
-    if (state.mode === "off") return;
+    const leaseEpoch = leaseOwner.epoch;
+    if (leaseOwner.state.mode === "off") return;
     if (boundary.kind === "turn_end" && activeToolExecutions > 0) return;
     const queued = queuedSecondaryReconciliation;
-    if (!queued) return;
+    if (!queued || leaseOwner.state.active?.lifecycle.phase === "review") return;
     const staleReason = secondaryStaleReason(queued.task);
     if (staleReason) {
       queuedSecondaryReconciliation = undefined;
@@ -1264,7 +1282,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       await rejectQueuedSecondary(ctx, queued, staleReason);
       return;
     }
-    const active = state.active;
+    const active = leaseOwner.state.active;
     if (!active) return;
     if (queued.run.status !== "completed") {
       queuedSecondaryReconciliation = undefined;
@@ -1293,7 +1311,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // every await rather than acting on the snapshot captured before it.
     const lateRejection = (): string | undefined => {
       if (queuedSecondaryReconciliation !== queued) return "superseded_secondary_result";
-      if (state.active !== active) return "lease_replaced_during_reconciliation";
+      if (leaseOwner.state.active !== active) return "lease_replaced_during_reconciliation";
+      if (leaseOwner.epoch !== leaseEpoch) return "routing_context_changed";
       return secondaryStaleReason(queued.task);
     };
     const afterRouteRejection = lateRejection();
@@ -1301,8 +1320,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       // Whoever took the queue already recorded its rejection, so do not record a second one for
       // the same task; just stop before mutating state this drain no longer owns.
       if (queuedSecondaryReconciliation !== queued) return;
+      const stale = secondaryStaleReason(queued.task);
+      // A temporary review or same-family lifecycle advance only postpones reconciliation.
+      if (!stale) return;
       queuedSecondaryReconciliation = undefined;
-      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
+      settleSecondarySafetyGate(queued, staleReasonResolvesSafetyGate(stale));
       await rejectQueuedSecondary(ctx, queued, afterRouteRejection);
       return;
     }
@@ -1378,7 +1400,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       policyVersion: routed.decision.policyVersion,
       lifecycle,
     };
-    if (state.mode === "active" && !(await applyChoice(ctx, correctedLease.selected))) {
+    const applied = leaseOwner.state.mode !== "active" || (await applyChoice(ctx, correctedLease.selected));
+    // `applyChoice` awaits the provider selection, so re-validate immediately before mutating.
+    const beforeInstallRejection = lateRejection();
+    if (beforeInstallRejection) {
+      if (queuedSecondaryReconciliation !== queued) return;
+      const stale = secondaryStaleReason(queued.task);
+      if (!stale) return;
+      queuedSecondaryReconciliation = undefined;
+      settleSecondarySafetyGate(queued, staleReasonResolvesSafetyGate(stale));
+      await rejectQueuedSecondary(ctx, queued, beforeInstallRejection);
+      return;
+    }
+    if (!applied) {
       queuedSecondaryReconciliation = undefined;
       // A safety-relevant correction that could not be applied leaves the gate unresolved.
       settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run) && !delta.safetyRelevant);
@@ -1392,16 +1426,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       return;
     }
 
-    // `applyChoice` awaits the provider selection, so re-validate immediately before mutating.
-    const beforeInstallRejection = lateRejection();
-    if (beforeInstallRejection) {
-      if (queuedSecondaryReconciliation !== queued) return;
-      queuedSecondaryReconciliation = undefined;
-      settleSecondarySafetyGate(queued, secondaryResolvedSafety(queued.run));
-      await rejectQueuedSecondary(ctx, queued, beforeInstallRejection);
-      return;
-    }
-    state = installLease(state, revokeDiscovery(correctedLease));
+    if (!leaseOwner.advance("RECONCILE", revokeDiscovery(correctedLease), active, leaseEpoch)) return;
     persistState();
     updateStatus(ctx);
     queuedSecondaryReconciliation = undefined;
@@ -1429,7 +1454,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     });
     // Shadow routing never applies the refreshed profile, so interrupting the run would only cost the
     // user a turn; the telemetry above still records the handoff active mode would have taken.
-    if (handoff === "clean_stop_resume" && state.mode === "active") {
+    if (handoff === "clean_stop_resume" && leaseOwner.state.mode === "active") {
+      profileRefreshAbort = { taskId: correctedLease.taskId, runSequence: agentRunSequence };
       ctx.abort();
       pi.sendMessage(
         {
@@ -1456,7 +1482,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return withRouterSpan(
       ctx.sessionManager.getSessionId(),
       "router.classify_continuity",
-      { "router.mode": state.mode },
+      { "router.mode": leaseOwner.state.mode },
       async (span) => {
         const invocation = await classifyWithTimeout(ctx, registry, prompt, taskSynopsis, "continuity", classifyTask);
         let continuity: ReturnType<typeof resolveContinuity> | undefined;
@@ -1498,7 +1524,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return withRouterSpan(
       ctx.sessionManager.getSessionId(),
       "router.classify",
-      { "router.mode": state.mode },
+      { "router.mode": leaseOwner.state.mode },
       async (span) => {
         const invocation = await classifyWithTimeout(
           ctx,
@@ -1734,6 +1760,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   async function applyChoice(ctx: ExtensionContext, choice: RouteChoice): Promise<boolean> {
+    const epoch = leaseOwner.epoch;
     applyingSelection = true;
     // `pi.setModel` is asynchronous, so a real user model selection can arrive while the flag is
     // set. Record the exact selection this call is making so only its own echo is suppressed.
@@ -1747,6 +1774,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       if (!model) return false;
       const selected = await pi.setModel(model);
       if (!selected) return false;
+      if (leaseOwner.epoch !== epoch) return false;
       pi.setThinkingLevel(choice.effort);
       return true;
     } catch {
@@ -1761,8 +1789,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     ctx: ExtensionContext,
     lease: TaskLease,
   ): Promise<TaskLease | undefined> {
+    const epoch = leaseOwner.epoch;
     let candidate = lease;
     while (!(await applyChoice(ctx, candidate.selected))) {
+      if (leaseOwner.epoch !== epoch) return undefined;
       const fallback = resolveFallback(candidate, "availability", new Date().toISOString());
       await record(
         ctx,
@@ -1786,20 +1816,26 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           modelSnapshotId: candidate.modelSnapshotId,
         },
       );
+      if (leaseOwner.epoch !== epoch) return undefined;
       if (fallback.action !== "use_choice") {
         if (fallback.action === "restore_previous" && fallback.choice) await applyChoice(ctx, fallback.choice);
         return undefined;
       }
       candidate = fallback.lease;
     }
-    return candidate;
+    return leaseOwner.epoch === epoch ? candidate : undefined;
   }
 
   async function restoreParentAfterReview(
     ctx: ExtensionContext,
     child: TaskLease,
     outcome: "completed" | "skipped",
+    // A passive hand-back runs while routing is off or in shadow, or after a manual model/effort override: the
+    // router must not switch models or start turns, and an override stays in force on the restored parent. The
+    // parent is still restored rather than leaving a finished review installed, and any authority stays withheld.
+    options: { passive?: boolean; manualOverride?: boolean } = {},
   ): Promise<void> {
+    const leaseEpoch = leaseOwner.epoch;
     if (!child.parentLease || child.lifecycle.phase !== "review") return;
     const now = new Date().toISOString();
     const submission = outcome === "completed" ? child.lifecycle.submission : undefined;
@@ -1814,7 +1850,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Restoration awaits a model switch and telemetry. New input, compaction, `/route off`, or any
     // other lease replacement during those waits wins: a superseded review must not reinstall its
     // parent or announce an approval that has since been revoked.
-    const owner = state.active;
+    const owner = leaseOwner.state.active;
     let lifecycle: LeaseLifecycle = original.lifecycle;
     let triggerContinuation = false;
 
@@ -1921,30 +1957,62 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       };
     }
 
-    const restored = await applyChoice(ctx, original.selected);
-    if (state.active !== owner) {
+    const restored = options.passive ? false : await applyChoice(ctx, original.selected);
+    if (options.passive) triggerContinuation = false;
+    if (leaseOwner.state.active !== owner) {
+      // Another lease replaced the review during the model switch; it owns what happens next.
       reviewParentAttemptMetrics = undefined;
       return;
     }
-    if (!restored && (lifecycle.phase === "discovery_ready" || lifecycle.phase === "authorized_execution")) {
-      // An approval is usable only by the builder it was granted to. If the builder model cannot be
-      // restored, the reviewer's model would otherwise be left holding the grant, so withhold it.
+    // Input, compaction, or a mode or override change during the switch moves only the epoch. The finished
+    // review still hands control back at the current epoch, or it would stay installed indefinitely. Any
+    // authorization grant is withheld below because the binding is stale, and no continuation is sent:
+    // the new input or boundary decides what runs next.
+    const settleEpoch = leaseOwner.epoch;
+    if (settleEpoch !== leaseEpoch) triggerContinuation = false;
+    const grants = grantsAuthority(lifecycle);
+    // New input, compaction, a reload, or a routing change after the review started revokes its
+    // authority, whether it would grant new authority or return an earlier authorization through a
+    // completion review. The parent is still restored, without it, so the task is not left holding a
+    // finished review it can never settle.
+    const bindingStale = grants && !leaseOwner.reviewBindingCurrent;
+    // An approval is usable only by the builder it was granted to. If the builder model cannot be
+    // restored, the reviewer's model would otherwise be left holding the grant, so withhold it.
+    const builderLost = grants && !restored;
+    if (bindingStale || builderLost) {
       lifecycle = {
         phase: "preflight",
         policy: "authorization_then_completion_review",
         taskFingerprint: original.lifecycle.taskFingerprint,
-        ...(lifecycle.phase === "authorized_execution" ? { plan: lifecycle.plan } : {}),
+        ...((lifecycle.phase === "authorized_execution" || lifecycle.phase === "completed") && lifecycle.plan
+          ? { plan: lifecycle.plan }
+          : {}),
+        // Record the withheld authority as an authorization outcome with no verdict: no approval stands, and a
+        // completion review's verdict is not a valid authorization verdict.
         lastAuthorizationReview: {
-          ...reviewOutcome,
-          summary: "Approval withheld: the builder model could not be restored after the independent review.",
+          kind: "authorization",
+          ...(reviewOutcome.reviewTaskId ? { reviewTaskId: reviewOutcome.reviewTaskId } : {}),
+          completedAt: reviewOutcome.completedAt,
+          summary: bindingStale
+            ? "Approval withheld: new input or a routing boundary arrived before the independent review settled; resubmit for a fresh review."
+            : "Approval withheld: the builder model could not be restored after the independent review.",
         },
       };
       triggerContinuation = false;
-      ctx.ui.notify("Approval withheld: the builder model could not be restored after review", "error");
+      if (bindingStale) {
+        ctx.ui.notify("Approval withheld: input or a routing boundary arrived during the review", "warning");
+      } else {
+        ctx.ui.notify("Approval withheld: the builder model could not be restored after review", "error");
+      }
     }
-    const parent = { ...original, updatedAt: now, lifecycle };
-    state = installLease(state, parent);
-    const installed = state.active;
+    const parent = {
+      ...original,
+      updatedAt: now,
+      lifecycle,
+      ...(options.manualOverride ? { manualOverride: true } : {}),
+    };
+    if (!leaseOwner.advance("REVIEW_FINISHED", parent, owner, settleEpoch)) return;
+    const installed = leaseOwner.state.active;
     const reviewMetrics = lastAttemptMetrics;
     // Cost, wall time, and retry are task-level totals, so the review's share is added to the
     // parent. Cache-token counts are deliberately NOT summed: they are a per-endpoint observation,
@@ -1975,7 +2043,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       },
       { taskId: parent.taskId, archetype: parent.archetype },
     );
-    if (triggerContinuation && state.active === installed) {
+    if (triggerContinuation && leaseOwner.state.active === installed) {
       pi.sendMessage(
         {
           customType: CONTEXT_MESSAGE,
@@ -1999,8 +2067,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     triggerTurn: boolean,
     options?: { skipProvider?: string },
   ): Promise<void> {
-    const active = state.active;
-    if (!active || state.mode !== "active" || active.executionFailed) return;
+    const leaseEpoch = leaseOwner.epoch;
+    const active = leaseOwner.state.active;
+    if (!active || leaseOwner.state.mode !== "active" || active.executionFailed) return;
     const fallback = resolveFallback(active, failure, new Date().toISOString(), options);
     await record(
       ctx,
@@ -2029,13 +2098,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     );
     // A lease replaced during telemetry or a model switch (for example, a discovery review revoked by
     // new input or `/route off`) must never be overwritten by a fallback computed from the stale one.
-    if (state.active !== active) return;
+    if (!leaseOwner.owns(active, leaseEpoch)) return;
     if (fallback.action === "use_choice") {
-      if (!(await applyChoice(ctx, fallback.choice))) {
+      const applied = await applyChoice(ctx, fallback.choice);
+      if (!leaseOwner.owns(active, leaseEpoch)) return;
+      if (!applied) {
         attemptDisposition = "failed";
         return;
       }
-      if (state.active !== active) return;
       const fallbackLease =
         fallback.lease.lifecycle.phase === "review"
           ? {
@@ -2049,7 +2119,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
               },
             }
           : fallback.lease;
-      state = installLease(state, fallbackLease);
+      if (!leaseOwner.advance("FALLBACK", fallbackLease, active, leaseEpoch)) return;
       attemptDisposition = "pending";
       attemptStartedAt = Date.now();
       attemptTurns = 0;
@@ -2074,18 +2144,21 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       return;
     }
     if (fallback.action === "restore_previous") {
-      attemptDisposition = "failed";
       if (fallback.choice) await applyChoice(ctx, fallback.choice);
-      if (state.active !== active) return;
-      state = installLease(state, { ...fallback.lease, executionFailed: true });
+      if (!leaseOwner.owns(active, leaseEpoch)) return;
+      attemptDisposition = "failed";
+      if (!leaseOwner.advance("FALLBACK", { ...fallback.lease, executionFailed: true }, active, leaseEpoch)) return;
       persistState();
       updateStatus(ctx);
+      ctx.ui.notify(fallback.reason, "error");
+      return;
     }
-    if (fallback.action === "skip_review" && active.lifecycle.phase === "review") {
+    if (active.lifecycle.phase === "review") {
       attemptDisposition = "failed";
       await restoreParentAfterReview(ctx, active, "skipped");
+      if (leaseOwner.epoch !== leaseEpoch) return;
     }
-    ctx.ui.notify(fallback.reason, fallback.action === "skip_review" ? "warning" : "error");
+    ctx.ui.notify(fallback.reason, "warning");
   }
 
   async function startIndependentReview(
@@ -2095,7 +2168,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     scopeFingerprint: string,
     evidenceInstructions: string,
   ): Promise<void> {
-    if (state.mode !== "active" || parent.lifecycle.phase === "review" || parent.archetype === "code_review") {
+    const leaseEpoch = leaseOwner.epoch;
+    if (
+      leaseOwner.state.active !== parent ||
+      leaseOwner.state.mode !== "active" ||
+      parent.lifecycle.phase === "review" ||
+      parent.archetype === "code_review"
+    ) {
       return;
     }
     const registry = buildRegistrySnapshot(ctx, scope);
@@ -2170,8 +2249,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       ...(parent.contextSizeBucket ? { contextSizeBucket: parent.contextSizeBucket } : {}),
     });
     const applied = await applyWithAvailabilityFallback(ctx, child);
-    if (state.active !== parent) {
-      // The parent was revoked or replaced during the model switch, so its review is moot.
+    if (!leaseOwner.owns(parent, leaseEpoch)) {
+      // The parent or routing context was superseded during the model switch.
       lastAttemptMetrics = reviewParentAttemptMetrics;
       reviewParentAttemptMetrics = undefined;
       return;
@@ -2180,8 +2259,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       await restoreParentAfterReview(ctx, child, "skipped");
       return;
     }
-    state = installLease(state, applied);
-    const installed = state.active;
+    if (!leaseOwner.advance("REVIEW_STARTED", applied, parent, leaseEpoch)) return;
+    const installed = leaseOwner.state.active;
     accumulatedTaskCosts.set(applied.taskId, 0);
     taskStartedAt.set(applied.taskId, Date.now());
     persistState();
@@ -2217,7 +2296,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         modelSnapshotId: applied.modelSnapshotId,
       },
     );
-    if (state.active !== installed) return;
+    if (leaseOwner.state.active !== installed) return;
     attemptDisposition = "pending";
     pi.sendMessage(
       {
@@ -2318,8 +2397,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       continuing: true,
     });
     if (superseded()) return undefined;
-    if (state.active?.taskId !== prepared.taskId || state.active === prepared) return prepared;
-    const corrected = await prepareActiveLeaseForTurn(ctx, state.active, pending);
+    if (leaseOwner.state.active?.taskId !== prepared.taskId) return undefined;
+    if (leaseOwner.state.active === prepared) return prepared;
+    const corrected = await prepareActiveLeaseForTurn(ctx, leaseOwner.state.active, pending);
     return corrected && !superseded() ? corrected : undefined;
   }
 
@@ -2328,18 +2408,20 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     active: TaskLease,
     pending: PendingInput | undefined,
   ): Promise<TaskLease | undefined> {
-    if (active.manualOverride || state.manualOverride) return undefined;
-    if (state.mode === "active" && pending && active.lifecycle.phase === "completed") {
+    const leaseEpoch = leaseOwner.epoch;
+    if (!leaseOwner.owns(active, leaseEpoch)) return undefined;
+    if (active.manualOverride || leaseOwner.state.manualOverride) return undefined;
+    if (leaseOwner.state.mode === "active" && pending && active.lifecycle.phase === "completed") {
       active = {
         ...active,
         lifecycle: resumeCompletedLifecycle(active.lifecycle, ctx.sessionManager.getSessionId()),
         updatedAt: new Date().toISOString(),
       };
-      state = installLease(state, active);
+      leaseOwner.advance("PREPARE", active, leaseOwner.state.active, leaseOwner.epoch);
       persistState();
     }
     updateStatus(ctx);
-    if (state.mode === "shadow") {
+    if (leaseOwner.state.mode === "shadow") {
       ctx.ui.notify(
         `Shadow route: ${active.archetype} → ${active.selected.provider}/${active.selected.modelId} (${active.selected.effort})`,
         "info",
@@ -2349,21 +2431,27 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     while (!active.executionFailed && !leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) {
       const previousAttempt = active.attemptIndex;
       await transitionFallback(ctx, "availability", false);
-      const next = state.active;
+      const next = leaseOwner.state.active;
       if (!next || next.executionFailed || next.attemptIndex === previousAttempt) return undefined;
       active = next;
     }
     if (!leasedChoiceEligible(ctx, active, pending?.hasImages ?? false)) return undefined;
     const applied = await applyWithAvailabilityFallback(ctx, active);
+    if (!leaseOwner.owns(active, leaseEpoch)) return undefined;
     if (!applied) {
-      state = installLease(state, { ...active, executionFailed: true });
+      if (!leaseOwner.advance("PREPARE", { ...active, executionFailed: true }, active, leaseEpoch)) return;
       persistState();
       updateStatus(ctx);
       return undefined;
     }
     if (applied !== active) {
-      state = installLease(state, applied);
+      if (!leaseOwner.advance("PREPARE", applied, active, leaseEpoch)) return;
       persistState();
+    }
+    if (agentRunPhase === "before_start" && applied.lifecycle.phase !== "review") {
+      // A settlement switch may have failed; successful preparation now restores builder ownership.
+      revokedReviewStillRunning = false;
+      syncRouterTools();
     }
     return applied;
   }
@@ -2375,15 +2463,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "Submit a concrete irreversible-action plan only when router context explicitly says the active safety lifecycle is preflight. Never infer preflight from the action itself. Validation does not authorize execution; a separate independent review must approve the exact task/plan fingerprint.",
     parameters: ActionPlanSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const active = state.active;
-      if (state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
-        throw new Error("submit_action_plan is only valid inside an active irreversible-action preflight lease");
-      }
-      if (revokedReviewStillRunning) {
+      const active = leaseOwner.state.active;
+      if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error(
-          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
+          "submit_action_plan requires active irreversible-action preflight. Read-only inspection remains available; wait for preflight or start a new irreversible-action task before submitting.",
         );
       }
+      if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateActionPlan(params);
       // Telemetry is awaited only after the lease update, so a lease replaced during the await can
       // never be overwritten with this stale submission.
@@ -2408,16 +2494,21 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         submittedAt: new Date().toISOString(),
         plan: validation.plan,
       };
-      state = installLease(state, {
-        ...active,
-        updatedAt: plan.submittedAt,
-        lifecycle: {
-          phase: "preflight",
-          policy: "authorization_then_completion_review",
-          taskFingerprint: active.lifecycle.taskFingerprint,
-          plan,
+      leaseOwner.advance(
+        "SUBMIT_PLAN",
+        {
+          ...active,
+          updatedAt: plan.submittedAt,
+          lifecycle: {
+            phase: "preflight",
+            policy: "authorization_then_completion_review",
+            taskFingerprint: active.lifecycle.taskFingerprint,
+            plan,
+          },
         },
-      });
+        active,
+        leaseOwner.epoch,
+      );
       persistState();
       updateStatus(ctx);
       await recordValidation();
@@ -2440,15 +2531,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "Submit one exact potentially mutating discovery call in preflight when read-only inspection cannot establish the facts needed for an irreversible-action plan. A separate independent authorization review is required; approval never authorizes final execution.",
     parameters: DiscoveryRequestSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const active = state.active;
-      if (state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
-        throw new Error("submit_discovery_request is only valid inside an active irreversible-action preflight lease");
-      }
-      if (revokedReviewStillRunning) {
+      const active = leaseOwner.state.active;
+      if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "preflight") {
         throw new Error(
-          "A revoked independent review is still running; submit after this run ends and the builder model is restored",
+          "submit_discovery_request requires active irreversible-action preflight. Read-only inspection remains available; wait for preflight or start a new irreversible-action task before requesting discovery.",
         );
       }
+      if (revokedReviewStillRunning) throw revokedReviewSubmissionError();
       const validation = validateDiscoveryRequest(params);
       // As for action plans, the request is installed before telemetry is awaited.
       const recordValidation = () =>
@@ -2472,23 +2561,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         ctx.cwd,
         ctx.sessionManager.getSessionId(),
       );
-      state = installLease(state, {
-        ...active,
-        updatedAt: submittedAt,
-        lifecycle: {
-          phase: "preflight",
-          policy: "authorization_then_completion_review",
-          taskFingerprint: active.lifecycle.taskFingerprint,
-          discovery: {
-            request: validation.request,
-            requestFingerprint: validation.fingerprint,
-            scopeFingerprint,
-            submittedAt,
-            cwd: ctx.cwd,
-            sessionId: ctx.sessionManager.getSessionId(),
+      leaseOwner.advance(
+        "SUBMIT_DISCOVERY",
+        {
+          ...active,
+          updatedAt: submittedAt,
+          lifecycle: {
+            phase: "preflight",
+            policy: "authorization_then_completion_review",
+            taskFingerprint: active.lifecycle.taskFingerprint,
+            discovery: {
+              request: validation.request,
+              requestFingerprint: validation.fingerprint,
+              scopeFingerprint,
+              submittedAt,
+              cwd: ctx.cwd,
+              sessionId: ctx.sessionManager.getSessionId(),
+            },
           },
         },
-      });
+        active,
+        leaseOwner.epoch,
+      );
       persistState();
       updateStatus(ctx);
       await recordValidation();
@@ -2511,12 +2605,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "Submit a verdict only when router context explicitly identifies a generated read-only review lease. Never use this for an ordinary user-requested review. The review kind and scope fingerprint must exactly match the active lease.",
     parameters: SafetyReviewSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const active = state.active;
-      if (state.mode !== "active" || active?.lifecycle.phase !== "review") {
-        throw new Error("submit_safety_review is only valid inside an active generated independent review lease");
+      const active = leaseOwner.state.active;
+      if (leaseOwner.state.mode !== "active" || active?.lifecycle.phase !== "review") {
+        throw new Error(
+          "submit_safety_review requires an active generated independent review. Read-only inspection remains available; wait for the router's review request with its exact scope fingerprint before submitting.",
+        );
       }
       if (active.lifecycle.submission) {
-        throw new Error("submit_safety_review may be called only once for a generated review attempt");
+        throw new Error(
+          "submit_safety_review may be called only once for a generated review attempt; the verdict is already recorded. Finish this review without submitting again.",
+        );
       }
       const validation = validateSafetyReview(params, active.lifecycle.reviewKind, active.lifecycle.scopeFingerprint);
       // The verdict is installed before telemetry is awaited, so a review revoked during the await is
@@ -2538,11 +2636,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         await recordValidation();
         throw new Error(`Invalid safety review: ${validation.errors.join("; ")}`);
       }
-      state = installLease(state, {
-        ...active,
-        updatedAt: new Date().toISOString(),
-        lifecycle: { ...active.lifecycle, submission: validation.submission },
-      });
+      leaseOwner.advance(
+        "SUBMIT_REVIEW",
+        {
+          ...active,
+          updatedAt: new Date().toISOString(),
+          lifecycle: { ...active.lifecycle, submission: validation.submission },
+        },
+        active,
+        leaseOwner.epoch,
+      );
       persistState();
       await recordValidation();
       return {
@@ -2564,26 +2667,31 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       "Submit a complete implementation-plan DAG. Required on implementation_planning and large_program_planning routes. Validates IDs, dependencies, cycles, acceptance criteria, rollout, and rollback.",
     parameters: ProgramPlanSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const active = state.active;
-      if (
-        !active ||
-        (active.archetype !== "implementation_planning" && active.archetype !== "large_program_planning")
-      ) {
-        throw new Error("submit_implementation_plan is only valid inside a planning lease");
+      if (leaseOwner.state.mode !== "active") {
+        throw new Error(
+          "submit_implementation_plan requires active routing; use /route active before submitting the plan.",
+        );
       }
+      // Validation grants nothing, so it is accepted on any lease, including a research lease that continuity or a
+      // failed planning route retained. `planningLease` records which case this was.
+      const active = leaseOwner.state.active;
+      const planningLease =
+        active?.archetype === "implementation_planning" || active?.archetype === "large_program_planning";
       const validation = validateProgramPlan(params);
       await record(
         ctx,
         "outcome",
         {
           planValidated: validation.success,
+          planningLease,
           validationErrors: validation.errors,
           topologicalOrder: validation.topologicalOrder,
         },
-        { taskId: active.taskId, archetype: active.archetype },
+        active ? { taskId: active.taskId, archetype: active.archetype } : {},
       );
       if (!validation.success) throw new Error(`Invalid implementation plan: ${validation.errors.join("; ")}`);
-      validatedPlanAttempts.add(`${active.taskId}:${String(active.attemptIndex)}:${String(agentRunSequence)}`);
+      if (active)
+        validatedPlanAttempts.add(`${active.taskId}:${String(active.attemptIndex)}:${String(agentRunSequence)}`);
       return {
         content: [
           {
@@ -2596,18 +2704,33 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     },
   });
 
-  pi.on("session_shutdown", async (event) => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
-    if (event.reason === "new") modeForNextSession = state.mode;
+    if (event.reason === "new") modeForNextSession = leaseOwner.state.mode;
     // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
     // sees the mode in force when a session ends.
-    await rememberMode(state.mode);
+    await rememberMode(leaseOwner.state.mode);
   });
 
   pi.on("session_start", async (event, ctx) => {
-    await abortSecondaryWork(ctx, "session_start");
+    clearPendingInput(ctx);
+    // The persisted snapshot is an async restore proposal. Keep the safety question closed while
+    // settings load, and let newer input/overrides win rather than restoring over their state.
+    invalidateLease("session startup");
+    if (event.reason !== "reload") {
+      // A new, resumed, or forked session never inherits the previous session's in-memory lease, even when
+      // newer input supersedes the async restore below; that input is then gated as a new task.
+      leaseOwner.send({ type: "RESET" });
+      if (event.reason === "fork") leaseOwner.send({ type: "BOUNDARY", boundary: "subagent" });
+    }
+    const startupOwner = leaseOwner.state.active;
+    const startupEpoch = leaseOwner.epoch;
+    const modeAtStartup = leaseOwner.state.mode;
+    await abortSecondaryWork(ctx, "session_start", { retainSafetyLatch: true });
     attemptDisposition = "unknown";
     revokedReviewStillRunning = false;
+    revokedReviewRunActive = false;
     // Re-read on every session start so a settings edit or a fresh probe takes effect on /reload.
     scope = await readRouterScope(ctx.cwd);
     const branch = ctx.sessionManager.getBranch();
@@ -2621,38 +2744,62 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       repoKeyCwd = ctx.cwd;
       recordedExitMode = undefined;
     }
-    const modeBeforeStart = state.mode;
+    const modeBeforeStart = leaseOwner.state.mode;
     let resolvedStartMode: RouterMode | undefined;
     if (needsStartMode && carriedMode === undefined) {
       const resolution = await readStartModeResolution({ agentDir: getAgentDir(), repoKey });
       recordedExitMode = resolution.lastKnownMode;
       resolvedStartMode = resolution.mode;
     }
-    const fallbackMode = carriedMode ?? resolvedStartMode ?? state.mode;
-    state = restoreLeaseState(branch, fallbackMode);
-    if (state.active && holdsDiscovery(state.active)) {
+    const fallbackMode = carriedMode ?? resolvedStartMode ?? leaseOwner.state.mode;
+    const proposed = restoreLeaseState(branch, fallbackMode);
+    if (!leaseOwner.owns(startupOwner, startupEpoch)) {
+      // Newer input, a /route change, or a telemetry fallback arrived while startup settings loaded. Keep the
+      // lease state it produced rather than restoring over it, but still apply this session's mode unless
+      // the mode itself changed meanwhile: an explicit change or a telemetry fallback wins.
+      if (leaseOwner.state.mode === modeAtStartup && proposed.mode !== modeAtStartup) {
+        leaseOwner.send({ type: "MODE", mode: proposed.mode });
+        persistState();
+      }
+      syncRouterTools();
+      updateStatus(ctx);
+      return;
+    }
+    leaseOwner.send({
+      type: "RESTORE",
+      state: proposed,
+      owner: startupOwner,
+      epoch: startupEpoch,
+    });
+    if (leaseOwner.state.active && holdsDiscovery(leaseOwner.state.active)) {
       // Discovery requests, their reviews, and unspent grants are bound to one runtime context and
       // never survive restoration; the parent returns to an empty preflight.
-      state = installLease(state, revokeDiscovery(state.active));
+      invalidateLease("discovery runtime boundary", true);
       persistState();
     }
     if (
-      state.active?.lifecycle.phase === "authorized_execution" &&
-      state.active.lifecycle.authorization.sessionId !== ctx.sessionManager.getSessionId()
+      leaseOwner.state.active?.lifecycle.phase === "authorized_execution" &&
+      leaseOwner.state.active.lifecycle.authorization.sessionId !== ctx.sessionManager.getSessionId()
     ) {
-      state = { ...state, active: invalidateAuthorization(state.active, "session boundary") };
+      invalidateLease("session boundary", false);
       persistState();
     }
-    if (event.reason !== "reload" && state.active?.lifecycle.phase === "review") {
+    if (event.reason !== "reload" && leaseOwner.state.active?.lifecycle.phase === "review") {
       // A generated review cannot cross into a new/forked session and later restore or authorize its
       // nested parent. The next user turn starts a fresh task under the hard-boundary gate.
-      state = { mode: state.mode, manualOverride: false };
+      leaseOwner.send({
+        type: "RESTORE",
+        state: { mode: leaseOwner.state.mode, manualOverride: false },
+        owner: leaseOwner.state.active,
+        epoch: leaseOwner.epoch,
+      });
       persistState();
     }
-    nextParentTaskId = event.reason === "fork" ? state.active?.taskId : undefined;
-    if (event.reason !== "reload") state = setHardBoundary(state, event.reason === "fork" ? "subagent" : "new_session");
+    nextParentTaskId = event.reason === "fork" ? leaseOwner.state.active?.taskId : undefined;
+    if (event.reason !== "reload")
+      leaseOwner.send({ type: "BOUNDARY", boundary: event.reason === "fork" ? "subagent" : "new_session" });
     if (carriedMode !== undefined) {
-      state = { ...state, mode: carriedMode };
+      leaseOwner.send({ type: "MODE", mode: carriedMode });
       persistState();
     } else if (resolvedStartMode !== undefined && resolvedStartMode !== modeBeforeStart) {
       // Only a start mode that actually changes enablement is worth a session entry; recording the
@@ -2673,12 +2820,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Authorization is invalidated immediately, because no approval may survive compaction even
     // though the lease itself does.
     // Every lease change happens before the first await, as in the override handlers.
-    if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "compaction boundary") };
-    state = setHardBoundary(state, "post_compaction");
+    if (leaseOwner.state.active) invalidateLease("compaction boundary", false);
+    leaseOwner.send({ type: "BOUNDARY", boundary: "post_compaction" });
     persistState();
     await abortSecondaryWork(ctx, "session_compact", { retainSafetyLatch: true });
-    await rememberMode(state.mode);
-    await record(ctx, "boundary", { boundary: "post_compaction" }, state.active ? { taskId: state.active.taskId } : {});
+    await rememberMode(leaseOwner.state.mode);
+    await record(
+      ctx,
+      "boundary",
+      { boundary: "post_compaction" },
+      leaseOwner.state.active ? { taskId: leaseOwner.state.active.taskId } : {},
+    );
   });
 
   pi.on("session_before_fork", async (_event, ctx) => {
@@ -2686,43 +2838,48 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       ctx,
       "boundary",
       { boundary: "subagent_fork_requested" },
-      state.active ? { taskId: state.active.taskId } : {},
+      leaseOwner.state.active ? { taskId: leaseOwner.state.active.taskId } : {},
     );
   });
 
   pi.on("input", (event, ctx) => {
-    // Generated turns bypass this hook, so retain both validators throughout active routing.
-    // In shadow and off modes, neither validator is declared.
+    // Custom continuations bypass input (even on Pi 1.3.0), so lifecycle transitions synchronize
+    // the phase-valid validators themselves. In shadow and off modes, neither is declared.
     syncRouterTools();
-    if (state.mode === "off") return { action: "continue" as const };
+    if (leaseOwner.state.mode === "off") return { action: "continue" as const };
+    leaseOwner.send({ type: "INTENT" });
     if (
-      state.active &&
-      (state.active.lifecycle.phase === "authorized_execution" ||
-        holdsDiscovery(state.active) ||
-        (state.active.lifecycle.phase === "completed" &&
-          state.active.lifecycle.policy === "authorization_then_completion_review"))
+      leaseOwner.state.active &&
+      (leaseOwner.state.active.lifecycle.phase === "authorized_execution" ||
+        holdsDiscovery(leaseOwner.state.active) ||
+        (leaseOwner.state.active.lifecycle.phase === "completed" &&
+          leaseOwner.state.active.lifecycle.policy === "authorization_then_completion_review"))
     ) {
       // Every input event is new user-turn intent, whatever its source. An extension calling
       // `sendUserMessage` is not the router continuing its own work: router continuations are custom
       // messages that never reach this hook, so no source is exempt from invalidating an approval
       // that was granted for a different exact plan.
-      state = { ...state, active: invalidateAuthorization(state.active, "new user input") };
+      invalidateLease("new user input", false);
       persistState();
     }
+    // Busy input is queued into the current run (or rejected by Pi if delivery was omitted), not
+    // followed by a new before_agent_start. It still invalidates authority above, but must neither
+    // stage a future start nor overwrite idle input waiting through pre-run compaction/preparation.
+    if (event.streamingBehavior || !ctx.isIdle()) return { action: "continue" as const };
     const cache = cacheEstimate(ctx.sessionManager.getBranch());
-    let gate = deterministicBoundaryGate(state, {
+    let gate = deterministicBoundaryGate(leaseOwner.state, {
       isUserInput: true,
       source: event.source,
-      ...(event.streamingBehavior ? { streamingBehavior: event.streamingBehavior } : {}),
       prompt: event.text,
       cachedTokens: cache.cachedTokens,
       expectedReuseRatio: cache.expectedReuseRatio,
     });
     const hasImages = Boolean(event.images?.length);
-    if (hasImages && state.active) {
+    if (hasImages && leaseOwner.state.active) {
       const selected = buildRegistrySnapshot(ctx, scope).find(
         (candidate) =>
-          candidate.provider === state.active?.selected.provider && candidate.modelId === state.active.selected.modelId,
+          candidate.provider === leaseOwner.state.active?.selected.provider &&
+          candidate.modelId === leaseOwner.state.active.selected.modelId,
       );
       if (!selected?.inputTypes.includes("image")) {
         gate = { action: "new_task", reason: "image input requires a newly eligible route" };
@@ -2741,23 +2898,27 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return { action: "continue" as const };
   });
 
-  pi.on("before_agent_start", async (event, ctx) => {
+  // Pi 1.1.0 fired this hook only for user prompts. Pi 1.3.0 also fires it for idle custom runs
+  // (`triggerTurn`, including the router's own generated follow-ups), which carry no prompt. Those runs
+  // are handled by the lifecycle code that queues them, so the router skips them to keep the 1.1.0 behavior.
+  const handleUserPrompt = async (event: BeforeAgentStartUserEvent, ctx: ExtensionContext) => {
     agentRunPhase = "before_start";
-    if (state.mode === "off") {
+    if (leaseOwner.state.mode === "off") {
       syncRouterTools();
       return;
     }
     // `/route off` does not cancel this hook. Each slow step below is followed by a generation check,
     // so a hook superseded by off installs no lease, applies no model/effort, and returns no prompt.
-    const generation = routingGeneration;
-    const superseded = (): boolean => generation !== routingGeneration;
+    let generation = leaseOwner.epoch;
+    const superseded = (): boolean => generation !== leaseOwner.epoch;
     try {
       const pending = pendingInput;
       pendingInput = undefined;
       const repository = pending ? await pending.repository : await readRepositoryMetadata(pi, ctx.cwd);
       if (superseded()) return;
       if (pending && lastUpstream && repository.upstream && repository.upstream !== lastUpstream) {
-        state = setHardBoundary(state, "post_push");
+        leaseOwner.send({ type: "BOUNDARY", boundary: "post_push" });
+        generation = leaseOwner.epoch;
         pending.gate = { action: "new_task", reason: "hard boundary: post_push", hardBoundary: "post_push" };
       }
       lastUpstream = repository.upstream;
@@ -2767,7 +2928,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           ctx,
           "boundary",
           { action: pending.gate.action, reason: pending.gate.reason, cache: pending.cache, source: pending.source },
-          state.active ? { taskId: state.active.taskId } : {},
+          leaseOwner.state.active ? { taskId: leaseOwner.state.active.taskId } : {},
         );
       }
       // Classification, builder provenance, and route selection consume the exact same
@@ -2786,7 +2947,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         event.prompt,
         currentSynopsis,
         pending,
-        state.active,
+        leaseOwner.state.active,
         superseded,
       );
       const primaryCompletedAtMs = Date.now();
@@ -2829,7 +2990,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           ctx.sessionManager.getSessionId(),
           "router.route",
           {
-            "router.mode": state.mode,
+            "router.mode": leaseOwner.state.mode,
             "router.archetype": routedClassification.archetype.archetype,
             "router.risk": routedClassification.features.risk,
           },
@@ -2884,7 +3045,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const currentSnapshot = snapshotForModel(ctx.model, routed.registry);
         const currentEffort = pi.getThinkingLevel();
         const priorSelection = previousChoice(currentSnapshot, currentEffort, routed.decision.archetype);
-        const preserveManualSelection = state.manualOverride || state.active?.manualOverride === true;
+        const preserveManualSelection =
+          leaseOwner.state.manualOverride || leaseOwner.state.active?.manualOverride === true;
         const routeChoices = routeChoicesForNewLease(
           routed.decision.primary,
           routed.decision.fallbacks,
@@ -2922,7 +3084,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           repositoryLanguageBucket: languageBucket,
           contextSizeBucket: contextBucket,
         });
-        state = installLease(state, lease);
+        const secondarySafetyPending =
+          Boolean(classifySecondaryTask) &&
+          routedClassification.escalated &&
+          !routedClassification.failedClosed &&
+          routedClassification.secondaryFeatures === undefined &&
+          routedClassification.primaryFeatures !== undefined &&
+          routedClassification.primaryFeatures.confidence < CLASSIFIER_CONFIDENCE_THRESHOLD;
+        if (!leaseOwner.advance("ROUTE", lease, leaseOwner.state.active, generation, secondarySafetyPending)) return;
         accumulatedTaskCosts.set(lease.taskId, 0);
         taskStartedAt.set(lease.taskId, Date.now());
         nextParentTaskId = undefined;
@@ -2934,6 +3103,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         deterministicCheckCalls.clear();
         deterministicCheckResults.clear();
         potentiallyMutatingCalls.clear();
+        // Start the real secondary before the first await. ROUTE reserved a gated placeholder for the task
+        // family; if newer input superseded this hook during the ledger write, a same-task continuation would
+        // never start one, leaving that placeholder latch with nothing able to resolve it.
+        const secondaryTask = startSecondaryReconciliation({
+          ctx,
+          registry: routed.registry,
+          prompt: event.prompt,
+          synopsis: currentSynopsis,
+          classification: routedClassification,
+          lease,
+          hasImages: pending?.hasImages ?? Boolean(event.images?.length),
+          languageBucket,
+          languageBuckets: repository.languageBuckets,
+          contextBucket,
+          explorationKey: promptFingerprint(event.prompt),
+          cache: pending?.cache ?? { cachedTokens: 0, expectedReuseRatio: 0 },
+          primaryCompletedAtMs,
+        });
         await record(
           ctx,
           "route_decision",
@@ -2968,21 +3155,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           },
         );
         if (superseded()) return;
-        const secondaryTask = startSecondaryReconciliation({
-          ctx,
-          registry: routed.registry,
-          prompt: event.prompt,
-          synopsis: currentSynopsis,
-          classification: routedClassification,
-          lease,
-          hasImages: pending?.hasImages ?? Boolean(event.images?.length),
-          languageBucket,
-          languageBuckets: repository.languageBuckets,
-          contextBucket,
-          explorationKey: promptFingerprint(event.prompt),
-          cache: pending?.cache ?? { cachedTokens: 0, expectedReuseRatio: 0 },
-          primaryCompletedAtMs,
-        });
         if (secondaryTask) {
           await waitForSecondaryGrace(ctx, secondaryTask);
           if (superseded()) return;
@@ -2992,7 +3164,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             promptRefreshAllowed: true,
             continuing: true,
           });
-          if (state.active?.taskId === lease.taskId) active = state.active;
+          if (leaseOwner.state.active?.taskId === lease.taskId) active = leaseOwner.state.active;
         }
       }
 
@@ -3024,10 +3196,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       syncRouterTools();
       ctx.ui.setWorkingMessage();
     }
+  };
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    // Pi 1.1.0 events have no messageType and always take the user path.
+    if (event.messageType === "custom") return;
+    return handleUserPrompt(event, ctx);
   });
 
   pi.on("model_select", async (event, ctx) => {
-    if (state.mode === "off" || event.source === "restore") return;
+    if (leaseOwner.state.mode === "off" || event.source === "restore") return;
     // Suppress only the echo of the selection the router is applying. `event.source` cannot
     // distinguish a programmatic `setModel` from a user picking a model (both report "set"), so a
     // different model arriving while the apply is in flight is a real override and must win.
@@ -3040,8 +3218,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
     // Revoke discovery and mark the override before any await, so an exact discovery call cannot
     // be dispatched in the window while secondary work is being cancelled.
-    if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual model override") };
-    state = markManualOverride(state);
+    if (leaseOwner.state.active) invalidateLease("manual model override", false);
+    leaseOwner.send({ type: "OVERRIDE" });
     persistState();
     await abortSecondaryWork(ctx, "manual_override");
     updateStatus(ctx);
@@ -3052,12 +3230,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       {
         provider: event.model.provider,
         modelId: event.model.id,
-        ...(state.active
+        ...(leaseOwner.state.active
           ? {
-              taskId: state.active.taskId,
-              archetype: state.active.archetype,
-              policyVersion: state.active.policyVersion,
-              modelSnapshotId: state.active.modelSnapshotId,
+              taskId: leaseOwner.state.active.taskId,
+              archetype: leaseOwner.state.active.archetype,
+              policyVersion: leaseOwner.state.active.policyVersion,
+              modelSnapshotId: leaseOwner.state.active.modelSnapshotId,
             }
           : {}),
       },
@@ -3065,13 +3243,13 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("thinking_level_select", async (event, ctx) => {
-    if (state.mode === "off" || applyingSelection) return;
+    if (leaseOwner.state.mode === "off" || applyingSelection) return;
     // As for model overrides, all lease changes happen before the first await.
-    if (state.active) state = { ...state, active: invalidateAuthorization(state.active, "manual effort override") };
-    const active = state.active;
+    if (leaseOwner.state.active) invalidateLease("manual effort override", false);
+    const active = leaseOwner.state.active;
     const changed = active ? changeEffortWithinLease(active, event.level, new Date().toISOString()) : undefined;
-    if (changed?.success) state = { ...state, active: changed.lease };
-    state = markManualOverride(state);
+    if (changed?.success) leaseOwner.send({ type: "OVERRIDE", effort: event.level });
+    leaseOwner.send({ type: "OVERRIDE" });
     persistState();
     await abortSecondaryWork(ctx, "manual_override");
     updateStatus(ctx);
@@ -3084,16 +3262,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         leaseUpdated: changed?.success ?? false,
         ...(!changed?.success && changed ? { reason: changed.reason } : {}),
       },
-      state.active
+      leaseOwner.state.active
         ? {
-            taskId: state.active.taskId,
-            archetype: state.active.archetype,
-            provider: state.active.selected.provider,
-            modelId: state.active.selected.modelId,
+            taskId: leaseOwner.state.active.taskId,
+            archetype: leaseOwner.state.active.archetype,
+            provider: leaseOwner.state.active.selected.provider,
+            modelId: leaseOwner.state.active.selected.modelId,
             effort: event.level,
-            promptProfileId: state.active.promptProfileId,
-            policyVersion: state.active.policyVersion,
-            modelSnapshotId: state.active.modelSnapshotId,
+            promptProfileId: leaseOwner.state.active.promptProfileId,
+            policyVersion: leaseOwner.state.active.policyVersion,
+            modelSnapshotId: leaseOwner.state.active.modelSnapshotId,
           }
         : {},
     );
@@ -3102,9 +3280,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   pi.on("agent_start", () => {
     // Run-phase bookkeeping tracks Pi itself, so it stays accurate while off for use after re-enable.
     agentRunPhase = "active";
+    runEndEpoch = undefined;
+    profileRefreshAbort = undefined;
     insideProviderTurn = false;
     activeToolExecutions = 0;
-    if (state.mode === "off") return;
+    if (leaseOwner.state.mode === "off") return;
     lastProviderFailure = undefined;
     attemptDisposition = "pending";
     agentRunSequence++;
@@ -3118,7 +3298,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("turn_start", () => {
     insideProviderTurn = true;
-    if (state.mode === "off") return;
+    if (leaseOwner.state.mode === "off") return;
     attemptTurns++;
   });
 
@@ -3141,7 +3321,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Untrack the call even while off so a discovery call that ends after `/route off` cannot leak.
     const discovery = discoveryCalls.get(event.toolCallId);
     discoveryCalls.delete(event.toolCallId);
-    if (state.mode === "off") return;
+    if (leaseOwner.state.mode === "off") return;
     attemptToolCalls++;
     if (discovery) {
       void record(
@@ -3160,40 +3340,45 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     deterministicCheckCalls.delete(event.toolCallId);
     potentiallyMutatingCalls.delete(event.toolCallId);
     if (check) deterministicCheckResults.set(check, !event.isError);
-    if (state.active && (check || (mutation && !event.isError))) {
+    if (leaseOwner.state.active && (check || (mutation && !event.isError))) {
       const now = new Date().toISOString();
-      state = {
-        ...state,
-        active: {
-          ...state.active,
+      leaseOwner.advance(
+        "EVIDENCE",
+        {
+          ...leaseOwner.state.active,
           updatedAt: now,
           safetyEvidence: {
-            ...state.active.safetyEvidence,
+            ...leaseOwner.state.active.safetyEvidence,
             checks: check
               ? [
-                  ...state.active.safetyEvidence.checks.filter((entry) => entry.command !== check),
+                  ...leaseOwner.state.active.safetyEvidence.checks.filter((entry) => entry.command !== check),
                   { command: check, passed: !event.isError, recordedAt: now },
                 ].slice(-20)
-              : state.active.safetyEvidence.checks,
+              : leaseOwner.state.active.safetyEvidence.checks,
             mutations:
               mutation && !event.isError
-                ? [...state.active.safetyEvidence.mutations, { ...mutation, recordedAt: now }].slice(-50)
-                : state.active.safetyEvidence.mutations,
+                ? [...leaseOwner.state.active.safetyEvidence.mutations, { ...mutation, recordedAt: now }].slice(-50)
+                : leaseOwner.state.active.safetyEvidence.mutations,
           },
         },
-      };
+        leaseOwner.state.active,
+        leaseOwner.epoch,
+      );
       persistState();
     }
   });
 
   pi.on("tool_call", (event, ctx) => {
-    if (state.mode !== "active") return undefined;
-    if (state.active?.lifecycle.phase === "discovery_ready" && (state.manualOverride || state.active.manualOverride)) {
+    if (leaseOwner.state.mode !== "active") return undefined;
+    if (
+      leaseOwner.state.active?.lifecycle.phase === "discovery_ready" &&
+      (leaseOwner.state.manualOverride || leaseOwner.state.active.manualOverride)
+    ) {
       // A manual model/effort override voids the grant; the ordinary preflight gate then applies.
-      state = installLease(state, revokeDiscovery(state.active));
+      invalidateLease("discovery runtime boundary", true);
       persistState();
     }
-    const active = state.active;
+    const active = leaseOwner.state.active;
     if (active?.lifecycle.phase === "discovery_ready") {
       const grant = active.lifecycle.grant;
       if (event.toolName === grant.request.toolName) {
@@ -3208,8 +3393,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           if (!safetyToolBlockReason(active, event.toolName, event.input)) return undefined;
           return { block: true, reason: consumed.reason };
         }
-        // Spend before the secondary gate or the tool dispatcher can observe the call.
-        state = installLease(state, { ...active, updatedAt: new Date().toISOString(), lifecycle: consumed.lifecycle });
+        // Spend before the secondary gate or the tool dispatcher can observe the call. The grant is
+        // single-use, so a spend the actor refuses must block the call rather than leave it reusable.
+        if (
+          !leaseOwner.advance(
+            "SPEND_DISCOVERY",
+            { ...active, updatedAt: new Date().toISOString(), lifecycle: consumed.lifecycle },
+            active,
+            leaseOwner.epoch,
+          )
+        ) {
+          return { block: true, reason: "The discovery grant could not be spent; resubmit the request for review." };
+        }
         persistState();
         const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
         if (secondaryReason) return { block: true, reason: secondaryReason };
@@ -3217,7 +3412,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         return undefined;
       }
     }
-    const reason = safetyToolBlockReason(state.active, event.toolName, event.input);
+    const reason = safetyToolBlockReason(leaseOwner.state.active, event.toolName, event.input);
     if (reason) return { block: true, reason };
     const secondaryReason = secondarySafetyBlockReason(event.toolName, event.input);
     if (secondaryReason) return { block: true, reason: secondaryReason };
@@ -3235,7 +3430,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("after_provider_response", (event) => {
-    if (state.mode === "off") return;
+    if (leaseOwner.state.mode === "off") return;
     // An invalid/expired token is endpoint availability failure just like a rate
     // limit: move to the next authorized provider instead of failing the lease.
     if (event.status === 401 || event.status === 403 || event.status === 429 || event.status >= 500) {
@@ -3244,13 +3439,23 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_end", async (event, ctx) => {
-    if (state.mode === "off") return;
-    const active = state.active;
+    // Clear before the first await and before early returns (including off/failed leases). Never
+    // clear in a finally: newer input may arrive while attempt telemetry is being recorded.
+    clearPendingInput(ctx);
+    const interruptedForProfileRefresh =
+      profileRefreshAbort?.taskId === leaseOwner.state.active?.taskId &&
+      profileRefreshAbort?.runSequence === agentRunSequence;
+    profileRefreshAbort = undefined;
+    const leaseEpoch = leaseOwner.epoch;
+    // Settlement compares against this, so input arriving after the run ended supersedes its lifecycle work.
+    runEndEpoch = leaseEpoch;
+    if (leaseOwner.state.mode === "off") return;
+    const active = leaseOwner.state.active;
     if (!active || active.executionFailed) return;
     const assistants = event.messages.filter(assistantMessage);
     const isActiveAttempt =
-      state.mode === "active" &&
-      !state.manualOverride &&
+      leaseOwner.state.mode === "active" &&
+      !leaseOwner.state.manualOverride &&
       !active.manualOverride &&
       ctx.model?.provider === active.selected.provider &&
       ctx.model.id === active.selected.modelId;
@@ -3305,6 +3510,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         deterministicChecksPassed: [...deterministicCheckResults.values()].filter(Boolean).length,
         deterministicChecksFailed: [...deterministicCheckResults.values()].filter((passed) => !passed).length,
         stopReason: last?.stopReason,
+        ...(interruptedForProfileRefresh ? { interruptionReason: "prompt_profile_refresh" } : {}),
       },
       {
         taskId: active.taskId,
@@ -3317,7 +3523,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         modelSnapshotId: active.modelSnapshotId,
       },
     );
-    const afterRecording: TaskLease | undefined = state.active;
+    const afterRecording: TaskLease | undefined = leaseOwner.state.active;
     if (afterRecording?.taskId !== active.taskId) {
       // The lease was replaced while the outcome was being recorded (for example, new input revoked a running
       // review). This attempt's outcome belongs to a lease that is gone, so it must not drive a repair or review.
@@ -3325,9 +3531,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       lastAttemptMetrics = undefined;
       return;
     }
+    if (interruptedForProfileRefresh) {
+      // The already-queued follow-up resumes this task. Do not spend a fallback attempt, switch
+      // providers (and rebill the cache), or start a safety repair for our own interrupted run.
+      attemptDisposition = "aborted";
+      lastProviderFailure = undefined;
+      return;
+    }
     const deterministicVerificationFailed =
       isActiveAttempt && [...deterministicCheckResults.values()].some((passed) => !passed);
-    const latestLifecycle = state.active?.taskId === active.taskId ? state.active.lifecycle : active.lifecycle;
+    const latestLifecycle =
+      leaseOwner.state.active?.taskId === active.taskId ? leaseOwner.state.active.lifecycle : active.lifecycle;
     const safetyReviewMissing =
       isActiveAttempt && latestLifecycle.phase === "review" && latestLifecycle.submission === undefined;
     const planValidationMissing =
@@ -3345,7 +3559,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         updatedAt: new Date().toISOString(),
         planValidationRepairAttempted: true,
       };
-      state = installLease(state, repaired);
+      if (!leaseOwner.advance("REPAIR", repaired, active, leaseEpoch)) return;
       attemptDisposition = "pending";
       persistState();
       updateStatus(ctx);
@@ -3399,9 +3613,46 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    // The settled run is bound to the epoch at its agent_end (or, without one, before the drain). Same-epoch
+    // secondary reconciliation still applies, but input, a boundary, or a mode change since then supersedes it.
+    const runEpoch = runEndEpoch ?? leaseOwner.epoch;
+    runEndEpoch = undefined;
+    await drainSecondaryReconciliation(ctx, { kind: "agent_settled", promptRefreshAllowed: false, continuing: false });
+    const leaseEpoch = leaseOwner.epoch;
     try {
-      const active = state.active;
-      if (!active || state.mode !== "active" || active.executionFailed) return;
+      const active = leaseOwner.state.active;
+      if (!active || active.executionFailed) return;
+      const manualOverride = leaseOwner.state.manualOverride || active.manualOverride;
+      if (active.lifecycle.phase === "review" && (leaseOwner.state.mode !== "active" || manualOverride)) {
+        // `/route off` or `shadow`, or a manual model/effort override, between the review's verdict and
+        // settlement must not strand the finished review: re-enabling does not replay this event, so the next
+        // user turn would run under it. Neither records a usable disposition (agent_end skips while off, and an
+        // override makes the run incomplete), so hand back on the submitted verdict alone, and skip otherwise.
+        // An inactive hand-back leaves the reviewer selected, and `/route active` restores the submission tools at
+        // once, even while the hand-back awaits its telemetry, so submissions wait for the builder from before the
+        // parent is installed (judged after the drains below). An override keeps the operator's model.
+        if (!manualOverride) revokedReviewStillRunning = true;
+        await restoreParentAfterReview(ctx, active, active.lifecycle.submission ? "completed" : "skipped", {
+          passive: true,
+          manualOverride,
+        });
+        return;
+      }
+      if (leaseOwner.state.mode !== "active") return;
+      if (revokedReviewStillRunning && !manualOverride) {
+        // Restore before queuing a follow-up: Pi <=1.1.0 skipped before_agent_start, and on Pi 1.3.0
+        // the router skips user-prompt preparation for custom starts. Keep submissions blocked through
+        // the asynchronous switch and after a failed switch.
+        const revokedReviewRestored = await applyChoice(ctx, active.selected);
+        if (!leaseOwner.owns(active, leaseEpoch)) return;
+        if (!revokedReviewRestored) {
+          ctx.ui.notify(
+            "Could not switch back to the builder model after the revoked review; preflight submissions stay blocked until it is restored",
+            "error",
+          );
+          return;
+        }
+      }
       if (active.lifecycle.phase === "review") {
         if (attemptDisposition === "success" && active.lifecycle.submission) {
           await restoreParentAfterReview(ctx, active, "completed");
@@ -3411,13 +3662,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         return;
       }
       if (attemptDisposition !== "success" && attemptDisposition !== "unknown") return;
+      // A superseded run must not start a review, repair, or completion check for work the newer input may
+      // change; that input drives the next turn. Review hand-back above has its own stale-binding rules.
+      if (leaseEpoch !== runEpoch) return;
 
       if (active.lifecycle.phase === "preflight") {
         const discovery = active.lifecycle.discovery;
         const plan = active.lifecycle.plan;
         if (discovery) {
           if (ctx.cwd !== discovery.cwd || ctx.sessionManager.getSessionId() !== discovery.sessionId) {
-            state = installLease(state, invalidateAuthorization(active, "discovery context changed"));
+            if (
+              !leaseOwner.advance(
+                "PREPARE",
+                invalidateAuthorization(active, "discovery context changed"),
+                active,
+                leaseEpoch,
+              )
+            )
+              return;
             persistState();
             return;
           }
@@ -3461,7 +3723,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             updatedAt: new Date().toISOString(),
             lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
           };
-          state = installLease(state, repaired);
+          if (!leaseOwner.advance("REPAIR", repaired, active, leaseEpoch)) return;
           persistState();
           pi.sendMessage(
             {
@@ -3492,6 +3754,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
       if (lifecycleRequiresCompletionReview(active.lifecycle)) {
         const collected = await collectCompletionEvidence(ctx, active);
+        if (leaseOwner.state.active !== active || leaseOwner.epoch !== leaseEpoch) return;
         if (collected.evidence) {
           const codeBuilder = isCodeBuilder(active.features);
           await startIndependentReview(
@@ -3519,7 +3782,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             updatedAt: new Date().toISOString(),
             lifecycle: { ...active.lifecycle, evidenceRepairAttempted: true },
           } as TaskLease;
-          state = installLease(state, repaired);
+          if (!leaseOwner.advance("REPAIR", repaired, active, leaseEpoch)) return;
           persistState();
           pi.sendMessage(
             {
@@ -3538,12 +3801,26 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       const settled: ReconciliationBoundary = { kind: "agent_settled", promptRefreshAllowed: false, continuing: false };
       await drainSecondaryReconciliation(ctx, settled);
       agentRunPhase = "settled";
-      revokedReviewStillRunning = false;
+      revokedReviewRunActive = false;
       insideProviderTurn = false;
       activeToolExecutions = 0;
       // A result queued while the drain above was awaited missed it, and the eager drain only runs
       // once the phase is settled, so drain again rather than leave it for the next run.
       await drainSecondaryReconciliation(ctx, settled);
+      // Submissions reopen only once the live model is the final lease's selection, judged after both drains
+      // because a correction can switch models and still be rejected. A failed restore, or an inactive mode
+      // (which switches no models while `/route active` restores the safety tools at once), keeps them blocked
+      // until a later turn preparation restores the builder.
+      const final = leaseOwner.state.active;
+      if (
+        !final ||
+        leaseOwner.state.manualOverride ||
+        final.manualOverride ||
+        (ctx.model?.provider === final.selected.provider && ctx.model.id === final.selected.modelId)
+      ) {
+        revokedReviewStillRunning = false;
+      }
+      syncRouterTools();
     }
   });
 
@@ -3560,12 +3837,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           return;
         }
         const liftedPhase =
-          command === "off" && state.mode !== "off" ? restrictedPhaseLiftedByOff(state.active?.lifecycle) : undefined;
+          command === "off" && leaseOwner.state.mode !== "off"
+            ? restrictedPhaseLiftedByOff(leaseOwner.state.active?.lifecycle)
+            : undefined;
         // Re-enabling restores tool gating for the persisted lifecycle, so an earlier off notice is
         // now wrong whether or not the model has seen it yet. Queue the correction behind it.
         const restoredPhase =
-          command === "active" && state.mode !== "active" && offNoticePhase
-            ? restrictedPhaseLiftedByOff(state.active?.lifecycle)
+          command === "active" && leaseOwner.state.mode !== "active" && offNoticePhase
+            ? restrictedPhaseLiftedByOff(leaseOwner.state.active?.lifecycle)
             : undefined;
         if (command === "active") offNoticePhase = undefined;
         if (restoredPhase) {
@@ -3579,24 +3858,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             { deliverAs: agentRunPhase === "active" ? "steer" : "nextTurn" },
           );
         }
-        state = {
-          ...state,
-          mode: command,
-          ...(command === "active"
-            ? {
-                manualOverride: false,
-                ...(state.active ? { active: { ...state.active, manualOverride: false } } : {}),
-              }
-            : {}),
-        };
+        leaseOwner.send({ type: "MODE", mode: command });
+        if (command === "off" && leaseOwner.state.active) invalidateLease("router off", true);
+        // Advertise the new mode's tools before the first await below: an in-flight request must not see tools the
+        // off-mode bypass and execute guards now refuse, nor miss ones re-enabling makes valid.
+        syncRouterTools();
         if (command === "off") {
-          if (state.active) state = { ...state, active: revokeDiscovery(state.active) };
           // Off is an immediate adapter bypass, not merely a promise to skip the next classification.
           // Discard turn-local routing work and hide lease-only tools so neither a pending decision nor
           // a persisted safety lifecycle can affect ordinary Pi behavior while the router is dormant.
-          if (pendingInput) ctx.ui.setWorkingMessage();
-          pendingInput = undefined;
-          routingGeneration++;
+          clearPendingInput(ctx);
+
           // Mode is already off, so this records nothing. Keep the safety latch so a re-enabled lease
           // still treats an unreconciled low-confidence primary conservatively.
           await abortSecondaryWork(ctx, "router_off", { retainSafetyLatch: true });
@@ -3624,14 +3896,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         // Off and shadow hide every router-only tool. Re-enabling active
         // routing restores them immediately, including before an extension-generated turn.
         syncRouterTools();
-        if (command === "active" && state.active) {
-          accumulatedTaskCosts.set(state.active.taskId, 0);
-          taskStartedAt.set(state.active.taskId, Date.now());
+        if (command === "active" && leaseOwner.state.active) {
+          accumulatedTaskCosts.set(leaseOwner.state.active.taskId, 0);
+          taskStartedAt.set(leaseOwner.state.active.taskId, Date.now());
         }
         persistState();
         updateStatus(ctx);
         // Recorded immediately so `startMode: "last"` survives a crash, not just a clean exit.
-        await rememberMode(state.mode);
+        await rememberMode(leaseOwner.state.mode);
         ctx.ui.notify(`Model router mode set to ${command}`, "info");
         return;
       }
@@ -3651,18 +3923,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         return;
       }
       if (command === "reset") {
-        state = setHardBoundary({ mode: state.mode, manualOverride: false }, "new_session");
+        leaseOwner.send({ type: "RESET" });
         persistState();
         updateStatus(ctx);
         ctx.ui.notify("Router lease cleared; next user input is a new task", "info");
         return;
       }
-      if ((command === "accept" || command === "reject" || command === "fail") && state.mode === "off") {
+      if ((command === "accept" || command === "reject" || command === "fail") && leaseOwner.state.mode === "off") {
         ctx.ui.notify(`Model router is off; enable routing before /route ${command}`, "warning");
         return;
       }
       if (command === "accept" || command === "reject") {
-        if (!lastAttemptMetrics || !state.active) {
+        if (!lastAttemptMetrics || !leaseOwner.state.active) {
           ctx.ui.notify("No completed routed attempt is available to label", "warning");
           return;
         }
@@ -3673,14 +3945,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             ...lastAttemptMetrics,
             accepted: command === "accept",
             humanIntervention: command === "reject",
-            contextBucket: state.active.contextSizeBucket ?? state.active.features.contextShape,
-            risk: state.active.features.risk,
-            interactivity: state.active.features.interactivity,
-            languageBucket: state.active.repositoryLanguageBucket ?? "unknown",
+            contextBucket: leaseOwner.state.active.contextSizeBucket ?? leaseOwner.state.active.features.contextShape,
+            risk: leaseOwner.state.active.features.risk,
+            interactivity: leaseOwner.state.active.features.interactivity,
+            languageBucket: leaseOwner.state.active.repositoryLanguageBucket ?? "unknown",
           },
           {
-            taskId: state.active.taskId,
-            archetype: state.active.archetype,
+            taskId: leaseOwner.state.active.taskId,
+            archetype: leaseOwner.state.active.archetype,
             provider: lastAttemptMetrics.provider,
             modelId: lastAttemptMetrics.modelId,
           },
@@ -3695,10 +3967,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         await transitionFallback(ctx, value, true);
         return;
       }
-      const lease = state.active;
+      const lease = leaseOwner.state.active;
       const detail = lease
         ? [
-            `mode=${state.mode}`,
+            `mode=${leaseOwner.state.mode}`,
             `task=${lease.taskId}`,
             `route=${lease.archetype}`,
             `model=${lease.selected.provider}/${lease.selected.modelId}`,
@@ -3709,7 +3981,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             `execution=${lease.executionFailed ? "failed" : "ready"}`,
             `boundary=${lastRoute.boundaryReason ?? "n/a"}`,
           ].join("\n")
-        : `mode=${state.mode}\nNo active task lease`;
+        : `mode=${leaseOwner.state.mode}\nNo active task lease`;
       ctx.ui.notify(detail, "info");
     },
   });

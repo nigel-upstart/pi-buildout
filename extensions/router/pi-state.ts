@@ -6,6 +6,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
 import { ARCHETYPES } from "./core/archetype.ts";
 import type { Archetype } from "./core/archetype.ts";
 import { validateFallbackTopology } from "./core/fallback.ts";
@@ -214,10 +215,19 @@ export function restoreLeaseState(entries: readonly unknown[], defaultMode: Leas
     if (entry?.type !== "custom" || entry.customType !== "model-router-state") continue;
     const data = object(entry.data);
     const mode = data?.mode === "off" || data?.mode === "shadow" || data?.mode === "active" ? data.mode : defaultMode;
+    const active = isTaskLease(data?.active) ? data.active : undefined;
+    const family = active?.lifecycle.phase === "review" && active.parentLease ? active.parentLease : active;
+    const pending = data?.secondarySafetyPending;
+    // Legacy low-confidence leases cannot prove that their runtime-only latch was resolved.
+    const safetyKnown =
+      pending === undefined
+        ? !family || family.features.confidence >= CLASSIFIER_CONFIDENCE_THRESHOLD
+        : typeof pending === "boolean";
     return {
       mode,
-      ...(isTaskLease(data?.active) ? { active: data.active } : {}),
+      ...(active && safetyKnown ? { active } : {}),
       manualOverride: data?.manualOverride === true,
+      ...(pending === true ? { secondarySafetyPending: true } : {}),
     };
   }
   return { mode: defaultMode, manualOverride: false };
