@@ -310,6 +310,32 @@ describe("lease restoration and context estimates", () => {
     });
   }
 
+  it("restores bounded review attempt identities and rejects malformed scheduling state", () => {
+    const restore = (reviewAttemptKeys) =>
+      restoreLeaseState(
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: { mode: "active", active: { ...leaseFixture(), reviewAttemptKeys } },
+          },
+        ],
+        "shadow",
+      );
+    for (const keys of [undefined, [], ["a".repeat(64)], Array.from({ length: 64 }, () => "b".repeat(64))]) {
+      assert.deepEqual(restore(keys).active.reviewAttemptKeys, keys);
+    }
+    for (const keys of [
+      null,
+      "a".repeat(64),
+      [1],
+      ["not-a-fingerprint"],
+      Array.from({ length: 65 }, () => "b".repeat(64)),
+    ]) {
+      assert.equal(restore(keys).active, undefined);
+    }
+  });
+
   it("ignores obsolete secondary markers, including malformed values, when restoring low-confidence leases", () => {
     const active = leaseFixture();
     active.features = { ...active.features, confidence: 0.6 };

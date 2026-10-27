@@ -554,13 +554,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     cancelled: boolean;
   };
   let pendingReview: PendingReview | undefined;
-  // Every review attempt key for the active task. Completion attempts must not erase the record of a plan
-  // attempt, or exhausted plan and completion ladders would alternate on unchanged work.
-  let attemptedReviews: { taskId: string; keys: Set<string> } | undefined;
-  function attemptedReviewKeys(taskId: string): Set<string> {
-    if (attemptedReviews?.taskId !== taskId) attemptedReviews = { taskId, keys: new Set() };
-    return attemptedReviews.keys;
-  }
   const reviewRunner = options.reviewRunner ?? inProcessReviewRunner;
   function cancelReview(): void {
     if (!pendingReview) return;
@@ -621,13 +614,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   /** Attempt keys bind a review to its kind, scope, builder attempt, and route; unchanged ones never rerun. */
   function reviewAttemptKey(parent: TaskLease, reviewKind: SafetyReviewKind, scopeFingerprint: string): string {
-    return `${reviewKind}:${scopeFingerprint}:${String(parent.attemptIndex)}:${parent.selected.provider}/${parent.selected.modelId}/${parent.selected.effort}`;
+    return safetyFingerprint({
+      reviewKind,
+      scopeFingerprint,
+      attemptIndex: parent.attemptIndex,
+      provider: parent.selected.provider,
+      modelId: parent.selected.modelId,
+      effort: parent.selected.effort,
+    });
   }
   function reviewAlreadyAttempted(parent: TaskLease, reviewKind: SafetyReviewKind, scopeFingerprint: string): boolean {
-    return (
-      attemptedReviews?.taskId === parent.taskId &&
-      attemptedReviews.keys.has(reviewAttemptKey(parent, reviewKind, scopeFingerprint))
-    );
+    return parent.reviewAttemptKeys?.includes(reviewAttemptKey(parent, reviewKind, scopeFingerprint)) ?? false;
   }
 
   /** Plan advice is pending while its review runs, and from plan submission until settlement starts that review. */
@@ -2017,13 +2014,14 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       evidence: parent.safetyEvidence,
       cancelled: false,
     };
+    // Persist before asynchronous work: a reload must not let an exhausted plan monopolize settlement
+    // again, or rerun a completion review merely because its advice was consumed in a fresh instance.
+    const marked = { ...parent, reviewAttemptKeys: [...(parent.reviewAttemptKeys ?? []).slice(-63), key] };
+    if (!leaseOwner.advance("EVIDENCE", marked, parent, review.epoch)) return;
     pendingReview = review;
+    persistState();
     let delivered = false;
     const reviewGeneration = sessionGeneration;
-    const attempted = attemptedReviewKeys(parent.taskId);
-    // Bounded like other per-instance review state; the oldest attempt is forgotten first.
-    if (attempted.size >= 64) attempted.delete(attempted.values().next().value ?? "");
-    attempted.add(key);
     try {
       // A cancelled reviewer can settle after reload/session replacement invalidates ctx, so outcome
       // telemetry uses metadata captured while ctx is still live.
@@ -2500,7 +2498,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         throw new Error(`Invalid action plan: ${validation.errors.join("; ")}`);
       }
       cancelReview();
-      attemptedReviews = undefined;
       const plan = {
         taskFingerprint: active.lifecycle.taskFingerprint,
         planFingerprint: validation.fingerprint,
@@ -2512,6 +2509,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         {
           ...active,
           updatedAt: plan.submittedAt,
+          reviewAttemptKeys: [],
           lifecycle: {
             phase: "planning",
             policy: "plan_review_then_completion_review",

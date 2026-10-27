@@ -64,8 +64,9 @@ Safety is an explicit persisted **advisory** lease lifecycle, not an inference f
   `advisory_step_skipped` telemetry at most once per step per lease. Mutation detection is heuristic. These skipped
   steps send no model-facing repair follow-ups; implementation-plan repair and deterministic check-failure fallback
   remain unchanged. Work executed in `planning` without an action plan is noted and still receives a completion review.
-  A rejected or verdictless plan review drops the unaccepted plan but preserves recorded work; later builder settlement
-  reviews that work rather than retrying the old plan. This hand-back persists across reload.
+  A rejected plan review drops the unaccepted plan. A verdictless review retains the plan as context, with a persisted
+  attempt identity preventing replay; later builder settlement reviews recorded work rather than retrying the old plan.
+  Both paths preserve mutation evidence and remain completion-review eligible across reload.
 - `submit_discovery_request`, single-use discovery grants, and authorization grants have been removed. Old persisted
   discovery/grant state and both old pre-action policies migrate to empty `planning`. Historical telemetry still parses.
   Old action-plan callers use `toolNames` instead of `authorizedToolNames`; irreversible steps are no longer mandatory.
@@ -443,8 +444,9 @@ findings are queued as follow-up context without manufacturing a new turn. Inval
 human and record telemetry, but deliver no advice. A session whose assistant ends with stop reason `error` or `aborted`
 is a failure even after a valid submission. New input, boundaries, overrides, off/shadow mode, reset, exhausted builder
 fallback, and shutdown cancel the session with `abort()`; cancellation and timeout wait up to one second for the aborted
-request's final usage before settling, and owner/epoch checks drop late results. The same unchanged evidence is
-scheduled at most once per attempt, so consuming completion advice cannot create an unbounded rereview loop. A
+request's final usage before settling, and owner/epoch checks drop late results. The lease persists up to 64 hashed
+kind/scope/attempt/route identities before review work starts. Reload preserves this scheduling history; explicit plan
+resubmission clears it. Unchanged evidence cannot create an unbounded rereview loop by consuming completion advice. A
 successful mutation or a failing deterministic check that finishes after completion advice reopens the completed
 lifecycle, so the newer evidence is reviewed at the next settlement. A plan review that ends without valid advice is not
 retried for the unchanged plan, but work executed afterwards (including work that settled while it ran) still receives

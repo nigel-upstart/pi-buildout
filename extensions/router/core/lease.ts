@@ -33,6 +33,8 @@ export type TaskLease = {
   lastPromptFingerprint: string;
   /** Bounded original requirements for isolated reviews; never an instruction-policy source. */
   reviewTaskContext?: string;
+  /** Bounded hashed kind/scope/attempt/route identities; review scheduling survives reload. */
+  reviewAttemptKeys?: string[];
   manualOverride: boolean;
   repositoryLanguageBucket?: string;
   contextSizeBucket?: string;

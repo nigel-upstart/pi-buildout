@@ -586,7 +586,13 @@ Ideas and API patterns used:
   in-memory sessions/settings, an empty ResourceLoader, native read-only tool selection, a custom verdict tool,
   abort/dispose, and usage events. The runner uses a guarded, operator-approved read of ModelRegistry's private runtime
   field to reuse model/auth access; no Pi implementation was copied. We intentionally exclude normal resource
-  inheritance, persistent reviewer transcripts, RPC subprocesses, and any subagents-extension dependency.
+  inheritance, persistent reviewer transcripts, RPC subprocesses, and any subagents-extension dependency. Published Pi
+  `1.4.0`'s `docs/sdk.md`, `docs/extensions.md`, `docs/packages.md`, `docs/configuration.md`, and
+  `examples/sdk/06-extensions.ts` were also reviewed, and the runner's nine offline SDK tests were executed against the
+  installed `1.4.0` package to verify runtime reuse, isolation, cancellation, and usage. Canonical source:
+  <https://github.com/earendil-works/pi/tree/v1.4.0/packages/coding-agent> (MIT). This is API compatibility
+  verification, not copied implementation. Durable bounded review-attempt identities are original router scheduling
+  logic, not upstream session replay or persistence machinery.
 - Pi `1.3.0`'s SDK/codemode documentation and `examples/sdk/06-extensions.ts` and `14-codemode-mcp.ts` informed the
   advisory-router regression fixture: in-memory `AgentSession`, explicit resource factories, deterministic model
   responses, and real nested tool dispatch. This is conceptual API use, not copied Pi code; live providers, MCP

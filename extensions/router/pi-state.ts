@@ -180,6 +180,10 @@ function isTaskLease(value: unknown): value is TaskLease {
     (lease.reviewTaskContext !== undefined &&
       (typeof lease.reviewTaskContext !== "string" || lease.reviewTaskContext.length > 6000)) ||
     typeof lease.manualOverride !== "boolean" ||
+    (lease.reviewAttemptKeys !== undefined &&
+      (!Array.isArray(lease.reviewAttemptKeys) ||
+        lease.reviewAttemptKeys.length > 64 ||
+        !lease.reviewAttemptKeys.every((key) => typeof key === "string" && /^[a-f0-9]{64}$/.test(key)))) ||
     (lease.advisoryStepsNoted !== undefined &&
       (!Array.isArray(lease.advisoryStepsNoted) ||
         lease.advisoryStepsNoted.length > 3 ||
