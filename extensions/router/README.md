@@ -163,8 +163,9 @@ The concrete tier lists live in [`pi-classifier.ts`](pi-classifier.ts) (`PRIMARY
   `error` means no such endpoint could be reached. Failed secondary work retains the primary route.
 
 Generated plan and completion reviews run in separate in-memory Pi SDK sessions, with a known builder and the existing
-different-vendor reviewer ladder. They never fall back to the builder for a verdict or replace its lease. Standalone
-user-requested reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta, classify its
+different-vendor reviewer ladder, which requires at least two eligible non-builder vendors in scope. They never fall
+back to the builder for a verdict or replace its lease. Standalone user-requested reviews are orthogonal ordinary
+leases: they inspect a bounded local or pull-request delta, classify its
 scope/languages/complexity/risk/horizon/context/tool needs, and use feature-based review routing. They do not inherit
 the current lease, invent a builder, become read-only merely because another task preceded them, or trigger recursive
 automatic review. They may perform explicitly requested external operations such as posting review comments.
