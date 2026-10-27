@@ -121,18 +121,18 @@ and their attribution. The installer already installs each extension's runtime m
 atomic swap; the router/OTel release package ships the union of both runtime manifests. XState v6 alpha is intentionally
 excluded.
 
-The lease actor owns enablement, boundaries, review/authorization phases, and every installed lease. Synchronous
-transitions validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger
-append. Every generated review is bound to the epoch in which it started: after new input, compaction, a reload, or a
-mode or override change, its settlement still restores the parent, but never with authority, whether a discovery grant
-or plan authorization the review would grant or an earlier authorization a completion review would return; the parent
-resumes in preflight with its plan, and a pending hard boundary is not consumed. More generally, only the routing
-transition that installs a freshly selected lease consumes a pending hard boundary; evidence, fallback, repair,
-preparation, and review transitions on the same task family leave it pending. Low-confidence secondary work is a
-cancellable promise actor under the parent task family. Its correction is bound to the exact owner and epoch, so
-lifecycle progress, fallback, new input, boundaries, overrides, and mode changes invalidate it. Ledger writes remain
-awaited and telemetry failure still switches routing to shadow. Persistence stores the validated version-2 lease shape,
-never an XState snapshot. Legacy secondary latch fields are ignored; a low-confidence primary needs no latch.
+The lease actor owns enablement, boundaries, advisory review phases, and every installed lease. Synchronous transitions
+validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger append.
+Every generated review is bound to the epoch in which it started: new input, compaction, reload, or a mode or override
+change makes its advice stale. Settlement restores the parent's original lifecycle without that stale advice or an
+advice continuation. A current rejected or verdictless plan review instead returns to `planning` without the unaccepted
+plan, preserving recorded work for completion review. Neither hand-back consumes a pending hard boundary. Only the
+routing transition that installs a freshly selected lease consumes one; evidence, fallback, repair, preparation, and
+review transitions on the same task family leave it pending. Low-confidence secondary work is a cancellable promise
+actor under the parent task family. Its correction is bound to the exact owner and epoch, so lifecycle progress,
+fallback, new input, boundaries, overrides, and mode changes invalidate it. Ledger writes remain awaited and telemetry
+failure still switches routing to shadow. Persistence stores the validated version-2 lease shape, never an XState
+snapshot. Legacy secondary latch fields are ignored; a low-confidence primary needs no latch.
 
 Scope-specific fast-check properties and scheduled handler races run in `npm test`, pre-push, and CI. The default is 50
 runs with fixed seed 730100; CI runs 500. `FC_NUM_RUNS`, `FC_SEED`, and `FC_PATH` control the budget and failure replay.
@@ -270,7 +270,7 @@ hard boundaries and explicit discontinuity run first; planning-to-implementation
 planning, review, read-only, and other incompatible leases do not receive the operation shortcut; and any topic-bearing
 addition falls through to continuity classification. Extension-generated input and queued steer/follow-up input are
 separate unconditional continuation paths evaluated before pending hard boundaries so they remain in the already running
-lease. These paths retain state only and never authorize mutation or bypass lifecycle tool enforcement.
+lease. These paths retain state only; they neither grant permission nor restrict tool dispatch.
 
 The router now owns and specifies its outer classification deadline and cancellation policy. It does not yet configure
 or normalize every provider SDK's lower-level connect/read/retry timeout, nor prove cancellation at the remote service
