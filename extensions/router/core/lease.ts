@@ -7,7 +7,7 @@ import { findPromptProfile } from "./profiles.ts";
 import type { EffortLevel } from "./profiles.ts";
 import type { RouteChoice } from "./routing.ts";
 import { deriveSafetyPolicy, initialLifecycle } from "./safety.ts";
-import type { LeaseLifecycle, SafetyEvidenceLog, SafetyPolicy } from "./safety.ts";
+import type { AdvisoryStep, LeaseLifecycle, SafetyEvidenceLog, SafetyPolicy } from "./safety.ts";
 
 export type HardBoundary = "new_session" | "post_compaction" | "post_push" | "subagent";
 export type RouterMode = "off" | "shadow" | "active";
@@ -37,6 +37,7 @@ export type TaskLease = {
   contextSizeBucket?: string;
   planValidationRepairAttempted?: boolean;
   executionFailed?: boolean;
+  advisoryStepsNoted?: AdvisoryStep[];
 };
 
 export type LeaseState = {
@@ -44,8 +45,6 @@ export type LeaseState = {
   active?: TaskLease;
   pendingHardBoundary?: HardBoundary;
   manualOverride: boolean;
-  /** Validated persistence marker; live decisions read the family actor's latch. */
-  secondarySafetyPending?: boolean;
 };
 
 export type BoundaryInput = {
@@ -151,13 +150,11 @@ const ACTION_MODE_RANK: Record<TaskFeatures["actionMode"], number> = {
   destructive: 4,
 };
 
-// Safety policies ordered by the gates they impose. Each adds to the one before it: a completion review after
-// mutation, then a non-mutating advisory phase before it, then a preflight that needs an independently approved plan.
+// Policies ordered by the recommended review coverage, not tool restrictions.
 const SAFETY_POLICY_RANK: Record<SafetyPolicy, number> = {
   ordinary: 0,
   completion_review: 1,
-  advisory_then_completion_review: 2,
-  authorization_then_completion_review: 3,
+  plan_review_then_completion_review: 2,
 };
 
 function isPlanningArchetype(archetype: Archetype): boolean {
@@ -171,8 +168,8 @@ export function resolveContinuity(
 ): BoundaryGateResult {
   // A continuation keeps the lease's tool policy, so it must not absorb work that needs a different one:
   // entering or leaving planning (whose validator only accepts planning leases), a riskier action mode, or a
-  // stricter safety policy. Risk alone can demand authorization at an unchanged action mode. A relaxed policy
-  // keeps the stricter lease rather than letting a reclassification escape an in-flight preflight. A generated
+  // broader review policy. Risk alone can call for plan advice at an unchanged action mode. A relaxed policy
+  // retains the existing review coverage rather than resetting an in-flight consultation. A generated
   // review child carries reviewer attributes (code_review, local_read, ordinary), so every comparison uses its
   // task family: the work that continues is the parent's.
   const family = lease.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;

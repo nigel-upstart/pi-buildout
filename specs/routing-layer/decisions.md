@@ -1,9 +1,58 @@
 # Routing layer — architecture decisions
 
+## Advisory-only safety phases, 2026-10-21
+
+Router safety guides the model but never blocks tool dispatch. The consolidated change incorporates PRs 132, 133,
+and 135. It keeps lifecycle phases, phase-specific submission tools, independent plan/completion reviews, evidence
+tracking, and deterministic-check failure recovery. It removes router shell classification, read-only allowlists,
+plan-tool enforcement, missing-review fallback escalation, and the secondary mutation latch. Approvals record scoped
+review outcomes, not permission to proceed. Enforce tool availability through Pi-native tool selection and host access
+through a container or sandbox, rather than a second router policy engine. This avoids a script-text policy that cannot
+represent every concrete nested effect. Trust-first classification and whole-tuple async correction are described below.
+
+This supersedes the execution-permission and tool-enforcement claims in
+[explicit review kinds and irreversible-action authorization](#decision-explicit-review-kinds-and-irreversible-action-authorization)
+and [bounded discovery authorization inside preflight](#decision-bounded-discovery-authorization-inside-preflight):
+read-only gates, unknown-tool/shell denial, reviewed-plan mutation limits, and execution/discovery grants no longer
+control dispatch. Legacy discovery/grant state and both former pre-action policies migrate to empty `planning`; review
+independence and phase-based validator visibility remain. Unaccepted plans are dropped at review hand-back, while
+recorded work survives for completion review, including across reload. The consolidated change is released as one unit
+so the earlier plan-retention bug is not shipped separately.
+
 Companion to [`SPEC.md`](SPEC.md) (the functional spec), [`eval.md`](eval.md) (the evaluation harness), and
 [`source-basis.md`](source-basis.md) (design provenance and public references). This document records _how_ it will be
 built and why — language, framework, tooling — plus the implementation-time findings that resolve the original open
 items. The extension is implemented and remains in its intended shadow-first rollout.
+
+## Decision: trust-first classification and whole-tuple async correction
+
+The primary classification releases routing immediately, including low-confidence results and cached prompts. A
+provider-diverse secondary runs asynchronously with its own deadline. Only material routing deltas justify a correction,
+and their fixed routing-quality benefit must exceed the estimated cache-switch penalty; safety-weighted benefits and the
+secondary mutation latch were removed.
+
+Investigation of published `@earendil-works/pi-coding-agent@1.3.0` (paths below relative to that package):
+
+- `docs/extensions.md:104` describes run-scoped `before_agent_start` prompt options and forced prompt results; `:189`
+  describes prompt/tool deltas before subsequent requests.
+- `dist/core/agent-session.js:327-377` dispatches tool hooks/results, without a public forced-prompt setter.
+- `dist/core/agent-session.js:535-566` refreshes subsequent requests from retained run prompt options and live tool,
+  model, and effort state. This does not rerun `before_agent_start`.
+- `dist/core/agent-session.js:1351-1367` projects the retained `forceSystemPrompt` onto each provider request;
+  `:1457-1495` obtains and stores it once in `_prepareRun`.
+- `dist/core/agent-session.js:1979-1995` and `:2085-2104` allow model/effort changes, but expose no matching public
+  mid-run forced-prompt update. Tool changes cannot replace that router-compiled text.
+
+Therefore a running task retains its whole model/effort/profile/features/archetype tuple. The correction applies at the
+first idle boundary or a later `before_agent_start`, where the profile can be compiled before any request. It never
+calls `ctx.abort()`, injects a resume turn, or swaps only the model. One synchronous XState `RECONCILE` transition
+installs the complete tuple, guarded by the captured owner and epoch, rechecked after asynchronous work. New user
+intent, fallback, manual override, mode change, or any boundary drops the correction rather than rebinding it to newer
+work.
+
+`secondary_reconciliation.swapBoundary` is bounded to `idle`, `next_run`, `dropped`, or `rejected`; `next_run` records
+deferral or application at run start, distinguished by reason/accepted. Legacy telemetry without this field and
+persisted state with old latch fields remain readable. No private Pi setter or retained event-object mutation is used.
 
 ## Decision: TypeScript, in-process, as a pi extension
 
@@ -67,25 +116,23 @@ pi's bundled packages already cover nearly the entire runtime surface. Reuse the
 
 Runtime dependencies may be added when they are popular, maintained, have small dependency trees, and have a tested
 installation and release path. The router uses exact-pinned XState v5 (5.33.2, no runtime dependencies) for lease
-ownership and task-family secondary actors, plus the shell tokenizers recorded in ATTRIBUTION.md. The installer already
-installs each extension's runtime manifest in its staged tree before the atomic swap; the router/OTel release package
-ships the union of both runtime manifests. XState v6 alpha is intentionally excluded.
+ownership and task-family secondary actors. The advisory-only decision removes the former shell tokenizer dependencies
+and their attribution. The installer already installs each extension's runtime manifest in its staged tree before the
+atomic swap; the router/OTel release package ships the union of both runtime manifests. XState v6 alpha is intentionally
+excluded.
 
-The lease actor owns enablement, boundaries, review/authorization phases, and every installed lease. Synchronous
-transitions validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger
-append. Every generated review is bound to the epoch in which it started: after new input, compaction, a reload, or a
-mode or override change, its settlement still restores the parent, but never with authority, whether a discovery grant
-or plan authorization the review would grant or an earlier authorization a completion review would return; the parent
-resumes in preflight with its plan, and a pending hard boundary is not consumed. More generally, only the routing
-transition that installs a freshly selected lease consumes a pending hard boundary; evidence, fallback, repair,
-preparation, and review transitions on the same task family leave it pending. Low-confidence secondary work is a
-cancellable promise actor under the parent task family, surviving temporary review children. Reconciliation drains
-before settlement lifecycle changes and after parent restoration; lifecycle progress alone does not invalidate a
-secondary answer. Input/registry mismatch, overrides, and revoked task families still invalidate it. An unanswered
-safety question remains latched after failure or cancellation. Ledger writes remain awaited and telemetry failure still
-switches routing to shadow. Persistence stores the validated version-2 lease shape, never an XState snapshot. The
-persisted state also records an unresolved secondary safety latch. Malformed leases and legacy low-confidence leases
-without a resolved/pending marker are discarded instead of silently dropping the latch.
+The lease actor owns enablement, boundaries, advisory review phases, and every installed lease. Synchronous transitions
+validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger append.
+Every generated review is bound to the epoch in which it started: new input, compaction, reload, or a mode or override
+change makes its advice stale. Settlement restores the parent's original lifecycle without that stale advice or an
+advice continuation. A current rejected or verdictless plan review instead returns to `planning` without the unaccepted
+plan, preserving recorded work for completion review. Neither hand-back consumes a pending hard boundary. Only the
+routing transition that installs a freshly selected lease consumes one; evidence, fallback, repair, preparation, and
+review transitions on the same task family leave it pending. Low-confidence secondary work is a cancellable promise
+actor under the parent task family. Its correction is bound to the exact owner and epoch, so lifecycle progress,
+fallback, new input, boundaries, overrides, and mode changes invalidate it. Ledger writes remain awaited and telemetry
+failure still switches routing to shadow. Persistence stores the validated version-2 lease shape, never an XState
+snapshot. Legacy secondary latch fields are ignored; a low-confidence primary needs no latch.
 
 Scope-specific fast-check properties and scheduled handler races run in `npm test`, pre-push, and CI. The default is 50
 runs with fixed seed 730100; CI runs 500. `FC_NUM_RUNS`, `FC_SEED`, and `FC_PATH` control the budget and failure replay.
@@ -198,14 +245,14 @@ continuity classification, which still escalates primary to secondary within one
 
 The architecture therefore has two timeout owners by design. Background fresh-task secondary reconciliation is
 asynchronous — a separate invocation started after the primary result is accepted — and is bounded by the configurable
-`secondaryGracePolicy.secondaryDeadlineMs` ([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts))
-rather than by the stage constant, with `maxGraceMs` bounding only how long the router delays the first provider
-request. Splitting the budgets keeps the blocking path's deadline the one reported to the user while letting operators
-tune background reconciliation independently. An `AbortSignal` reaches the schema-attempt loop, endpoint iterator, and
-pi-ai `complete()` call for that stage. The stage deadline races the active stage operation, aborts the signal, and
-returns the fail-safe result promptly; the operation promise has rejection handlers attached so a transport settling
-after the race cannot create an unhandled rejection. Exact timeout constants and telemetry handling can be inspected in
-[`extensions/router/index.ts`](../../extensions/router/index.ts) and
+`secondaryReconciliationPolicy.secondaryDeadlineMs`
+([`core/reconciliation.ts`](../../extensions/router/core/reconciliation.ts)) rather than by the stage constant. There is
+no foreground grace delay. Splitting the budgets keeps the primary path's deadline the one reported to the user while
+letting operators tune background reconciliation independently. An `AbortSignal` reaches the schema-attempt loop,
+endpoint iterator, and pi-ai `complete()` call for that stage. The stage deadline races the active stage operation,
+aborts the signal, and returns the fail-safe result promptly; the operation promise has rejection handlers attached so a
+transport settling after the race cannot create an unhandled rejection. Exact timeout constants and telemetry handling
+can be inspected in [`extensions/router/index.ts`](../../extensions/router/index.ts) and
 [`extensions/router/telemetry.ts`](../../extensions/router/telemetry.ts).
 
 `AbortError` and `TimeoutError` are terminal control outcomes, not availability errors. The schema layer does not retry,
@@ -223,7 +270,7 @@ hard boundaries and explicit discontinuity run first; planning-to-implementation
 planning, review, read-only, and other incompatible leases do not receive the operation shortcut; and any topic-bearing
 addition falls through to continuity classification. Extension-generated input and queued steer/follow-up input are
 separate unconditional continuation paths evaluated before pending hard boundaries so they remain in the already running
-lease. These paths retain state only and never authorize mutation or bypass lifecycle tool enforcement.
+lease. These paths retain state only; they neither grant permission nor restrict tool dispatch.
 
 The router now owns and specifies its outer classification deadline and cancellation policy. It does not yet configure
 or normalize every provider SDK's lower-level connect/read/retry timeout, nor prove cancellation at the remote service
@@ -799,3 +846,23 @@ registry.
 4. **The scoped registry remains authoritative.** The policy names current releases, but endpoint resolution still skips
    any model absent from the operator's enabled live registry. This is especially important for provider surfaces that
    expose Astra but not Luna/Sol, or use `claude-opus-5.5` rather than `claude-opus-5-5` spelling.
+
+## Decision: one advisory plan-review policy, no grants (C1)
+
+Owner: router maintainers. Status: implemented. Links: [spec](SPEC.md#explicit-advisory-safety-lifecycle),
+[router lifecycle](../../extensions/router/README.md#lease-lifecycle-state-machine).
+
+The router recommends a pre-action plan review for the union of the old authorization and advisory conditions. A verdict
+is advice, never permission. Approval advances the steering phase to executing; concerns recommend revising the plan.
+Completion-only code-builder review and ordinary work retain their existing policy derivation. Automatic completion
+reviews remain limited to the existing high-risk policies.
+
+Discovery approval has no purpose without enforcement, so its tool, single-use grants, fingerprints, and events are
+removed. Old persisted grant states and policy names migrate to empty planning rather than manufacturing advice from an
+old approval. Action plans now declare descriptive `toolNames`, not authorized tool names, and accept reversible steps.
+Scope fingerprints and epochs only protect against stale advice.
+
+Missing recommended plans, possible mutations while advice is pending, and missing completion evidence notify the human
+and emit an enum-only skipped-step event once per step per lease. Mutation evidence is heuristic; the UI says so. These
+notes do not queue model reminders. The implementation-plan validator repair and deterministic check-failure fallback
+remain intact. In-session review transport is retained in C1; its replacement is a separate change.

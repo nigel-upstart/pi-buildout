@@ -6,7 +6,7 @@ import type { ModelVendor } from "./core/profiles.ts";
 import type { SessionSynopsis } from "./core/synopsis.ts";
 
 export const CLASSIFIER_TOOL_NAME = "report_task_features";
-export const CLASSIFIER_CONFIDENCE_THRESHOLD = 0.8;
+const CLASSIFIER_CONFIDENCE_THRESHOLD = 0.8;
 
 export type ClassifierRequest = {
   stage: "primary" | "secondary";

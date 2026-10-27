@@ -4,25 +4,15 @@ import { changeEffortWithinLease, installLease, markManualOverride, setHardBound
 import type { HardBoundary, LeaseState, RouterMode, TaskLease } from "./lease.ts";
 import type { EffortLevel } from "./profiles.ts";
 
-type SecondaryInput = { key: object; gated: boolean; work: (signal: AbortSignal) => Promise<void> };
-
-function unresolvedSecondary(): SecondaryInput {
-  return {
-    key: {},
-    gated: true,
-    work: async () => {
-      // A restored or reserved latch waits for fresh classification; it does not invoke a provider.
-    },
-  };
-}
+type SecondaryInput = { work: (signal: AbortSignal) => Promise<void> };
 
 // The classifier is a child of the task family, not the temporary reviewer. Exiting running
-// aborts its promise actor; an unanswered safety question survives cancellation when requested.
+// or stopping the child aborts its background work.
 const secondaryMachine = setup({
   types: {
     context: {} as SecondaryInput,
     input: {} as SecondaryInput,
-    events: {} as { type: "RESOLVE" } | { type: "RETAIN" } | { type: "ABORT"; retain: boolean },
+    events: {} as { type: "ABORT" },
   },
   actors: {
     classify: fromPromise(async ({ input, signal }: { input: SecondaryInput; signal: AbortSignal }) => {
@@ -32,17 +22,13 @@ const secondaryMachine = setup({
 }).createMachine({
   context: ({ input }) => input,
   initial: "running",
-  on: {
-    RESOLVE: { actions: assign({ gated: false }) },
-    RETAIN: {},
-    ABORT: { target: ".stopped", actions: assign({ gated: ({ context, event }) => event.retain && context.gated }) },
-  },
+  on: { ABORT: { target: ".stopped" } },
   states: {
     running: {
-      invoke: { src: "classify", input: ({ context }) => context, onDone: "queued", onError: "stopped" },
+      invoke: { src: "classify", input: ({ context }) => context, onDone: "done", onError: "stopped" },
     },
-    queued: {},
-    stopped: {},
+    done: { type: "final" },
+    stopped: { type: "final" },
   },
 });
 
@@ -53,11 +39,9 @@ type LeaseTransition =
   | "REVIEW_STARTED"
   | "REVIEW_FINISHED"
   | "SUBMIT_PLAN"
-  | "SUBMIT_DISCOVERY"
   | "SUBMIT_REVIEW"
   | "RECONCILE"
   | "REPAIR"
-  | "SPEND_DISCOVERY"
   | "EVIDENCE";
 
 type LeaseAdvance = {
@@ -65,7 +49,6 @@ type LeaseAdvance = {
   lease: TaskLease;
   owner: TaskLease | undefined;
   epoch: number;
-  secondarySafetyPending: boolean;
 };
 
 function isAdvance(event: LeaseEvent): event is LeaseAdvance {
@@ -84,12 +67,9 @@ function validAdvance(event: LeaseAdvance): boolean {
         ? event.owner?.parentLease?.taskId === event.lease.taskId
         : event.owner?.taskId === event.lease.taskId;
     case "SUBMIT_PLAN":
-    case "SUBMIT_DISCOVERY":
-      return phase === "preflight" && event.lease.lifecycle.phase === "preflight";
+      return phase === "planning" && event.lease.lifecycle.phase === "planning";
     case "SUBMIT_REVIEW":
       return phase === "review" && event.lease.lifecycle.phase === "review";
-    case "SPEND_DISCOVERY":
-      return phase === "discovery_ready" && event.lease.lifecycle.phase === "preflight";
     case "RECONCILE":
       return phase !== "review" && event.owner?.taskId === event.lease.taskId;
     case "PREPARE":
@@ -106,11 +86,11 @@ type LeaseEvent =
   | { type: "MODE"; mode: RouterMode }
   | { type: "INTENT" }
   | { type: "BOUNDARY"; boundary: HardBoundary }
-  | { type: "INVALIDATE"; reason: string; discoveryOnly: boolean }
+  | { type: "INVALIDATE"; reason: string }
   | { type: "OVERRIDE"; effort?: EffortLevel }
   | { type: "RESET" }
   | { type: "START_SECONDARY"; owner: TaskLease; input: SecondaryInput }
-  | { type: "ABORT_SECONDARY"; retain: boolean };
+  | { type: "ABORT_SECONDARY" };
 
 type LeaseContext = {
   state: LeaseState;
@@ -121,72 +101,6 @@ type LeaseContext = {
 
 export function leaseFamily(lease: TaskLease | undefined): TaskLease | undefined {
   return lease?.lifecycle.phase === "review" && lease.parentLease ? lease.parentLease : lease;
-}
-
-export function holdsDiscovery(lease: TaskLease): boolean {
-  const lifecycle = lease.lifecycle;
-  if (lifecycle.phase === "discovery_ready") return true;
-  if (lifecycle.phase === "preflight") return lifecycle.discovery !== undefined;
-  return (
-    lifecycle.phase === "review" &&
-    lease.parentLease?.lifecycle.phase === "preflight" &&
-    lease.parentLease.lifecycle.discovery !== undefined
-  );
-}
-
-export function revokeDiscovery(lease: TaskLease): TaskLease {
-  if (!holdsDiscovery(lease)) return lease;
-  const base = leaseFamily(lease) ?? lease;
-  return {
-    ...base,
-    updatedAt: new Date().toISOString(),
-    lifecycle: {
-      phase: "preflight",
-      policy: "authorization_then_completion_review",
-      taskFingerprint: base.lifecycle.taskFingerprint,
-    },
-  };
-}
-
-/**
- * Lifecycles that let the builder act on an independent approval: one discovery call, an exact plan, or a
- * completed plan whose authorization can resume in the session that obtained it.
- */
-export function grantsAuthority(lifecycle: TaskLease["lifecycle"]): boolean {
-  return (
-    lifecycle.phase === "discovery_ready" ||
-    lifecycle.phase === "authorized_execution" ||
-    (lifecycle.phase === "completed" &&
-      lifecycle.policy === "authorization_then_completion_review" &&
-      lifecycle.authorization !== undefined)
-  );
-}
-
-export function invalidateAuthorization(lease: TaskLease, reason: string): TaskLease {
-  if (holdsDiscovery(lease)) return revokeDiscovery(lease);
-  const lifecycle = lease.lifecycle;
-  if (!(
-    lifecycle.phase === "authorized_execution" ||
-    (lifecycle.phase === "completed" && lifecycle.policy === "authorization_then_completion_review" && lifecycle.plan)
-  )) {
-    return lease;
-  }
-  const now = new Date().toISOString();
-  return {
-    ...lease,
-    updatedAt: now,
-    lifecycle: {
-      phase: "preflight",
-      policy: "authorization_then_completion_review",
-      taskFingerprint: lifecycle.taskFingerprint,
-      ...(lifecycle.plan ? { plan: lifecycle.plan } : {}),
-      lastAuthorizationReview: {
-        kind: "authorization",
-        completedAt: now,
-        summary: `Authorization invalidated at ${reason}; the exact plan requires a fresh independent review.`,
-      },
-    },
-  };
 }
 
 // Freeze the owned data, including nested review parents. Consumers can build candidate values,
@@ -208,18 +122,7 @@ const leaseMachine = setup({
   actors: { secondary: secondaryMachine },
   guards: {
     ownsLease: ({ context, event }) =>
-      isAdvance(event) &&
-      validAdvance(event) &&
-      context.state.active === event.owner &&
-      context.epoch === event.epoch &&
-      // Every review is bound to the epoch in which it started. That covers authorization reviews granting
-      // new authority and completion reviews returning a parent that still holds an earlier authorization.
-      (event.type !== "REVIEW_FINISHED" ||
-        event.owner?.lifecycle.phase !== "review" ||
-        context.reviewEpoch === context.epoch ||
-        // A review that crossed a revocation boundary can never restore authority, but it must still hand
-        // control back; otherwise the stale child lease would stay installed and block the task indefinitely.
-        !grantsAuthority(event.lease.lifecycle)),
+      isAdvance(event) && validAdvance(event) && context.state.active === event.owner && context.epoch === event.epoch,
   },
   actions: {
     discardSecondary: enqueueActions(({ context, enqueue }) => {
@@ -232,14 +135,6 @@ const leaseMachine = setup({
         if (context.secondary) enqueue.stopChild(context.secondary);
         enqueue.assign({ secondary: undefined });
       }
-      if (event.type === "ROUTE" && event.secondarySafetyPending) {
-        enqueue.assign({
-          secondary: ({ spawn }) =>
-            spawn("secondary", {
-              input: unresolvedSecondary(),
-            }),
-        });
-      }
       const installed = installLease(context.state, event.lease);
       const pendingHardBoundary = context.state.pendingHardBoundary;
       enqueue.assign({
@@ -250,7 +145,7 @@ const leaseMachine = setup({
           event.type !== "ROUTE" && pendingHardBoundary ? { ...installed, pendingHardBoundary } : installed,
         ),
         // Verdict submission and fallback replace the child without starting a new review.
-        // Settlement's current epoch must never refresh the authorization it started with.
+        // Settlement's current epoch must never refresh the advice binding it started with.
         reviewEpoch:
           event.lease.lifecycle.phase !== "review"
             ? undefined
@@ -262,12 +157,11 @@ const leaseMachine = setup({
   },
 }).createMachine({
   id: "routerLease",
-  context: ({ input, spawn }) => ({
+  context: ({ input }) => ({
     state: freezeState(input),
     epoch: 0,
     reviewEpoch: undefined,
-    secondary:
-      input.active && input.secondarySafetyPending ? spawn("secondary", { input: unresolvedSecondary() }) : undefined,
+    secondary: undefined,
   }),
   initial: "selecting",
   on: {
@@ -277,11 +171,9 @@ const leaseMachine = setup({
     REVIEW_STARTED: { guard: "ownsLease", target: ".selecting", actions: "install" },
     REVIEW_FINISHED: { guard: "ownsLease", target: ".selecting", actions: "install" },
     SUBMIT_PLAN: { guard: "ownsLease", target: ".selecting", actions: "install" },
-    SUBMIT_DISCOVERY: { guard: "ownsLease", target: ".selecting", actions: "install" },
     SUBMIT_REVIEW: { guard: "ownsLease", target: ".selecting", actions: "install" },
     RECONCILE: { guard: "ownsLease", target: ".selecting", actions: "install" },
     REPAIR: { guard: "ownsLease", target: ".selecting", actions: "install" },
-    SPEND_DISCOVERY: { guard: "ownsLease", target: ".selecting", actions: "install" },
     EVIDENCE: { guard: "ownsLease", target: ".selecting", actions: "install" },
     RESTORE: {
       guard: ({ context, event }) => context.state.active === event.owner && context.epoch === event.epoch,
@@ -290,10 +182,6 @@ const leaseMachine = setup({
         "discardSecondary",
         assign({
           state: ({ event }) => freezeState(event.state),
-          secondary: ({ event, spawn }) =>
-            event.state.active && event.state.secondarySafetyPending
-              ? spawn("secondary", { input: unresolvedSecondary() })
-              : undefined,
           epoch: ({ context }) => context.epoch + 1,
           reviewEpoch: undefined,
         }),
@@ -338,17 +226,6 @@ const leaseMachine = setup({
       target: ".selecting",
       actions: assign({
         epoch: ({ context }) => context.epoch + 1,
-        state: ({ context, event }) =>
-          freezeState({
-            ...context.state,
-            ...(context.state.active
-              ? {
-                  active: event.discoveryOnly
-                    ? revokeDiscovery(context.state.active)
-                    : invalidateAuthorization(context.state.active, event.reason),
-                }
-              : {}),
-          }),
       }),
     },
     OVERRIDE: {
@@ -387,7 +264,7 @@ const leaseMachine = setup({
       ],
     },
     ABORT_SECONDARY: {
-      actions: ({ context, event }) => context.secondary?.send({ type: "ABORT", retain: event.retain }),
+      actions: ({ context }) => context.secondary?.send({ type: "ABORT" }),
     },
   },
   states: {
@@ -396,16 +273,14 @@ const leaseMachine = setup({
         { guard: ({ context }) => context.state.mode === "off", target: "off" },
         { guard: ({ context }) => !context.state.active, target: "idle" },
         { guard: ({ context }) => context.state.active?.lifecycle.phase === "review", target: "review" },
-        { guard: ({ context }) => context.state.active?.lifecycle.phase === "preflight", target: "preflight" },
-        { guard: ({ context }) => context.state.active?.lifecycle.phase === "discovery_ready", target: "discovery" },
+        { guard: ({ context }) => context.state.active?.lifecycle.phase === "planning", target: "planning" },
         { guard: ({ context }) => context.state.active?.lifecycle.phase === "completed", target: "completed" },
         { target: "execution" },
       ],
     },
     off: {},
     idle: {},
-    preflight: {},
-    discovery: {},
+    planning: {},
     review: {},
     execution: {},
     completed: {},
@@ -430,28 +305,14 @@ export function createLeaseOwner(initial: LeaseState) {
       const current = actor.getSnapshot().context;
       return current.state.active === lease && current.epoch === epoch;
     },
-    get secondaryGated(): boolean {
-      return actor.getSnapshot().context.secondary?.getSnapshot().context.gated ?? false;
-    },
     send(event: Exclude<LeaseEvent, LeaseAdvance>): void {
       actor.send(event);
     },
-    advance(
-      type: LeaseTransition,
-      lease: TaskLease,
-      owner: TaskLease | undefined,
-      epoch: number,
-      secondarySafetyPending = false,
-    ): boolean {
+    advance(type: LeaseTransition, lease: TaskLease, owner: TaskLease | undefined, epoch: number): boolean {
       const before = actor.getSnapshot().context.state;
-      actor.send({ type, lease, owner, epoch, secondarySafetyPending });
+      actor.send({ type, lease, owner, epoch });
       const after = actor.getSnapshot().context.state;
       return after !== before && after.active === lease;
-    },
-    settleSecondary(key: object, resolved: boolean): void {
-      const secondary = actor.getSnapshot().context.secondary;
-      if (secondary?.getSnapshot().context.key !== key) return;
-      secondary.send({ type: resolved ? "RESOLVE" : "RETAIN" });
     },
   };
 }

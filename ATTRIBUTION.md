@@ -148,6 +148,21 @@ of first resort.
 - Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
   custom-start preparation and busy-start semantics.
 
+Published Pi `1.3.0` (MIT; canonical repository above) was also inspected for async router correction boundaries:
+`dist/core/agent-session.js` tool hooks, next-turn refresh, forced-prompt projection, run preparation, and model/effort
+setters; and `docs/extensions.md` event and prompt/tool-delta contracts. This conceptual inspection established that
+model/effort can refresh between requests but the router's forced prompt has no public mid-run setter. The original
+router implementation therefore defers the whole tuple until idle or a new run start. Private setters, mutation of
+retained prompt event objects, abort/resume handoffs, and secondary safety latches were not adopted.
+
+The same published `1.3.0` model/effort setters and `ThinkingLevelSelectEvent` declaration were inspected for
+operator-effort recovery races. The original router guards distinguish its own effort echoes and the model switch's
+post-authentication default-effort echo from operator effort changes during authentication; no upstream setter
+implementation or private API was adopted. The published `1.3.0` `AgentSession.setThinkingLevel` and
+`ExtensionRunner.emit` were also inspected: the event is emitted without being awaited and each earlier handler is
+awaited, so the router records each expected effort echo, including the model switch's default-effort change, by its
+observed level transition and consumes it on arrival instead of relying on a synchronous flag window.
+
 No Pi code, issue prose, or documentation prose was copied or modified.
 
 ### Pi model catalog: GPT-6.1 Sol pricing
@@ -565,6 +580,13 @@ Ideas and API patterns used:
 - The Pi 0.85.1 and 0.87.1 patches adapt the synchronous `proper-lockfile` acquisition/retry and `finally` release
   pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
+- Pi `1.3.0`'s SDK/codemode documentation and `examples/sdk/06-extensions.ts` and `14-codemode-mcp.ts` informed the
+  advisory-router regression fixture: in-memory `AgentSession`, explicit resource factories, deterministic model
+  responses, and real nested tool dispatch. This is conceptual API use, not copied Pi code; live providers, MCP
+  connections, user resources, and persistent sessions are intentionally excluded.
+- Pi `1.3.0`'s `docs/security.md`, `containerization.md`, `cli.md`, and `settings.md` informed the router's documented
+  separation between advisory prompts, native tool selection, and whole-process isolation. No documentation text or
+  isolation implementation was copied; the router does not implement a sandbox.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
 - Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
   `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
@@ -607,31 +629,6 @@ MIT), which itself extends pi's skills configuration.
 - **Intentionally not adopted**: the skills catalog/activation model, session-scoped (`--session`) entries, the
   `/skills` command surface, and the enabled-entry list shape. Router start mode is a single scalar preference per
   scope, not a list, and it is not settable from a slash command.
-
-## `shell-quote` and `shlex` (router shell tokenizer dependencies)
-
-- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.11.0`, MIT) and `shlex`
-  (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
-- Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
-  copied or modified, and both ship their own type declarations. `shell-quote` was raised to the first patched release
-  for [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv); this does not change the adopted API.
-
-What each is used for, and why both:
-
-- `shell-quote`'s `parse` supplies the token structure the read-only gate needs, classifying control operators, glob
-  patterns, and comments as distinct entries rather than as text.
-- `shlex`'s `split` supplies malformed-quoting detection, which `shell-quote` does not report: it accepts an unbalanced
-  quote silently.
-
-Behavior of both libraries that this repository deliberately compensates for, rather than relying on:
-
-- Both treat newlines and carriage returns as ordinary whitespace, so a two-line command lexes into one argument list.
-  Control characters are therefore rejected on the raw string before either lexer runs.
-- `shell-quote` performs parameter expansion during parsing and yields an empty token for an unset variable, so `$` and
-  backticks are rejected before parsing rather than interpreted.
-
-The argv policy itself — the allowed binaries, git subcommands, and per-binary flag allowlists — is original code in
-this repository and is not derived from either package.
 
 ## `pi-web-access` (removed local OpenAI auth patch)
 
@@ -779,8 +776,8 @@ patch artifacts and overlays were removed; historical attribution above remains 
   2026-10-07. Consumed as a development dependency, with no upstream source copied or modified.
 
 Conceptual use: XState's synchronous actor transitions, guarded statecharts, and cancellable promise children provide
-one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates JSON inputs,
-state-transition sequences, and adversarial schedules for actual router handlers and their ledger/model waits. The
-machine, adapter integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6
-alpha APIs, a global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check
-examples or its implementation; the existing Node test runner remains in place.
+one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates state-transition
+sequences and adversarial schedules for actual router handlers and their ledger/model waits. The machine, adapter
+integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6 alpha APIs, a
+global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check examples or
+its implementation; the existing Node test runner remains in place.

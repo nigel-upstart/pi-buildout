@@ -310,7 +310,7 @@ describe("lease restoration and context estimates", () => {
     });
   }
 
-  it("validates the persisted secondary latch and discards ambiguous legacy low-confidence leases", () => {
+  it("ignores obsolete secondary markers, including malformed values, when restoring low-confidence leases", () => {
     const active = leaseFixture();
     active.features = { ...active.features, confidence: 0.6 };
     const restore = (extra) =>
@@ -318,11 +318,91 @@ describe("lease restoration and context estimates", () => {
         [{ type: "custom", customType: "model-router-state", data: { mode: "active", active, ...extra } }],
         "shadow",
       );
-    assert.equal(restore({}).active, undefined);
-    assert.equal(restore({ secondarySafetyPending: "yes" }).active, undefined);
-    assert.equal(restore({ secondarySafetyPending: true }).secondarySafetyPending, true);
-    assert.equal(restore({ secondarySafetyPending: true }).active.taskId, active.taskId);
-    assert.equal(restore({ secondarySafetyPending: false }).active.taskId, active.taskId);
+    const expected = { mode: "active", active, manualOverride: false };
+    assert.deepEqual(restore({}), expected);
+    for (const value of [undefined, null, true, false, "yes", 0, 1, [], {}]) {
+      assert.deepEqual(restore({ secondarySafetyPending: value }), expected);
+    }
+  });
+
+  it("migrates persisted legacy discovery/grant state and both pre-action policies", () => {
+    for (const [phase, policy] of [
+      ["preflight", "authorization_then_completion_review"],
+      ["discovery_ready", "authorization_then_completion_review"],
+      ["authorized_execution", "authorization_then_completion_review"],
+      ["completed", "authorization_then_completion_review"],
+      ["advisory_pending", "advisory_then_completion_review"],
+      ["ready_after_advisory", "advisory_then_completion_review"],
+    ]) {
+      const active = {
+        ...leaseFixture(),
+        lifecycle: { phase, policy, taskFingerprint: "task", grant: {}, authorization: {} },
+      };
+      const restored = restoreLeaseState(
+        [
+          {
+            type: "custom",
+            customType: "model-router-state",
+            data: {
+              mode: "active",
+              active,
+              secondarySafetyPending: false,
+            },
+          },
+        ],
+        "shadow",
+      );
+      assert.deepEqual(restored.active.lifecycle, {
+        phase: "planning",
+        policy: "plan_review_then_completion_review",
+        taskFingerprint: "task",
+      });
+      assert.equal(restored.active.taskId, active.taskId);
+    }
+  });
+
+  it("keeps a legacy reviewer's accumulated safety evidence when recovering its builder", () => {
+    for (const reviewKind of ["authorization", "advisory"]) {
+      const parent = {
+        ...leaseFixture(),
+        lifecycle: {
+          phase: "authorized_execution",
+          policy: "authorization_then_completion_review",
+          taskFingerprint: "task",
+          grant: {},
+        },
+        safetyEvidence: {
+          baselineChangedFiles: [],
+          checks: [{ command: "npm test", passed: true, recordedAt: "2026-07-17T00:00:01.000Z" }],
+          mutations: [],
+        },
+      };
+      const child = {
+        ...structuredClone(parent),
+        taskId: "task-review",
+        parentTaskId: parent.taskId,
+        parentLease: structuredClone(parent),
+        lifecycle: { phase: "review", policy: "ordinary", taskFingerprint: "task", reviewKind },
+        // Legacy reviewer tool results updated only the child, never its stored parent.
+        safetyEvidence: {
+          baselineChangedFiles: [],
+          checks: [{ command: "npm test", passed: false, recordedAt: "2026-07-17T00:00:03.000Z" }],
+          mutations: [{ toolName: "edit", inputFingerprint: "b".repeat(64), recordedAt: "2026-07-17T00:00:02.000Z" }],
+        },
+      };
+      const restored = restoreLeaseState(
+        [{ type: "custom", customType: "model-router-state", data: { mode: "active", active: child } }],
+        "shadow",
+      );
+      assert.equal(restored.active?.taskId, parent.taskId, reviewKind);
+      assert.equal(restored.active.parentLease, undefined);
+      assert.deepEqual(restored.active.lifecycle, {
+        phase: "planning",
+        policy: "plan_review_then_completion_review",
+        taskFingerprint: "task",
+      });
+      assert.deepEqual(restored.active.safetyEvidence, child.safetyEvidence, reviewKind);
+    }
   });
 
   it("restores only router-authored state entries", () => {
@@ -342,7 +422,7 @@ describe("lease restoration and context estimates", () => {
         {
           type: "custom",
           customType: "model-router-state",
-          data: { secondarySafetyPending: false, mode: "active", active },
+          data: { mode: "active", active },
         },
       ],
       "shadow",
@@ -357,7 +437,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: malformedRepair },
+            data: { mode: "active", active: malformedRepair },
           },
         ],
         "shadow",
@@ -373,7 +453,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: legacyImplicitChild },
+            data: { mode: "active", active: legacyImplicitChild },
           },
         ],
         "shadow",
@@ -395,7 +475,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: malformedIndependentReview },
+            data: { mode: "active", active: malformedIndependentReview },
           },
         ],
         "shadow",
@@ -411,7 +491,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: legacyVersion },
+            data: { mode: "active", active: legacyVersion },
           },
         ],
         "shadow",
@@ -427,7 +507,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: tampered },
+            data: { mode: "active", active: tampered },
           },
         ],
         "shadow",
@@ -441,7 +521,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: lease },
+            data: { mode: "active", active: lease },
           },
         ],
         "shadow",
@@ -513,7 +593,7 @@ describe("lease restoration and context estimates", () => {
           {
             type: "custom",
             customType: "model-router-state",
-            data: { secondarySafetyPending: false, mode: "active", active: lease },
+            data: { mode: "active", active: lease },
           },
         ],
         "shadow",
@@ -547,6 +627,13 @@ describe("lease restoration and context estimates", () => {
     ];
     assert.deepEqual(cacheEstimate(entries), { cachedTokens: 25_000, expectedReuseRatio: 0.625 });
     assert.equal(latestReportedContextTokens(entries), 67_000);
+    // A fully cached prompt reports no uncached input; its cache is still reusable.
+    const fullyCached = [{ type: "message", message: { role: "assistant", usage: { input: 0, cacheRead: 80_000 } } }];
+    assert.deepEqual(cacheEstimate(fullyCached), { cachedTokens: 80_000, expectedReuseRatio: 1 });
+    assert.deepEqual(
+      cacheEstimate([{ type: "message", message: { role: "assistant", usage: { input: 0, cacheRead: 0 } } }]),
+      { cachedTokens: 0, expectedReuseRatio: 0 },
+    );
   });
 });
 
