@@ -79,7 +79,8 @@ Measured 2026-10-08 to answer open question 2 before the spike.
   branch), so default startup is unchanged by design. The flag-on cost, about 43 ms once on the first classifier call,
   is on the turn path and becomes its own gate below. Barrel imports from `effect` are not allowed.
 
-Probe used (rerun it on the reference machine before the spike PR):
+Dependency-import probe used (rerun it on the reference machine before the spike PR). This measures only a package
+baseline; it cannot validate router extension load or the full first-classifier-call gates below.
 
 ```sh
 cat > probe.mjs << 'EOF'
@@ -107,8 +108,8 @@ done
 - **Adoption can be incremental.** One module, one exported function, and an `Effect.tryPromise` boundary around the
   existing Promise-based `invoke`. Nothing above the function changes; both production call sites in `index.ts` keep the
   same signature.
-- **The cost of finding out is bounded.** The change is one module plus one manifest entry, and it is reversible with a
-  flag and a revert.
+- **The cost of finding out is bounded.** The change is one runner implementation plus its dependency pins and
+  lockfiles, and it is reversible with a flag and a revert.
 
 ## Why it is not worth broad adoption now
 
@@ -157,8 +158,11 @@ done
 
 Scope is **one function** plus the packaging it needs.
 
-1. Add `effect` pinned to an exact version (`4.0.2` at analysis time) to `extensions/router/package.json`. Do not add it
-   to the root manifest. Regenerate the lockfile through the extension's own install path.
+1. Pin the same exact `effect` version (`4.0.2` at analysis time) in `extensions/router/package.json` runtime
+   dependencies, root `package.json` development dependencies for typechecking/tests, and
+   `packages/pi-router-otel/package.json` runtime dependencies for published installs. Regenerate the root lockfile and
+   create or update the router extension lockfile through its own install path. The existing installer and release
+   package parity tests must pass; a root development dependency does not enable Effect at runtime.
 2. Add an optional timer seam to `runClassifierInvocation`, modelled on the `JsonlTelemetryStore` `deadline` option
    (`set`/`clear`, defaulting to the global timers). Land it first, on its own, with the flag-off implementation, so the
    existing tests prove the seam changes nothing.
@@ -184,10 +188,15 @@ Scope is **one function** plus the packaging it needs.
 - A test proves that with the flag off, importing the router extension does not load any `effect` module.
 - `npm run check` passes (format, evidence, lint, typecheck, test, knip, secrets). `npm run audit` shows no new
   findings.
-- Startup is measured on the reference machine with the probe above and reported in the PR description:
-  - **Flag off:** no measurable change to router extension load (within run-to-run noise).
-  - **Flag on:** the one-time lazy import adds no more than **50 ms** at p50 to the first classifier call. The subpath
-    measurement above (~43 ms) fits under this; a barrel import (~153 ms) does not.
+- Startup is measured at the router boundary on the reference machine and reported in the PR description. Use at least
+  41 fresh Node processes per case, the same Node version and machine, and a deterministic `invoke` stub without network
+  calls. Measure extension load and the first classifier invocation separately. Keep the package-import probe above only
+  as a dependency baseline; its ~43 ms result does not prove either router gate.
+  - **Flag off:** compare router extension load with the unchanged Promise implementation; no measurable change within
+    run-to-run noise, and no Effect module loaded.
+  - **Flag on:** compare the first classifier call with flag-off runs using the same stub. The complete added cost,
+    including the sibling module, every Effect subpath, and runtime initialization, must be no more than **50 ms** at
+    p50. Later invocations must be reported separately from the cold first call.
 
 **Shadow period (flag on for personal sessions, one to two weeks):**
 
@@ -204,8 +213,9 @@ dependency, and keep this record with the findings. Either outcome is a valid re
 
 - **Immediate:** turn the flag off. The existing implementation runs again, and Effect is no longer loaded. No migration
   is involved.
-- **Full:** revert the Phase 0 commit(s) and remove `effect` from `extensions/router/package.json`. The lockfile reverts
-  with it. The timer seam from scope item 2 can stay; it has no dependency.
+- **Full:** revert the Phase 0 commit(s), removing `effect` from the router runtime, root development, and router-OTel
+  release manifests and reverting their lockfile changes together. The timer seam from scope item 2 can stay; it has no
+  dependency.
 
 ## Phase 1 and 2 (conditional, not committed)
 
@@ -233,7 +243,7 @@ dependency, and keep this record with the findings. Either outcome is a valid re
    from scope item 2 or `node:test` `mock.timers`.
 2. **Startup cost.** Answered: see [Startup and size measurement](#startup-and-size-measurement). The 25 ms proposal is
    not reachable with Effect loaded, so the gate is now "flag off loads nothing; flag on ≤ 50 ms at p50". Rerun the
-   probe on the reference machine before the spike PR.
+   dependency probe and the router-level fresh-process measurements on the reference machine before the spike PR.
 3. **Issue ownership.** Answered: router work is tracked in `nigel-upstart/pi-buildout` (for example #81, #100, #108,
    and `specs/routing-layer/future-work.md` links there). Only the otel ownership decision
    (`specs/otel-ownership-decision.md`) uses `zew1me/pi-buildout`. The Phase 0 spike issue belongs in
