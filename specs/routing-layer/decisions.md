@@ -2,19 +2,22 @@
 
 ## Advisory-only safety phases, 2026-10-21
 
-Router safety guides the model but never blocks tool dispatch. Keep lifecycle phases, phase-specific submission tools,
-independent authorization/advisory/completion reviews, evidence tracking, and deterministic-check failure recovery.
-Remove router shell classification, read-only allowlists, plan-tool enforcement, and missing-review fallback escalation.
-Approvals record scoped review outcomes, not permission to proceed. Enforce tool availability through Pi-native tool
-selection and host access through a container or sandbox, rather than a second router policy engine. This avoids a
-script-text policy that cannot represent every concrete nested effect. Secondary reconciliation remains unchanged in
-this PR except that its pending state no longer blocks calls; the next stacked PR removes that latch machinery.
+Router safety guides the model but never blocks tool dispatch. The consolidated change incorporates PRs 132, 133,
+and 135. It keeps lifecycle phases, phase-specific submission tools, independent plan/completion reviews, evidence
+tracking, and deterministic-check failure recovery. It removes router shell classification, read-only allowlists,
+plan-tool enforcement, missing-review fallback escalation, and the secondary mutation latch. Approvals record scoped
+review outcomes, not permission to proceed. Enforce tool availability through Pi-native tool selection and host access
+through a container or sandbox, rather than a second router policy engine. This avoids a script-text policy that cannot
+represent every concrete nested effect. Trust-first classification and whole-tuple async correction are described below.
 
 This supersedes the execution-permission and tool-enforcement claims in
 [explicit review kinds and irreversible-action authorization](#decision-explicit-review-kinds-and-irreversible-action-authorization)
 and [bounded discovery authorization inside preflight](#decision-bounded-discovery-authorization-inside-preflight):
 read-only gates, unknown-tool/shell denial, reviewed-plan mutation limits, and execution/discovery grants no longer
-control dispatch. Their lifecycle schemas, review independence, and phase-based validator visibility remain.
+control dispatch. Legacy discovery/grant state and both former pre-action policies migrate to empty `planning`; review
+independence and phase-based validator visibility remain. Unaccepted plans are dropped at review hand-back, while
+recorded work survives for completion review, including across reload. The consolidated change is released as one unit
+so the earlier plan-retention bug is not shipped separately.
 
 Companion to [`SPEC.md`](SPEC.md) (the functional spec), [`eval.md`](eval.md) (the evaluation harness), and
 [`source-basis.md`](source-basis.md) (design provenance and public references). This document records _how_ it will be
