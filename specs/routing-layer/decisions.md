@@ -909,10 +909,11 @@ context bounds never trim or replace third-party tool-result content.
 Owner/task identity, attempt, selection, evidence revision, and epoch reject stale results. Invalidating mode and
 builder-selection changes cancel sessions promptly, including telemetry-triggered shadow mode. Input, boundaries, mode
 changes, overrides, and shutdown cancel the reviewer. Up to 64 hashed kind/scope/attempt/route identities are persisted
-on the builder lease before asynchronous review work starts; explicit plan resubmission clears them. This preserves
-bounded scheduling across reload and prevents a verdictless plan from monopolizing completion review after a fresh
-extension instance restores its retained context. Rejected plans are still discarded. Completion-advice rereview loops
-remain bounded without gating tools. Review work never schedules review-of-review; the SDK child loads no extensions by
+on the builder lease before asynchronous review work starts; explicit plan resubmission clears them. Pruning keeps the
+current retained plan's attempted identity pinned, even after 64 distinct completion scopes. This preserves bounded
+scheduling across reload and prevents a verdictless plan from monopolizing completion review after a fresh extension
+instance restores its retained context. Rejected plans are still discarded. Completion-advice rereview loops remain
+bounded without gating tools. Review work never schedules review-of-review; the SDK child loads no extensions by
 construction, and ordinary routing is not disabled in other reviewer children. Legacy review-child persistence unwraps
 the builder instead of resuming a reviewer model. `REVIEW_STARTED`/`REVIEW_FINISHED` and grant-oriented child-lease
 restoration are removed.

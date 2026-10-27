@@ -623,6 +623,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       effort: parent.selected.effort,
     });
   }
+  function reviewAttemptHistory(parent: TaskLease, key: string): string[] {
+    const history = parent.reviewAttemptKeys ?? [];
+    const planKey =
+      parent.lifecycle.phase === "planning" && parent.lifecycle.plan
+        ? reviewAttemptKey(parent, "plan", parent.lifecycle.plan.planFingerprint)
+        : undefined;
+    // Completion churn must never evict the retained plan's attempted identity and revive its review.
+    const pinned = history.find((candidate) => candidate === planKey);
+    const recent = history.filter((candidate) => candidate !== pinned).slice(pinned ? -62 : -63);
+    return [...(pinned ? [pinned] : []), ...recent, key];
+  }
+
   function reviewAlreadyAttempted(parent: TaskLease, reviewKind: SafetyReviewKind, scopeFingerprint: string): boolean {
     return parent.reviewAttemptKeys?.includes(reviewAttemptKey(parent, reviewKind, scopeFingerprint)) ?? false;
   }
@@ -2016,7 +2028,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     };
     // Persist before asynchronous work: a reload must not let an exhausted plan monopolize settlement
     // again, or rerun a completion review merely because its advice was consumed in a fresh instance.
-    const marked = { ...parent, reviewAttemptKeys: [...(parent.reviewAttemptKeys ?? []).slice(-63), key] };
+    const marked = { ...parent, reviewAttemptKeys: reviewAttemptHistory(parent, key) };
     if (!leaseOwner.advance("EVIDENCE", marked, parent, review.epoch)) return;
     pendingReview = review;
     persistState();

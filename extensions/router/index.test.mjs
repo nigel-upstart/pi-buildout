@@ -1268,6 +1268,63 @@ describe("advisory tool-call observation", () => {
     }
   }
 
+  it("preserves the current plan attempt while pruning a full completion history and across reload", async () => {
+    const transport = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: transport });
+    const notes = [];
+    fixture.ctx.ui.notify = (message) => notes.push(message);
+    const failures = () => notes.filter((message) => /did not return valid advice/.test(message)).length;
+    let resumed;
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.tools
+        .get("submit_action_plan")
+        .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => transport.calls.length === 1);
+      const planAttempt = fixture.latestLease().reviewAttemptKeys[0];
+      transport.calls[0].resolve({ status: "failed", usage: { cost: 1, inputTokens: 1, outputTokens: 1 } });
+      await waitForReview(() => failures() === 1);
+      for (let index = 0; index < 64; index++) {
+        const write = {
+          toolCallId: `work-${index}`,
+          toolName: "write",
+          input: { path: `file-${index}`, content: "x" },
+        };
+        fixture.hooks.get("tool_call")(write, fixture.ctx);
+        fixture.hooks.get("tool_execution_end")({ ...write, isError: false }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+        await waitForReview(() => transport.calls.length === index + 2);
+        const completion = transport.calls.at(-1);
+        assert.equal(completion.request.kind, "completion");
+        completion.resolve({ status: "failed", usage: { cost: 1, inputTokens: 1, outputTokens: 1 } });
+        await waitForReview(() => failures() === index + 2);
+      }
+      const keys = fixture.latestLease().reviewAttemptKeys;
+      assert.equal(keys.length, 64);
+      assert.ok(keys.includes(planAttempt), "completion pruning must not evict the current plan attempt");
+      const entries = JSON.parse(JSON.stringify(fixture.appended)).map((entry) => ({ type: "custom", ...entry }));
+      const state = restoreLeaseState(entries, "active");
+      resumed = await authorizationLifecycleFixture({ reviewRunner: transport }, state);
+      await resumed.hooks.get("session_start")({ reason: "reload" }, resumed.ctx);
+      const write = { toolCallId: "after-reload", toolName: "write", input: { path: "new-file", content: "x" } };
+      resumed.hooks.get("tool_call")(write, resumed.ctx);
+      resumed.hooks.get("tool_execution_end")({ ...write, isError: false }, resumed.ctx);
+      await resumed.hooks.get("agent_settled")({}, resumed.ctx);
+      await waitForReview(() => transport.calls.length === 66);
+      assert.equal(
+        transport.calls.at(-1).request.kind,
+        "completion",
+        "the old plan cannot monopolize settlement again",
+      );
+      assert.equal(resumed.latestLease().reviewAttemptKeys.length, 64);
+      assert.ok(resumed.latestLease().reviewAttemptKeys.includes(planAttempt));
+    } finally {
+      resumed?.restoreEnvironment();
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("does not retry exhausted completion evidence after restoring a fresh extension", async () => {
     const transport = controlledRunner();
     const fixture = await authorizationLifecycleFixture({ reviewRunner: transport });

@@ -445,14 +445,14 @@ human and record telemetry, but deliver no advice. A session whose assistant end
 is a failure even after a valid submission. New input, boundaries, overrides, off/shadow mode, reset, exhausted builder
 fallback, and shutdown cancel the session with `abort()`; cancellation and timeout wait up to one second for the aborted
 request's final usage before settling, and owner/epoch checks drop late results. The lease persists up to 64 hashed
-kind/scope/attempt/route identities before review work starts. Reload preserves this scheduling history; explicit plan
-resubmission clears it. Unchanged evidence cannot create an unbounded rereview loop by consuming completion advice. A
-successful mutation or a failing deterministic check that finishes after completion advice reopens the completed
-lifecycle, so the newer evidence is reviewed at the next settlement. A plan review that ends without valid advice is not
-retried for the unchanged plan, but work executed afterwards (including work that settled while it ran) still receives
-completion review. Advice never applies during an in-flight custom-start preparation. Ordinary task/model routing
-remains available if the router is loaded in some other reviewer child, but review work never schedules
-review-of-review.
+kind/scope/attempt/route identities before review work starts. The current retained plan's identity is pinned while
+older completion entries are pruned. Reload preserves this scheduling history; explicit plan resubmission clears it.
+Unchanged evidence cannot create an unbounded rereview loop by consuming completion advice. A successful mutation or a
+failing deterministic check that finishes after completion advice reopens the completed lifecycle, so the newer evidence
+is reviewed at the next settlement. A plan review that ends without valid advice is not retried for the unchanged plan,
+but work executed afterwards (including work that settled while it ran) still receives completion review. Advice never
+applies during an in-flight custom-start preparation. Ordinary task/model routing remains available if the router is
+loaded in some other reviewer child, but review work never schedules review-of-review.
 
 `ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. A later adapter may resolve that
 promise from external event observation. No delegation adapter or manager protocol is implemented, and the router never
