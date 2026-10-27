@@ -64,6 +64,8 @@ Safety is an explicit persisted **advisory** lease lifecycle, not an inference f
   `advisory_step_skipped` telemetry at most once per step per lease. Mutation detection is heuristic. These skipped
   steps send no model-facing repair follow-ups; implementation-plan repair and deterministic check-failure fallback
   remain unchanged. Work executed in `planning` without an action plan is noted and still receives a completion review.
+  A rejected or verdictless plan review drops the unaccepted plan but preserves recorded work; later builder settlement
+  reviews that work rather than retrying the old plan. This hand-back persists across reload.
 - `submit_discovery_request`, single-use discovery grants, and authorization grants have been removed. Old persisted
   discovery/grant state and both old pre-action policies migrate to empty `planning`. Historical telemetry still parses.
   Old action-plan callers use `toolNames` instead of `authorizedToolNames`; irreversible steps are no longer mandatory.

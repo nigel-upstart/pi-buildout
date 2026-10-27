@@ -2,19 +2,22 @@
 
 ## Advisory-only safety phases, 2026-10-21
 
-Router safety guides the model but never blocks tool dispatch. Keep lifecycle phases, phase-specific submission tools,
-independent authorization/advisory/completion reviews, evidence tracking, and deterministic-check failure recovery.
-Remove router shell classification, read-only allowlists, plan-tool enforcement, and missing-review fallback escalation.
-Approvals record scoped review outcomes, not permission to proceed. Enforce tool availability through Pi-native tool
-selection and host access through a container or sandbox, rather than a second router policy engine. This avoids a
-script-text policy that cannot represent every concrete nested effect. Secondary reconciliation remains unchanged in
-this PR except that its pending state no longer blocks calls; the next stacked PR removes that latch machinery.
+Router safety guides the model but never blocks tool dispatch. The consolidated change incorporates PRs 132, 133,
+and 135. It keeps lifecycle phases, phase-specific submission tools, independent plan/completion reviews, evidence
+tracking, and deterministic-check failure recovery. It removes router shell classification, read-only allowlists,
+plan-tool enforcement, missing-review fallback escalation, and the secondary mutation latch. Approvals record scoped
+review outcomes, not permission to proceed. Enforce tool availability through Pi-native tool selection and host access
+through a container or sandbox, rather than a second router policy engine. This avoids a script-text policy that cannot
+represent every concrete nested effect. Trust-first classification and whole-tuple async correction are described below.
 
 This supersedes the execution-permission and tool-enforcement claims in
 [explicit review kinds and irreversible-action authorization](#decision-explicit-review-kinds-and-irreversible-action-authorization)
 and [bounded discovery authorization inside preflight](#decision-bounded-discovery-authorization-inside-preflight):
 read-only gates, unknown-tool/shell denial, reviewed-plan mutation limits, and execution/discovery grants no longer
-control dispatch. Their lifecycle schemas, review independence, and phase-based validator visibility remain.
+control dispatch. Legacy discovery/grant state and both former pre-action policies migrate to empty `planning`; review
+independence and phase-based validator visibility remain. Unaccepted plans are dropped at review hand-back, while
+recorded work survives for completion review, including across reload. The consolidated change is released as one unit
+so the earlier plan-retention bug is not shipped separately.
 
 Companion to [`SPEC.md`](SPEC.md) (the functional spec), [`eval.md`](eval.md) (the evaluation harness), and
 [`source-basis.md`](source-basis.md) (design provenance and public references). This document records _how_ it will be
@@ -118,18 +121,18 @@ and their attribution. The installer already installs each extension's runtime m
 atomic swap; the router/OTel release package ships the union of both runtime manifests. XState v6 alpha is intentionally
 excluded.
 
-The lease actor owns enablement, boundaries, review/authorization phases, and every installed lease. Synchronous
-transitions validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger
-append. Every generated review is bound to the epoch in which it started: after new input, compaction, a reload, or a
-mode or override change, its settlement still restores the parent, but never with authority, whether a discovery grant
-or plan authorization the review would grant or an earlier authorization a completion review would return; the parent
-resumes in preflight with its plan, and a pending hard boundary is not consumed. More generally, only the routing
-transition that installs a freshly selected lease consumes a pending hard boundary; evidence, fallback, repair,
-preparation, and review transitions on the same task family leave it pending. Low-confidence secondary work is a
-cancellable promise actor under the parent task family. Its correction is bound to the exact owner and epoch, so
-lifecycle progress, fallback, new input, boundaries, overrides, and mode changes invalidate it. Ledger writes remain
-awaited and telemetry failure still switches routing to shadow. Persistence stores the validated version-2 lease shape,
-never an XState snapshot. Legacy secondary latch fields are ignored; a low-confidence primary needs no latch.
+The lease actor owns enablement, boundaries, advisory review phases, and every installed lease. Synchronous transitions
+validate the phase, captured lease owner, and routing epoch; no lock spans an awaited Pi callback or ledger append.
+Every generated review is bound to the epoch in which it started: new input, compaction, reload, or a mode or override
+change makes its advice stale. Settlement restores the parent's original lifecycle without that stale advice or an
+advice continuation. A current rejected or verdictless plan review instead returns to `planning` without the unaccepted
+plan, preserving recorded work for completion review. Neither hand-back consumes a pending hard boundary. Only the
+routing transition that installs a freshly selected lease consumes one; evidence, fallback, repair, preparation, and
+review transitions on the same task family leave it pending. Low-confidence secondary work is a cancellable promise
+actor under the parent task family. Its correction is bound to the exact owner and epoch, so lifecycle progress,
+fallback, new input, boundaries, overrides, and mode changes invalidate it. Ledger writes remain awaited and telemetry
+failure still switches routing to shadow. Persistence stores the validated version-2 lease shape, never an XState
+snapshot. Legacy secondary latch fields are ignored; a low-confidence primary needs no latch.
 
 Scope-specific fast-check properties and scheduled handler races run in `npm test`, pre-push, and CI. The default is 50
 runs with fixed seed 730100; CI runs 500. `FC_NUM_RUNS`, `FC_SEED`, and `FC_PATH` control the budget and failure replay.
@@ -267,7 +270,7 @@ hard boundaries and explicit discontinuity run first; planning-to-implementation
 planning, review, read-only, and other incompatible leases do not receive the operation shortcut; and any topic-bearing
 addition falls through to continuity classification. Extension-generated input and queued steer/follow-up input are
 separate unconditional continuation paths evaluated before pending hard boundaries so they remain in the already running
-lease. These paths retain state only and never authorize mutation or bypass lifecycle tool enforcement.
+lease. These paths retain state only; they neither grant permission nor restrict tool dispatch.
 
 The router now owns and specifies its outer classification deadline and cancellation policy. It does not yet configure
 or normalize every provider SDK's lower-level connect/read/retry timeout, nor prove cancellation at the remote service

@@ -71,6 +71,63 @@ include named/default agent types, custom agent frontmatter, proactive completio
 scheduling, event-bus RPC, persistent memory, worktree isolation, skill preloading, and its three-tool Claude
 Code-compatible surface.
 
+## Subagent delegation design (`specs/subagents/modern-layer-design.md`, DRAFT)
+
+The draft manager-first router delegation design studied the sources below. Operator design decisions select one shared
+tintinweb-compatible signaling subset, then classifier-found builder-steered delegation, then SDK fallback. This remains
+a design document; P0/P2/P3/P4 implementation is now authorized on separate branches/draft PRs. This section records
+research and intended reuse, not a claim that code has landed. No upstream code was copied into this document.
+
+- `nicobailon/pi-subagents` — <https://github.com/nicobailon/pi-subagents>, revision
+  `d48d580954086a426d31f1c7b8d793a1d26ad184` (`0.79.2`), MIT. Conceptual inspiration only: the structured delegation
+  API's exact-tuple attempt identity, single terminal response, cancel-before-start, explicit text vs structured result
+  mode, and usage with effective model/thinking; `context: "fresh"` defaulting. Its ordinary tool remains a possible
+  builder-steered target only. Neither its signaling nor structured-delegation API is supported, deferred, or planned.
+  Not adopted: workflows, missions, schedules, agent frontmatter, management APIs, watchdog/intercom, Herdr/fleet UI,
+  worktrees.
+- `tintinweb/pi-subagents` — <https://github.com/tintinweb/pi-subagents>, revision
+  `ca93a5247e72e7053fcd10bea7125d6c4205f949` (reviewed source snapshot, package version `0.22.0`) and released `v0.22.0`
+  source `85a704cb8f35c96c0cabfa665b572bab296942e5`, MIT. Release/package `0.22.0` and ping protocol `2` are distinct.
+  This is the minimum verified release baseline; earlier compatibility is unverified. Conceptual inspiration only:
+  final-result-by-default with verbose opt-in, `inherit_context: false` as the fresh default, per-call model/thinking,
+  and consuming a result to suppress redundant notifications. Proposed compatibility adoption: the documented protocol-2
+  ping/spawn/stop/consume request/reply subset and completed/failed events, as documented in `docs/rpc.md` and
+  implemented in `src/cross-extension-rpc.ts` and `src/index.ts`. Our manager would answer that generic subset; one
+  router adapter would serve both. This is a planned compatible reimplementation, not copied code or a new review
+  protocol. Not adopted: steer, global `Symbol.for` registry, compiled `structuredOutput`, scheduling, workflows,
+  FleetView, memory, worktree isolation, protocol dialect shims, or competing-manager arbitration. The approved
+  final-only wait uses our existing action and bounds; no third-party result rewriting is proposed. The parent
+  separately owns any factual upstream discovery/generic-compatibility feature request; none is filed by this design
+  task.
+- `elpapi42/pi-minimal-subagent` — revision `4c847a37b7d675470a8c5eb50d736d11ceac910a`; `package.json` declares MIT, the
+  repository has no LICENSE file. Re-reviewed; no new ideas adopted.
+- `earendil-works/pi` — <https://github.com/earendil-works/pi>, MIT; v1.2.0 `06a466935536f8c9bcacb2d5efc0fc021be1bdff`,
+  v1.3.0 `71023aec1546d6d677a65669c5665c0927ce0dd0`, main `16f5f0af4d85ca583d045ceb5ed6d646fcaf7761`. Studied
+  `packages/coding-agent` extension/SDK declarations and docs (API-boundary evidence) and `packages/durable` README and
+  `test/examples/22`, `23`, `26`, `28` at release `71023aec1546d6d677a65669c5665c0927ce0dd0`, plus associated
+  `src/harness/types.ts`, `src/types.ts` submission records, and `src/tools/index.ts`. The actual durable-based coding
+  agent is a forward-looking conceptual reference, not a runtime-adoption request or evidence of a future Pi roadmap.
+  Concrete comparisons: foreground versus background child ownership, accepted submission versus settled answer handle,
+  cancellation of a wait versus child termination, explicit tools/configuration versus transcript construction,
+  model/structured/UI result channels, and application-owned model selection. The examples return prose; their tool
+  types support structured results separately. Their extension-removal recursion shortcut and prose-sentinel reviewer
+  continuation are not substitutes for our no-router isolation and bounded parent review-attempt scheduling. The draft
+  strengthens tests in existing PRs without copying code or adding a new framework. Not adopted: durable `Harness`,
+  storage, task runtime, replay/restart/idempotency guarantees, background reporters, example review loop, or any
+  durable dependency. The private `ModelRegistry.runtime` access is accepted in the draft with a runtime guard and
+  proposed floor/latest-released contract canary; pinned Pi remains in normal CI. The router/subagents supported host
+  range `>=1.2.0 <2.0.0` is operator-approved, with metadata/tests coordinator-owned and floor execution checks required
+  before release. This is not npm runtime enforcement or a new installer upper gate; future latest 2.x must flag an
+  unsupported-upgrade investigation rather than imply support. The draft audits SDK imports, extension/auth APIs, CLI
+  flags, and RPC operations against recorded 1.2.0 sources; no live floor-runtime execution is claimed. Pi session
+  custom entries support parent scheduling state; explicit resource loading supports router-free children. Child-task
+  classification/model-effort selection runs in the parent before spawn, reusing existing routing and explicit override
+  precedence without switching the builder. No child lineage, opaque startup metadata API, or child-router factory is
+  adopted. These are API references and original design, not copied upstream implementation. Stale-while-refresh
+  discovery and delta-scaled review budgets are operator-directed original design, not attributed upstream behavior.
+  Workflow layout draws from this repository’s `.github/workflows/patch-drift.yml`; new action versions and org
+  allowlist compatibility remain implementation-time checks. No networked pre-commit hook is proposed.
+
 ## Routing layer (`extensions/router`)
 
 Full design provenance, including the historical conversation export the router's spec derives from and the public
