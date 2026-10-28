@@ -157,6 +157,28 @@ test("timeout aborts, records telemetry, stays DIRTY, and retries only on next a
   await tick();
 });
 
+test("session reset drops the publication while an ignored abort retains the single-flight bound", async () => {
+  const h = harness([agentTool()]);
+  h.discovery.observe();
+  h.calls[0].resolve(agentAnswer());
+  await tick();
+  assert.ok(h.discovery.observe().plan);
+  h.setTools([agentTool(), other("changed")]);
+  h.discovery.observe();
+  h.discovery.reset();
+  assert.equal(h.calls[1].signal.aborted, true);
+  assert.equal(h.discovery.observe(), undefined, "new sessions never inherit the previous publication");
+  assert.equal(h.calls.length, 2, "reset cannot overlap a provider that ignored abort");
+  h.calls[1].resolve(agentAnswer());
+  await tick();
+  assert.equal(h.calls.length, 2, "settlement never eagerly retries");
+  assert.equal(h.discovery.observe(), undefined);
+  assert.equal(h.calls.length, 3);
+  h.calls[2].resolve({ match: false });
+  await tick();
+  assert.equal(h.discovery.observe().plan, null);
+});
+
 test("failures do not publish; the next access retries", async () => {
   const h = harness([agentTool()]);
   h.discovery.observe();
@@ -294,6 +316,9 @@ test("a full quarantine map blocks every candidate instead of evicting evidence"
   quarantine.add(second, "argument_rejected");
   assert.equal(quarantine.blocks(other("Third"), tools), true);
   assert.equal(quarantine.blocks(agentTool(), tools), true);
+  quarantine.reset();
+  assert.equal(quarantine.blocks(agentTool(), tools), false, "session replacement clears contract evidence");
+  assert.equal(quarantine.blocks(other("Third"), tools), false, "session replacement clears overflow too");
 });
 
 test("quarantine excludes the candidate from discovery and old generations cannot republish it", async () => {
