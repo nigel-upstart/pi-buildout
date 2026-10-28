@@ -3465,6 +3465,9 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   // Observational only: review results are parsed, never replaced, trimmed, or marked as errors.
   pi.on("tool_result", (event) => {
     builderRunner.onToolResult(event);
+    // Only the actually executed, exact review call is orchestration rather than builder implementation.
+    // Later tool_call handlers may have changed its arguments; deviations retain normal mutation tracking.
+    if (builderRunner.isValidatedOrchestration(event)) potentiallyMutatingCalls.delete(event.toolCallId);
   });
 
   pi.on("tool_call", (event) => {
