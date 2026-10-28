@@ -572,7 +572,7 @@ Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
 - Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
-  at valid lifecycle phases, including generated review turns; stale calls retain execution-time guards.
+  at valid builder lifecycle phases; stale calls retain execution-time guards.
 - The Pi 0.85.1 and 0.87.1 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
   metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
   The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
@@ -580,6 +580,19 @@ Ideas and API patterns used:
 - The Pi 0.85.1 and 0.87.1 patches adapt the synchronous `proper-lockfile` acquisition/retry and `finally` release
   pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
+- Pi `1.3.0`'s `docs/sdk.md`, `examples/sdk/12-full-control.ts`, and published
+  `dist/core/{sdk,model-registry,model-runtime,agent-session}.js` informed the router's independent reviewer runner.
+  Canonical source: <https://github.com/earendil-works/pi/tree/v1.3.0/packages/coding-agent> (MIT). Conceptual API use:
+  in-memory sessions/settings, an empty ResourceLoader, native read-only tool selection, a custom verdict tool,
+  abort/dispose, and usage events. The runner uses a guarded, operator-approved read of ModelRegistry's private runtime
+  field to reuse model/auth access; no Pi implementation was copied. We intentionally exclude normal resource
+  inheritance, persistent reviewer transcripts, RPC subprocesses, and any subagents-extension dependency. Published Pi
+  `1.4.0`'s `docs/sdk.md`, `docs/extensions.md`, `docs/packages.md`, `docs/configuration.md`, and
+  `examples/sdk/06-extensions.ts` were also reviewed, and the runner's nine offline SDK tests were executed against the
+  installed `1.4.0` package to verify runtime reuse, isolation, cancellation, and usage. Canonical source:
+  <https://github.com/earendil-works/pi/tree/v1.4.0/packages/coding-agent> (MIT). This is API compatibility
+  verification, not copied implementation. Durable bounded review-attempt identities are original router scheduling
+  logic, not upstream session replay or persistence machinery.
 - Pi `1.3.0`'s SDK/codemode documentation and `examples/sdk/06-extensions.ts` and `14-codemode-mcp.ts` informed the
   advisory-router regression fixture: in-memory `AgentSession`, explicit resource factories, deterministic model
   responses, and real nested tool dispatch. This is conceptual API use, not copied Pi code; live providers, MCP
@@ -776,8 +789,8 @@ patch artifacts and overlays were removed; historical attribution above remains 
   2026-10-07. Consumed as a development dependency, with no upstream source copied or modified.
 
 Conceptual use: XState's synchronous actor transitions, guarded statecharts, and cancellable promise children provide
-one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates state-transition
-sequences and adversarial schedules for actual router handlers and their ledger/model waits. The machine, adapter
-integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6 alpha APIs, a
-global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check examples or
-its implementation; the existing Node test runner remains in place.
+one builder lease owner and a secondary classifier scoped to that task. fast-check generates state-transition sequences
+and adversarial schedules for actual router handlers and their ledger/model waits. The machine, adapter integration, and
+properties are original code. We did not adopt XState's persisted snapshot format, v6 alpha APIs, a global asynchronous
+handler queue, or make the telemetry ledger a state source. We did not copy fast-check examples or its implementation;
+the existing Node test runner remains in place.

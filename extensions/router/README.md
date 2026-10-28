@@ -64,8 +64,9 @@ Safety is an explicit persisted **advisory** lease lifecycle, not an inference f
   `advisory_step_skipped` telemetry at most once per step per lease. Mutation detection is heuristic. These skipped
   steps send no model-facing repair follow-ups; implementation-plan repair and deterministic check-failure fallback
   remain unchanged. Work executed in `planning` without an action plan is noted and still receives a completion review.
-  A rejected or verdictless plan review drops the unaccepted plan but preserves recorded work; later builder settlement
-  reviews that work rather than retrying the old plan. This hand-back persists across reload.
+  A rejected plan review drops the unaccepted plan. A verdictless review retains the plan as context, with a persisted
+  attempt identity preventing replay; later builder settlement reviews recorded work rather than retrying the old plan.
+  Both paths preserve mutation evidence and remain completion-review eligible across reload.
 - `submit_discovery_request`, single-use discovery grants, and authorization grants have been removed. Old persisted
   discovery/grant state and both old pre-action policies migrate to empty `planning`. Historical telemetry still parses.
   Old action-plan callers use `toolNames` instead of `authorizedToolNames`; irreversible steps are no longer mandatory.
@@ -161,9 +162,10 @@ The concrete tier lists live in [`pi-classifier.ts`](pi-classifier.ts) (`PRIMARY
   one for a secondary tier of a different vendor in scope; a `classifier_invocation` whose secondary attempts all end in
   `error` means no such endpoint could be reached. Failed secondary work retains the primary route.
 
-Generated plan and completion reviews have explicit `review` lifecycle state, a known tracked builder, and at least two
-eligible non-builder-vendor attempts; they never fall back to the builder for a verdict. Standalone user-requested
-reviews are orthogonal ordinary leases: they inspect a bounded local or pull-request delta, classify its
+Generated plan and completion reviews run in separate in-memory Pi SDK sessions, with a known builder and the existing
+different-vendor reviewer ladder, which requires at least two eligible non-builder vendors in scope. They never fall
+back to the builder for a verdict or replace its lease. Standalone user-requested reviews are orthogonal ordinary
+leases: they inspect a bounded local or pull-request delta, classify its
 scope/languages/complexity/risk/horizon/context/tool needs, and use feature-based review routing. They do not inherit
 the current lease, invent a builder, become read-only merely because another task preceded them, or trigger recursive
 automatic review. They may perform explicitly requested external operations such as posting review comments.
@@ -412,6 +414,51 @@ non-delegating extensions outside the boundary. Project trust and the working di
 [settings reference](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/settings.md#tools).
 These references describe Pi 1.3.0; check the installed host's help when using an older supported version.
 
+### Independent reviewer sessions
+
+The only runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an empty
+`ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget. It
+loads no extensions (including router/subagents), skills, templates, context files, or MCP servers. Its explicit native
+tool allowlist is read/grep/find/ls plus its private `submit_safety_review` tool. The builder's `submit_safety_review`
+registration is hidden and cannot accept reviewer verdicts.
+
+The SDK takes a `ModelRuntime`, while extensions expose a `ModelRegistry`. With operator approval, a guarded read of
+that registry's private `runtime` field reuses the parent's actual model/auth runtime. If the field is missing or has an
+unexpected type, review is skipped with a human warning and telemetry. The shared runtime is never wrapped or mutated;
+request limits wrap only the reviewer's agent. No credentials are copied to disk.
+
+The router collects a bounded diff (24,000 characters) and bounded task/evidence prompt (60,000 characters). It retains
+bounded original task requirements on the lease and transfers them with the relevant plan and latest continuation;
+"continue" alone is never treated as the original requirements. Legacy leases recover the original prompt by its
+fingerprint when available and otherwise disclose the context gap. These bounds affect router-owned review context only;
+no third-party tool-result content is trimmed or replaced. Each review has a delta-scaled wall budget: five minutes plus
+one second per changed line, capped at four hours. Unknown, binary, or unmeasurable scope receives four hours. The
+provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each session also has at most eight
+model requests and 4,096 output tokens per request. A measured $1 cost threshold stops subsequent calls; it is not a
+provider-side billing limit and can overshoot by the final bounded request. Fallback sessions share the wall deadline
+and remaining measured cost budget. Usage/cost/status and `reviewRunner: "in_process"` are recorded in telemetry. Each
+review attempt's cost is also added to its owning task's total and labeled `modelAndToolCost`; reviewer token counts
+stay out of builder cache metrics. No raw reviewer errors are logged.
+
+Valid verdicts are delivered as custom follow-up context plus a UI notification. Plan advice triggers a turn; completion
+findings are queued as follow-up context without manufacturing a new turn. Invalid output, timeout, and failure warn the
+human and record telemetry, but deliver no advice. A session whose assistant ends with stop reason `error` or `aborted`
+is a failure even after a valid submission. New input, boundaries, overrides, off/shadow mode, reset, exhausted builder
+fallback, and shutdown cancel the session with `abort()`; cancellation and timeout wait up to one second for the aborted
+request's final usage before settling, and owner/epoch checks drop late results. The lease persists up to 64 hashed
+kind/scope/attempt/route identities before review work starts. The current retained plan's identity is pinned while
+older completion entries are pruned. Reload preserves this scheduling history; explicit plan resubmission clears it.
+Unchanged evidence cannot create an unbounded rereview loop by consuming completion advice. A successful mutation or a
+failing deterministic check that finishes after completion advice reopens the completed lifecycle, so the newer evidence
+is reviewed at the next settlement. A plan review that ends without valid advice is not retried for the unchanged plan,
+but work executed afterwards (including work that settled while it ran) still receives completion review. Advice never
+applies during an in-flight custom-start preparation. Ordinary task/model routing remains available if the router is
+loaded in some other reviewer child, but review work never schedules review-of-review.
+
+`ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. A later adapter may resolve that
+promise from external event observation. No delegation adapter or manager protocol is implemented, and the router never
+depends on the separately packaged subagents extension.
+
 ### Lease lifecycle state machine
 
 A single XState v5 actor (`core/lease-machine.ts`) owns the router mode, pending hard boundaries, and the installed
@@ -424,27 +471,26 @@ stateDiagram-v2
   [*] --> selecting
   selecting --> off: mode is off
   selecting --> idle: no active lease
-  selecting --> review: phase review
   selecting --> planning: phase planning
   selecting --> completed: phase completed
   selecting --> execution: any other phase
 ```
 
-Lease advances (`ROUTE`, `SUBMIT_*`, `REVIEW_*`, `FALLBACK`, `REPAIR`, and the rest) must name the current owner lease
-and routing epoch. `INTENT`, `BOUNDARY`, `INVALIDATE`, `MODE`, `OVERRIDE`, `RESET`, and `RESTORE` bump the epoch, so
-work captured before them can no longer advance the lease. Only `ROUTE`, which installs the lease freshly selected for a
-boundary, consumes a pending hard boundary; same-task advances leave it pending for the next ordinary input.
+Lease advances (`ROUTE`, `SUBMIT_PLAN`, `FALLBACK`, `REPAIR`, `EVIDENCE`, and the rest) must name the current owner
+lease and routing epoch. `INTENT`, `BOUNDARY`, `INVALIDATE`, `MODE`, `OVERRIDE`, `RESET`, and `RESTORE` bump the epoch,
+so work captured before them can no longer advance the lease. Only `ROUTE`, which installs the lease freshly selected
+for a boundary, consumes a pending hard boundary; same-task advances leave it pending for the next ordinary input.
 
 The safety workflow lives in the lease's lifecycle phase. Each task starts in the phase its safety policy selects.
-Generated reviews run as child leases instructed not to mutate that temporarily hold their parent: `REVIEW_STARTED`
-installs the child, `SUBMIT_REVIEW` records its verdict, and `REVIEW_FINISHED` restores the parent with the outcome.
+Generated reviews do not install child leases or switch the builder model. Pending review ownership is runtime-only;
+legacy persisted review children restore their builder instead. A verdict advances the current builder via `EVIDENCE`.
 
 The merged `plan_review_then_completion_review` policy recommends pre-action advice, not authorization:
 
 ```mermaid
 stateDiagram-v2
   [*] --> planning
-  planning --> plan_review: SUBMIT_PLAN then REVIEW_STARTED
+  planning --> plan_review: SUBMIT_PLAN then async SDK review
   plan_review --> executing: approve or proceed (advice only)
   plan_review --> planning: concerns, revise and resubmit
   executing --> completion_review: evidence available
@@ -456,7 +502,7 @@ stateDiagram-v2
 ```
 
 The review scope and start epoch identify stale advice; neither binds an execution grant. A review crossing new input or
-a boundary hands back the original parent without its stale verdict. The pending boundary survives.
+a boundary is cancelled and its stale verdict is dropped. The builder stays installed and the boundary survives.
 
 ```mermaid
 sequenceDiagram
@@ -464,13 +510,13 @@ sequenceDiagram
   participant Lease
   participant Reviewer
   Builder->>Lease: SUBMIT_PLAN
-  Lease->>Reviewer: REVIEW_STARTED (scope, epoch n)
+  Lease->>Reviewer: start separate SDK session (scope, epoch n)
   Note over Builder: Recommended wait; no tool gate
-  Reviewer->>Lease: SUBMIT_REVIEW (advice)
+  Reviewer->>Lease: validated verdict result
   alt epoch still current
     Lease-->>Builder: findings, revise or execute
   else input or boundary changed epoch
-    Lease-->>Builder: original parent, stale verdict dropped
+    Lease-->>Reviewer: cancel; drop late result
   end
 ```
 

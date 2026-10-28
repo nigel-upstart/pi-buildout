@@ -52,7 +52,10 @@ function routerExtension(pi, options) {
           }
         : handler,
     );
-  return routerExtensionImpl(pi, options);
+  return routerExtensionImpl(pi, {
+    reviewRunner: { start: () => ({ result: new Promise(() => {}), cancel() {} }) },
+    ...options,
+  });
 }
 
 function deferred() {
@@ -177,8 +180,37 @@ function irreversibleActionPlan() {
   };
 }
 
-// Mirrors the irreversible-action authorization fixture: a parent lease in authorization preflight,
-// with a builder and an independent reviewer from different vendors.
+async function waitForReview(predicate) {
+  for (let i = 0; i < 200 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(Boolean(predicate()), true, "review condition did not settle");
+}
+function controlledRunner() {
+  const calls = [];
+  return {
+    calls,
+    start(request) {
+      const completion = deferred();
+      const call = { request, resolve: completion.resolve, cancelled: false };
+      calls.push(call);
+      return {
+        result: completion.promise,
+        cancel() {
+          call.cancelled = true;
+        },
+      };
+    },
+  };
+}
+const validAdvice = (request) => ({
+  reviewKind: request.kind,
+  scopeFingerprint: request.scopeFingerprint,
+  verdict: request.kind === "plan" ? "approve" : "pass",
+  summary: "Bounded advice",
+  evidence: ["Inspected evidence"],
+  findings: ["Verify rollback"],
+});
+
+// A high-risk builder with an independent reviewer from a different vendor.
 async function authorizationLifecycleFixture(options = {}, restoredState) {
   const hooks = new Map();
   const commands = new Map();
@@ -288,8 +320,8 @@ async function authorizationLifecycleFixture(options = {}, restoredState) {
       activeTools = tools;
     },
     exec: async (command, args) => {
-      await hooksDuringSwitch.duringExec?.(command, args);
-      return { stdout: "", stderr: "", code: 1, killed: false };
+      const result = await hooksDuringSwitch.duringExec?.(command, args);
+      return result ?? { stdout: "", stderr: "", code: 1, killed: false };
     },
   };
   routerExtension(pi, options);
@@ -889,7 +921,7 @@ describe("resumeCompletedLifecycle", () => {
 
 describe("router-off safety notice", () => {
   it("names advisory guidance paused by off and resumed by active mode", () => {
-    for (const phase of ["planning", "review", "planning"]) {
+    for (const phase of ["planning"]) {
       assert.equal(advisoryPhasePausedByOff({ phase, policy: "ordinary", taskFingerprint: "t" }), phase);
       assert.ok(routerOffNotice(phase).includes(`Advisory ${phase} guidance is paused`), phase);
     }
@@ -989,14 +1021,7 @@ describe("router-mode tool exposure", () => {
         "review",
       ]) {
         const lifecycle = phase ? { phase, policy: "ordinary", taskFingerprint: "t" } : undefined;
-        const expected =
-          mode !== "active"
-            ? []
-            : phase === "planning"
-              ? ["submit_action_plan"]
-              : phase === "review"
-                ? ["submit_safety_review"]
-                : [];
+        const expected = mode !== "active" ? [] : phase === "planning" ? ["submit_action_plan"] : [];
         assert.deepEqual(
           activeToolsForSafetyLifecycle(ordinaryTools, mode, lifecycle),
           ["read", "bash", ...expected],
@@ -1020,10 +1045,7 @@ describe("router-mode tool exposure", () => {
       "repeated syncs must not reorder the prompt's tool declarations",
     );
     for (const phase of ["planning", "review"]) {
-      assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active", { phase }, false, true), [
-        "read",
-        "bash",
-      ]);
+      assert.deepEqual(activeToolsForSafetyLifecycle(ordinaryTools, "active", { phase }, true), ["read", "bash"]);
     }
   });
 });
@@ -1099,31 +1121,17 @@ describe("stageDeadlineDescription", () => {
 
 describe("advisory tool-call observation", () => {
   it("never blocks tools across lifecycle phases, modes, or manual overrides", async () => {
-    const fixture = await authorizationLifecycleFixture();
-    let reviewLease;
-    try {
-      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
-      await fixture.tools
-        .get("submit_action_plan")
-        .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
-      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
-      reviewLease = fixture.latestLease();
-      assert.equal(reviewLease.lifecycle.phase, "review");
-    } finally {
-      fixture.restoreEnvironment();
-    }
     const phases = [
       { phase: "ordinary", policy: "ordinary" },
       { phase: "building", policy: "completion_review" },
       { phase: "planning", policy: "plan_review_then_completion_review" },
-      { phase: "planning", policy: "plan_review_then_completion_review" },
-      reviewLease.lifecycle,
+      { phase: "executing", policy: "plan_review_then_completion_review" },
     ];
     for (const mode of ["active", "shadow", "off"]) {
       for (const manualOverride of [false, true]) {
         for (const lifecycle of phases) {
           const active = {
-            ...(lifecycle.phase === "review" ? reviewLease : adapterLease()),
+            ...adapterLease(),
             manualOverride,
             lifecycle: { ...lifecycle, taskFingerprint: "task-fingerprint" },
           };
@@ -1177,146 +1185,81 @@ describe("advisory tool-call observation", () => {
     await hooks.get("agent_settled")({}, ctx);
   };
 
-  it("hands back a review that ends without a submission, keeping its evidence and skipping fallback", async () => {
-    const fixture = await authorizationLifecycleFixture();
-    const { hooks, tools, ctx, models, latestLease, selectedModels, parent } = fixture;
-    try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-      await hooks.get("agent_settled")({}, ctx);
-      const child = latestLease();
-      assert.equal(child.lifecycle.phase, "review");
-      const switchesBefore = selectedModels.length;
-      ctx.model = models.find(
-        (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
-      );
-      hooks.get("agent_start")({}, ctx);
-      hooks.get("turn_start")({}, ctx);
-      const write = { toolCallId: "reviewer-write", toolName: "write", input: { path: "x", content: "y" } };
-      assert.equal(hooks.get("tool_call")(write, ctx), undefined);
-      hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
-      assert.equal(latestLease().safetyEvidence.mutations.length, 1, "reviewer mutation recorded on the child");
-      await finishRun(hooks, ctx, child.selected);
-      const restored = latestLease();
-      assert.equal(restored.taskId, parent.taskId, "a finished review without a verdict is handed back");
-      assert.equal(restored.lifecycle.phase, "planning");
-      assert.equal(restored.lifecycle.planReview.verdict, undefined);
-      assert.equal(restored.executionFailed, undefined);
-      assert.deepEqual(
-        restored.safetyEvidence.mutations.map(({ toolName }) => toolName),
-        ["write"],
-        "reviewer evidence survives hand-back",
-      );
-      assert.deepEqual(
-        selectedModels.slice(switchesBefore).map(({ id }) => id),
-        [parent.selected.modelId],
-        "only the builder is restored; no fallback reviewer",
-      );
-      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line));
-      assert.equal(
-        events.some(({ kind }) => kind === "fallback"),
-        false,
-      );
-    } finally {
-      fixture.restoreEnvironment();
-    }
-  });
+  const recordingRunner = () => {
+    const requests = [];
+    return { requests, start: (request) => (requests.push(request), { result: new Promise(() => {}), cancel() {} }) };
+  };
 
   for (const verdict of [undefined, "reject"]) {
     for (const reload of [false, true]) {
       it(`reviews executed work after ${verdict ?? "missing"} plan advice${reload ? " across reload" : ""}`, async () => {
-        const fixture = await authorizationLifecycleFixture();
+        const transport = controlledRunner();
+        const fixture = await authorizationLifecycleFixture({ reviewRunner: transport });
         let resumed;
         try {
-          const { hooks, tools, ctx, models, parent } = fixture;
+          const { hooks, tools, ctx, parent } = fixture;
+          const notes = [];
+          ctx.ui.notify = (message) => notes.push(message);
           await hooks.get("session_start")({ reason: "reload" }, ctx);
           hooks.get("agent_start")({}, ctx);
           hooks.get("turn_start")({}, ctx);
           await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+          await finishRun(hooks, ctx, parent.selected);
+          await waitForReview(() => transport.calls.length === 1);
+          const planReview = transport.calls[0];
+          assert.equal(planReview.request.kind, "plan");
+          planReview.resolve({
+            status: verdict ? "completed" : "failed",
+            ...(verdict ? { verdict: { ...validAdvice(planReview.request), verdict } } : {}),
+            // Exhaust the ladder deterministically when advice is missing.
+            usage: { cost: verdict ? 0.01 : 1, inputTokens: 1, outputTokens: 1 },
+          });
+          await waitForReview(() =>
+            verdict
+              ? fixture.latestLease().lifecycle.planReview?.verdict === verdict
+              : notes.some((message) => /did not return valid advice/.test(message)),
+          );
+          await flushMicrotasks();
+          hooks.get("agent_start")({}, ctx);
+          hooks.get("turn_start")({}, ctx);
           const write = { toolCallId: "planned-write", toolName: "write", input: { path: "x", content: "y" } };
           assert.equal(hooks.get("tool_call")(write, ctx), undefined);
           hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
-          await finishRun(hooks, ctx, parent.selected);
-          const planReview = fixture.latestLease();
-          assert.equal(planReview.lifecycle.reviewKind, "plan");
-          ctx.model = models.find(
-            (model) => model.provider === planReview.selected.provider && model.id === planReview.selected.modelId,
-          );
-          hooks.get("agent_start")({}, ctx);
-          hooks.get("turn_start")({}, ctx);
-          if (verdict) {
-            await tools.get("submit_safety_review").execute(
-              "plan-verdict",
-              {
-                reviewKind: "plan",
-                scopeFingerprint: planReview.lifecycle.scopeFingerprint,
-                verdict,
-                summary: "The submitted plan needs revision.",
-                evidence: ["Inspected the plan and recorded work."],
-                findings: ["Strengthen rollback verification."],
-              },
-              undefined,
-              undefined,
-              ctx,
-            );
-          }
-          await finishRun(hooks, ctx, planReview.selected);
           const returned = fixture.latestLease();
           assert.equal(returned.lifecycle.phase, "planning");
-          assert.equal(returned.lifecycle.planReview.verdict, verdict);
-          assert.equal(returned.lifecycle.plan, undefined, "an unaccepted plan cannot monopolize later settlement");
           assert.equal(returned.safetyEvidence.mutations.length, 1);
+          if (verdict) assert.equal(returned.lifecycle.plan, undefined, "rejected plans are discarded");
           if (reload) {
-            // A fresh extension instance sees only the serialized entries, not any in-memory retry marker.
+            // A fresh extension sees only serialized entries, not in-memory review scheduling state.
             const entries = JSON.parse(JSON.stringify(fixture.appended)).map((entry) => ({ type: "custom", ...entry }));
             const state = restoreLeaseState(entries, "active");
             assert.equal(state.active?.taskId, parent.taskId);
             assert.deepEqual(state.active.safetyEvidence, returned.safetyEvidence);
-            resumed = await authorizationLifecycleFixture({}, state);
+            resumed = await authorizationLifecycleFixture({ reviewRunner: transport }, state);
             await resumed.hooks.get("session_start")({ reason: "reload" }, resumed.ctx);
           }
           const runner = resumed ?? fixture;
-          runner.ctx.model = runner.models.find(
-            (model) => model.provider === parent.selected.provider && model.id === parent.selected.modelId,
-          );
+          const callsBeforeCompletion = transport.calls.length;
           runner.hooks.get("agent_start")({}, runner.ctx);
           runner.hooks.get("turn_start")({}, runner.ctx);
           await finishRun(runner.hooks, runner.ctx, parent.selected);
-          const completion = runner.latestLease();
-          assert.equal(
-            completion.lifecycle.reviewKind,
-            "completion",
-            "recorded work gets review, not another plan review",
-          );
-          assert.equal(completion.parentLease.taskId, parent.taskId);
-          assert.deepEqual(completion.parentLease.safetyEvidence, returned.safetyEvidence);
-          runner.ctx.model = runner.models.find(
-            (model) => model.provider === completion.selected.provider && model.id === completion.selected.modelId,
-          );
-          runner.hooks.get("agent_start")({}, runner.ctx);
-          await runner.tools.get("submit_safety_review").execute(
-            "completion-verdict",
-            {
-              reviewKind: "completion",
-              scopeFingerprint: completion.lifecycle.scopeFingerprint,
-              verdict: "pass",
-              summary: "The recorded work matches the task.",
-              evidence: ["Inspected the recorded mutation."],
-              findings: [],
-            },
-            undefined,
-            undefined,
-            runner.ctx,
-          );
-          await finishRun(runner.hooks, runner.ctx, completion.selected);
-          assert.equal(runner.latestLease().lifecycle.phase, "completed");
-          const reviewCount = runner.sent.length;
+          await waitForReview(() => transport.calls.length > callsBeforeCompletion);
+          const completion = transport.calls.at(-1);
+          assert.equal(completion.request.kind, "completion", "recorded work gets review, not another plan review");
+          assert.equal(runner.latestLease().taskId, parent.taskId, "the builder remains installed");
+          assert.deepEqual(runner.latestLease().selected, parent.selected);
+          assert.deepEqual(runner.latestLease().safetyEvidence, returned.safetyEvidence);
+          completion.resolve({
+            status: "completed",
+            verdict: validAdvice(completion.request),
+            usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+          });
+          await waitForReview(() => runner.latestLease().lifecycle.phase === "completed");
+          const reviewCount = transport.calls.length;
           await runner.hooks.get("agent_settled")({}, runner.ctx);
+          await flushMicrotasks();
           assert.equal(runner.latestLease().lifecycle.phase, "completed");
-          assert.equal(runner.sent.length, reviewCount, "settlement cannot reopen completed or failed plan advice");
+          assert.equal(transport.calls.length, reviewCount, "settlement cannot reopen completed or failed plan advice");
         } finally {
           resumed?.restoreEnvironment();
           fixture.restoreEnvironment();
@@ -1325,9 +1268,118 @@ describe("advisory tool-call observation", () => {
     }
   }
 
+  it("preserves the current plan attempt while pruning a full completion history and across reload", async () => {
+    const transport = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: transport });
+    const notes = [];
+    fixture.ctx.ui.notify = (message) => notes.push(message);
+    const failures = () => notes.filter((message) => /did not return valid advice/.test(message)).length;
+    let resumed;
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.tools
+        .get("submit_action_plan")
+        .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => transport.calls.length === 1);
+      const planAttempt = fixture.latestLease().reviewAttemptKeys[0];
+      transport.calls[0].resolve({ status: "failed", usage: { cost: 1, inputTokens: 1, outputTokens: 1 } });
+      await waitForReview(() => failures() === 1);
+      for (let index = 0; index < 64; index++) {
+        const write = {
+          toolCallId: `work-${index}`,
+          toolName: "write",
+          input: { path: `file-${index}`, content: "x" },
+        };
+        fixture.hooks.get("tool_call")(write, fixture.ctx);
+        fixture.hooks.get("tool_execution_end")({ ...write, isError: false }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+        await waitForReview(() => transport.calls.length === index + 2);
+        const completion = transport.calls.at(-1);
+        assert.equal(completion.request.kind, "completion");
+        completion.resolve({ status: "failed", usage: { cost: 1, inputTokens: 1, outputTokens: 1 } });
+        await waitForReview(() => failures() === index + 2);
+      }
+      const keys = fixture.latestLease().reviewAttemptKeys;
+      assert.equal(keys.length, 64);
+      assert.ok(keys.includes(planAttempt), "completion pruning must not evict the current plan attempt");
+      const entries = JSON.parse(JSON.stringify(fixture.appended)).map((entry) => ({ type: "custom", ...entry }));
+      const state = restoreLeaseState(entries, "active");
+      resumed = await authorizationLifecycleFixture({ reviewRunner: transport }, state);
+      await resumed.hooks.get("session_start")({ reason: "reload" }, resumed.ctx);
+      const write = { toolCallId: "after-reload", toolName: "write", input: { path: "new-file", content: "x" } };
+      resumed.hooks.get("tool_call")(write, resumed.ctx);
+      resumed.hooks.get("tool_execution_end")({ ...write, isError: false }, resumed.ctx);
+      await resumed.hooks.get("agent_settled")({}, resumed.ctx);
+      await waitForReview(() => transport.calls.length === 66);
+      assert.equal(
+        transport.calls.at(-1).request.kind,
+        "completion",
+        "the old plan cannot monopolize settlement again",
+      );
+      assert.equal(resumed.latestLease().reviewAttemptKeys.length, 64);
+      assert.ok(resumed.latestLease().reviewAttemptKeys.includes(planAttempt));
+    } finally {
+      resumed?.restoreEnvironment();
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("does not retry exhausted completion evidence after restoring a fresh extension", async () => {
+    const transport = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: transport });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    };
+    let resumed;
+    try {
+      const { hooks, ctx, parent } = fixture;
+      const notes = [];
+      ctx.ui.notify = (message) => notes.push(message);
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      hooks.get("agent_start")({}, ctx);
+      hooks.get("turn_start")({}, ctx);
+      const write = { toolCallId: "work", toolName: "write", input: { path: "x", content: "y" } };
+      hooks.get("tool_call")(write, ctx);
+      hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
+      await finishRun(hooks, ctx, parent.selected);
+      await waitForReview(() => transport.calls.length === 1);
+      assert.equal(transport.calls[0].request.kind, "completion");
+      transport.calls[0].resolve({
+        status: "failed",
+        usage: { cost: 1, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => notes.some((message) => /did not return valid advice/.test(message)));
+      const entries = JSON.parse(JSON.stringify(fixture.appended)).map((entry) => ({ type: "custom", ...entry }));
+      const state = restoreLeaseState(entries, "active");
+      resumed = await authorizationLifecycleFixture({ reviewRunner: transport }, state);
+      await resumed.hooks.get("session_start")({ reason: "reload" }, resumed.ctx);
+      resumed.hooks.get("agent_start")({}, resumed.ctx);
+      resumed.hooks.get("turn_start")({}, resumed.ctx);
+      await finishRun(resumed.hooks, resumed.ctx, parent.selected);
+      await flushMicrotasks();
+      assert.equal(transport.calls.length, 1, "a fresh instance must not repeat unchanged exhausted evidence");
+      assert.equal(
+        resumed.sent.some((s) => s.options?.triggerTurn),
+        false,
+      );
+    } finally {
+      resumed?.restoreEnvironment();
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("notes and reviews work executed during planning without an action plan", async () => {
-    const fixture = await authorizationLifecycleFixture();
-    const { hooks, tools, ctx, models, appended, latestLease, sent, parent } = fixture;
+    const reviewRunner = recordingRunner();
+    const completion = deferred();
+    reviewRunner.start = (request) => (
+      reviewRunner.requests.push(request),
+      { result: completion.promise, cancel() {} }
+    );
+    const fixture = await authorizationLifecycleFixture({ reviewRunner });
+    const { hooks, ctx, appended, latestLease, sent, parent } = fixture;
     try {
       await hooks.get("session_start")({ reason: "reload" }, ctx);
       hooks.get("agent_start")({}, ctx);
@@ -1336,36 +1388,38 @@ describe("advisory tool-call observation", () => {
       assert.equal(hooks.get("tool_call")(write, ctx), undefined);
       hooks.get("tool_execution_end")({ ...write, isError: false }, ctx);
       await finishRun(hooks, ctx, parent.selected);
-      const child = latestLease();
-      assert.equal(child.lifecycle.phase, "review");
-      assert.equal(child.lifecycle.reviewKind, "completion");
-      assert.equal(child.parentLease.taskId, parent.taskId);
-      assert.deepEqual(child.parentLease.advisoryStepsNoted, ["action_plan"], "the skipped plan is still noted");
+      for (let i = 0; i < 200 && reviewRunner.requests.length === 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.deepEqual(
+        reviewRunner.requests.map(({ kind }) => kind),
+        ["completion"],
+      );
+      assert.equal(latestLease().taskId, parent.taskId);
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      assert.deepEqual(latestLease().advisoryStepsNoted, ["action_plan"], "the skipped plan is still noted");
       assert.equal(
         sent.some(({ message }) => message.details?.repairReason === "missing_action_plan"),
         false,
         "executed work is reviewed rather than asked for a plan it no longer precedes",
       );
       // Settle the planless completion review, then prove the result survives reload and continuation.
-      ctx.model = models.find(
-        (model) => model.provider === child.selected.provider && model.id === child.selected.modelId,
-      );
-      hooks.get("agent_start")({}, ctx);
-      await tools.get("submit_safety_review").execute(
-        "complete",
-        {
+      const [request] = reviewRunner.requests;
+      completion.resolve({
+        status: "completed",
+        verdict: {
           reviewKind: "completion",
-          scopeFingerprint: child.lifecycle.scopeFingerprint,
+          scopeFingerprint: request.scopeFingerprint,
           verdict: "pass",
           summary: "The unplanned write matches the task.",
           evidence: ["Inspected the recorded mutation."],
           findings: [],
         },
-        undefined,
-        undefined,
-        ctx,
-      );
-      await finishRun(hooks, ctx, child.selected);
+        usage: { cost: 0, inputTokens: 0, outputTokens: 0 },
+      });
+      for (let i = 0; i < 200 && latestLease().lifecycle.phase !== "completed"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
       const completed = latestLease();
       assert.equal(completed.taskId, parent.taskId);
       assert.equal(completed.lifecycle.phase, "completed");
@@ -1395,13 +1449,16 @@ describe("advisory tool-call observation", () => {
   });
 
   it("neither reviews nor sends a plan reminder when planning records no executed work", async () => {
-    const fixture = await authorizationLifecycleFixture();
+    const reviewRunner = recordingRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner });
     const { hooks, ctx, latestLease, sent, parent } = fixture;
     try {
       await hooks.get("session_start")({ reason: "reload" }, ctx);
       hooks.get("agent_start")({}, ctx);
       hooks.get("turn_start")({}, ctx);
       await finishRun(hooks, ctx, parent.selected);
+      await flushMicrotasks();
+      assert.deepEqual(reviewRunner.requests, []);
       assert.equal(latestLease().lifecycle.phase, "planning");
       assert.equal(latestLease().taskId, parent.taskId);
       assert.equal(
@@ -1909,7 +1966,7 @@ describe("routerExtension", () => {
     );
     await assert.rejects(
       tools.get("submit_safety_review").execute("shadow-review", {}, undefined, undefined, ctx),
-      /accepts submissions during an active generated independent review/,
+      /independent reviewer session/,
     );
     await commands.get("route").handler("active", ctx);
     assert.ok(activeTools.includes("submit_action_plan"));
@@ -5691,142 +5748,570 @@ describe("routerExtension", () => {
     }
   });
 
-  for (const verdict of ["approve", "reject"]) {
-    it(`delivers ${verdict} as plan advice without granting authority`, async () => {
-      const fixture = await authorizationLifecycleFixture();
-      const { hooks, tools, models, ctx, sent, latestLease, restoreEnvironment } = fixture;
-      try {
-        await hooks.get("session_start")({ reason: "reload" }, ctx);
-        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-        await hooks.get("agent_settled")({}, ctx);
-        const review = latestLease();
-        assert.equal(review.lifecycle.reviewKind, "plan");
-        ctx.model = models.find((m) => m.provider === review.selected.provider && m.id === review.selected.modelId);
-        hooks.get("agent_start")();
-        await tools.get("submit_safety_review").execute(
-          "verdict",
-          {
-            reviewKind: "plan",
-            scopeFingerprint: review.lifecycle.scopeFingerprint,
-            verdict,
-            summary: "Consider the rollback window.",
-            evidence: ["Inspected preconditions"],
-            findings: ["Rollback window is short"],
-          },
-          undefined,
-          undefined,
-          ctx,
-        );
-        await hooks.get("agent_end")(
-          {
-            messages: [
-              {
-                role: "assistant",
-                provider: review.selected.provider,
-                model: review.selected.modelId,
-                stopReason: "stop",
-                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
-              },
-            ],
-          },
-          ctx,
-        );
-        await hooks.get("agent_settled")({}, ctx);
-        assert.equal(latestLease().lifecycle.phase, verdict === "approve" ? "executing" : "planning");
-        assert.equal(latestLease().lifecycle.authorization, undefined);
-        assert.match(sent.at(-1).message.content, /not permission/);
-        assert.match(sent.at(-1).message.content, /Rollback window is short/);
-        assert.equal(sent.at(-1).options.triggerTurn, true);
-        assert.equal(tools.has("submit_discovery_request"), false);
-      } finally {
-        restoreEnvironment();
-      }
-    });
+  async function launchReview(fixture) {
+    await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+    await fixture.tools
+      .get("submit_action_plan")
+      .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+    await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+    await flushMicrotasks();
   }
-
-  for (const interruption of ["restore_failed", "input_during_telemetry", "off_during_telemetry"]) {
-    it(`does not queue stale plan advice after ${interruption}`, async () => {
-      let fixture;
-      let armed = false;
-      fixture = await authorizationLifecycleFixture({
-        telemetry: {
-          read: async () => [],
-          append: async (event) => {
-            if (!armed || event.kind !== "outcome" || !event.data.adviceOnly) return;
-            armed = false;
-            if (interruption === "input_during_telemetry")
-              await fixture.hooks.get("input")(
-                { text: "Stop; inspect instead", source: "interactive", streamingBehavior: "followUp" },
-                fixture.ctx,
-              );
-            else if (interruption === "off_during_telemetry")
-              await fixture.commands.get("route").handler("off", fixture.ctx);
-          },
-        },
-      });
-      const { hooks, tools, models, ctx, sent, latestLease, onBuilderSwitch, restoreEnvironment } = fixture;
-      try {
-        await hooks.get("session_start")({ reason: "reload" }, ctx);
-        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-        await hooks.get("agent_settled")({}, ctx);
-        const review = latestLease();
-        ctx.model = models.find((m) => m.provider === review.selected.provider && m.id === review.selected.modelId);
-        hooks.get("agent_start")();
-        await tools.get("submit_safety_review").execute(
-          "verdict",
-          {
-            reviewKind: "plan",
-            scopeFingerprint: review.lifecycle.scopeFingerprint,
-            verdict: "approve",
-            summary: "Bounded",
-            evidence: ["Inspected"],
-            findings: [],
-          },
-          undefined,
-          undefined,
-          ctx,
-        );
-        await hooks.get("agent_end")(
-          {
-            messages: [
-              {
-                role: "assistant",
-                provider: review.selected.provider,
-                model: review.selected.modelId,
-                stopReason: "stop",
-                usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
-              },
-            ],
-          },
-          ctx,
-        );
-        const before = sent.length;
-        if (interruption === "restore_failed") onBuilderSwitch(() => false);
-        armed = true;
-        await hooks.get("agent_settled")({}, ctx);
-        assert.equal(
-          sent.slice(before).some((s) => s.message.content.includes("Independent review advice")),
-          false,
-        );
-      } finally {
-        restoreEnvironment();
-      }
-    });
-  }
-
-  it("records unavailable review advice even when no child lease could be installed", async () => {
-    const { hooks, tools, ctx, latestLease, onBuilderSwitch, restoreEnvironment } =
-      await authorizationLifecycleFixture();
+  it("defers plan advice until an in-flight custom-start preparation finishes", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-      onBuilderSwitch(() => false);
+      await launchReview(fixture);
+      await waitForReview(() => runner.calls.length === 1);
+      let releaseMetadata = () => {};
+      let metadataHeld = false;
+      const held = new Promise((resolve) => {
+        releaseMetadata = resolve;
+      });
+      fixture.onExec(async () => {
+        fixture.onExec(undefined);
+        metadataHeld = true;
+        await held;
+        return undefined;
+      });
+      const started = fixture.hooks.get("before_agent_start")(
+        { messageType: "custom", systemPrompt: "system" },
+        fixture.ctx,
+      );
+      await waitForReview(() => metadataHeld);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      // Give the reviewer outcome time to apply; it must wait for the preparation instead.
+      for (let i = 0; i < 40 && fixture.latestLease().lifecycle.phase === "planning"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const phaseDuringPreparation = fixture.latestLease().lifecycle.phase;
+      releaseMetadata();
+      const prepared = await started;
+      assert.ok(prepared?.systemPrompt, "the custom start still receives the routed system prompt");
+      assert.equal(phaseDuringPreparation, "planning", "advice waits for the preparation");
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "executing");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("reviews work that settled before the plan-review ladder failed", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const { hooks, ctx } = fixture;
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => runner.calls.length === 1);
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "w" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "w", isError: false }, ctx);
+      // The builder settles while the plan review is still running, so settlement cannot review the work.
       await hooks.get("agent_settled")({}, ctx);
+      await flushMicrotasks();
+      assert.ok(runner.calls.every((call) => call.request.kind === "plan"));
+      // Every plan reviewer then fails.
+      for (let i = 0; i < 400 && !runner.calls.some((call) => call.request.kind === "completion"); i++) {
+        const open = runner.calls.filter((call) => call.request.kind === "plan" && !call.settled);
+        for (const call of open) {
+          call.settled = true;
+          call.resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.ok(
+        runner.calls.some((call) => call.request.kind === "completion"),
+        "the settled work gets completion review once the plan ladder ends without advice",
+      );
+      assert.equal(
+        fixture.sent.some((s) => s.options?.triggerTurn),
+        false,
+        "no model turn is started",
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("delivers out-of-band plan advice without changing builder model or effort", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const { ctx, selectedModels, latestLease, sent, restoreEnvironment } = fixture;
+    const model = ctx.model;
+    try {
+      await launchReview(fixture);
+      assert.equal(runner.calls.length, 1);
+      assert.equal(ctx.model, model);
+      assert.equal(selectedModels.length, 0, "review transport never calls builder setModel");
       assert.equal(latestLease().lifecycle.phase, "planning");
-      assert.match(latestLease().lifecycle.planReview.summary, /unavailable/);
-      assert.equal(latestLease().lifecycle.plan, undefined);
+      assert.notEqual(runner.calls[0].request.model.provider, model.provider);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 100, outputTokens: 20 },
+      });
+      await flushMicrotasks();
+      await waitForReview(() => latestLease().lifecycle.phase === "executing");
+      assert.match(sent.at(-1).message.content, /Verify rollback/);
+      assert.equal(sent.at(-1).options.triggerTurn, true);
+      assert.equal(selectedModels.length, 0);
+      assert.equal(ctx.model, model);
     } finally {
       restoreEnvironment();
+    }
+  });
+  for (const boundary of ["input", "off", "compact", "shutdown", "fork"]) {
+    it(`cancels review and drops a late verdict after ${boundary}`, async () => {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+      const { hooks, commands, ctx, sent, latestLease, restoreEnvironment } = fixture;
+      try {
+        await launchReview(fixture);
+        const call = runner.calls[0];
+        if (boundary === "input")
+          await hooks.get("input")(
+            { text: "Inspect instead", source: "interactive", streamingBehavior: "followUp" },
+            ctx,
+          );
+        if (boundary === "off") await commands.get("route").handler("off", ctx);
+        if (boundary === "compact") await hooks.get("session_compact")({}, ctx);
+        if (boundary === "shutdown") await hooks.get("session_shutdown")({}, ctx);
+        if (boundary === "fork") await hooks.get("session_before_fork")({}, ctx);
+        assert.equal(call.cancelled, true);
+        const count = sent.length;
+        call.resolve({
+          status: "completed",
+          verdict: validAdvice(call.request),
+          usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+        });
+        await flushMicrotasks();
+        assert.equal(sent.length, count, "stale advice must not start a turn");
+        assert.notEqual(latestLease()?.lifecycle.phase, "executing");
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+  it("cancels on shadow transitions but preserves a redundant active command", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      await fixture.commands.get("route").handler("active", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, false);
+      await fixture.commands.get("route").handler("shadow", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels review when a telemetry failure disables active routing", async () => {
+    const runner = controlledRunner();
+    let fail = false;
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      telemetry: {
+        read: async () => [],
+        append: async () => {
+          if (fail) throw new Error("fixture telemetry failure");
+        },
+      },
+    });
+    try {
+      await launchReview(fixture);
+      fail = true;
+      fixture.hooks.get("agent_start")();
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: fixture.parent.selected.provider,
+              model: fixture.parent.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 1, output: 1, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels the paid reviewer before applying a different builder selection", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      fixture.onBuilderSwitch(() => {
+        assert.equal(runner.calls[0].cancelled, true);
+      });
+      await fixture.commands.get("route").handler("fail availability", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels plan review before fallback telemetry so late advice cannot defeat the fallback", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      const before = fixture.latestLease();
+      const fallback = fixture.commands.get("route").handler("fail availability", fixture.ctx);
+      // Still inside fallback's first await (its telemetry write): the obsolete review is already cancelled.
+      assert.equal(runner.calls[0].cancelled, true);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await fallback;
+      await flushMicrotasks();
+      const after = fixture.latestLease();
+      assert.equal(after.attemptIndex, before.attemptIndex + 1, "fallback still advances the builder");
+      assert.notDeepEqual(after.selected, before.selected);
+      assert.equal(after.lifecycle.phase, "planning", "late advice for the failed attempt is dropped");
+      assert.equal(
+        fixture.sent.some((s) => s.message.customType && s.message.content?.includes("<review_advice>")),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels obsolete builder reviews and schedules the same scope on a new attempt", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    // Keep the selection identical so only the changed attempt index distinguishes the new review.
+    fixture.parent.fallbacks = [{ ...fixture.parent.selected }];
+    try {
+      await launchReview(fixture);
+      const first = runner.calls[0];
+      await fixture.commands.get("route").handler("fail availability", fixture.ctx);
+      assert.equal(first.cancelled, true);
+      assert.equal(fixture.latestLease().attemptIndex, 1);
+      fixture.ctx.model = fixture.models.find(
+        (m) =>
+          m.provider === fixture.latestLease().selected.provider && m.id === fixture.latestLease().selected.modelId,
+      );
+      fixture.hooks.get("agent_start")();
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: fixture.latestLease().selected.provider,
+              model: fixture.latestLease().selected.modelId,
+              stopReason: "stop",
+              usage: { input: 1, output: 1, cacheRead: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 2);
+      assert.equal(runner.calls[1].request.scopeFingerprint, first.request.scopeFingerprint);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("transfers original requirements and retained plan despite a continuation-only latest message", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const validation = validateActionPlan(irreversibleActionPlan());
+    fixture.parent.reviewTaskContext = "Original requirement: preserve the rollback overlap window.";
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+      plan: {
+        taskFingerprint: "task-fingerprint",
+        planFingerprint: validation.fingerprint,
+        submittedAt: "now",
+        plan: validation.plan,
+      },
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+    ];
+    const branch = fixture.ctx.sessionManager.getBranch;
+    fixture.ctx.sessionManager.getBranch = () => [
+      ...branch(),
+      { type: "message", message: { role: "user", content: "continue" } },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      assert.match(runner.calls[0].request.prompt, /preserve the rollback overlap window/);
+      assert.match(runner.calls[0].request.prompt, /untrusted_retained_plan/);
+      assert.ok(runner.calls[0].request.prompt.includes(validation.plan.objective));
+      assert.ok(runner.calls[0].request.prompt.length < 60_000);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels plan review and drops a late approval once the last builder rung fails", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    // Last rung: no untried fallback and no previous selection, so exhaustion keeps the same selection.
+    fixture.parent.attemptIndex = fixture.parent.fallbacks.length;
+    try {
+      await launchReview(fixture);
+      const call = runner.calls[0];
+      await fixture.commands.get("route").handler("fail quality", fixture.ctx);
+      assert.equal(fixture.latestLease().executionFailed, true);
+      assert.equal(call.cancelled, true, "a failed builder's pending review is obsolete");
+      const count = fixture.sent.length;
+      call.resolve({
+        status: "completed",
+        verdict: validAdvice(call.request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await flushMicrotasks();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(fixture.sent.length, count, "late approval must not queue another builder turn");
+      assert.equal(fixture.latestLease().lifecycle.phase, "planning");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels a pending review on /route reset", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      await fixture.commands.get("route").handler("reset", fixture.ctx);
+      assert.equal(runner.calls[0].cancelled, true);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("adds reviewer cost to the owning task's labeled cost without folding reviewer tokens", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const builderTurn = async () => {
+      fixture.hooks.get("agent_start")();
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: fixture.parent.selected.provider,
+              model: fixture.parent.selected.modelId,
+              stopReason: "stop",
+              usage: { input: 10, output: 1, cacheRead: 4, cacheWrite: 0, cost: { total: 0.01 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+    };
+    const labeledCosts = async () =>
+      (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((event) => event.kind === "outcome" && typeof event.data.accepted === "boolean")
+        .map((event) => event.data);
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.tools
+        .get("submit_action_plan")
+        .execute("plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+      await builderTurn();
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.25, inputTokens: 1000, outputTokens: 100 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "executing");
+      await fixture.commands.get("route").handler("accept", fixture.ctx);
+      let labels = await labeledCosts();
+      assert.ok(Math.abs(labels.at(-1).modelAndToolCost - 0.26) < 1e-9, JSON.stringify(labels.at(-1)));
+      assert.equal(labels.at(-1).cacheReadTokens, 4, "reviewer tokens stay out of builder cache metrics");
+      // The task total keeps the review share after a later builder attempt.
+      await builderTurn();
+      await fixture.commands.get("route").handler("accept", fixture.ctx);
+      labels = await labeledCosts();
+      assert.ok(Math.abs(labels.at(-1).modelAndToolCost - 0.27) < 1e-9, JSON.stringify(labels.at(-1)));
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("reopens a completed lifecycle when a mutation finishes after completion advice", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      // A custom continuation is running (no input epoch change); its mutation starts before advice lands.
+      fixture.hooks.get("tool_call")(
+        { toolCallId: "late-mutation", toolName: "write", input: { path: "changed" } },
+        fixture.ctx,
+      );
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "completed");
+      fixture.hooks.get("tool_execution_end")({ toolCallId: "late-mutation", isError: false }, fixture.ctx);
+      assert.equal(fixture.latestLease().lifecycle.phase, "executing", "newer work reopens completion review");
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 2);
+      assert.notEqual(runner.calls[1].request.scopeFingerprint, runner.calls[0].request.scopeFingerprint);
+      // Unchanged evidence after the reopened review is still scheduled at most once.
+      runner.calls[1].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[1].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "completed");
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await flushMicrotasks();
+      assert.equal(runner.calls.length, 2);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("reopens a completed lifecycle when a check fails after completion advice", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 1);
+      // A deterministic check starts before the completion advice lands and fails afterwards.
+      fixture.hooks.get("tool_call")(
+        { toolCallId: "late-check", toolName: "bash", input: { command: "npm test" } },
+        fixture.ctx,
+      );
+      runner.calls[0].resolve({
+        status: "completed",
+        verdict: validAdvice(runner.calls[0].request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "completed");
+      fixture.hooks.get("tool_execution_end")({ toolCallId: "late-check", isError: true }, fixture.ctx);
+      const reopened = fixture.latestLease();
+      assert.equal(reopened.lifecycle.phase, "executing", "a failing check reopens completion review");
+      assert.equal(reopened.lifecycle.completionReview, undefined, "earlier advice is not kept for failing evidence");
+      assert.deepEqual(
+        reopened.safetyEvidence.checks.map((check) => [check.command, check.passed]),
+        [["npm test", false]],
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("skips unavailable Pi runtimes with a human note and telemetry", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const notes = [];
+    fixture.ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await launchReview(fixture);
+      runner.calls[0].resolve({ status: "runtime_unavailable", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } });
+      await waitForReview(() => notes.some((n) => /runtime unavailable/.test(n.message)));
+      assert.equal(
+        fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+        false,
+      );
+      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
+      assert.ok(events.some((e) => e.data.reviewStatus === "runtime_unavailable"));
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("cancels obsolete plan review on resubmission and accepts a fresh attempt", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    try {
+      await launchReview(fixture);
+      const first = runner.calls[0];
+      await fixture.tools
+        .get("submit_action_plan")
+        .execute("new-plan", irreversibleActionPlan(), undefined, undefined, fixture.ctx);
+      assert.equal(first.cancelled, true);
+      first.resolve({
+        status: "completed",
+        verdict: validAdvice(first.request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => runner.calls.length === 2);
+      assert.equal(
+        fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("rejects invalid runner verdicts with warnings and telemetry, never advice", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    const notes = [];
+    fixture.ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await launchReview(fixture);
+      for (let i = 0; i < 2; i++) {
+        runner.calls[i].resolve({
+          status: "completed",
+          verdict: { ...validAdvice(runner.calls[i].request), scopeFingerprint: "b".repeat(64) },
+          usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+        });
+        await waitForReview(() =>
+          i === 0 ? runner.calls.length > 1 : notes.some((n) => /valid advice/.test(n.message)),
+        );
+      }
+      assert.equal(
+        fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+        false,
+      );
+      assert.ok(notes.some((n) => n.level === "warning" && /valid advice/.test(n.message)));
+      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
+      assert.ok(events.some((e) => e.data.reviewRunner === "in_process" && e.data.verdictValid === false));
+    } finally {
+      fixture.restoreEnvironment();
     }
   });
 
@@ -5847,9 +6332,7 @@ describe("routerExtension", () => {
       const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
       assert.equal(events.filter((e) => e.kind === "advisory_step_skipped" && e.data.step === "action_plan").length, 1);
       assert.equal(notes.filter((n) => n.level === "warning" && /Possible mutation/.test(n.message)).length, 1);
-      // The unplanned work still receives a completion review, which holds the noted parent.
-      assert.equal(latestLease().lifecycle.reviewKind, "completion");
-      assert.deepEqual(latestLease().parentLease.advisoryStepsNoted, ["action_plan"]);
+      assert.deepEqual(latestLease().advisoryStepsNoted, ["action_plan"]);
       assert.equal(
         sent.some((s) => s.message.details?.repairReason === "missing_action_plan"),
         false,
@@ -5859,31 +6342,18 @@ describe("routerExtension", () => {
     }
   });
 
-  it("notes mutations during pending plan advice once per lease", async () => {
-    const { hooks, tools, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture();
-    const notes = [];
-    ctx.ui.notify = (message, level) => notes.push({ message, level });
+  it("notes possible mutations while out-of-band plan review is pending once per lease", async () => {
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: controlledRunner() });
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-      await hooks.get("agent_settled")({}, ctx);
-      assert.equal(latestLease().lifecycle.phase, "review");
+      await launchReview(fixture);
       for (let i = 0; i < 2; i++) {
-        await hooks.get("tool_call")(
-          { toolName: "write", input: { path: "x", content: "x" }, toolCallId: "mutation" },
-          ctx,
-        );
-        await hooks.get("tool_execution_end")({ toolCallId: "mutation", isError: false }, ctx);
+        fixture.hooks.get("tool_call")({ toolCallId: "mut", toolName: "write", input: { path: "x" } }, fixture.ctx);
+        fixture.hooks.get("tool_execution_end")({ toolCallId: "mut", isError: false }, fixture.ctx);
       }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
-      assert.equal(
-        events.filter((e) => e.kind === "advisory_step_skipped" && e.data.step === "plan_review_wait").length,
-        1,
-      );
-      assert.equal(notes.filter((n) => n.level === "warning" && /advice was pending/.test(n.message)).length, 1);
+      await flushMicrotasks();
+      assert.deepEqual(fixture.latestLease().advisoryStepsNoted, ["plan_review_wait"]);
     } finally {
-      restoreEnvironment();
+      fixture.restoreEnvironment();
     }
   });
 
@@ -5907,35 +6377,224 @@ describe("routerExtension", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(pendingNotes().length, 1);
       await hooks.get("agent_settled")({}, ctx);
-      assert.equal(latestLease().lifecycle.phase, "review");
+      await flushMicrotasks();
+      // The plan review now runs out of band while the builder lease stays in planning.
+      assert.equal(latestLease().lifecycle.phase, "planning");
       assert.equal(pendingNotes().length, 1);
       const events = (await readFile(process.env.PI_ROUTER_TELEMETRY_PATH, "utf8")).trim().split("\n").map(JSON.parse);
       assert.equal(
         events.filter((e) => e.kind === "advisory_step_skipped" && e.data.step === "plan_review_wait").length,
         1,
       );
-      assert.deepEqual(latestLease().parentLease.advisoryStepsNoted, ["plan_review_wait"]);
+      assert.deepEqual(latestLease().advisoryStepsNoted, ["plan_review_wait"]);
     } finally {
       restoreEnvironment();
     }
   });
 
   it("does not queue a resubmission turn when every reviewer is unavailable", async () => {
-    const { hooks, tools, ctx, sent, latestLease, onBuilderSwitch, restoreEnvironment } =
-      await authorizationLifecycleFixture();
+    const attempts = [];
+    const reviewRunner = {
+      start: (request) => {
+        attempts.push(request);
+        return {
+          result: Promise.resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } }),
+          cancel() {},
+        };
+      },
+    };
+    const { hooks, tools, ctx, sent, latestLease, restoreEnvironment } = await authorizationLifecycleFixture({
+      reviewRunner,
+    });
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
     try {
       await hooks.get("session_start")({ reason: "reload" }, ctx);
-      const builder = ctx.model;
-      // Reviewer selections all fail; restoring the builder succeeds.
-      onBuilderSwitch((model) => model.provider === builder.provider && model.id === builder.id);
       await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
       await hooks.get("agent_settled")({}, ctx);
+      // Wait until every reviewer attempt has failed and no further attempt starts.
+      const failures = () => notes.filter((n) => /did not return valid advice/.test(n.message)).length;
+      for (let stable = 0, i = 0; i < 400 && stable < 5; i++) {
+        const before = attempts.length;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stable = attempts.length === before && attempts.length > 0 && failures() === attempts.length ? stable + 1 : 0;
+      }
+      await flushMicrotasks();
+      assert.ok(attempts.length >= 1);
       assert.equal(latestLease().lifecycle.phase, "planning");
-      assert.match(latestLease().lifecycle.planReview.summary, /unavailable/);
       assert.equal(
-        sent.some((s) => s.message.content?.includes("resubmitting")),
+        sent.some((s) => s.options?.triggerTurn || s.message.content?.includes("resubmitting")),
         false,
       );
+      // The plan's review already ran, so later mutations are not noted as waiting for it.
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "late" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "late", isError: false }, ctx);
+      await flushMicrotasks();
+      assert.equal(latestLease().advisoryStepsNoted?.includes("plan_review_wait") ?? false, false);
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("notes a mutation awaiting the fallback attempt's plan review after an exhausted one", async () => {
+    const attempts = [];
+    const reviewRunner = {
+      start: (request) => {
+        attempts.push(request);
+        return {
+          result: Promise.resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } }),
+          cancel() {},
+        };
+      },
+    };
+    const fixture = await authorizationLifecycleFixture({ reviewRunner });
+    const { hooks, tools, ctx, commands, latestLease, restoreEnvironment } = fixture;
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      const failures = () => notes.filter((n) => /did not return valid advice/.test(n.message)).length;
+      for (let stable = 0, i = 0; i < 400 && stable < 5; i++) {
+        const before = attempts.length;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stable = attempts.length === before && attempts.length > 0 && failures() === attempts.length ? stable + 1 : 0;
+      }
+      await flushMicrotasks();
+      const exhaustedAttempt = latestLease().attemptIndex;
+      // The builder falls back; the new attempt's plan review has not run yet.
+      await commands.get("route").handler("fail availability", ctx);
+      assert.equal(latestLease().attemptIndex, exhaustedAttempt + 1);
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "early" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "early", isError: false }, ctx);
+      await flushMicrotasks();
+      assert.equal(
+        latestLease().advisoryStepsNoted?.includes("plan_review_wait"),
+        true,
+        "an earlier attempt's exhausted review does not hide the new attempt's pending one",
+      );
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("still reviews completed work after the plan review is exhausted", async () => {
+    const attempts = [];
+    const reviewRunner = {
+      start: (request) => {
+        attempts.push(request);
+        return {
+          result: Promise.resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } }),
+          cancel() {},
+        };
+      },
+    };
+    const { hooks, tools, ctx, sent, latestLease, restoreEnvironment } = await authorizationLifecycleFixture({
+      reviewRunner,
+    });
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    const settledAttempts = async () => {
+      const failures = () => notes.filter((n) => /did not return valid advice/.test(n.message)).length;
+      for (let stable = 0, i = 0; i < 400 && stable < 5; i++) {
+        const before = attempts.length;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stable = attempts.length === before && attempts.length > 0 && failures() === attempts.length ? stable + 1 : 0;
+      }
+      await flushMicrotasks();
+    };
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      await settledAttempts();
+      const planAttempts = attempts.length;
+      assert.ok(planAttempts >= 1);
+      assert.ok(attempts.every((request) => request.kind === "plan"));
+      assert.equal(latestLease().lifecycle.phase, "planning");
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "late" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "late", isError: false }, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      await settledAttempts();
+      const later = attempts.slice(planAttempts);
+      assert.ok(later.length >= 1, "executed work still receives a completion review");
+      assert.ok(
+        later.every((request) => request.kind === "completion"),
+        "unchanged plan advice is never retried",
+      );
+      assert.equal(
+        sent.some((s) => s.options?.triggerTurn),
+        false,
+        "exhausted reviews create no reminder turns",
+      );
+      // With both ladders exhausted on unchanged work, further settlements restart neither review.
+      const exhausted = attempts.length;
+      for (let settle = 0; settle < 3; settle++) {
+        await hooks.get("agent_settled")({}, ctx);
+        await settledAttempts();
+      }
+      assert.equal(attempts.length, exhausted, "exhausted plan and completion ladders never alternate");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("keeps the retained plan when completion advice follows an exhausted plan review", async () => {
+    const attempts = [];
+    const reviewRunner = {
+      start: (request) => {
+        attempts.push(request);
+        const verdict =
+          request.kind === "completion"
+            ? {
+                reviewKind: "completion",
+                scopeFingerprint: request.scopeFingerprint,
+                verdict: "pass",
+                summary: "Bounded advice",
+                evidence: ["Inspected evidence"],
+                findings: [],
+              }
+            : undefined;
+        return {
+          result: Promise.resolve(
+            verdict
+              ? { status: "completed", verdict, usage: { cost: 0, inputTokens: 0, outputTokens: 0 } }
+              : { status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } },
+          ),
+          cancel() {},
+        };
+      },
+    };
+    const { hooks, tools, ctx, latestLease, restoreEnvironment } = await authorizationLifecycleFixture({
+      reviewRunner,
+    });
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await hooks.get("session_start")({ reason: "reload" }, ctx);
+      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
+      const plan = latestLease().lifecycle.plan;
+      assert.ok(plan);
+      await hooks.get("agent_settled")({}, ctx);
+      // Wait until the whole plan-review ladder has failed and no further attempt starts.
+      const failures = () => notes.filter((n) => /did not return valid advice/.test(n.message)).length;
+      for (let stable = 0, i = 0; i < 400 && stable < 5; i++) {
+        const before = attempts.length;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stable = attempts.length === before && attempts.length > 0 && failures() === attempts.length ? stable + 1 : 0;
+      }
+      await flushMicrotasks();
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "x", content: "x" }, toolCallId: "w1" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "w1", isError: false }, ctx);
+      await hooks.get("agent_settled")({}, ctx);
+      await waitForReview(() => latestLease().lifecycle.phase === "completed");
+      assert.deepEqual(latestLease().lifecycle.plan, plan, "completion from planning keeps the retained plan");
+      await hooks.get("tool_call")({ toolName: "write", input: { path: "y", content: "y" }, toolCallId: "w2" }, ctx);
+      await hooks.get("tool_execution_end")({ toolCallId: "w2", isError: false }, ctx);
+      assert.equal(latestLease().lifecycle.phase, "executing");
+      assert.deepEqual(latestLease().lifecycle.plan, plan, "reopened work keeps the retained plan");
     } finally {
       restoreEnvironment();
     }
@@ -6003,140 +6662,6 @@ describe("routerExtension", () => {
         .findLast(({ kind, data }) => kind === "boundary" && data.action !== undefined);
       assert.equal(boundary.data.action, "new_task", "the previous session's lease must not absorb the input");
       assert.match(boundary.data.reason, /hard boundary: new_session/);
-    } finally {
-      restoreEnvironment();
-    }
-  });
-
-  for (const when of ["before the review run ends", "after the review run ends"]) {
-    it(`hands a review back without switching models when the operator overrides the model ${when}`, async () => {
-      const fixture = await authorizationLifecycleFixture();
-      const { hooks, tools, models, parent, ctx, appended, selectedModels, sent, restoreEnvironment } = fixture;
-      const lastState = () => appended.filter(({ customType }) => customType === "model-router-state").at(-1)?.data;
-      try {
-        await hooks.get("session_start")({ reason: "reload" }, ctx);
-        await hooks.get("before_agent_start")(
-          { prompt: "Inspect and plan the production change", systemPrompt: "base" },
-          ctx,
-        );
-        await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-        await hooks.get("agent_settled")({}, ctx);
-        const review = lastState().active;
-        ctx.model = models.find(
-          (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
-        );
-        hooks.get("agent_start")();
-        await tools.get("submit_safety_review").execute(
-          "approve",
-          {
-            reviewKind: "plan",
-            scopeFingerprint: review.lifecycle.scopeFingerprint,
-            verdict: "approve",
-            summary: "The exact plan is bounded.",
-            evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
-            findings: [],
-          },
-          undefined,
-          undefined,
-          ctx,
-        );
-        // The operator picks a third model mid-review.
-        const chosen = models[2];
-        const override = async () => {
-          ctx.model = chosen;
-          await hooks.get("model_select")({ model: chosen, source: "set" }, ctx);
-        };
-        const endRun = () =>
-          hooks.get("agent_end")(
-            {
-              messages: [
-                {
-                  role: "assistant",
-                  provider: review.selected.provider,
-                  model: review.selected.modelId,
-                  stopReason: "stop",
-                  usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
-                },
-              ],
-            },
-            ctx,
-          );
-        if (when === "before the review run ends") {
-          await override();
-          await endRun();
-        } else {
-          await endRun();
-          await override();
-        }
-        const switches = selectedModels.length;
-        const messages = sent.length;
-        await hooks.get("agent_settled")({}, ctx);
-
-        const restored = lastState().active;
-        assert.equal(restored.taskId, parent.taskId, "the finished review must not stay installed");
-        assert.equal(restored.lifecycle.phase, "planning", "the override makes the advice stale");
-        assert.equal(restored.manualOverride, true, "the operator's override stays in force");
-        assert.equal(selectedModels.length, switches, "the router does not switch away from the operator's model");
-        assert.equal(sent.length, messages, "no automatic continuation follows an override");
-
-        await hooks.get("input")({ text: "continue", source: "interactive" }, ctx);
-        await hooks.get("before_agent_start")({ prompt: "continue", systemPrompt: "base" }, ctx);
-        assert.equal(selectedModels.length, switches, "the next user turn keeps the operator's model");
-      } finally {
-        restoreEnvironment();
-      }
-    });
-  }
-
-  it("keeps valid advice when the operator re-requests the current mode during the review", async () => {
-    const { hooks, commands, tools, models, parent, ctx, latestLease, restoreEnvironment } =
-      await authorizationLifecycleFixture();
-    try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      await hooks.get("before_agent_start")(
-        { prompt: "Inspect and plan the production change", systemPrompt: "base" },
-        ctx,
-      );
-      await tools.get("submit_action_plan").execute("plan", irreversibleActionPlan(), undefined, undefined, ctx);
-      await hooks.get("agent_settled")({}, ctx);
-      const review = latestLease();
-      ctx.model = models.find(
-        (model) => model.provider === review.selected.provider && model.id === review.selected.modelId,
-      );
-      hooks.get("agent_start")();
-      await tools.get("submit_safety_review").execute(
-        "approve",
-        {
-          reviewKind: "plan",
-          scopeFingerprint: review.lifecycle.scopeFingerprint,
-          verdict: "approve",
-          summary: "The exact plan is bounded.",
-          evidence: ["Checked targets, preconditions, irreversible effects, and abort conditions."],
-          findings: [],
-        },
-        undefined,
-        undefined,
-        ctx,
-      );
-      // Routing is already active; re-requesting it changes nothing and must not revoke the review.
-      await commands.get("route").handler("active", ctx);
-      await hooks.get("agent_end")(
-        {
-          messages: [
-            {
-              role: "assistant",
-              provider: review.selected.provider,
-              model: review.selected.modelId,
-              stopReason: "stop",
-              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
-            },
-          ],
-        },
-        ctx,
-      );
-      await hooks.get("agent_settled")({}, ctx);
-      assert.equal(latestLease().taskId, parent.taskId);
-      assert.equal(latestLease().lifecycle.phase, "executing");
     } finally {
       restoreEnvironment();
     }
@@ -6241,203 +6766,177 @@ describe("routerExtension", () => {
     assert.equal(decision, undefined, "secondary corrections never restrict tools");
   });
 
-  it("runs a scoped completion-review child lease and restores the builder", async () => {
-    const hooks = new Map();
-    const appended = [];
-    const sent = [];
-    const selectedModels = [];
-    const tools = new Map();
-    const telemetryDirectory = await mkdtemp(join(tmpdir(), "pi-router-adapter-"));
-    const previousTelemetryPath = process.env.PI_ROUTER_TELEMETRY_PATH;
-    process.env.PI_ROUTER_TELEMETRY_PATH = join(telemetryDirectory, "events.jsonl");
-    const now = new Date().toISOString();
-    const features = {
-      ...conservativeFeatures("required review test"),
-      intent: "implement",
-      workflowType: "coding_implementation",
-      actionMode: "reversible_mutation",
-      risk: "critical",
-      confidence: 0.99,
+  it("drops completion advice if builder evidence changed while review was pending", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
     };
-    const parent = {
-      version: 2,
-      taskId: "parent-task",
-      startedAt: now,
-      updatedAt: now,
-      archetype: "highest_risk_advisory",
-      features,
-      selected: {
-        provider: "openai-codex",
-        modelId: "gpt-6-sol",
-        logicalModelId: "gpt-6-sol",
-        vendor: "openai",
-        effort: "high",
-        ability: 4,
-        profileId: "openai-gpt-6-agent-v1",
-        contextWindow: 1_000_000,
-        endpointTier: "manufacturer",
-        rankReason: "bootstrap",
-      },
-      fallbacks: [
-        {
-          provider: "anthropic",
-          modelId: "claude-opus-5-5",
-          logicalModelId: "claude-opus-5-5",
-          vendor: "anthropic",
-          effort: "high",
-          ability: 4,
-          profileId: "anthropic-claude-planning-v1",
-          contextWindow: 1_000_000,
-          endpointTier: "manufacturer",
-          rankReason: "evidence_prior",
-        },
-      ],
-      attemptIndex: 0,
-      promptProfileId: "openai-gpt-6-agent-v1",
-      modelSnapshotId: "snapshot",
-      policyVersion: POLICY_VERSION,
-      lastPromptFingerprint: "fingerprint",
-      lifecycle: { phase: "building", policy: "completion_review", taskFingerprint: "task-fingerprint" },
-      safetyEvidence: {
-        baselineHead: "base-head",
-        baselineChangedFiles: [],
-        checks: [{ command: "npm test", passed: true, recordedAt: now }],
-        mutations: [{ toolName: "edit", inputFingerprint: "e".repeat(64), recordedAt: now }],
-      },
-      manualOverride: false,
-    };
-    const makeModel = (provider, id, api) => ({
-      provider,
-      id,
-      name: id,
-      api,
-      baseUrl: "https://models.invalid",
-      reasoning: true,
-      input: ["text"],
-      cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 },
-      contextWindow: 1_000_000,
-      maxTokens: 128_000,
-    });
-    const models = [
-      makeModel("openai-codex", "gpt-6-sol", "openai-responses"),
-      makeModel("anthropic", "claude-opus-5-5", "anthropic-messages"),
-      makeModel("google-vertex", "gemini-3.6-flash", "google-generative-ai"),
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
     ];
-    const branch = [
-      {
-        type: "custom",
-        customType: "model-router-state",
-        data: { secondarySafetyPending: false, mode: "active", manualOverride: false, active: parent },
-      },
-    ];
-    const pi = {
-      on: (event, handler) => hooks.set(event, handler),
-      registerCommand: () => {},
-      registerTool: (tool) => tools.set(tool.name, tool),
-      appendEntry: (customType, data) => appended.push({ customType, data }),
-      sendMessage: (message, options) => sent.push({ message, options }),
-      setModel: async (model) => selectedModels.push(model),
-      setThinkingLevel: () => {},
-      getThinkingLevel: () => "high",
-      exec: async (command, args) => {
-        const joined = args?.join(" ") ?? "";
-        if (command === "git" && joined.includes("rev-parse --show-toplevel")) {
-          return { stdout: `${telemetryDirectory}\n`, stderr: "", code: 0, killed: false };
-        }
-        if (command === "git" && joined.includes("rev-parse HEAD")) {
-          return { stdout: "completed-head\n", stderr: "", code: 0, killed: false };
-        }
-        if (command === "git" && joined.includes("status --porcelain")) {
-          return { stdout: " M src/a.ts\n", stderr: "", code: 0, killed: false };
-        }
-        if (command === "git" && joined.includes("ls-files")) {
-          return { stdout: "src/a.ts\n", stderr: "", code: 0, killed: false };
-        }
-        if (command === "git" && joined.includes("diff --no-ext-diff --binary")) {
-          return { stdout: "diff --git a/src/a.ts b/src/a.ts\n+safe change\n", stderr: "", code: 0, killed: false };
-        }
-        return { stdout: "", stderr: "", code: 1, killed: false };
-      },
-    };
-    routerExtension(pi);
-    const ctx = {
-      cwd: telemetryDirectory,
-      model: models[0],
-      modelRegistry: {
-        getAll: () => models,
-        getAvailable: () => models,
-        find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
-      },
-      sessionManager: {
-        getBranch: () => branch,
-        getSessionId: () => "review-session",
-      },
-      getContextUsage: () => ({ tokens: 10_000, contextWindow: 1_000_000, percent: 1 }),
-      ui: {
-        theme: { fg: (_color, text) => text },
-        setStatus: () => {},
-        notify: () => {},
-      },
-    };
     try {
-      await hooks.get("session_start")({ reason: "reload" }, ctx);
-      await hooks.get("agent_settled")({}, ctx);
-      assert.equal(sent.length, 1);
-      assert.equal(sent[0].options.triggerTurn, true);
-      const child = appended.at(-1).data.active;
-      assert.equal(child.parentTaskId, parent.taskId);
-      assert.equal(child.lifecycle.phase, "review");
-      assert.equal(child.lifecycle.reviewKind, "completion");
-      assert.equal(child.archetype, "code_review");
-      assert.notEqual(child.selected.vendor, "openai");
-      assert.equal(hooks.get("tool_call")({ toolName: "edit", input: {} }), undefined);
-      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff --stat" } }), undefined);
-      assert.equal(hooks.get("tool_call")({ toolName: "bash", input: { command: "git diff | sh" } }), undefined);
-      assert.equal(hooks.get("tool_call")({ toolName: "custom_mutator", input: {} }), undefined);
-      await hooks.get("agent_settled")({}, ctx);
-      assert.equal(appended.at(-1).data.active.taskId, child.taskId, "pending review must not restore its parent");
-      ctx.model = selectedModels[0];
-      hooks.get("agent_start")();
-      hooks.get("turn_start")();
-      await tools.get("submit_safety_review").execute(
-        "review-tool-call",
-        {
-          reviewKind: "completion",
-          scopeFingerprint: child.lifecycle.scopeFingerprint,
-          verdict: "pass",
-          summary: "The implementation and passing check match the tracked task.",
-          evidence: ["Inspected the baseline-to-working-tree diff and npm test evidence."],
-          findings: [],
-        },
-        undefined,
-        undefined,
-        ctx,
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await flushMicrotasks();
+      const call = runner.calls[0];
+      fixture.hooks.get("tool_call")(
+        { toolCallId: "new-mutation", toolName: "write", input: { path: "changed" } },
+        fixture.ctx,
       );
-      await hooks.get("agent_end")(
-        {
-          messages: [
-            {
-              role: "assistant",
-              provider: child.selected.provider,
-              model: child.selected.modelId,
-              stopReason: "stop",
-              usage: { input: 100, output: 20, cacheRead: 0, cost: { total: 0.01 } },
-            },
-          ],
-        },
-        ctx,
+      fixture.hooks.get("tool_execution_end")({ toolCallId: "new-mutation", isError: false }, fixture.ctx);
+      call.resolve({
+        status: "completed",
+        verdict: validAdvice(call.request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await waitForReview(() => fixture.latestLease().safetyEvidence.mutations.length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(fixture.latestLease().lifecycle.phase, "executing");
+      assert.equal(
+        fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+        false,
       );
-      await hooks.get("agent_settled")({}, ctx);
-      const restored = appended.at(-1).data.active;
-      assert.equal(restored.taskId, parent.taskId);
-      assert.equal(restored.lifecycle.phase, "completed");
-      assert.equal(restored.lifecycle.completionReview.verdict, "pass");
-      assert.equal(restored.selected.modelId, "gpt-6-sol");
-      // The reviewer is the Anthropic rung at or above the builder's evidence band.
-      assert.equal(selectedModels[0].id, "claude-opus-5-5");
     } finally {
-      if (previousTelemetryPath === undefined) delete process.env.PI_ROUTER_TELEMETRY_PATH;
-      else process.env.PI_ROUTER_TELEMETRY_PATH = previousTelemetryPath;
+      fixture.restoreEnvironment();
     }
   });
+
+  it("delivers completion findings as a follow-up without switching builder models", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+    fixture.parent.lifecycle = {
+      phase: "executing",
+      policy: "plan_review_then_completion_review",
+      taskFingerprint: "task-fingerprint",
+    };
+    fixture.parent.safetyEvidence.mutations = [
+      { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "now" },
+    ];
+    try {
+      await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await flushMicrotasks();
+      const call = runner.calls[0];
+      assert.equal(call.request.kind, "completion");
+      call.resolve({
+        status: "completed",
+        verdict: validAdvice(call.request),
+        usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 },
+      });
+      await flushMicrotasks();
+      await waitForReview(() => fixture.latestLease().lifecycle.phase === "completed");
+      assert.equal(fixture.sent.at(-1).options.triggerTurn, false);
+      assert.equal(fixture.sent.at(-1).options.deliverAs, "followUp");
+      assert.equal(fixture.selectedModels.length, 0);
+      await fixture.hooks.get("before_agent_start")({ prompt: "Continue", systemPrompt: "BUILDER_BASE" }, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await flushMicrotasks();
+      assert.equal(runner.calls.length, 1, "unchanged completion evidence must not schedule another review");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("records a late cancelled outcome without touching the invalidated context", async () => {
+    const runner = controlledRunner();
+    const events = [];
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      telemetry: { read: async () => [], append: async (event) => events.push(event) },
+    });
+    const { hooks, ctx, sent, restoreEnvironment } = fixture;
+    try {
+      await launchReview(fixture);
+      const call = runner.calls[0];
+      await hooks.get("session_shutdown")({ reason: "reload" }, ctx);
+      assert.equal(call.cancelled, true);
+      // Pi invalidates the captured context after shutdown; every getter then throws.
+      const staleAccesses = [];
+      for (const key of ["ui", "cwd", "sessionManager", "modelRegistry", "model", "hasUI"])
+        Object.defineProperty(ctx, key, {
+          configurable: true,
+          get() {
+            staleAccesses.push(key);
+            throw new Error("This extension ctx is stale after session replacement or reload.");
+          },
+        });
+      const sentBefore = sent.length;
+      const eventsBefore = events.length;
+      call.resolve({ status: "cancelled", usage: { cost: 0.02, inputTokens: 3, outputTokens: 2 } });
+      await waitForReview(() => events.length > eventsBefore);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const outcome = events.findLast((event) => event.kind === "outcome" && event.data.reviewStatus === "cancelled");
+      assert.ok(outcome, "late cancelled outcome must still be recorded");
+      assert.equal(outcome.sessionId, "authorization-session");
+      assert.equal(outcome.data.staleVerdictDropped, true);
+      assert.equal(outcome.data.reviewCost, 0.02);
+      assert.equal(outcome.provider, call.request.model.provider);
+      assert.equal(outcome.modelId, call.request.model.id);
+      assert.equal(outcome.cacheWriteClassification !== undefined, true, "endpoint metadata captured before start");
+      assert.deepEqual(staleAccesses, [], "late outcomes must not read the invalidated context");
+      assert.equal(sent.length, sentBefore);
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("disables routing when a review cancelled by input then fails its outcome append", async () => {
+    const runner = controlledRunner();
+    let fail = false;
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      telemetry: {
+        read: async () => [],
+        append: async () => {
+          if (fail) throw new Error("fixture telemetry failure");
+        },
+      },
+    });
+    const { hooks, ctx, restoreEnvironment } = fixture;
+    const notes = [];
+    ctx.ui.notify = (message, level) => notes.push({ message, level });
+    try {
+      await launchReview(fixture);
+      const call = runner.calls[0];
+      await hooks.get("input")({ text: "Inspect instead", source: "interactive", streamingBehavior: "followUp" }, ctx);
+      assert.equal(call.cancelled, true);
+      fail = true;
+      call.resolve({ status: "cancelled", usage: { cost: 0.01, inputTokens: 1, outputTokens: 1 } });
+      await waitForReview(() => notes.some((note) => /Router telemetry failed/.test(note.message)));
+      assert.equal(
+        notes.some((note) => note.level === "error" && /Router telemetry failed/.test(note.message)),
+        true,
+      );
+      const state = fixture.appended.findLast((entry) => entry.customType === "model-router-state");
+      assert.equal(state.data.mode, "shadow", "telemetry failure disables active routing");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  for (const tracked of ["", "10\t2\tsrc/changed.ts\n"]) {
+    it(`keeps the conservative review timeout when untracked files are in scope (tracked: ${tracked ? "yes" : "no"})`, async () => {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({ reviewRunner: runner });
+      const ok = (stdout) => ({ stdout, stderr: "", code: 0, killed: false });
+      fixture.onExec(async (command, args) => {
+        if (command !== "git") return undefined;
+        if (args.includes("--numstat")) return ok(tracked);
+        if (args.includes("diff")) return ok("");
+        if (args.includes("ls-files")) return ok("new-binary.bin\0");
+        return undefined;
+      });
+      try {
+        await launchReview(fixture);
+        assert.equal(runner.calls.length, 1);
+        // Untracked scope is unmeasured, so the reviewer gets the four-hour cap rather than the five-minute floor.
+        assert.ok(runner.calls[0].request.timeoutMs > 60 * 60_000, `timeout ${runner.calls[0].request.timeoutMs}`);
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    });
+  }
 });

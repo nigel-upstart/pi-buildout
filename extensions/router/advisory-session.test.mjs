@@ -76,7 +76,7 @@ async function activeRouter(cwd, sessionId, phase) {
     policyVersion: POLICY_VERSION,
     lastPromptFingerprint: "fixture",
     lifecycle: {
-      phase: phase === "review" ? "planning" : phase,
+      phase,
       policy: phase === "building" ? "completion_review" : "plan_review_then_completion_review",
       taskFingerprint: "dispatch-task",
     },
@@ -130,39 +130,11 @@ async function activeRouter(cwd, sessionId, phase) {
   );
   const latest = () => entries.findLast((entry) => entry.customType === "model-router-state")?.data.active ?? parent;
   await hooks.get("session_start")({ reason: "reload" }, ctx);
-  if (phase === "review") {
-    await tools.get("submit_action_plan").execute(
-      "plan",
-      {
-        objective: "Inspect a bounded fixture",
-        targets: ["fixture"],
-        assumptions: [],
-        preconditions: ["Temporary directory only"],
-        steps: [
-          {
-            id: "inspect",
-            action: "Inspect fixture",
-            target: "fixture",
-            expectedEffect: "Return metadata",
-            potentiallyIrreversible: false,
-          },
-        ],
-        verification: ["Read the fixture"],
-        rollback: ["Remove fixture"],
-        abortConditions: ["Unexpected target"],
-        toolNames: ["read"],
-      },
-      undefined,
-      undefined,
-      ctx,
-    );
-    await hooks.get("agent_settled")({}, ctx);
-  }
   assert.equal(latest().lifecycle.phase, phase, "exercise the actual requested router phase");
   return { hooks, latest };
 }
 
-for (const phase of ["planning", "executing", "review", "building"]) {
+for (const phase of ["planning", "executing", "building"]) {
   it(`real Pi dispatch permits direct and codemode mutations during active ${phase}`, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "pi-advisory-session-"));
     let session;
