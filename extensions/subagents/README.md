@@ -121,7 +121,7 @@ implementations are not bridged.
 The isolated launch disables discovered/configured extensions, MCP, skills, templates, themes, context files, and
 `SYSTEM.md`/`APPEND_SYSTEM.md` prompt files, loading only the explicit minimal auth bridge. This is resource selection,
 not an OS/credential sandbox. Ordinary `subagent` tool defaults are unchanged; `contextMode: none` alone is not
-extension isolation. Signaling children are one-task runs and are stopped after terminal delivery. Results contain final
-assistant text only. Consume marks the settled result synchronously; this manager never auto-notifies the parent.
+extension isolation. Signaling children are one-task runs and are stopped before terminal delivery. Results contain
+final assistant text only. Consume marks the settled result synchronously; this manager never auto-notifies the parent.
 Stop/signal terminate only owned children. There are no reviewer roles or verdict semantics. Several simultaneous
 manager responders are unsupported.
