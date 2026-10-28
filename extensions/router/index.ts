@@ -646,7 +646,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   }
 
   /** Plan advice is pending while its review runs, and from plan submission until settlement starts that review. */
-  function planReviewAdvicePending(ctx: ExtensionContext, active: TaskLease): boolean {
+  function planReviewAdvicePending(active: TaskLease): boolean {
     if (pendingReview) return pendingReview.kind === "plan" && pendingReview.taskId === active.taskId;
     const lifecycle = active.lifecycle;
     // A plan whose review already ran without valid advice for this builder attempt and route is no longer
@@ -2110,6 +2110,22 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     return { diff, numstat };
   }
 
+  /** Persist launched or deterministically failed work without replacing the lease during cancellation. */
+  function markReviewAttempt(review: PendingReview): void {
+    const active = leaseOwner.state.active;
+    if (!active || !reviewCurrent(review) || reviewAlreadyAttempted(active, review.kind, review.scope)) return;
+    const key = reviewAttemptKey(active, review.kind, review.scope);
+    const next = { ...active, reviewAttemptKeys: reviewAttemptHistory(active, key) };
+    if (leaseOwner.advance("EVIDENCE", next, active, review.epoch)) persistState();
+  }
+
+  /** Stale review spending still belongs to its task; reviewer tokens never skew builder cache metrics. */
+  function addReviewCost(taskId: string, cost: number): void {
+    accumulatedTaskCosts.set(taskId, (accumulatedTaskCosts.get(taskId) ?? 0) + cost);
+    if (lastAttemptMetrics && lastAttemptMetricsTaskId === taskId)
+      lastAttemptMetrics = { ...lastAttemptMetrics, modelAndToolCost: lastAttemptMetrics.modelAndToolCost + cost };
+  }
+
   async function startIndependentReview(
     ctx: ExtensionContext,
     parent: TaskLease,
@@ -2117,7 +2133,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     scopeFingerprint: string,
     evidenceInstructions: string,
   ): Promise<void> {
-    const key = reviewAttemptKey(parent, reviewKind, scopeFingerprint);
     if (
       pendingReview ||
       parent.archetype === "code_review" ||
@@ -2141,16 +2156,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     // Reserve synchronously in memory during selection. Only launched or deterministically failed work
     // consumes the persisted attempt; cancellation before launch must not strand an unchanged plan.
     pendingReview = review;
-    let marked = false;
-    const markAttempt = () => {
-      if (marked || !reviewCurrent(review)) return;
-      const active = leaseOwner.state.active!;
-      const next = { ...active, reviewAttemptKeys: reviewAttemptHistory(active, key) };
-      if (leaseOwner.advance("EVIDENCE", next, active, review.epoch)) {
-        marked = true;
-        persistState();
-      }
-    };
     let delivered = false;
     const reviewGeneration = sessionGeneration;
     // Telemetry attributes an exception to child selection or to the runner that was starting.
@@ -2217,7 +2222,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const remaining = deadline - Date.now();
         if (remaining <= 0 || spent >= 1) break;
         const endpointFields = endpointFieldsFor(model);
-        markAttempt();
+        markReviewAttempt(review);
         failedStage = runnerName;
         review.handle = runner.start({
           cwd: ctx.cwd,
@@ -2235,14 +2240,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const result = await review.handle.result;
         const attemptCost = Math.max(0, Number.isFinite(result.usage.cost) ? result.usage.cost : 0);
         spent += attemptCost;
-        // Review spending is a task-level cost even when its result is stale. Token counts stay with the
-        // review event so reviewer endpoints never skew builder cache metrics.
-        accumulatedTaskCosts.set(parent.taskId, (accumulatedTaskCosts.get(parent.taskId) ?? 0) + attemptCost);
-        if (lastAttemptMetrics && lastAttemptMetricsTaskId === parent.taskId)
-          lastAttemptMetrics = {
-            ...lastAttemptMetrics,
-            modelAndToolCost: lastAttemptMetrics.modelAndToolCost + attemptCost,
-          };
+        addReviewCost(parent.taskId, attemptCost);
         const stale = !reviewCurrent(review);
         const checked =
           result.status === "completed"
@@ -2354,7 +2352,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           "warning",
         );
     } catch {
-      markAttempt();
+      markReviewAttempt(review);
       if (reviewCurrent(review)) {
         ctx.ui.notify("Independent review could not start; tools remain available.", "warning");
         await record(
@@ -2365,7 +2363,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         );
       }
     } finally {
-      markAttempt();
+      markReviewAttempt(review);
       if (pendingReview === review) pendingReview = undefined;
       if (!delivered) void reviewSettledWorkAfterPlanReview(ctx, review, reviewGeneration);
     }
@@ -3373,7 +3371,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         leaseOwner.epoch,
       );
       persistState();
-      if (mutation && !event.isError && planReviewAdvicePending(ctx, leaseOwner.state.active)) {
+      if (mutation && !event.isError && planReviewAdvicePending(leaseOwner.state.active)) {
         void noteSkippedStep(ctx, "plan_review_wait");
       }
     }

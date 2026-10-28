@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { registerSignaling } from "../subagents/signaling.ts";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
 // than reading whatever the developer happens to have enabled.
@@ -6476,6 +6477,42 @@ describe("routerExtension", () => {
     }
   });
 
+  it("does not start SDK fallback until the failed signaling child's stop has completed", async () => {
+    const events = createEventBus();
+    const stopping = deferred();
+    let stopCalls = 0;
+    const close = registerSignaling(events, /** @type {any} */ ({}), async () => ({
+      id: "cleanup-pending",
+      waitForIdle: async () => true,
+      refresh: async () => {},
+      stop: () => {
+        stopCalls++;
+        return stopping.promise;
+      },
+      snapshot: () => ({ state: "failed", error: "model failed", transcriptTail: "PRIVATE" }),
+    }));
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      events,
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+    });
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => stopCalls === 1);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(runner.calls.length, 0, "the SDK cannot overlap a signaling child awaiting cleanup");
+      stopping.resolve();
+      await waitForReview(() => runner.calls.length === 1);
+      assert.equal(stopCalls, 1);
+      runner.calls[0].resolve({ status: "failed", usage: { cost: 1, inputTokens: 1, outputTokens: 1 } });
+    } finally {
+      stopping.resolve();
+      await close();
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("never launches a replacement when signaling acceptance is uncertain", async () => {
     const events = createEventBus();
     const seen = signalingManager(events, { spawn: "malformed" });
@@ -6533,10 +6570,13 @@ describe("routerExtension", () => {
       "active",
     );
     state.mode = "active";
-    const reloaded = await authorizationLifecycleFixture({
-      reviewRunner: runner,
-      classifyPrimaryTask: childClassifier([]),
-    }, state);
+    const reloaded = await authorizationLifecycleFixture(
+      {
+        reviewRunner: runner,
+        classifyPrimaryTask: childClassifier([]),
+      },
+      state,
+    );
     try {
       await reloaded.hooks.get("session_start")({ reason: "reload" }, reloaded.ctx);
       await reloaded.hooks.get("agent_settled")({}, reloaded.ctx);

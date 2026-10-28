@@ -318,6 +318,109 @@ test("cancellation and timeout keep the stale status but report the stop termina
   }
 });
 
+test("lost acceptance retains billed usage before and during the bounded stale drain", async () => {
+  for (const ending of ["cancelled", "timeout"]) {
+    for (const early of [true, false]) {
+      const bus = createEventBus();
+      const seen = releasedManager(bus, { spawn: "lost", terminal: "never", early });
+      const runner = createSignalingReviewRunner(bus);
+      const handle = runner.start(request(ending === "timeout" ? { timeoutMs: 60 } : {}));
+      try {
+        for (let i = 0; i < 50 && seen.spawns.length === 0; i++) await tick();
+        assert.equal(seen.spawns.length, 1);
+        await tick();
+        if (ending === "cancelled") handle.cancel();
+        if (!early) {
+          // For timeout this also lets the spawn RPC's own timeout arrive before the terminal.
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          bus.emit("subagents:failed", {
+            id: "agent-1",
+            description: seen.spawns[0].options.description,
+            status: "aborted",
+            usage: { input: 10, output: 5, cacheRead: 2, cost: { total: 0.03 } },
+          });
+        }
+        const result = await handle.result;
+        assert.equal(result.status, ending);
+        assert.equal(result.verdict, undefined, "stale, unaccepted advice never reaches the builder");
+        assert.deepEqual(result.usage, { cost: 0.03, inputTokens: 12, outputTokens: 5 });
+        assert.deepEqual(seen.consumeRequests, ["agent-1"]);
+        assert.equal(seen.spawns.length, 1, "lost acceptance never starts a replacement");
+      } finally {
+        await runner.dispose();
+      }
+    }
+  }
+});
+
+test("missing terminal bounds the stale usage drain and still consumes a terminal arriving afterwards", async () => {
+  for (const ending of ["cancelled", "timeout"]) {
+    const bus = createEventBus();
+    const seen = releasedManager(bus, { spawn: "lost", terminal: "never" });
+    const runner = createSignalingReviewRunner(bus);
+    const handle = runner.start(request(ending === "timeout" ? { timeoutMs: 60 } : {}));
+    try {
+      for (let i = 0; i < 50 && seen.spawns.length === 0; i++) await tick();
+      assert.equal(seen.spawns.length, 1);
+      const started = Date.now();
+      if (ending === "cancelled") handle.cancel();
+      const result = await handle.result;
+      assert.equal(result.status, ending);
+      assert.ok(Date.now() - started >= 900, "waits for the usage grace, not just the spawn timeout");
+      assert.ok(Date.now() - started < 3_000, "never waits for the 120-second acceptance deadline");
+      assert.deepEqual(result.usage, { cost: 0, inputTokens: 0, outputTokens: 0 });
+      bus.emit("subagents:failed", {
+        id: "agent-1",
+        description: seen.spawns[0].options.description,
+        status: "aborted",
+        usage: { cost: { total: 0.03 } },
+      });
+      assert.deepEqual(seen.consumeRequests, ["agent-1"], "late terminals remain synchronously consumed");
+      assert.equal(result.usage.cost, 0, "the already-settled result is immutable");
+      assert.equal(seen.spawns.length, 1);
+    } finally {
+      await runner.dispose();
+    }
+  }
+});
+
+test("contract: a failed P2 child is reported only after cleanup completes", async () => {
+  const bus = createEventBus();
+  let finishStop;
+  const stopped = new Promise((resolve) => {
+    finishStop = resolve;
+  });
+  let stopCalls = 0;
+  const close = registerSignaling(bus, /** @type {any} */ ({}), async () => ({
+    id: "ours",
+    waitForIdle: async () => true,
+    refresh: async () => {},
+    stop: () => {
+      stopCalls++;
+      return stopped;
+    },
+    snapshot: () => ({ state: "failed", error: "model failed", transcriptTail: "PRIVATE" }),
+  }));
+  const runner = createSignalingReviewRunner(bus);
+  try {
+    let settled = false;
+    const pending = runner.start(request()).result.then((result) => {
+      settled = true;
+      return result;
+    });
+    for (let i = 0; i < 50 && stopCalls === 0; i++) await tick();
+    assert.equal(stopCalls, 1);
+    for (let i = 0; i < 10; i++) await tick();
+    assert.equal(settled, false, "no terminal is available while process cleanup is pending");
+    finishStop();
+    assert.equal((await pending).status, "failed");
+  } finally {
+    finishStop();
+    await close();
+    await runner.dispose();
+  }
+});
+
 test("contract: this repository's P2 handler serves the router adapter with an isolated child", async () => {
   const bus = createEventBus();
   const launches = [];

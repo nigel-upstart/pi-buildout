@@ -441,13 +441,16 @@ invalid terminal result also falls forward with the remaining budget. A lost or 
 **uncertain**: the router aborts the signal, keeps listening only to consume, and starts no replacement for that review.
 On cancellation or deadline expiry, the result is marked stale before the signal is aborted and `subagents:rpc:stop` is
 sent. The result keeps its cancelled or timeout status but waits up to one second for the terminal event, so usage the
-child reports at termination still counts toward the task. A stop acknowledgement is not proof of exit. Shutdown waits
-up to two seconds for those terminal events, so they can still be consumed, before it removes the listeners. An error
-envelope without a string `error` is malformed and treated as uncertain. Review cancellation also aborts the in-flight
-child-selection classifier. A ping with no reply, or a reply naming another protocol version, is verified
-absence/incompatibility. That negative result is cached for the extension instance only, and reload resets it. Error
-envelopes, spawn/provider errors, failed reviews, bad reviewer JSON, and cancellation never disable signaling; the next
-review probes again. There is no provider election or multi-manager support.
+child reports at termination still counts toward the task, even if spawn acceptance is lost or arrives after the
+terminal. A lost acceptance reply cannot shorten this usage grace; stale advice is never delivered. Terminals arriving
+after the grace are consumed but cannot update the already-settled usage result. A stop acknowledgement is not proof of
+exit. This repository's manager publishes a terminal only after child cleanup, preventing overlapping SDK fallback.
+Shutdown waits up to two seconds for those terminal events, so they can still be consumed, before it removes the
+listeners. An error envelope without a string `error` is malformed and treated as uncertain. Review cancellation also
+aborts the in-flight child-selection classifier. A ping with no reply, or a reply naming another protocol version, is
+verified absence/incompatibility. That negative result is cached for the extension instance only, and reload resets it.
+Error envelopes, spawn/provider errors, failed reviews, bad reviewer JSON, and cancellation never disable signaling; the
+next review probes again. There is no provider election or multi-manager support.
 
 Isolation is the manager's responsibility. Tintinweb agent frontmatter can override `isolated` to false for the generic
 type. Such a deployment is unsuitable for automatic reviews, and the router cannot detect or fix it. The router
@@ -490,15 +493,15 @@ fallback, and shutdown cancel the session with `abort()`; cancellation and timeo
 request's final usage before settling, and owner/epoch checks drop late results. The lease persists up to 64 hashed
 kind/scope/attempt/route identities before a runner starts or selection deterministically fails. Parent-side selection
 reserves the attempt in memory; cancellation before any runner starts leaves no consumed attempt, so the unchanged plan
-can be reviewed later. Unroutable selection is not retried on every settle. The current retained plan's identity is pinned
-while older completion entries are pruned. Reload preserves this history; explicit plan resubmission clears it.
+can be reviewed later. Unroutable selection is not retried on every settle. The current retained plan's identity is
+pinned while older completion entries are pruned. Reload preserves this history; explicit plan resubmission clears it.
 Unchanged evidence cannot create an unbounded rereview loop by consuming completion advice. A successful mutation or a
 failing deterministic check that finishes after completion advice reopens the completed lifecycle, so the newer evidence
 is reviewed at the next settlement. A plan review that ends without valid advice is not retried for the unchanged plan,
 but work executed afterwards (including work that settled while it ran) still receives completion review. Advice never
-applies during an in-flight custom-start preparation. Reviewer children load no router: signaling requests isolation
-and the SDK loads no extensions. No child marker or lineage system exists. Ordinary task/model routing remains available
-if the router is loaded in some other reviewer child, but review work never schedules review-of-review.
+applies during an in-flight custom-start preparation. Reviewer children load no router: signaling requests isolation and
+the SDK loads no extensions. No child marker or lineage system exists. Ordinary task/model routing remains available if
+the router is loaded in some other reviewer child, but review work never schedules review-of-review.
 
 `ReviewRunner.start(request)` returns `{ result: Promise<ReviewResult>, cancel() }`. Both runners implement it. The
 router never imports the separately packaged subagents extension; it speaks only the bus subset.
