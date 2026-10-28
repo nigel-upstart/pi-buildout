@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { Usage } from "@earendil-works/pi-ai";
 import { bindPlan } from "./discovery.ts";
 import type { BoundCall, Observation, ToolView } from "./discovery.ts";
 import { newReviewNonce, parseReviewOutput, reviewOutputContract } from "./review-output.ts";
@@ -10,7 +11,20 @@ import { validateSafetyReview } from "./core/safety.ts";
  * handlers have no public `executeTool`). Results are observed, never rewritten or trimmed.
  */
 type ToolCallEvent = { toolCallId: string; toolName: string; input: unknown };
-type ToolResultEvent = ToolCallEvent & { content: readonly { type: string; text?: string }[]; isError: boolean };
+type ToolResultEvent = ToolCallEvent & {
+  content: readonly { type: string; text?: string }[];
+  isError: boolean;
+  usage?: Usage;
+};
+const nonnegative = (value: number | undefined) =>
+  value !== undefined && Number.isFinite(value) ? Math.max(0, value) : 0;
+function reportedUsage(usage: Usage): ReviewResult["usage"] {
+  return {
+    cost: nonnegative(usage.cost.total),
+    inputTokens: nonnegative(usage.input) + nonnegative(usage.cacheRead) + nonnegative(usage.cacheWrite),
+    outputTokens: nonnegative(usage.output),
+  };
+}
 
 // Deterministic rejection of a published argument *name* by the manager ("Unknown parameter: isolated"). Value errors
 // ("Invalid parameter model: must be ...", "Unknown model: x") never match; the extracted name must be bound by us.
@@ -58,6 +72,8 @@ export function createBuilderReviewRunner(deps: {
     verdict?: unknown;
     rejection?: string;
     spawnFailed: boolean;
+    usage: ReviewResult["usage"];
+    reportedCalls: Set<string>;
     finish(status: ReviewResult["status"], verdict?: unknown): void;
   };
   /** The validated companion template, where "<child id>" must be a string the spawn actually returned. */
@@ -126,11 +142,13 @@ export function createBuilderReviewRunner(deps: {
         exact: false,
         deviated: false,
         spawnFailed: false,
+        usage: { ...zero },
+        reportedCalls: new Set(),
         finish(status, verdict) {
           if (open !== attempt) return;
           open = undefined;
           clearTimeout(timer);
-          resolveResult({ status, usage: zero, ...(verdict === undefined ? {} : { verdict }) });
+          resolveResult({ status, usage: { ...attempt.usage }, ...(verdict === undefined ? {} : { verdict }) });
         },
       };
       // Deadline: the router cannot cancel a builder-launched child, so no replacement follows.
@@ -192,11 +210,35 @@ export function createBuilderReviewRunner(deps: {
         attempt.deviated = true;
       }
     },
+    /** Recheck the executed input at tool_result, not merely the initially proposed tool_call input. */
+    isValidatedOrchestration(event: ToolCallEvent): boolean {
+      const attempt = open;
+      if (!attempt || !attempt.exact || attempt.spawnCalls !== 1) return false;
+      if (event.toolCallId === attempt.spawnCallId && event.toolName === attempt.call.tool.name)
+        return isDeepStrictEqual(event.input, attempt.call.arguments);
+      return (
+        event.toolCallId === attempt.resultCallId &&
+        event.toolName === attempt.call.result?.tool.name &&
+        matchesResult(event.input, attempt.call.result.arguments, attempt.spawnText ?? "")
+      );
+    },
     /** Record evidence only; every decision waits for the run to settle. */
     onToolResult(event: ToolResultEvent): void {
       const attempt = open;
       if (!attempt) return;
       const { call } = attempt;
+      // Pi's tool_result usage is execution-local: nested usage is aggregated later on the outer transcript
+      // message. Count only our correlated spawn/wait ids, never descendants or an outer wrapper's aggregate.
+      const correlated =
+        (event.toolCallId === attempt.spawnCallId && event.toolName === call.tool.name) ||
+        (event.toolCallId === attempt.resultCallId && event.toolName === call.result?.tool.name);
+      if (correlated && event.usage && !attempt.reportedCalls.has(event.toolCallId)) {
+        attempt.reportedCalls.add(event.toolCallId);
+        const usage = reportedUsage(event.usage);
+        attempt.usage.cost += usage.cost;
+        attempt.usage.inputTokens += usage.inputTokens;
+        attempt.usage.outputTokens += usage.outputTokens;
+      }
       if (event.toolCallId === attempt.resultCallId) {
         // Later tool_call handlers may mutate input; trust only what actually executed.
         const executed = matchesResult(event.input, call.result?.arguments, attempt.spawnText ?? "");
