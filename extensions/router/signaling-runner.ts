@@ -125,7 +125,8 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
       let graceTimer: ReturnType<typeof setTimeout> | undefined;
       let spawnRequested = false;
       // Read through a function: cancellation and deadlines mutate this across awaits.
-      const isFinished = () => finished || stale !== undefined;
+      const isSettled = () => finished;
+      const isFinished = () => isSettled() || stale !== undefined;
       let childId: string | undefined;
       let early: Terminal | undefined;
       let observed = false;
@@ -177,7 +178,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
           result: typeof event.result === "string" ? event.result : "",
           usage: usageOf(event.usage),
         };
-        if (childId) settle(terminal);
+        if (childId || stale) settle(terminal);
         else early = terminal;
       };
       const expire = (status: "timeout" | "cancelled") => {
@@ -186,7 +187,11 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         stale = status;
         clearTimeout(timer);
         stop();
-        if (!spawnRequested || observed) finish(status);
+        // A manager may report its terminal before (or without) acceptance. Description correlation is
+        // enough to retain billed usage for stale work, but never to deliver unaccepted advice.
+        if (isSettled()) return;
+        if (early) finish(status, { usage: early.usage });
+        else if (!spawnRequested) finish(status);
         else
           graceTimer = setTimeout(() => {
             finish(status);
@@ -262,7 +267,8 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         if (typeof accepted !== "string" || !accepted || (early && early.id !== accepted)) {
           // Lost or malformed acceptance: abort, keep listening to consume, and never resend.
           controller.abort();
-          finish("uncertain");
+          // Cancellation/deadline owns settlement now; a lost reply must not truncate its usage grace.
+          if (!stale) finish("uncertain");
           return;
         }
         childId = accepted;
