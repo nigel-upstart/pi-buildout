@@ -7173,6 +7173,92 @@ describe("routerExtension", () => {
     }
   });
 
+  for (const boundary of ["none", "input", "shutdown", "replacement"]) {
+    it(`handles a rejected review selection telemetry append across ${boundary}`, async () => {
+      const runner = controlledRunner();
+      const write = deferred();
+      const rejected = deferred();
+      let writing = false;
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        classifyPrimaryTask: childClassifier([]),
+        telemetry: {
+          read: async () => [],
+          append: async (event) => {
+            if (event.kind !== "classifier_invocation" || event.data.purpose !== "review_child") return;
+            writing = true;
+            try {
+              await write.promise;
+            } finally {
+              rejected.resolve();
+            }
+          },
+        },
+      });
+      const { hooks, ctx, appended, sent, restoreEnvironment } = fixture;
+      const notes = [];
+      ctx.ui.notify = (message, level) => notes.push({ message, level });
+      const staleAccesses = [];
+      try {
+        await launchReview(fixture);
+        await waitForReview(() => writing);
+        assert.equal(runner.calls.length, 0, "selection telemetry precedes child launch");
+        const expired = boundary === "shutdown" || boundary === "replacement";
+        if (expired) await hooks.get("session_shutdown")({ reason: "reload" }, ctx);
+        else if (boundary === "input")
+          await hooks.get("input")(
+            { text: "Inspect instead", source: "interactive", streamingBehavior: "followUp" },
+            ctx,
+          );
+        const currentCtx = { ...ctx };
+        if (boundary === "replacement") await hooks.get("session_start")({ reason: "reload" }, currentCtx);
+        if (expired)
+          for (const key of ["ui", "cwd", "sessionManager", "modelRegistry", "model", "hasUI"])
+            Object.defineProperty(ctx, key, {
+              configurable: true,
+              get() {
+                staleAccesses.push(key);
+                throw new Error("This extension ctx is stale after session replacement or reload.");
+              },
+            });
+        const entriesBefore = appended.length;
+        const sentBefore = sent.length;
+        write.reject(new Error("selection telemetry write failed"));
+        await rejected.promise;
+        // Flush the entire record -> selection -> review continuation after the deferred rejection.
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.deepEqual(staleAccesses, [], "a failed old write must never access the expired context");
+        assert.equal(runner.calls.length, 0);
+        assert.equal(sent.length, sentBefore, "failed selection never delivers advice");
+        const state = appended.findLast((entry) => entry.customType === "model-router-state");
+        if (expired) {
+          assert.equal(appended.length, entriesBefore, "old telemetry failure cannot mutate the current routing state");
+          assert.equal(state.data.mode, "active");
+          assert.equal(
+            notes.some((note) => /Router telemetry failed/.test(note.message)),
+            false,
+          );
+          if (boundary === "replacement") {
+            await fixture.commands.get("route").handler("active", currentCtx);
+            assert.equal(
+              notes.some((note) => /cannot enter active mode/.test(note.message)),
+              false,
+            );
+          }
+        } else {
+          assert.equal(state.data.mode, "shadow", "current-session failures remain fail-closed, even after input");
+          assert.equal(
+            notes.some((note) => note.level === "error" && /Router telemetry failed/.test(note.message)),
+            true,
+          );
+        }
+      } finally {
+        write.resolve();
+        restoreEnvironment();
+      }
+    });
+  }
+
   it("records a late cancelled outcome without touching the invalidated context", async () => {
     const runner = controlledRunner();
     const events = [];

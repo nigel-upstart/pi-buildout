@@ -160,6 +160,27 @@ test("early completion before the acceptance reply correlates by description and
   assert.deepEqual(seen.notified, []);
 });
 
+test("early terminal usage survives malformed acceptance without authorizing advice or replacement", async () => {
+  for (const terminal of ["completed", "failed"]) {
+    const bus = createEventBus();
+    const seen = releasedManager(bus, { early: true, spawn: "malformed", terminal });
+    const runner = createSignalingReviewRunner(bus);
+    try {
+      const result = await runner.start(request()).result;
+      assert.equal(result.status, "uncertain", "a terminal cannot make malformed acceptance safe to replace");
+      assert.equal(result.verdict, undefined, "even valid early advice is withheld");
+      assert.deepEqual(seen.consumed, ["agent-1"]);
+      assert.deepEqual(seen.notified, []);
+      assert.equal(seen.spawns[0].options.signal.aborted, true);
+      assert.equal(seen.spawns.length, 1, "never resent");
+      assert.equal(runner.negative, undefined);
+      assert.deepEqual(result.usage, { cost: 0.03, inputTokens: 12, outputTokens: 5 });
+    } finally {
+      await runner.dispose();
+    }
+  }
+});
+
 test("invalid or failed terminal output is still consumed and reported as confirmed failure", async () => {
   for (const behavior of [{ result: "no verdict block" }, { terminal: "failed" }, { result: block("0".repeat(32)) }]) {
     const bus = createEventBus();
