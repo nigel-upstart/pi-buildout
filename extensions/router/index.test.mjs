@@ -7449,6 +7449,171 @@ describe("routerExtension", () => {
     });
   }
 
+  for (const outcome of ["published", "failed"]) {
+    it(`ignores late ${outcome} discovery after session replacement without touching stale context`, async () => {
+      const gate = deferred();
+      const runner = controlledRunner();
+      const events = [];
+      let signal;
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: (request) => {
+          signal = request.signal;
+          return gate.promise; // Deliberately ignores abort.
+        },
+        telemetry: { read: async () => [], append: async (event) => events.push(event) },
+      });
+      const { hooks, ctx, restoreEnvironment } = fixture;
+      try {
+        await launchReview(fixture, runner);
+        await hooks.get("session_shutdown")({ reason: "new" }, ctx);
+        const nextCtx = {
+          ...ctx,
+          sessionManager: { ...ctx.sessionManager, getSessionId: () => "replacement", getBranch: () => [] },
+        };
+        await hooks.get("session_start")({ reason: "new" }, nextCtx);
+        const staleAccesses = [];
+        Object.defineProperty(ctx, "sessionManager", {
+          configurable: true,
+          get() {
+            staleAccesses.push("sessionManager");
+            throw new Error("This extension ctx is stale after session replacement or reload.");
+          },
+        });
+        if (outcome === "published") gate.resolve(agentDiscovery());
+        else gate.reject(new Error("late discovery failure"));
+        await flushMicrotasks();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.deepEqual(staleAccesses, [], "late discovery must not read the previous context");
+        assert.equal(signal.aborted, true, "shutdown invalidates and aborts discovery before context expires");
+        assert.equal(
+          events.some((event) => event.data.discovery),
+          false,
+          "old discovery cannot publish or report",
+        );
+        assert.equal(
+          fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode,
+          "active",
+        );
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  it("does not disable a replacement session when an earlier discovery telemetry append fails late", async () => {
+    const gate = deferred();
+    const reached = deferred();
+    const runner = controlledRunner();
+    const notes = [];
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+      telemetry: {
+        read: async () => [],
+        append: (event) => {
+          if (event.data.discovery) {
+            reached.resolve();
+            return gate.promise;
+          }
+          return Promise.resolve();
+        },
+      },
+    });
+    const { hooks, ctx, restoreEnvironment } = fixture;
+    ctx.ui.notify = (message) => notes.push(message);
+    try {
+      await launchReview(fixture);
+      await reached.promise;
+      await hooks.get("session_shutdown")({ reason: "new" }, ctx);
+      const nextCtx = {
+        ...ctx,
+        sessionManager: { ...ctx.sessionManager, getSessionId: () => "replacement", getBranch: () => [] },
+      };
+      await hooks.get("session_start")({ reason: "new" }, nextCtx);
+      gate.reject(new Error("late discovery append failure"));
+      await flushMicrotasks();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(
+        notes.some((note) => /Router telemetry failed/.test(note)),
+        false,
+      );
+      assert.equal(fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode, "active");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("disables the same session when discovery telemetry fails after another observation", async () => {
+    const gate = deferred();
+    const reached = deferred();
+    const runner = controlledRunner();
+    const notes = [];
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: async () => ({ match: false }),
+      telemetry: {
+        read: async () => [],
+        append: (event) => {
+          if (event.data.discovery) {
+            reached.resolve();
+            return gate.promise;
+          }
+          return Promise.resolve();
+        },
+      },
+    });
+    fixture.ctx.ui.notify = (message) => notes.push(message);
+    try {
+      await launchReview(fixture, runner);
+      await reached.promise;
+      runner.calls[0].resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } });
+      await flushMicrotasks();
+      const revised = {
+        ...irreversibleActionPlan(),
+        objective: "Rotate the production credential after rechecking access.",
+      };
+      await fixture.tools.get("submit_action_plan").execute("revised", revised, undefined, undefined, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      // Starting another review observes discovery again without replacing the session or its generation.
+      await waitForReview(() => runner.calls.length === 2);
+      gate.reject(new Error("delayed same-session discovery append failure"));
+      await waitForReview(() => notes.some((note) => /Router telemetry failed/.test(note)));
+      assert.equal(fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode, "shadow");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("still disables the owning live session when discovery telemetry fails", async () => {
+    const notes = [];
+    const fixture = await authorizationLifecycleFixture({
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+      telemetry: {
+        read: async () => [],
+        append: async (event) => {
+          if (event.data.discovery) throw new Error("current discovery append failure");
+        },
+      },
+    });
+    fixture.ctx.ui.notify = (message) => notes.push(message);
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => notes.some((note) => /Router telemetry failed/.test(note)));
+      assert.equal(fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode, "shadow");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("records a late cancelled outcome without touching the invalidated context", async () => {
     const runner = controlledRunner();
     const events = [];
