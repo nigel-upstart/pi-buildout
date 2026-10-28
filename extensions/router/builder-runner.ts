@@ -45,6 +45,8 @@ const boundPaths = (value: unknown, prefix = ""): string[] =>
  * make exact reproduction unreliable, and a deviation blocks every fallback, so they use the SDK instead.
  */
 const MAX_BUILDER_TASK_CHARS = 12_000;
+/** Accounting only: cancellation/deadline stales advice immediately, but pending tool usage may arrive later. */
+const ABORT_USAGE_GRACE_MS = 1_000;
 const OPERATIONAL =
   /(not found|api key|auth|rate.?limit|quota|timed? ?out|timeout|unavailable|overloaded|network|validation failed for tool)/i;
 
@@ -73,7 +75,9 @@ export function createBuilderReviewRunner(deps: {
     rejection?: string;
     spawnFailed: boolean;
     usage: ReviewResult["usage"];
-    reportedCalls: Set<string>;
+    /** Accounting IDs are independent of the single spawn/wait IDs allowed to supply a verdict. */
+    accounting: Map<string, { toolName: string; spawn: boolean; reported: boolean; reply?: string }>;
+    stale?: "cancelled" | "timeout";
     finish(status: ReviewResult["status"], verdict?: unknown): void;
   };
   /** The validated companion template, where "<child id>" must be a string the spawn actually returned. */
@@ -91,6 +95,40 @@ export function createBuilderReviewRunner(deps: {
   };
   const textOf = (event: ToolResultEvent) =>
     event.content.flatMap((part) => (part.type === "text" && part.text ? [part.text] : [])).join("\n");
+  const addAccountingCall = (attempt: Attempt, event: ToolCallEvent, spawn: boolean): void => {
+    if (attempt.accounting.has(event.toolCallId)) return;
+    // Native nested IDs are <parent id>/<n>. A nested child cannot bill its ancestor's usage a second time.
+    if ([...attempt.accounting.keys()].some((id) => event.toolCallId.startsWith(`${id}/`))) return;
+    attempt.accounting.set(event.toolCallId, { toolName: event.toolName, spawn, reported: false });
+  };
+  const observeAccountingCall = (attempt: Attempt, event: ToolCallEvent): void => {
+    const { call } = attempt;
+    // A matching companion can use the same tool as the spawn. Account for every other selected-tool
+    // invocation too, including a duplicate whose arguments deviate from the plan; none gains verdict trust.
+    const companion =
+      event.toolName === call.result?.tool.name &&
+      [...attempt.accounting.values()].some(
+        (entry) => entry.reply !== undefined && matchesResult(event.input, call.result?.arguments, entry.reply),
+      );
+    if (event.toolName === call.tool.name) addAccountingCall(attempt, event, !companion);
+    else if (companion) addAccountingCall(attempt, event, false);
+  };
+  const observeAccountingResult = (attempt: Attempt, event: ToolResultEvent): void => {
+    const entry = attempt.accounting.get(event.toolCallId);
+    if (entry?.toolName !== event.toolName) return;
+    // Pi tool_result usage is execution-local; outer transcript aggregates and unregistered nested IDs are ignored.
+    if (event.usage && !entry.reported) {
+      entry.reported = true;
+      const usage = reportedUsage(event.usage);
+      attempt.usage.cost += usage.cost;
+      attempt.usage.inputTokens += usage.inputTokens;
+      attempt.usage.outputTokens += usage.outputTokens;
+    }
+    // Keep only call correlation, never a verdict, while stale accounting drains. New companion calls may follow
+    // a late spawn reply; they must still bind a child id returned by an actually validated spawn.
+    if (entry.spawn && !event.isError && isDeepStrictEqual(event.input, attempt.call.arguments))
+      entry.reply ??= textOf(event);
+  };
   let open: Attempt | undefined;
   /** The dispatched run outlives a timed-out or cancelled attempt; only its settle clears this. */
   let runInFlight = false;
@@ -134,6 +172,15 @@ export function createBuilderReviewRunner(deps: {
       const result = new Promise<ReviewResult>((resolve) => {
         resolveResult = resolve;
       });
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (status: ReviewResult["status"], verdict?: unknown) => {
+        if (open !== attempt) return;
+        open = undefined;
+        clearTimeout(timer);
+        clearTimeout(drainTimer);
+        attempt.accounting.clear();
+        resolveResult({ status, usage: { ...attempt.usage }, ...(verdict === undefined ? {} : { verdict }) });
+      };
       const attempt: Attempt = {
         call,
         nonce,
@@ -143,12 +190,20 @@ export function createBuilderReviewRunner(deps: {
         deviated: false,
         spawnFailed: false,
         usage: { ...zero },
-        reportedCalls: new Set(),
+        accounting: new Map(),
         finish(status, verdict) {
-          if (open !== attempt) return;
-          open = undefined;
-          clearTimeout(timer);
-          resolveResult({ status, usage: { ...attempt.usage }, ...(verdict === undefined ? {} : { verdict }) });
+          if (open !== attempt || attempt.stale) return;
+          if (status === "cancelled" || status === "timeout") {
+            attempt.stale = status;
+            attempt.verdict = undefined;
+            clearTimeout(timer);
+            // Even cancellation before the first call needs a grace: the builder's dispatched run cannot be stopped.
+            drainTimer = setTimeout(() => {
+              settle(status);
+            }, ABORT_USAGE_GRACE_MS);
+            return;
+          }
+          settle(status, verdict);
         },
       };
       // Deadline: the router cannot cancel a builder-launched child, so no replacement follows.
@@ -192,6 +247,8 @@ export function createBuilderReviewRunner(deps: {
     onToolCall(event: ToolCallEvent): void {
       const attempt = open;
       if (!attempt) return;
+      observeAccountingCall(attempt, event);
+      if (attempt.stale) return;
       const { call } = attempt;
       // The companion call (possibly the same tool with a wait action) must match its validated template and
       // carry a child id the spawn returned. Anything else is a deviation: observed, never blocked or rewritten.
@@ -204,6 +261,8 @@ export function createBuilderReviewRunner(deps: {
       if (call.tool.name === event.toolName) {
         attempt.spawnCalls++;
         attempt.spawnCallId ??= event.toolCallId;
+        // Preserve accounting of an observed selected spawn even when its arguments deviated from the plan.
+        addAccountingCall(attempt, event, true);
         attempt.exact = attempt.spawnCalls === 1 && isDeepStrictEqual(event.input, call.arguments);
       } else {
         // Any off-plan call (another agent tool, an early companion) may have launched something we cannot see.
@@ -213,7 +272,7 @@ export function createBuilderReviewRunner(deps: {
     /** Recheck the executed input at tool_result, not merely the initially proposed tool_call input. */
     isValidatedOrchestration(event: ToolCallEvent): boolean {
       const attempt = open;
-      if (!attempt || !attempt.exact || attempt.spawnCalls !== 1) return false;
+      if (!attempt || attempt.stale || !attempt.exact || attempt.spawnCalls !== 1) return false;
       if (event.toolCallId === attempt.spawnCallId && event.toolName === attempt.call.tool.name)
         return isDeepStrictEqual(event.input, attempt.call.arguments);
       return (
@@ -226,19 +285,9 @@ export function createBuilderReviewRunner(deps: {
     onToolResult(event: ToolResultEvent): void {
       const attempt = open;
       if (!attempt) return;
+      observeAccountingResult(attempt, event);
+      if (attempt.stale) return;
       const { call } = attempt;
-      // Pi's tool_result usage is execution-local: nested usage is aggregated later on the outer transcript
-      // message. Count only our correlated spawn/wait ids, never descendants or an outer wrapper's aggregate.
-      const correlated =
-        (event.toolCallId === attempt.spawnCallId && event.toolName === call.tool.name) ||
-        (event.toolCallId === attempt.resultCallId && event.toolName === call.result?.tool.name);
-      if (correlated && event.usage && !attempt.reportedCalls.has(event.toolCallId)) {
-        attempt.reportedCalls.add(event.toolCallId);
-        const usage = reportedUsage(event.usage);
-        attempt.usage.cost += usage.cost;
-        attempt.usage.inputTokens += usage.inputTokens;
-        attempt.usage.outputTokens += usage.outputTokens;
-      }
       if (event.toolCallId === attempt.resultCallId) {
         // Later tool_call handlers may mutate input; trust only what actually executed.
         const executed = matchesResult(event.input, call.result?.arguments, attempt.spawnText ?? "");
@@ -269,7 +318,7 @@ export function createBuilderReviewRunner(deps: {
     onSettled(aborted = false): void {
       runInFlight = false;
       const attempt = open;
-      if (!attempt) return;
+      if (!attempt || attempt.stale) return;
       const single = attempt.spawnCalls === 1;
       const trusted = single && attempt.exact && !attempt.deviated;
       if (aborted) attempt.finish("cancelled");

@@ -179,6 +179,72 @@ test("session reset drops the publication while an ignored abort retains the sin
   assert.equal(h.discovery.observe().plan, null);
 });
 
+test("a synchronous discovery throw releases its flight and retries only on the next access", async () => {
+  let calls = 0;
+  const events = [];
+  const discovery = createDiscovery({
+    tools: () => [agentTool()],
+    excluded: () => false,
+    timeoutMs: 20,
+    classify: () => {
+      calls++;
+      if (calls === 1) throw new Error("registry snapshot failed synchronously");
+      return Promise.resolve({ match: false });
+    },
+    onEvent: (event) => events.push(event),
+  });
+  let thrown;
+  try {
+    discovery.observe();
+  } catch (error) {
+    thrown = error;
+  }
+  assert.equal(calls, 1, "classification is invoked eagerly during access");
+  await tick();
+  assert.equal(calls, 1, "rejection cleanup never retries eagerly");
+  discovery.observe();
+  assert.equal(calls, 2, "the failed synchronous invocation cannot orphan the single-flight slot");
+  await tick();
+  assert.equal(thrown, undefined, "sync and async failures share the rejection path");
+  assert.equal(discovery.observe().plan, null);
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["failed", "published"],
+  );
+});
+
+test("reset during a synchronous discovery failure suppresses stale events without orphaning the flight", async () => {
+  let calls = 0;
+  const events = [];
+  const discovery = createDiscovery({
+    tools: () => [agentTool()],
+    excluded: () => false,
+    timeoutMs: 20,
+    classify: () => {
+      calls++;
+      if (calls === 1) {
+        discovery.reset();
+        throw new Error("old session snapshot expired");
+      }
+      return Promise.resolve({ match: false });
+    },
+    onEvent: (event) => events.push(event),
+  });
+  try {
+    discovery.observe();
+  } catch {
+    /* Reproduce the old synchronous escape while checking cleanup. */
+  }
+  discovery.observe();
+  assert.equal(calls, 1, "even a reset keeps the flight occupied until its rejected promise settles");
+  await tick();
+  assert.deepEqual(events, [], "the old generation cannot report failure");
+  discovery.observe();
+  assert.equal(calls, 2);
+  await tick();
+  assert.equal(discovery.observe().plan, null);
+});
+
 test("failures do not publish; the next access retries", async () => {
   const h = harness([agentTool()]);
   h.discovery.observe();
@@ -607,6 +673,202 @@ for (const status of ["completed", "failed", "uncertain", "cancelled", "timeout"
     h.runner.onSettled();
   });
 }
+
+for (const status of ["cancelled", "timeout"]) {
+  for (const target of ["spawn", "wait"]) {
+    test(`builder drains usage arriving after ${status} from a pending ${target} without reviving advice`, async () => {
+      const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+      const handle = h.runner.start(reviewRequest({ timeoutMs: status === "timeout" ? 5 : 5_000 }));
+      const args = argsFrom(h.sent[0]);
+      h.runner.onToolCall({ toolCallId: "spawn", toolName: "subagent", input: args });
+      let input = args;
+      if (target === "wait") {
+        h.runner.onToolResult({ ...resultEvent("Started child agent-42", false, "spawn", args), toolName: "subagent" });
+        input = { action: "wait", id: "agent-42" };
+        h.runner.onToolCall({ toolCallId: "wait", toolName: "subagent", input });
+      }
+      let settled = false;
+      void handle.result.then(() => {
+        settled = true;
+      });
+      if (status === "cancelled") handle.cancel();
+      else await new Promise((resolve) => setTimeout(resolve, 20));
+      await tick();
+      assert.equal(settled, false, "stale advice does not discard pending accounting before the bounded grace");
+      assert.equal(h.runner.isValidatedOrchestration({ toolCallId: target, toolName: "subagent", input }), false);
+      assert.equal((await h.runner.start(reviewRequest()).result).status, "unavailable");
+      h.runner.onSettled(); // Settling the run cannot turn a stale result into advice or truncate its usage grace.
+      assert.equal((await h.runner.start(reviewRequest()).result).status, "unavailable");
+      const block = `<router-result nonce="${nonceOf(args.task)}">${JSON.stringify(verdict)}</router-result>`;
+      const event = { ...resultEvent(block, false, target, input), toolName: "subagent", usage: toolUsage() };
+      const original = structuredClone(event);
+      h.runner.onToolResult(event);
+      h.runner.onToolResult(event);
+      const result = await handle.result;
+      assert.deepEqual(result, { status, usage: { cost: 0.25, inputTokens: 140, outputTokens: 20 } });
+      assert.deepEqual(event, original);
+      // Results after the accounting grace are ignored, and the next attempt cannot inherit old usage.
+      h.runner.onToolResult({ ...event, usage: toolUsage(9) });
+      const next = h.runner.start(reviewRequest());
+      h.runner.onSettled();
+      assert.deepEqual((await next.result).usage, { cost: 0, inputTokens: 0, outputTokens: 0 });
+    });
+  }
+}
+
+test("cancellation before the first call still drains a later spawn and companion during grace", async () => {
+  const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+  const handle = h.runner.start(reviewRequest());
+  const args = argsFrom(h.sent[0]);
+  handle.cancel();
+  h.runner.onToolCall({ toolCallId: "spawn", toolName: "subagent", input: args });
+  h.runner.onToolResult({
+    ...resultEvent("Started child agent-42", false, "spawn", args),
+    toolName: "subagent",
+    usage: toolUsage(),
+  });
+  const input = { action: "wait", id: "agent-42" };
+  h.runner.onToolCall({ toolCallId: "wait", toolName: "subagent", input });
+  h.runner.onToolResult({ ...resultEvent("done", false, "wait", input), toolName: "subagent", usage: toolUsage(0.5) });
+  assert.equal((await h.runner.start(reviewRequest()).result).status, "unavailable");
+  const result = await handle.result;
+  assert.deepEqual(result, { status: "cancelled", usage: { cost: 0.75, inputTokens: 280, outputTokens: 40 } });
+  assert.equal(h.runner.delegating(), true, "accounting drain never clears the live run guard");
+  h.runner.onSettled();
+});
+
+test("builder stale accounting is bounded even without a result, while a still-running delegation stays guarded", async () => {
+  const h = builderHarness();
+  const handle = h.runner.start(reviewRequest());
+  const started = Date.now();
+  handle.cancel();
+  const result = await handle.result;
+  assert.equal(result.status, "cancelled");
+  assert.ok(Date.now() - started < 2_500, "a missing result cannot hold accounting indefinitely");
+  assert.equal(h.runner.delegating(), true, "accounting expiry is not proof the delegation run stopped");
+  assert.equal((await h.runner.start(reviewRequest()).result).status, "unavailable");
+  h.runner.onSettled();
+  const next = h.runner.start(reviewRequest());
+  h.runner.onSettled();
+  assert.equal((await next.result).status, "unavailable");
+});
+
+test("duplicate planned spawns report all call usage but stay uncertain, excluding nested and outer calls", async () => {
+  const h = builderHarness();
+  const handle = h.runner.start(reviewRequest());
+  const input = argsFrom(h.sent[0]);
+  for (const [toolCallId, parentToolCallId] of [
+    ["outer/1", "outer"],
+    ["second", undefined],
+    ["outer/1/1", "outer/1"],
+  ])
+    h.runner.onToolCall({ toolCallId, parentToolCallId, toolName: "Agent", input });
+  for (const [toolCallId, toolName, cost] of [
+    ["outer/1", "Agent", 0.25],
+    ["second", "Agent", 0.5],
+    ["outer/1/1", "Agent", 9],
+    ["outer", "codemode", 9.25],
+  ]) {
+    const event = { ...resultEvent("done", false, toolCallId, input), toolName, usage: toolUsage(cost) };
+    h.runner.onToolResult(event);
+    h.runner.onToolResult(event);
+  }
+  h.runner.onSettled();
+  const result = await handle.result;
+  assert.equal(result.status, "uncertain");
+  assert.deepEqual(result.usage, { cost: 0.75, inputTokens: 280, outputTokens: 40 });
+  assert.deepEqual(h.quarantined, []);
+});
+
+test("same-tool duplicate spawns after a reply retain accounting for both children and their companions", async () => {
+  const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+  const handle = h.runner.start(reviewRequest());
+  const args = argsFrom(h.sent[0]);
+  for (const [toolCallId, child, cost] of [
+    ["spawn-1", "agent-42", 0.25],
+    ["spawn-2", "agent-43", 0.5],
+  ]) {
+    h.runner.onToolCall({ toolCallId, toolName: "subagent", input: args });
+    h.runner.onToolResult({
+      ...resultEvent(`Started child ${child}`, false, toolCallId, args),
+      toolName: "subagent",
+      usage: toolUsage(cost),
+    });
+  }
+  for (const [toolCallId, id] of [
+    ["wait-1", "agent-42"],
+    ["wait-2", "agent-43"],
+  ]) {
+    const input = { action: "wait", id };
+    h.runner.onToolCall({ toolCallId, toolName: "subagent", input });
+    const event = { ...resultEvent("done", false, toolCallId, input), toolName: "subagent", usage: toolUsage() };
+    h.runner.onToolResult(event);
+    h.runner.onToolResult(event);
+  }
+  h.runner.onSettled();
+  const result = await handle.result;
+  assert.equal(result.status, "uncertain");
+  assert.deepEqual(result.usage, { cost: 1.25, inputTokens: 560, outputTokens: 80 });
+});
+
+test("same-tool duplicate with deviated spawn arguments still bills usage without trusting its reply", async () => {
+  const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+  const handle = h.runner.start(reviewRequest());
+  const args = argsFrom(h.sent[0]);
+  h.runner.onToolCall({ toolCallId: "spawn-1", toolName: "subagent", input: args });
+  h.runner.onToolResult({
+    ...resultEvent("Started child agent-42", false, "spawn-1", args),
+    toolName: "subagent",
+    usage: toolUsage(),
+  });
+  const input = { ...args, isolated: false };
+  h.runner.onToolCall({ toolCallId: "spawn-2", toolName: "subagent", input });
+  const block = `<router-result nonce="${nonceOf(args.task)}">${JSON.stringify(verdict)}</router-result>`;
+  const event = {
+    ...resultEvent(`Started child agent-43\n${block}`, false, "spawn-2", input),
+    toolName: "subagent",
+    usage: toolUsage(0.5),
+  };
+  h.runner.onToolResult(event);
+  h.runner.onToolResult(event);
+  assert.equal(h.runner.isValidatedOrchestration(event), false);
+  const wait = { action: "wait", id: "agent-43" };
+  h.runner.onToolCall({ toolCallId: "off-plan-wait", toolName: "subagent", input: wait });
+  const reply = { ...resultEvent(block, false, "off-plan-wait", wait), toolName: "subagent" };
+  h.runner.onToolResult(reply);
+  assert.equal(
+    h.runner.isValidatedOrchestration(reply),
+    false,
+    "a deviated spawn cannot establish companion correlation",
+  );
+  h.runner.onSettled();
+  const result = await handle.result;
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.verdict, undefined);
+  assert.deepEqual(result.usage, { cost: 0.75, inputTokens: 280, outputTokens: 40 });
+});
+
+test("duplicate correlated companions report each call once without authorizing a verdict", async () => {
+  const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+  const handle = h.runner.start(reviewRequest());
+  const args = argsFrom(h.sent[0]);
+  h.runner.onToolCall({ toolCallId: "spawn", toolName: "subagent", input: args });
+  h.runner.onToolResult({ ...resultEvent("Started child agent-42", false, "spawn", args), toolName: "subagent" });
+  const input = { action: "wait", id: "agent-42" };
+  for (const [toolCallId, cost] of [
+    ["wait-1", 0.25],
+    ["wait-2", 0.5],
+  ]) {
+    h.runner.onToolCall({ toolCallId, toolName: "subagent", input });
+    const event = { ...resultEvent("done", false, toolCallId, input), toolName: "subagent", usage: toolUsage(cost) };
+    h.runner.onToolResult(event);
+    h.runner.onToolResult(event);
+  }
+  h.runner.onSettled();
+  const result = await handle.result;
+  assert.equal(result.status, "uncertain");
+  assert.deepEqual(result.usage, { cost: 0.75, inputTokens: 280, outputTokens: 40 });
+});
 
 test("a companion wait counts only when it matches its template and the spawned child id", async () => {
   const run = async (resultInput) => {
