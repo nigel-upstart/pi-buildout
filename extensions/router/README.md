@@ -473,7 +473,8 @@ direct dispatch.
   meanwhile retain the stale publication without starting overlapping classification.
 - **Timeout.** The discovery deadline is 60 seconds, separate from the review budget. Expiry aborts the flight, records
   telemetry, and leaves discovery DIRTY. Only an access after settlement retries; there is no timer or catch/finally
-  retry.
+  retry. Synchronous snapshot/classifier exceptions use the same rejection cleanup, so they cannot orphan the flight;
+  classification still starts eagerly on access.
 - **Isolation.** Documentation must establish it. The cited argument needs exactly one literal value. A verbatim quote
   naming both extensions and that exact literal (for example "If true, agent gets no extension/MCP tools") must appear
   in that parameter's published description, or in the tool docs alongside the argument name. Duplicate or overlapping
@@ -494,6 +495,13 @@ settles. A user abort (Escape) cancels the review. No calls, or exactly one veri
 Any off-plan call or unverified companion makes ownership uncertain, even before a spawn or after a failed one. A
 successful spawn without a verdict, a second spawn, a deviating call, a timeout, or cancellation is uncertain or stale,
 because a builder-launched child cannot be cancelled by the router; no replacement starts.
+
+Reported Pi tool usage is accounted once per correlated call ID, including duplicate planned spawns and companion calls
+that make verdict ownership uncertain. Nested descendants and outer-wrapper aggregates are not counted again.
+Cancellation or timeout makes advice stale immediately, but retains accounting for one second, even if cancellation
+precedes the first observed call. Spawn/wait results during that grace can contribute usage, never advice; later usage
+is best-effort and cannot update a settled result. The delegation run remains guarded until it settles independently of
+the accounting grace, and no new attempt overlaps either owner.
 
 The builder must copy the arguments exactly, in its own context and at builder output pricing, and any deviation blocks
 fallback. Tasks over 12,000 characters (most diff-carrying completion reviews) therefore skip the builder path and use

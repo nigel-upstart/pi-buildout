@@ -175,7 +175,11 @@ finalization/event sequence were also inspected as API evidence: executed-input 
 mutation accounting, and tool-result usage is execution-local while nested totals are merged later into transcript
 messages. The original router now exempts only revalidated orchestration from implementation evidence and counts only
 reported, correlated call usage once. No upstream code was copied; tool-result rewriting, usage estimates from prose or
-details, and accounting of unrelated/outer-wrapper totals were not adopted.
+details, and accounting of unrelated/outer-wrapper totals were not adopted. Follow-up accounting separates observed call
+IDs from single-verdict ownership, excludes native nested descendants, and drains stale usage for one second while
+keeping the delegation-run overlap guard. This and eager synchronous-classifier rejection cleanup are original
+repository safeguards using the same documented API boundaries, not copied Pi lifecycle/usage code. No manager adapter,
+new transport, estimated usage, or post-grace accounting recovery was adopted.
 
 ## Routing layer (`extensions/router`)
 
