@@ -407,6 +407,10 @@ export function createQuarantine(limit = 64) {
         reason,
       });
     },
+    reset(): void {
+      entries.clear();
+      overflow = false;
+    },
   };
 }
 
@@ -487,5 +491,11 @@ export function createDiscovery(deps: {
     },
     /** Eligibility changed (for example a new quarantine): abort, advance, and refresh on next access. */
     invalidate,
+    /** A replacement session starts without a publication, but an ignored abort still occupies its flight slot. */
+    reset(): void {
+      invalidate();
+      publication = undefined;
+      fingerprint = undefined;
+    },
   };
 }

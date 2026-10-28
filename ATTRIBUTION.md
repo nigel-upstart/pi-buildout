@@ -164,7 +164,12 @@ Builder-steered discovery (`extensions/router/discovery.ts`, `builder-runner.ts`
 reproduces the parameter shape and the published `isolated` description of tintinweb's normal `Agent` tool from the same
 `v0.22.0` release `src/index.ts` (MIT). Nothing tintinweb-specific is in the runtime: any tool qualifies only through
 its own published schema and documentation. Stale-while-refresh generations, declarative call plans, and candidate
-quarantine follow the approved design. No upstream code was copied.
+quarantine follow the approved design. No upstream code was copied. Installed Pi 1.3.0 `docs/sdk.md`,
+`docs/extensions.md`, `docs/session-format.md`, and `examples/sdk/13-session-runtime.ts` (canonical Pi repository,
+release revision and MIT license above) informed the session-replacement integration: capture plain session identity,
+invalidate discovery before contexts expire, and discard late publication/telemetry failure effects across generations.
+The reset retains an abort-ignoring flight until settlement rather than adopting a new session runtime or copying
+upstream lifecycle code; private context revival and eager discovery retries remain intentionally excluded.
 
 ## Routing layer (`extensions/router`)
 

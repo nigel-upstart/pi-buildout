@@ -571,7 +571,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   // Instance-closure state only: a verified negative discovery resets with reload/session replacement.
   const signalingRunner = createSignalingReviewRunner(pi.events);
   // Builder-steered fallback: closure-scoped SWR discovery and candidate quarantine, reset with the instance.
-  let discoveryCtx: ExtensionContext | undefined;
+  let discoveryOwner: { ctx: ExtensionContext; sessionId: string; generation: number } | undefined;
   const toolViews = (): ToolView[] => {
     const active = new Set(pi.getActiveTools());
     return pi.getAllTools().map((tool) => ({ ...tool, active: active.has(tool.name) }));
@@ -581,11 +581,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     tools: toolViews,
     excluded: (tool, tools) => quarantine.blocks(tool, tools),
     classify: (tools, signal) => {
-      const ctx = discoveryCtx;
-      if (!ctx) return Promise.reject(new Error("No session context"));
+      const owner = discoveryOwner;
+      if (owner?.generation !== sessionGeneration) return Promise.reject(new Error("No session context"));
       return (options.discoverDelegate ?? callStructuredWithPi)({
-        ctx,
-        registry: buildRegistrySnapshot(ctx, scope),
+        ctx: owner.ctx,
+        registry: buildRegistrySnapshot(owner.ctx, scope),
         tool: DISCOVERY_TOOL,
         systemPrompt: DISCOVERY_PROMPT,
         userPrompt: describeTools(tools),
@@ -593,12 +593,11 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       });
     },
     onEvent: (event) => {
-      if (discoveryCtx)
-        void record(discoveryCtx, "outcome", {
-          discovery: event.kind,
-          discoveryGeneration: event.generation,
-          discoveryFingerprint: event.fingerprint,
-        });
+      recordDiscoveryOutcome({
+        discovery: event.kind,
+        discoveryGeneration: event.generation,
+        discoveryFingerprint: event.fingerprint,
+      });
     },
   });
   const builderRunner = createBuilderReviewRunner({
@@ -609,7 +608,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       quarantine.add(call, reason);
       // Eligibility changed: abort any flight, advance the generation, and refresh only on next access.
       discovery.invalidate();
-      if (discoveryCtx) void record(discoveryCtx, "outcome", { candidateQuarantined: reason });
+      recordDiscoveryOutcome({ candidateQuarantined: reason });
     },
     dispatch: (content) => {
       pi.sendMessage(
@@ -618,9 +617,19 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       );
     },
   });
+  /** Never read an expired context, including when an already-started append rejects after replacement. */
+  function recordDiscoveryOutcome(data: Record<string, unknown>): void {
+    const owner = discoveryOwner;
+    if (owner?.generation !== sessionGeneration) return;
+    void appendTelemetry(owner.sessionId, {}, "outcome", data, {}).catch((error: unknown) => {
+      const current = discoveryOwner;
+      if (current?.sessionId === owner.sessionId && owner.generation === sessionGeneration)
+        disableForTelemetryFailure(current.ctx, error);
+    });
+  }
   /** Warm SWR discovery without making its availability a prerequisite for the shared review lifecycle. */
   function observeDelegationDiscovery(ctx: ExtensionContext): void {
-    discoveryCtx = ctx;
+    discoveryOwner = { ctx, sessionId: ctx.sessionManager.getSessionId(), generation: sessionGeneration };
     try {
       discovery.observe();
     } catch {
@@ -2767,6 +2776,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("session_shutdown", async (event, ctx) => {
     sessionGeneration++;
+    // Session replacement retains this extension instance; drop its context and session-local discovery evidence.
+    discoveryOwner = undefined;
+    discovery.reset();
+    quarantine.reset();
     cancelReview();
     clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
