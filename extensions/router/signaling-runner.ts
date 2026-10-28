@@ -268,7 +268,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
           // Lost or malformed acceptance: abort, keep listening to consume, and never resend.
           controller.abort();
           // Cancellation/deadline owns settlement now; a lost reply must not truncate its usage grace.
-          if (!stale) finish("uncertain");
+          if (!stale) finish("uncertain", { usage: early?.usage ?? zero });
           return;
         }
         childId = accepted;

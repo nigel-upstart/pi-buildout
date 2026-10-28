@@ -779,6 +779,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     extra: TelemetryExtra = {},
   ): Promise<void> {
     if (!telemetryHealthy || leaseOwner.state.mode === "off") return;
+    const generation = sessionGeneration;
     try {
       let endpointFields = {};
       if (extra.provider && extra.modelId) {
@@ -790,7 +791,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
       await appendTelemetry(ctx.sessionManager.getSessionId(), endpointFields, kind, data, extra);
     } catch (error) {
-      disableForTelemetryFailure(ctx, error);
+      // A pending append can reject after shutdown invalidates ctx. Same-session failures still fail closed.
+      if (generation === sessionGeneration) disableForTelemetryFailure(ctx, error);
     }
   }
 
