@@ -6694,6 +6694,141 @@ describe("routerExtension", () => {
     }
   });
 
+  for (const kind of ["plan", "completion"]) {
+    it(`keeps exact builder ${kind} review orchestration out of mutation evidence through native tool events`, async () => {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+      });
+      if (kind === "completion") {
+        fixture.parent.lifecycle = {
+          phase: "executing",
+          policy: "plan_review_then_completion_review",
+          taskFingerprint: "task-fingerprint",
+        };
+        fixture.parent.safetyEvidence.mutations = [
+          { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+        ];
+      }
+      try {
+        if (kind === "plan") await launchReview(fixture);
+        else {
+          await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+          await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+        }
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        const dispatch = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message;
+        const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(dispatch.content)[1]);
+        const nonce = /nonce="([a-f0-9]{32})"/.exec(input.prompt)[1];
+        const scopeFingerprint = /scopeFingerprint "([a-f0-9]{64})"/.exec(input.prompt)[1];
+        const evidence = fixture.latestLease().safetyEvidence;
+        await fixture.hooks.get("before_agent_start")(
+          { messageType: "custom", message: dispatch, systemPrompt: "system" },
+          fixture.ctx,
+        );
+        fixture.hooks.get("agent_start")({}, fixture.ctx);
+        fixture.hooks.get("tool_execution_start")(
+          { toolCallId: "review", toolName: "Agent", args: input },
+          fixture.ctx,
+        );
+        fixture.hooks.get("tool_call")({ toolCallId: "review", toolName: "Agent", input }, fixture.ctx);
+        const result = {
+          toolCallId: "review",
+          toolName: "Agent",
+          input,
+          isError: false,
+          content: [
+            {
+              type: "text",
+              text: `<router-result nonce="${nonce}">${JSON.stringify({ reviewKind: kind, scopeFingerprint, verdict: kind === "plan" ? "approve" : "pass", summary: "Native pipeline advice", evidence: ["Inspected scope"], findings: ["Pipeline finding"] })}</router-result>`,
+            },
+          ],
+        };
+        const original = structuredClone(result);
+        assert.equal(await fixture.hooks.get("tool_result")(result, fixture.ctx), undefined);
+        assert.deepEqual(result, original);
+        fixture.hooks.get("tool_execution_end")(
+          { toolCallId: "review", toolName: "Agent", result, isError: false },
+          fixture.ctx,
+        );
+        assert.equal(
+          fixture.latestLease().safetyEvidence,
+          evidence,
+          "orchestration never replaces reviewed implementation evidence",
+        );
+        await fixture.hooks.get("agent_end")({ messages: [] }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await waitForReview(() => fixture.sent.some((s) => /Pipeline finding/.test(s.message.content)));
+        assert.equal(fixture.latestLease().lifecycle.phase, kind === "plan" ? "executing" : "completed");
+        assert.equal(runner.calls.length, 0);
+      } finally {
+        await fixture.hooks.get("session_shutdown")({ reason: "quit" }, fixture.ctx);
+        fixture.restoreEnvironment();
+      }
+    });
+  }
+
+  it("keeps changed execution arguments and unrelated calls as completion mutation evidence", async () => {
+    for (const deviation of ["changed_arguments", "unrelated"]) {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+      });
+      fixture.parent.lifecycle = {
+        phase: "executing",
+        policy: "plan_review_then_completion_review",
+        taskFingerprint: "task-fingerprint",
+      };
+      fixture.parent.safetyEvidence.mutations = [
+        { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+      ];
+      try {
+        await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        const content = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message.content;
+        const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
+        const event = {
+          toolCallId: "mutation",
+          toolName: deviation === "unrelated" ? "write" : "Agent",
+          input: deviation === "unrelated" ? { path: "changed", content: "x" } : input,
+        };
+        fixture.hooks.get("agent_start")({}, fixture.ctx);
+        fixture.hooks.get("tool_execution_start")(
+          { toolCallId: event.toolCallId, toolName: event.toolName, args: event.input },
+          fixture.ctx,
+        );
+        fixture.hooks.get("tool_call")(event, fixture.ctx);
+        // A later extension mutates the initially exact arguments before execution.
+        if (deviation === "changed_arguments") event.input.isolated = false;
+        const result = { ...event, content: [{ type: "text", text: "done" }], isError: false };
+        await fixture.hooks.get("tool_result")(result, fixture.ctx);
+        fixture.hooks.get("tool_execution_end")(
+          { toolCallId: event.toolCallId, toolName: event.toolName, result, isError: false },
+          fixture.ctx,
+        );
+        assert.equal(fixture.latestLease().safetyEvidence.mutations.length, 2, deviation);
+        await fixture.hooks.get("agent_end")({ messages: [] }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await flushMicrotasks();
+        assert.equal(
+          fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+          false,
+        );
+        assert.equal(runner.calls.length, 0, "a deviated child never authorizes overlapping fallback");
+      } finally {
+        await fixture.hooks.get("session_shutdown")({ reason: "quit" }, fixture.ctx);
+        fixture.restoreEnvironment();
+      }
+    }
+  });
+
   it("never starts SDK fallback after an off-plan call, including after a failed planned spawn", async () => {
     for (const failedSpawn of [false, true]) {
       const runner = controlledRunner();
@@ -6734,6 +6869,69 @@ describe("routerExtension", () => {
         assert.equal(runner.calls.length, 0, "the unverified child must not overlap an SDK reviewer");
         assert.equal(fixture.selectedModels.length, 0);
       } finally {
+        fixture.restoreEnvironment();
+      }
+    }
+  });
+
+  it("charges reported builder tool usage before budgeting SDK fallback", async () => {
+    for (const cost of [0.4, 1.25]) {
+      const runner = controlledRunner();
+      const events = [];
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+        telemetry: { read: async () => [], append: async (event) => events.push(event) },
+      });
+      try {
+        await launchReview(fixture);
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        const content = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message.content;
+        const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
+        fixture.hooks.get("agent_start")({}, fixture.ctx);
+        fixture.hooks.get("tool_execution_start")(
+          { toolCallId: "failed-review", toolName: "Agent", args: input },
+          fixture.ctx,
+        );
+        fixture.hooks.get("tool_call")({ toolCallId: "failed-review", toolName: "Agent", input }, fixture.ctx);
+        const result = {
+          toolCallId: "failed-review",
+          toolName: "Agent",
+          input,
+          content: [{ type: "text", text: "Unknown parameter: isolated" }],
+          isError: true,
+          usage: {
+            input: 100,
+            output: 20,
+            cacheRead: 30,
+            cacheWrite: 10,
+            totalTokens: 160,
+            cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+          },
+        };
+        await fixture.hooks.get("tool_result")(result, fixture.ctx);
+        fixture.hooks.get("tool_execution_end")(
+          { toolCallId: "failed-review", toolName: "Agent", result, isError: true },
+          fixture.ctx,
+        );
+        await fixture.hooks.get("agent_end")({ messages: [] }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await waitForReview(() => events.some((e) => e.data.reviewRunner === "builder"));
+        const outcome = events.find((e) => e.data.reviewRunner === "builder").data;
+        assert.equal(outcome.reviewCost, cost);
+        assert.equal(outcome.inputTokens, 140);
+        assert.equal(outcome.outputTokens, 20);
+        if (cost < 1) {
+          await waitForReview(() => runner.calls.length === 1);
+          assert.equal(runner.calls[0].request.maxCost, 1 - cost);
+        } else {
+          await flushMicrotasks();
+          assert.equal(runner.calls.length, 0, "reported spend exhausts the budget before any SDK launch");
+        }
+      } finally {
+        await fixture.hooks.get("session_shutdown")({ reason: "quit" }, fixture.ctx);
         fixture.restoreEnvironment();
       }
     }

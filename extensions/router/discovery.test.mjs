@@ -544,6 +544,70 @@ const managerAnswer = {
   isolationEvidence: "If true, the child loads no extensions.",
 };
 
+const toolUsage = (cost = 0.25) => ({
+  input: 100,
+  output: 20,
+  cacheRead: 30,
+  cacheWrite: 10,
+  totalTokens: 160,
+  cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+});
+
+test("builder usage includes each correlated tool result once, not nested children or outer aggregates", async () => {
+  const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });
+  const handle = h.runner.start(reviewRequest());
+  const args = argsFrom(h.sent[0]);
+  h.runner.onToolCall({ toolCallId: "outer/1", parentToolCallId: "outer", toolName: "subagent", input: args });
+  const spawn = {
+    ...resultEvent("Started child agent-42", false, "outer/1", args),
+    toolName: "subagent",
+    parentToolCallId: "outer",
+    usage: toolUsage(),
+  };
+  h.runner.onToolResult({ ...spawn, toolCallId: "outer/1/1", parentToolCallId: "outer/1", usage: toolUsage(9) });
+  h.runner.onToolResult(spawn);
+  h.runner.onToolResult(spawn); // Repeated notifications must not bill the same call twice.
+  h.runner.onToolResult({
+    ...spawn,
+    toolCallId: "outer",
+    toolName: "codemode",
+    parentToolCallId: undefined,
+    usage: toolUsage(9.25),
+  });
+  const input = { action: "wait", id: "agent-42" };
+  h.runner.onToolCall({ toolCallId: "wait", toolName: "subagent", input });
+  const block = `<router-result nonce="${nonceOf(args.task)}">${JSON.stringify(verdict)}</router-result>`;
+  const event = { ...resultEvent(block, false, "wait", input), toolName: "subagent", usage: toolUsage(0.5) };
+  const before = structuredClone(event);
+  h.runner.onToolResult(event);
+  h.runner.onToolResult(event);
+  assert.deepEqual(event, before, "usage and payloads are observational only");
+  h.runner.onSettled();
+  const result = await handle.result;
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.usage, { cost: 0.75, inputTokens: 280, outputTokens: 40 });
+});
+
+for (const status of ["completed", "failed", "uncertain", "cancelled", "timeout"]) {
+  test(`builder retains reported tool usage for ${status}`, async () => {
+    const h = builderHarness();
+    const handle = h.runner.start(reviewRequest({ timeoutMs: status === "timeout" ? 10 : 5_000 }));
+    const args = argsFrom(h.sent[0]);
+    h.runner.onToolCall({ toolCallId: "call-1", toolName: "Agent", input: args });
+    const text =
+      status === "completed"
+        ? `<router-result nonce="${nonceOf(args.prompt)}">${JSON.stringify(verdict)}</router-result>`
+        : "Provider unavailable";
+    h.runner.onToolResult({ ...resultEvent(text, status === "failed", "call-1", args), usage: toolUsage() });
+    if (status === "cancelled") handle.cancel();
+    else if (status !== "timeout") h.runner.onSettled();
+    const result = await handle.result;
+    assert.equal(result.status, status);
+    assert.deepEqual(result.usage, { cost: 0.25, inputTokens: 140, outputTokens: 20 });
+    h.runner.onSettled();
+  });
+}
+
 test("a companion wait counts only when it matches its template and the spawned child id", async () => {
   const run = async (resultInput) => {
     const h = builderHarness({ tools: [managerTool()], answer: managerAnswer });

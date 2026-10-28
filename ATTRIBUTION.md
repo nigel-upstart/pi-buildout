@@ -169,7 +169,13 @@ quarantine follow the approved design. No upstream code was copied. Installed Pi
 release revision and MIT license above) informed the session-replacement integration: capture plain session identity,
 invalidate discovery before contexts expire, and discard late publication/telemetry failure effects across generations.
 The reset retains an abort-ignoring flight until settlement rather than adopting a new session runtime or copying
-upstream lifecycle code; private context revival and eager discovery retries remain intentionally excluded.
+upstream lifecycle code; private context revival and eager discovery retries remain intentionally excluded. Installed Pi
+1.3.0 `ToolResultEventBase`, `AgentSession._afterToolCall`, `NestedToolCallRunner`, and the agent-core
+finalization/event sequence were also inspected as API evidence: executed-input observation precedes execution-end
+mutation accounting, and tool-result usage is execution-local while nested totals are merged later into transcript
+messages. The original router now exempts only revalidated orchestration from implementation evidence and counts only
+reported, correlated call usage once. No upstream code was copied; tool-result rewriting, usage estimates from prose or
+details, and accounting of unrelated/outer-wrapper totals were not adopted.
 
 ## Routing layer (`extensions/router`)
 
