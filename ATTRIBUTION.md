@@ -759,6 +759,22 @@ The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from 
 router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
 evidence review; only the version numbers are shared with upstream.
 
+## Effect (conceptual evaluation only)
+
+- Sources: Effect documentation (<https://effect.website/docs/v4/onboarding>,
+  <https://effect.website/docs/v4/getting-started/the-effect-type>,
+  <https://effect.website/docs/v3/getting-started/why-effect>), Hacker News discussion of Effect 4.0
+  (<https://news.ycombinator.com/item?id=49925812>), and TypeScriptWorld's Effect vs fp-ts comparison
+  (<https://typescriptworld.com/effect-vs-fp-ts-error-tracking-and-the-two-learning-curves>).
+- Revision reviewed: `effect@4.0.2` (npm `latest` at 2026-10-08). License declared by the package: MIT.
+
+Ideas studied: structuring timeouts, abort propagation, and timer cleanup as program structure; incremental adoption at
+Promise boundaries. The published `effect@4.0.2` package was installed in a scratch directory only to measure import
+time and size and to confirm the `effect/testing` `TestClock` export; it is not a dependency of this repository. No
+Effect source code or documentation text has been copied. See
+[`specs/effect-adoption-evaluation.md`](specs/effect-adoption-evaluation.md) for the evaluation and the intentionally
+unadopted parts of the library.
+
 ## Pi 1.1.0 supported-install discovery and registry refresh
 
 - Source: [Pi installer](https://pi.dev/install.sh) and `@earendil-works/pi-coding-agent@1.1.0` /
