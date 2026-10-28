@@ -499,9 +499,10 @@ because a builder-launched child cannot be cancelled by the router; no replaceme
 Reported Pi tool usage is accounted once per correlated call ID, including duplicate planned spawns and companion calls
 that make verdict ownership uncertain. Nested descendants and outer-wrapper aggregates are not counted again.
 Cancellation or timeout makes advice stale immediately, but retains accounting for one second, even if cancellation
-precedes the first observed call. Spawn/wait results during that grace can contribute usage, never advice; later usage
-is best-effort and cannot update a settled result. The delegation run remains guarded until it settles independently of
-the accounting grace, and no new attempt overlaps either owner.
+precedes the first observed call. Spawn/wait results during that grace can contribute usage, never advice; once the
+delegation run settles, no new call IDs are admitted from later turns. Usage after the grace is best-effort and cannot
+update a settled result. The run remains guarded until it settles independently of the accounting grace, and no new
+attempt overlaps either owner.
 
 The builder must copy the arguments exactly, in its own context and at builder output pricing, and any deviation blocks
 fallback. Tasks over 12,000 characters (most diff-carrying completion reviews) therefore skip the builder path and use

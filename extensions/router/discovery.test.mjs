@@ -737,6 +737,22 @@ test("cancellation before the first call still drains a later spawn and companio
   h.runner.onSettled();
 });
 
+test("settled delegation drains only previously observed calls, never calls from the next turn", async () => {
+  const h = builderHarness();
+  const handle = h.runner.start(reviewRequest());
+  const input = argsFrom(h.sent[0]);
+  h.runner.onToolCall({ toolCallId: "owned", toolName: "Agent", input });
+  handle.cancel();
+  h.runner.onSettled();
+  h.runner.onToolCall({ toolCallId: "unrelated", toolName: "Agent", input });
+  h.runner.onToolResult({ ...resultEvent("later review", false, "unrelated", input), usage: toolUsage(4) });
+  h.runner.onToolResult({ ...resultEvent("owned review", false, "owned", input), usage: toolUsage() });
+  assert.deepEqual(await handle.result, {
+    status: "cancelled",
+    usage: { cost: 0.25, inputTokens: 140, outputTokens: 20 },
+  });
+});
+
 test("builder stale accounting is bounded even without a result, while a still-running delegation stays guarded", async () => {
   const h = builderHarness();
   const handle = h.runner.start(reviewRequest());
