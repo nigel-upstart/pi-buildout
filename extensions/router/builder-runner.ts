@@ -246,7 +246,8 @@ export function createBuilderReviewRunner(deps: {
     ...runner,
     onToolCall(event: ToolCallEvent): void {
       const attempt = open;
-      if (!attempt) return;
+      // A stale attempt can outlive its run for usage drainage. Never attach a new turn's calls to it.
+      if (!attempt || !runInFlight) return;
       observeAccountingCall(attempt, event);
       if (attempt.stale) return;
       const { call } = attempt;
