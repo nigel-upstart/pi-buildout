@@ -453,8 +453,8 @@ export function createDiscovery(deps: {
       owned.controller.abort();
       report("timeout");
     }, timeoutMs);
-    void deps
-      .classify(tools, owned.controller.signal)
+    // Invoke eagerly, but normalize a synchronous snapshot/classifier throw into the same rejection cleanup.
+    void (async () => deps.classify(tools, owned.controller.signal))()
       .then(
         (answer) => {
           // An ignored abort or a superseded generation can never publish.
