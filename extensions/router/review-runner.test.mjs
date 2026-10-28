@@ -199,7 +199,7 @@ for (const reason of ["error", "aborted"]) {
   test(`SDK reviewer fails a valid verdict when the session then ends with stopReason ${reason}`, async (t) => {
     const f = await fixture(t);
     let calls = 0;
-    f.runtime.streamSimple = (model) => {
+    f.respond = (model) => {
       if (calls++ === 0)
         return streamMessage(
           model,
@@ -224,7 +224,7 @@ for (const reason of ["error", "aborted"]) {
 
 test("SDK reviewer reports usage from the final aborted message after cancellation or timeout", async (t) => {
   const f = await fixture(t);
-  f.runtime.streamSimple = (model, _context, options) => {
+  f.respond = (model, _context, options) => {
     const stream = createAssistantMessageEventStream();
     options.signal.addEventListener(
       "abort",
@@ -278,7 +278,7 @@ test("SDK reviewer starts no provider request when cancelled while prompt awaits
     });
   });
   let requests = 0;
-  f.runtime.streamSimple = (model) => {
+  f.respond = (model) => {
     requests++;
     return streamMessage(model, []);
   };

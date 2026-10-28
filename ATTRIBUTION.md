@@ -186,7 +186,8 @@ API (used as the no-network fake provider, following the custom-provider stream 
 `sendMessage(..., { triggerTurn: true })`; `tool_result` fields for direct and `ctx.executeTool()` nested calls; and the
 event bus's synchronous `EventEmitter` delivery and reload-time listener invalidation. The full-control example's
 empty-resource `ResourceLoader` shape was already adopted by `review-runner.ts`; inline `extensionFactories` follow the
-extensions example.
+extensions example. The merged separate-session reviewer's provider-error, aborted-usage, and pending-auth cancellation
+tests also use this shared custom API fixture rather than replacing the parent runtime's stream method.
 
 Only behavior was used: no Pi code, tests, or documentation prose was copied or modified. Intentionally not adopted: a
 public `ctx.modelRegistry.streamSimple()`-backed agent loop replacing the accepted private runtime field, Pi's own
