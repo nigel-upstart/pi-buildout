@@ -245,9 +245,10 @@ export class ManagedSubagent {
   private error: string | undefined;
   private lastAssistantText: string | undefined;
   private finalAssistantText: string | undefined;
-  // An interrupted operation can still deliver its start and final messages; until new work is sent, no message
-  // becomes the answer. Only sending new work clears it, because the interrupted run's agent_start may arrive late.
+  // An interrupted operation can still deliver its start and final messages. Queued work only restores answer
+  // eligibility when its user message starts, because the interrupted run's agent_start may arrive late.
   private interruptedOperation = false;
+  private queuedAfterInterrupt = new Set<string>();
   private sessionFile: string | undefined;
   private pendingMessages = 0;
   private turns = 0;
@@ -309,6 +310,7 @@ export class ManagedSubagent {
   async start(): Promise<void> {
     this.finalAssistantText = undefined;
     this.interruptedOperation = false;
+    this.queuedAfterInterrupt.clear();
     await this.request({ type: "prompt", message: buildKickoffPrompt(this.task, this.options.contextSummary) });
     if (this.state === "starting") this.state = "running";
     this.touch();
@@ -318,10 +320,11 @@ export class ManagedSubagent {
     return this.serializeControl(async () => {
       this.assertControllable();
       if (this.state === "running" || this.state === "interrupting") {
-        await this.request({ type: "steer", message });
+        await this.queueMessage("steer", message);
       } else {
         this.finalAssistantText = undefined;
         this.interruptedOperation = false;
+        this.queuedAfterInterrupt.clear();
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -333,10 +336,11 @@ export class ManagedSubagent {
     return this.serializeControl(async () => {
       this.assertControllable();
       if (this.state === "running" || this.state === "interrupting") {
-        await this.request({ type: "follow_up", message });
+        await this.queueMessage("follow_up", message);
       } else {
         this.finalAssistantText = undefined;
         this.interruptedOperation = false;
+        this.queuedAfterInterrupt.clear();
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -353,6 +357,7 @@ export class ManagedSubagent {
       // Interrupted work has no final answer, even if the abort races a completed message.
       this.finalAssistantText = undefined;
       this.interruptedOperation = true;
+      this.queuedAfterInterrupt.clear();
       this.touch();
       try {
         await this.request({ type: "abort" });
@@ -488,6 +493,17 @@ export class ManagedSubagent {
     return this.state === "failed" || this.state === "stopped" || (this.state === "idle" && this.pendingMessages === 0);
   }
 
+  private async queueMessage(type: "steer" | "follow_up", message: string): Promise<void> {
+    // Register before writing: the child's message_start can precede the RPC acknowledgement.
+    if (this.interruptedOperation) this.queuedAfterInterrupt.add(message);
+    try {
+      await this.request({ type, message });
+    } catch (error) {
+      this.queuedAfterInterrupt.delete(message);
+      throw error;
+    }
+  }
+
   private finishInterrupt(): void {
     if (this.state === "interrupting") this.state = "idle";
   }
@@ -495,6 +511,7 @@ export class ManagedSubagent {
   private restoreInterrupt(previousState: ChildState): void {
     // The abort failed, so the operation continues and its answer is genuine.
     this.interruptedOperation = false;
+    this.queuedAfterInterrupt.clear();
     if (this.state === "interrupting") this.state = previousState;
   }
 
@@ -689,6 +706,15 @@ export class ManagedSubagent {
       case "message_update": {
         const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
         if (delta?.type === "text_delta" && typeof delta.delta === "string") this.appendTranscript(delta.delta);
+        break;
+      }
+      case "message_start": {
+        const message = event.message as Record<string, unknown> | undefined;
+        if (message?.role === "user" && this.queuedAfterInterrupt.has(extractTextContent(message.content))) {
+          this.interruptedOperation = false;
+          this.queuedAfterInterrupt.clear();
+          this.finalAssistantText = undefined;
+        }
         break;
       }
       case "message_end": {

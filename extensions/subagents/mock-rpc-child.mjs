@@ -7,6 +7,9 @@ let prompts = 0;
 let activeOperation = 0;
 let abortFails = false;
 let lateFinal = false;
+let abortTimesOut = false;
+/** @type {{ type: string, message: string } | undefined} */
+let queuedWork;
 
 /** @param {unknown} value */
 function send(value) {
@@ -29,6 +32,11 @@ function handleAbort(command) {
     send({ id: command.id, type: "response", command: "abort", success: false, error: "mock abort failure" });
     return;
   }
+  if (abortTimesOut) {
+    // Model an abort that returns after its idle deadline while the run is still active.
+    send({ id: command.id, type: "response", command: "abort", success: true });
+    return;
+  }
   streaming = false;
   activeOperation++;
   if (lateFinal) {
@@ -42,6 +50,48 @@ function handleAbort(command) {
   send({ type: "agent_settled" });
 }
 
+/** @param {{ id: unknown, type: string, message: string }} command */
+function handleQueuedWork(command) {
+  if (abortTimesOut) {
+    queuedWork = command;
+    send({ type: "queue_update", steering: [], followUp: [command.message] });
+    // Neither a delayed start nor the old user message makes this late answer eligible.
+    send({ type: "agent_start" });
+    send({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "old task" }] } });
+    send({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "late-answer" }], stopReason: "stop" },
+    });
+  }
+  send({ id: command.id, type: "response", command: command.type, success: true });
+}
+
+/** @param {{ id: unknown, type: string }} command */
+function finishQueuedWork(command) {
+  if (!queuedWork) return;
+  // Follow-ups can start another run; steering can begin within the existing run.
+  if (queuedWork.type === "follow_up") send({ type: "agent_start" });
+  send({ type: "queue_update", steering: [], followUp: [] });
+  send({ type: "message_start", message: { role: "user", content: [{ type: "text", text: queuedWork.message }] } });
+  send({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "queued-answer" }], stopReason: "stop" },
+  });
+  queuedWork = undefined;
+  streaming = false;
+  send({ type: "agent_settled" });
+  send({ id: command.id, type: "response", command: command.type, success: true });
+}
+
+/** @param {{ id: unknown, type: string, message: string }} command */
+function handleControlCommand(command) {
+  if (command.type === "abort") handleAbort(command);
+  else if (command.type === "steer" || command.type === "follow_up") handleQueuedWork(command);
+  else if (command.type === "finish_queued") finishQueuedWork(command);
+  else return false;
+  return true;
+}
+
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const command = JSON.parse(line);
@@ -52,7 +102,7 @@ input.on("line", (line) => {
       type: "response",
       command: "get_state",
       success: true,
-      data: { isStreaming: streaming, pendingMessageCount: 0, sessionFile: "/tmp/mock-child.jsonl" },
+      data: { isStreaming: streaming, pendingMessageCount: queuedWork ? 1 : 0, sessionFile: "/tmp/mock-child.jsonl" },
     });
     return;
   }
@@ -70,14 +120,7 @@ input.on("line", (line) => {
     });
     return;
   }
-  if (command.type === "abort") {
-    handleAbort(command);
-    return;
-  }
-  if (command.type === "steer" || command.type === "follow_up") {
-    send({ id: command.id, type: "response", command: command.type, success: true });
-    return;
-  }
+  if (handleControlCommand(command)) return;
   if (command.type === "timeout") {
     process.stderr.write("mock timeout diagnostic\n");
     return;
@@ -94,6 +137,7 @@ input.on("line", (line) => {
     streaming = true;
     abortFails = String(command.message).includes("ABORT_FAIL");
     lateFinal = String(command.message).includes("LATE_FINAL");
+    abortTimesOut = String(command.message).includes("ABORT_TIMEOUT");
     send({ id: command.id, type: "response", command: "prompt", success: true });
     send({ type: "agent_start" });
     if (String(command.message).includes("SLOW_WAIT")) {
@@ -101,7 +145,7 @@ input.on("line", (line) => {
     }
     setTimeout(
       () => {
-        if (operation !== activeOperation || !streaming) return;
+        if (operation !== activeOperation || !streaming || abortTimesOut) return;
         if (String(command.message).includes("ABORTED_COMPACT")) {
           // An aborted compaction must not count toward the compaction total.
           send({ type: "compaction_end", aborted: true, result: undefined });

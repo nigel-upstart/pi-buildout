@@ -309,6 +309,40 @@ test("only a completed non-empty response for the current operation is the final
   assert.equal(racing.snapshot().finalAssistantText, undefined, "a message racing the abort is not the answer");
 });
 
+for (const action of /** @type {const} */ (["followUp", "steer"])) {
+  test(`${action} after an abort timeout accepts only the queued work's final answer`, async (t) => {
+    const child = new ManagedSubagent({
+      id: `abort-timeout-${action}`,
+      name: "abort-timeout-child",
+      task: "ABORT_TIMEOUT",
+      model: "test/model",
+      effort: "off",
+      contextSummary: "",
+      cwd: process.cwd(),
+      command: process.execPath,
+      args: [mockPath],
+      env: { ...process.env },
+      classification: "explicit",
+    });
+    t.after(async () => child.stop());
+    await child.start();
+    await child.interrupt();
+    await child.refresh();
+    assert.equal(child.snapshot().state, "running", "the child is still running after abort returns");
+    await child[action]("new queued task");
+    assert.equal(await child.waitForIdle(10), false);
+    assert.equal(child.snapshot().lastAssistantText, "late-answer", "late text remains diagnostic");
+    assert.equal(child.snapshot().finalAssistantText, undefined, "queueing must not admit the old answer");
+
+    const testOnlyChild = /** @type {any} */ (child);
+    await testOnlyChild.request({ type: "finish_queued" });
+    for (let wait = 0; wait < 2; wait++) {
+      assert.equal(await child.waitForIdle(500), true);
+      assert.equal(child.snapshot().finalAssistantText, "queued-answer");
+    }
+  });
+}
+
 test("wait times out without stopping the child", async (t) => {
   const child = new ManagedSubagent({
     id: "slow123",
