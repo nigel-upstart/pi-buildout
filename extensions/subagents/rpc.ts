@@ -11,6 +11,9 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const FORCE_KILL_DELAY_MS = 3_000;
 const TERMINAL_CLEANUP_TIMEOUT_MS = 10_000;
 
+// Only an explicit RPC rejection proves that an abort did not take effect.
+class RpcRejectionError extends Error {}
+
 function processListInvocation(): { command: string; args: string[]; timeout: number } {
   return process.platform === "win32"
     ? {
@@ -248,6 +251,8 @@ export class ManagedSubagent {
   // An interrupted operation can still deliver its start and final messages; until new work is sent, no message
   // becomes the answer. Only sending new work clears it, because the interrupted run's agent_start may arrive late.
   private interruptedOperation = false;
+  // Never expose this candidate while abort is pending; serialized control keeps it within this operation.
+  private abortAttempt: { wasInterrupted: boolean; finalAssistantText: string | undefined } | undefined;
   private sessionFile: string | undefined;
   private pendingMessages = 0;
   private turns = 0;
@@ -349,6 +354,7 @@ export class ManagedSubagent {
       this.assertControllable();
       if (this.state === "idle") return;
       const previousState = this.state;
+      this.abortAttempt = { wasInterrupted: this.interruptedOperation, finalAssistantText: this.finalAssistantText };
       this.state = "interrupting";
       // Interrupted work has no final answer, even if the abort races a completed message.
       this.finalAssistantText = undefined;
@@ -360,9 +366,10 @@ export class ManagedSubagent {
         // which case no later agent_settled event is guaranteed.
         this.finishInterrupt();
       } catch (error) {
-        this.restoreInterrupt(previousState);
+        this.restoreInterrupt(previousState, error instanceof RpcRejectionError);
         throw error;
       } finally {
+        this.abortAttempt = undefined;
         this.touch();
       }
     });
@@ -492,9 +499,13 @@ export class ManagedSubagent {
     if (this.state === "interrupting") this.state = "idle";
   }
 
-  private restoreInterrupt(previousState: ChildState): void {
-    // The abort failed, so the operation continues and its answer is genuine.
-    this.interruptedOperation = false;
+  private restoreInterrupt(previousState: ChildState, explicitlyRejected: boolean): void {
+    // Timeouts, write failures and shutdown cannot establish whether the abort took effect.
+    const attempt = this.abortAttempt;
+    if (explicitlyRejected && attempt && !this.terminationStarted) {
+      this.interruptedOperation = attempt.wasInterrupted;
+      if (!attempt.wasInterrupted) this.finalAssistantText = attempt.finalAssistantText;
+    }
     if (this.state === "interrupting") this.state = previousState;
   }
 
@@ -650,7 +661,9 @@ export class ManagedSubagent {
       clearTimeout(pending.timer);
       this.pending.delete(event.id);
       if (event.success === false)
-        pending.reject(new Error(typeof event.error === "string" ? event.error : `${pending.command} failed.`));
+        pending.reject(
+          new RpcRejectionError(typeof event.error === "string" ? event.error : `${pending.command} failed.`),
+        );
       else pending.resolve(event);
       return;
     }
@@ -672,6 +685,7 @@ export class ManagedSubagent {
       case "agent_start":
         this.state = "running";
         this.finalAssistantText = undefined;
+        if (this.abortAttempt) this.abortAttempt.finalAssistantText = undefined;
         break;
       case "agent_settled":
         this.activeTools.clear();
@@ -698,10 +712,12 @@ export class ManagedSubagent {
           if (text) this.lastAssistantText = appendBoundedTail("", text, MAX_TRANSCRIPT_CHARS);
           // Only a completed, non-empty response is the operation's answer; working text before a tool call,
           // aborted partial text, and an empty final message are diagnostics.
-          this.finalAssistantText =
-            message.stopReason === "stop" && text.trim() && !this.interruptedOperation
+          const finalText =
+            message.stopReason === "stop" && text.trim()
               ? appendBoundedTail("", text, MAX_TRANSCRIPT_CHARS)
               : undefined;
+          this.finalAssistantText = this.interruptedOperation ? undefined : finalText;
+          if (this.abortAttempt) this.abortAttempt.finalAssistantText = finalText;
           if (message.stopReason === "error") {
             this.fail(
               typeof message.errorMessage === "string" ? message.errorMessage : "Child model returned an error.",
