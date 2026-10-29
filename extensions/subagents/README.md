@@ -30,6 +30,10 @@ response: working text before a tool call, an empty final message, interrupted w
 do not count. Failure/stopped state and errors remain visible, so “settled” does not imply success. Usage metadata is
 retained.
 
+When an answer completes during an interrupt attempt, it stays hidden until the abort outcome is known. An explicit
+abort rejection restores the completed answer; a successful abort discards it. An unknown outcome such as an RPC timeout
+keeps it hidden, including after a late abort response, until new work is sent.
+
 A timeout returns a concise still-active receipt and status metadata only—no partial assistant output, task echo,
 transcript, tool arguments, or stderr. It does not stop or interrupt the child. Call `wait` again for the result.
 Cancellation likewise does not stop the child. These output rules apply to both the displayed content and result

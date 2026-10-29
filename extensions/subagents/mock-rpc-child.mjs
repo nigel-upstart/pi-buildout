@@ -7,6 +7,9 @@ let prompts = 0;
 let activeOperation = 0;
 let abortFails = false;
 let lateFinal = false;
+let holdAbort = false;
+/** @type {{ id: unknown } | undefined} */
+let heldAbort;
 
 /** @param {unknown} value */
 function send(value) {
@@ -25,27 +28,59 @@ const UNEXPECTED_EXITS = [
 
 /** @param {{ id: unknown }} command */
 function handleAbort(command) {
+  if (lateFinal) {
+    // Deliver the completed operation before either abort outcome, without relying on timers.
+    streaming = false;
+    activeOperation++;
+    send({ type: "agent_start" });
+    send({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "late-answer" }], stopReason: "stop" },
+    });
+    send({ type: "agent_settled" });
+  }
+  if (holdAbort) {
+    heldAbort = command;
+    return;
+  }
   if (abortFails) {
     send({ id: command.id, type: "response", command: "abort", success: false, error: "mock abort failure" });
     return;
   }
   streaming = false;
   activeOperation++;
-  if (lateFinal) {
-    // A completed message can race the abort and arrive after the parent started interrupting.
-    send({
-      type: "message_end",
-      message: { role: "assistant", content: [{ type: "text", text: "late-answer" }], stopReason: "stop" },
-    });
-  }
   send({ id: command.id, type: "response", command: "abort", success: true });
   send({ type: "agent_settled" });
+}
+
+/** @param {{ type: string, id: unknown, events?: unknown[], success?: boolean }} command */
+function handleAbortTestControl(command) {
+  if (command.type === "emit_events") {
+    for (const event of command.events ?? []) send(event);
+    send({ id: command.id, type: "response", success: true });
+    return true;
+  }
+  if (command.type === "release_abort") {
+    if (heldAbort) {
+      send({
+        id: heldAbort.id,
+        type: "response",
+        command: "abort",
+        success: command.success,
+        error: "mock abort failure",
+      });
+      heldAbort = undefined;
+    }
+    send({ id: command.id, type: "response", success: true });
+    return true;
+  }
+  return false;
 }
 
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const command = JSON.parse(line);
-  if (command.type === "extension_ui_response") return;
+  if (command.type === "extension_ui_response" || handleAbortTestControl(command)) return;
   if (command.type === "get_state") {
     send({
       id: command.id,
@@ -94,6 +129,7 @@ input.on("line", (line) => {
     streaming = true;
     abortFails = String(command.message).includes("ABORT_FAIL");
     lateFinal = String(command.message).includes("LATE_FINAL");
+    holdAbort = String(command.message).includes("HOLD_ABORT");
     send({ id: command.id, type: "response", command: "prompt", success: true });
     send({ type: "agent_start" });
     if (String(command.message).includes("SLOW_WAIT")) {
