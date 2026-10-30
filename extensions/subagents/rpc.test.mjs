@@ -309,6 +309,27 @@ test("only a completed non-empty response for the current operation is the final
   assert.equal(racing.snapshot().finalAssistantText, undefined, "a message racing the abort is not the answer");
 });
 
+// Pi removes a delivered entry from its queue before announcing the user message.
+/** @param {"followUp" | "steer"} action @param {string} text */
+const start = (action, text) => [
+  ...(action === "followUp" ? [{ type: "agent_start" }] : []),
+  { type: "queue_update", steering: [], followUp: [] },
+  { type: "message_start", message: { role: "user", content: [{ type: "text", text }] } },
+];
+/** @param {string} text */
+const finish = (text) => [
+  { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } },
+  { type: "agent_settled" },
+];
+
+/** @param {ManagedSubagent} child @param {string | undefined} expected */
+async function assertWaits(child, expected) {
+  for (let wait = 0; wait < 2; wait++) {
+    assert.equal(await child.waitForIdle(500), true);
+    assert.equal(child.snapshot().finalAssistantText, expected);
+  }
+}
+
 for (const action of /** @type {const} */ (["followUp", "steer"])) {
   test(`${action} after an abort timeout accepts only the queued work's final answer`, async (t) => {
     const { child, driver, request } = await heldAbortChild(t, "SLOW_WAIT HOLD_ABORT HOLD_RUNNING");
@@ -354,6 +375,107 @@ for (const action of /** @type {const} */ (["followUp", "steer"])) {
       assert.equal(child.snapshot().finalAssistantText, "queued-answer");
     }
   });
+
+  test(`${action} after an abort timeout recovers input that Pi transforms before queueing`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t);
+    await child[action]("EXPAND_QUEUE task");
+    await request({
+      type: "emit_events",
+      events: [...start(action, "expanded: EXPAND_QUEUE task"), ...finish("queued-answer")],
+    });
+    await assertWaits(child, "queued-answer");
+  });
+
+  test(`${action} after an abort timeout ignores queue entries that predate the interrupt`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t, {
+      before: [{ type: "queue_update", steering: [], followUp: ["pre-interrupt task"] }],
+    });
+    await child[action]("new queued task");
+    // The acknowledgement can precede the announcement; the claim waits for the next new entry.
+    await request({
+      type: "emit_events",
+      events: [
+        { type: "queue_update", steering: [], followUp: ["pre-interrupt task", "transformed task"] },
+        ...start(action, "pre-interrupt task"),
+        ...finish("old-answer"),
+      ],
+    });
+    await assertWaits(child, undefined);
+    await request({ type: "emit_events", events: [...start(action, "transformed task"), ...finish("queued-answer")] });
+    await assertWaits(child, "queued-answer");
+  });
+
+  test(`${action} queue timeout keeps recovery open for late acceptance`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t, { queueTimeoutMs: 25 });
+    await assert.rejects(child[action]("HOLD_QUEUE task"), /RPC timeout/);
+    await request({
+      type: "emit_events",
+      events: [
+        { type: "queue_update", steering: [], followUp: ["expanded: HOLD_QUEUE task"] },
+        ...start(action, "expanded: HOLD_QUEUE task"),
+        ...finish("queued-answer"),
+      ],
+    });
+    await assertWaits(child, "queued-answer");
+  });
+
+  test(`${action} explicitly rejected by the child cannot restore answer eligibility`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t);
+    await assert.rejects(child[action]("REJECT_QUEUE task"), /mock queue rejection/);
+    await request({ type: "emit_events", events: [...start(action, "REJECT_QUEUE task"), ...finish("old-answer")] });
+    await assertWaits(child, undefined);
+  });
+
+  for (const rejected of [true, false]) {
+    for (const startDuring of [true, false]) {
+      const outcome = rejected ? "recovers after a rejected retry" : "stays interrupted after a successful retry";
+      test(`${action} queued after an abort timeout ${outcome} (start ${startDuring ? "during" : "after"} retry)`, async (t) => {
+        const { child, request } = await timedOutAbortChild(t);
+        await child[action]("new queued task");
+        const retry = child.interrupt();
+        const settled = rejected ? assert.rejects(retry, /mock abort failure/) : retry;
+        await Promise.resolve();
+        await request({ type: "get_state" });
+        await request({
+          type: "emit_events",
+          events: [
+            // A completion from the interrupted run precedes the queued work.
+            ...finish("late-answer").slice(0, 1),
+            ...(startDuring ? start(action, "new queued task") : []),
+          ],
+        });
+        await request({ type: "release_abort", success: !rejected });
+        await settled;
+        assert.equal(child.snapshot().finalAssistantText, undefined, "the interrupted run's completion stays hidden");
+        await request({
+          type: "emit_events",
+          events: [...(startDuring ? [] : start(action, "new queued task")), ...finish("queued-answer")],
+        });
+        await assertWaits(child, rejected ? "queued-answer" : undefined);
+      });
+    }
+  }
+}
+
+/**
+ * Leave a running child guarded by an abort that timed out.
+ * @param {import('node:test').TestContext} t
+ * @param {{ before?: unknown[], queueTimeoutMs?: number }} [options]
+ */
+async function timedOutAbortChild(t, options = {}) {
+  const held = await heldAbortChild(t, "SLOW_WAIT HOLD_ABORT HOLD_RUNNING");
+  const { child, driver, request } = held;
+  if (options.before) await request({ type: "emit_events", events: options.before });
+  let abortTimeouts = 1;
+  driver.request = (command, timeoutMs) => {
+    if (command.type === "abort" && abortTimeouts-- > 0) return request(command, 25);
+    if (options.queueTimeoutMs && (command.type === "steer" || command.type === "follow_up")) {
+      return request(command, options.queueTimeoutMs);
+    }
+    return request(command, timeoutMs);
+  };
+  await assert.rejects(child.interrupt(), /RPC timeout/);
+  return held;
 }
 
 test("wait times out without stopping the child", async (t) => {

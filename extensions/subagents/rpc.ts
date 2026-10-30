@@ -252,8 +252,20 @@ export class ManagedSubagent {
   // eligibility when its user message starts, because the interrupted run's agent_start may arrive late.
   private interruptedOperation = false;
   private queuedAfterInterrupt = new Set<string>();
+  // Pi can transform queued input, so each guarded queue request claims the next queue_update addition, which is
+  // the exact text its message_start will carry. Uncertain outcomes keep the claim open for late acceptance.
+  private queueClaims = new Set<object>();
+  private queuedTexts: string[] = [];
   // Never expose this candidate while abort is pending; serialized control keeps it within this operation.
-  private abortAttempt: { wasInterrupted: boolean; finalAssistantText: string | undefined } | undefined;
+  private abortAttempt:
+    | {
+        wasInterrupted: boolean;
+        finalAssistantText: string | undefined;
+        queuedAfterInterrupt: Set<string>;
+        queueClaims: Set<object>;
+        queuedWorkStarted: boolean;
+      }
+    | undefined;
   private sessionFile: string | undefined;
   private pendingMessages = 0;
   private turns = 0;
@@ -315,7 +327,7 @@ export class ManagedSubagent {
   async start(): Promise<void> {
     this.finalAssistantText = undefined;
     this.interruptedOperation = false;
-    this.queuedAfterInterrupt.clear();
+    this.clearQueuedRecovery();
     await this.request({ type: "prompt", message: buildKickoffPrompt(this.task, this.options.contextSummary) });
     if (this.state === "starting") this.state = "running";
     this.touch();
@@ -329,7 +341,7 @@ export class ManagedSubagent {
       } else {
         this.finalAssistantText = undefined;
         this.interruptedOperation = false;
-        this.queuedAfterInterrupt.clear();
+        this.clearQueuedRecovery();
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -345,7 +357,7 @@ export class ManagedSubagent {
       } else {
         this.finalAssistantText = undefined;
         this.interruptedOperation = false;
-        this.queuedAfterInterrupt.clear();
+        this.clearQueuedRecovery();
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -358,12 +370,20 @@ export class ManagedSubagent {
       this.assertControllable();
       if (this.state === "idle") return;
       const previousState = this.state;
-      this.abortAttempt = { wasInterrupted: this.interruptedOperation, finalAssistantText: this.finalAssistantText };
+      // Queued work belongs to this abort; only an explicit rejection can hand it back.
+      this.abortAttempt = {
+        wasInterrupted: this.interruptedOperation,
+        finalAssistantText: this.finalAssistantText,
+        queuedAfterInterrupt: this.queuedAfterInterrupt,
+        queueClaims: this.queueClaims,
+        queuedWorkStarted: false,
+      };
+      this.queuedAfterInterrupt = new Set();
+      this.queueClaims = new Set();
       this.state = "interrupting";
       // Interrupted work has no final answer, even if the abort races a completed message.
       this.finalAssistantText = undefined;
       this.interruptedOperation = true;
-      this.queuedAfterInterrupt.clear();
       this.touch();
       try {
         await this.request({ type: "abort" });
@@ -501,13 +521,50 @@ export class ManagedSubagent {
   }
 
   private async queueMessage(type: "steer" | "follow_up", message: string): Promise<void> {
-    // Register before writing: the child's message_start can precede the RPC acknowledgement.
-    if (this.interruptedOperation) this.queuedAfterInterrupt.add(message);
+    // Register before writing: the child's queue_update and message_start can precede the RPC acknowledgement.
+    const claim = this.interruptedOperation ? {} : undefined;
+    if (claim) {
+      this.queuedAfterInterrupt.add(message);
+      this.queueClaims.add(claim);
+    }
     try {
-      await this.request({ type, message });
+      const response = await this.request({ type, message });
+      const data = response.data as Record<string, unknown> | undefined;
+      // An input handler consumed the message, so no queue entry will arrive.
+      if (claim && data?.disposition === "handled") this.queueClaims.delete(claim);
     } catch (error) {
-      this.queuedAfterInterrupt.delete(message);
+      // Timeouts and write failures do not prove rejection; Pi can still accept the message late.
+      if (claim && error instanceof RpcRejectionError) {
+        this.queuedAfterInterrupt.delete(message);
+        this.queueClaims.delete(claim);
+      }
       throw error;
+    }
+  }
+
+  private clearQueuedRecovery(): void {
+    this.queuedAfterInterrupt.clear();
+    this.queueClaims.clear();
+  }
+
+  // Attribute new queue entries to outstanding guarded requests, using the transformed text Pi will deliver.
+  private recordQueueUpdate(queued: string[]): void {
+    const previous = [...this.queuedTexts];
+    this.queuedTexts = queued;
+    const recovery = this.abortAttempt ?? {
+      queueClaims: this.queueClaims,
+      queuedAfterInterrupt: this.queuedAfterInterrupt,
+    };
+    for (const text of queued) {
+      const index = previous.indexOf(text);
+      if (index !== -1) {
+        previous.splice(index, 1);
+        continue;
+      }
+      const [claim] = recovery.queueClaims;
+      if (!claim) return;
+      recovery.queueClaims.delete(claim);
+      recovery.queuedAfterInterrupt.add(text);
     }
   }
 
@@ -519,8 +576,15 @@ export class ManagedSubagent {
     // Timeouts, write failures and shutdown cannot establish whether the abort took effect.
     const attempt = this.abortAttempt;
     if (explicitlyRejected && attempt && !this.terminationStarted) {
-      this.interruptedOperation = attempt.wasInterrupted;
-      if (!attempt.wasInterrupted) this.finalAssistantText = attempt.finalAssistantText;
+      // Queued work that started during the rejected attempt is the current operation.
+      const answerEligible = attempt.queuedWorkStarted || !attempt.wasInterrupted;
+      this.interruptedOperation = !answerEligible;
+      if (answerEligible) {
+        this.finalAssistantText = attempt.finalAssistantText;
+      } else {
+        this.queuedAfterInterrupt = attempt.queuedAfterInterrupt;
+        this.queueClaims = attempt.queueClaims;
+      }
     }
     if (this.state === "interrupting") this.state = previousState;
   }
@@ -711,9 +775,10 @@ export class ManagedSubagent {
         this.turns++;
         break;
       case "queue_update": {
-        const steering = Array.isArray(event.steering) ? event.steering.length : 0;
-        const followUp = Array.isArray(event.followUp) ? event.followUp.length : 0;
-        this.pendingMessages = steering + followUp;
+        const steering = Array.isArray(event.steering) ? (event.steering as unknown[]) : [];
+        const followUp = Array.isArray(event.followUp) ? (event.followUp as unknown[]) : [];
+        this.pendingMessages = steering.length + followUp.length;
+        this.recordQueueUpdate([...steering, ...followUp].filter((text) => typeof text === "string"));
         break;
       }
       case "message_update": {
@@ -723,9 +788,16 @@ export class ManagedSubagent {
       }
       case "message_start": {
         const message = event.message as Record<string, unknown> | undefined;
-        if (message?.role === "user" && this.queuedAfterInterrupt.has(extractTextContent(message.content))) {
+        if (message?.role !== "user") break;
+        const text = extractTextContent(message.content);
+        const attempt = this.abortAttempt;
+        if (attempt?.queuedAfterInterrupt.has(text)) {
+          // The pending abort may still stop this work; only an explicit rejection makes it current.
+          attempt.queuedWorkStarted = true;
+          attempt.finalAssistantText = undefined;
+        } else if (this.queuedAfterInterrupt.has(text)) {
           this.interruptedOperation = false;
-          this.queuedAfterInterrupt.clear();
+          this.clearQueuedRecovery();
           this.finalAssistantText = undefined;
         }
         break;

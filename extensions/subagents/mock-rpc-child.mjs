@@ -77,6 +77,26 @@ function handleAbortTestControl(command) {
   return false;
 }
 
+/** @param {{ type: string, id: unknown, message?: unknown }} command */
+function handleQueue(command) {
+  const message = String(command.message);
+  if (message.includes("HOLD_QUEUE")) return;
+  if (message.includes("REJECT_QUEUE")) {
+    send({ id: command.id, type: "response", command: command.type, success: false, error: "mock queue rejection" });
+    return;
+  }
+  if (message.includes("EXPAND_QUEUE")) {
+    // Pi announces the transformed queue entry before acknowledging the request.
+    const queued = [`expanded: ${message}`];
+    send({
+      type: "queue_update",
+      steering: command.type === "steer" ? queued : [],
+      followUp: command.type === "follow_up" ? queued : [],
+    });
+  }
+  send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition: "queued" } });
+}
+
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const command = JSON.parse(line);
@@ -110,7 +130,7 @@ input.on("line", (line) => {
     return;
   }
   if (command.type === "steer" || command.type === "follow_up") {
-    send({ id: command.id, type: "response", command: command.type, success: true });
+    handleQueue(command);
     return;
   }
   if (command.type === "timeout") {

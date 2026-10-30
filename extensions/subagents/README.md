@@ -32,7 +32,10 @@ retained.
 
 When an answer completes during an interrupt attempt, it stays hidden until the abort outcome is known. An explicit
 abort rejection restores the completed answer; a successful abort discards it. An unknown outcome such as an RPC timeout
-keeps it hidden, including after a late abort response, until new work is sent.
+keeps it hidden, including after a late abort response, until new work is sent. Work queued with `steer` or `follow_up`
+after such an outcome becomes the current operation when the child starts it, matched by the text Pi actually queues
+after input handlers and prompt expansion. A queue request that times out may still be accepted late, so only an
+explicit rejection drops it, and an explicitly rejected interrupt retry leaves that queued work recoverable.
 
 A timeout returns a concise still-active receipt and status metadata only—no partial assistant output, task echo,
 transcript, tool arguments, or stderr. It does not stop or interrupt the child. Call `wait` again for the result.
