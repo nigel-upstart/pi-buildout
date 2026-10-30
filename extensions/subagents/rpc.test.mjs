@@ -243,6 +243,241 @@ test("interrupt aborts an active child without accepting its delayed answer", as
   assert.doesNotMatch(child.snapshot().transcriptTail, /answer-/);
 });
 
+test("only a completed non-empty response for the current operation is the final answer", async (t) => {
+  const working = new ManagedSubagent({
+    id: "final1",
+    name: "final-child",
+    task: "WORKING_THEN_EMPTY",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => working.stop());
+  await working.start();
+  assert.equal(await working.waitForIdle(2_000), true);
+  assert.equal(working.snapshot().lastAssistantText, "working-note", "diagnostic text is kept");
+  assert.equal(working.snapshot().finalAssistantText, undefined, "working text before an empty final is not final");
+
+  const followed = new ManagedSubagent({
+    id: "final2",
+    name: "followed-child",
+    task: "normal task",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => followed.stop());
+  await followed.start();
+  assert.equal(await followed.waitForIdle(2_000), true);
+  assert.equal(followed.snapshot().finalAssistantText, "answer-1");
+  await followed.followUp("SLOW_WAIT");
+  assert.equal(followed.snapshot().finalAssistantText, undefined, "new work clears the previous answer");
+  await followed.interrupt();
+  assert.equal(await followed.waitForIdle(500), true);
+  await sleep(200);
+  assert.equal(followed.snapshot().finalAssistantText, undefined, "an interrupted follow-up has no final answer");
+
+  const racing = new ManagedSubagent({
+    id: "final3",
+    name: "racing-child",
+    task: "SLOW_WAIT LATE_FINAL",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => racing.stop());
+  await racing.start();
+  await racing.interrupt();
+  assert.equal(await racing.waitForIdle(500), true);
+  await sleep(50);
+  assert.equal(racing.snapshot().lastAssistantText, "late-answer", "the racing message is still a diagnostic");
+  assert.equal(racing.snapshot().finalAssistantText, undefined, "a message racing the abort is not the answer");
+});
+
+// Pi removes a delivered entry from its queue before announcing the user message.
+/** @param {"followUp" | "steer"} action @param {string} text */
+const start = (action, text) => [
+  ...(action === "followUp" ? [{ type: "agent_start" }] : []),
+  { type: "queue_update", steering: [], followUp: [] },
+  { type: "message_start", message: { role: "user", content: [{ type: "text", text }] } },
+];
+/** @param {string} text */
+const finish = (text) => [
+  { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } },
+  { type: "agent_settled" },
+];
+
+/** @param {ManagedSubagent} child @param {string | undefined} expected */
+async function assertWaits(child, expected) {
+  for (let wait = 0; wait < 2; wait++) {
+    assert.equal(await child.waitForIdle(500), true);
+    assert.equal(child.snapshot().finalAssistantText, expected);
+  }
+}
+
+for (const action of /** @type {const} */ (["followUp", "steer"])) {
+  test(`${action} after an abort timeout accepts only the queued work's final answer`, async (t) => {
+    const { child, driver, request } = await heldAbortChild(t, "SLOW_WAIT HOLD_ABORT HOLD_RUNNING");
+    driver.request = (command, timeoutMs) => request(command, command.type === "abort" ? 25 : timeoutMs);
+    await assert.rejects(child.interrupt(), /RPC timeout/);
+    await child.refresh();
+    assert.equal(child.snapshot().state, "running", "the child is still running after abort returns");
+    await child[action]("new queued task");
+    await request({
+      type: "emit_events",
+      events: [
+        { type: "queue_update", steering: [], followUp: ["new queued task"] },
+        { type: "agent_start" },
+        { type: "message_start", message: { role: "user", content: [{ type: "text", text: "old task" }] } },
+        {
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "late-answer" }], stopReason: "stop" },
+        },
+      ],
+    });
+    assert.equal(await child.waitForIdle(10), false);
+    assert.equal(child.snapshot().lastAssistantText, "late-answer", "late text remains diagnostic");
+    assert.equal(child.snapshot().finalAssistantText, undefined, "queueing must not admit the old answer");
+
+    await request({ type: "release_abort", success: false });
+    assert.equal(child.snapshot().finalAssistantText, undefined, "a late abort response cannot admit old text");
+    await request({
+      type: "emit_events",
+      events: [
+        // Steering can begin inside the existing run, without another agent_start.
+        ...(action === "followUp" ? [{ type: "agent_start" }] : []),
+        { type: "queue_update", steering: [], followUp: [] },
+        { type: "message_start", message: { role: "user", content: [{ type: "text", text: "new queued task" }] } },
+        {
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "queued-answer" }], stopReason: "stop" },
+        },
+        { type: "agent_settled" },
+      ],
+    });
+    for (let wait = 0; wait < 2; wait++) {
+      assert.equal(await child.waitForIdle(500), true);
+      assert.equal(child.snapshot().finalAssistantText, "queued-answer");
+    }
+  });
+
+  test(`${action} after an abort timeout recovers input that Pi transforms before queueing`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t);
+    await child[action]("EXPAND_QUEUE task");
+    await request({
+      type: "emit_events",
+      events: [...start(action, "expanded: EXPAND_QUEUE task"), ...finish("queued-answer")],
+    });
+    await assertWaits(child, "queued-answer");
+  });
+
+  test(`${action} after an abort timeout ignores queue entries that predate the interrupt`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t, {
+      before: [{ type: "queue_update", steering: [], followUp: ["pre-interrupt task"] }],
+    });
+    await child[action]("new queued task");
+    // The acknowledgement can precede the announcement; the claim waits for the next new entry.
+    await request({
+      type: "emit_events",
+      events: [
+        { type: "queue_update", steering: [], followUp: ["pre-interrupt task", "transformed task"] },
+        ...start(action, "pre-interrupt task"),
+        ...finish("old-answer"),
+      ],
+    });
+    await assertWaits(child, undefined);
+    await request({ type: "emit_events", events: [...start(action, "transformed task"), ...finish("queued-answer")] });
+    await assertWaits(child, "queued-answer");
+  });
+
+  test(`${action} queue timeout keeps recovery open for late acceptance`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t, { queueTimeoutMs: 25 });
+    await assert.rejects(child[action]("HOLD_QUEUE task"), /RPC timeout/);
+    await request({
+      type: "emit_events",
+      events: [
+        { type: "queue_update", steering: [], followUp: ["expanded: HOLD_QUEUE task"] },
+        ...start(action, "expanded: HOLD_QUEUE task"),
+        ...finish("queued-answer"),
+      ],
+    });
+    await assertWaits(child, "queued-answer");
+  });
+
+  test(`${action} explicitly rejected by the child cannot restore answer eligibility`, async (t) => {
+    const { child, request } = await timedOutAbortChild(t);
+    await assert.rejects(child[action]("REJECT_QUEUE task"), /mock queue rejection/);
+    await request({ type: "emit_events", events: [...start(action, "REJECT_QUEUE task"), ...finish("old-answer")] });
+    await assertWaits(child, undefined);
+  });
+
+  for (const rejected of [true, false]) {
+    for (const startDuring of [true, false]) {
+      const outcome = rejected ? "recovers after a rejected retry" : "stays interrupted after a successful retry";
+      test(`${action} queued after an abort timeout ${outcome} (start ${startDuring ? "during" : "after"} retry)`, async (t) => {
+        const { child, request } = await timedOutAbortChild(t);
+        await child[action]("new queued task");
+        const retry = child.interrupt();
+        const settled = rejected ? assert.rejects(retry, /mock abort failure/) : retry;
+        await Promise.resolve();
+        await request({ type: "get_state" });
+        await request({
+          type: "emit_events",
+          events: [
+            // A completion from the interrupted run precedes the queued work.
+            ...finish("late-answer").slice(0, 1),
+            ...(startDuring ? start(action, "new queued task") : []),
+          ],
+        });
+        await request({ type: "release_abort", success: !rejected });
+        await settled;
+        assert.equal(child.snapshot().finalAssistantText, undefined, "the interrupted run's completion stays hidden");
+        await request({
+          type: "emit_events",
+          events: [...(startDuring ? [] : start(action, "new queued task")), ...finish("queued-answer")],
+        });
+        await assertWaits(child, rejected ? "queued-answer" : undefined);
+      });
+    }
+  }
+}
+
+/**
+ * Leave a running child guarded by an abort that timed out.
+ * @param {import('node:test').TestContext} t
+ * @param {{ before?: unknown[], queueTimeoutMs?: number }} [options]
+ */
+async function timedOutAbortChild(t, options = {}) {
+  const held = await heldAbortChild(t, "SLOW_WAIT HOLD_ABORT HOLD_RUNNING");
+  const { child, driver, request } = held;
+  if (options.before) await request({ type: "emit_events", events: options.before });
+  let abortTimeouts = 1;
+  driver.request = (command, timeoutMs) => {
+    if (command.type === "abort" && abortTimeouts-- > 0) return request(command, 25);
+    if (options.queueTimeoutMs && (command.type === "steer" || command.type === "follow_up")) {
+      return request(command, options.queueTimeoutMs);
+    }
+    return request(command, timeoutMs);
+  };
+  await assert.rejects(child.interrupt(), /RPC timeout/);
+  return held;
+}
+
 test("wait times out without stopping the child", async (t) => {
   const child = new ManagedSubagent({
     id: "slow123",
@@ -285,6 +520,175 @@ test("failed interrupt restores the child's prior state", async (t) => {
   await child.start();
   await assert.rejects(child.interrupt(), /mock abort failure/);
   assert.equal(child.snapshot().state, "running");
+  assert.equal(await child.waitForIdle(2_000), true);
+  assert.equal(child.snapshot().finalAssistantText, "answer-1", "completion after rejection is still genuine");
+});
+
+test("completion before explicit abort rejection remains available to repeated waits", async (t) => {
+  const child = new ManagedSubagent({
+    id: "abort-completion",
+    name: "abort-completion",
+    task: "SLOW_WAIT LATE_FINAL ABORT_FAIL",
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => child.stop());
+  await child.start();
+  await assert.rejects(child.interrupt(), /mock abort failure/);
+  assert.equal(child.snapshot().state, "idle", "completion settled before the rejection");
+  assert.equal(child.snapshot().lastAssistantText, "late-answer", "completion reached the message handler");
+  for (let wait = 0; wait < 2; wait++) {
+    assert.equal(await child.waitForIdle(500), true);
+    assert.equal(child.snapshot().finalAssistantText, "late-answer");
+  }
+  await child.followUp("WORKING_THEN_EMPTY");
+  assert.equal(child.snapshot().finalAssistantText, undefined, "new work clears the recovered answer");
+  assert.equal(await child.waitForIdle(2_000), true);
+  assert.equal(child.snapshot().finalAssistantText, undefined, "an empty final cannot reuse the recovered answer");
+});
+
+/** @param {import('node:test').TestContext} t @param {string} [task] */
+async function heldAbortChild(t, task = "SLOW_WAIT LATE_FINAL HOLD_ABORT") {
+  const child = new ManagedSubagent({
+    id: "held-abort",
+    name: "held-abort",
+    task,
+    model: "test/model",
+    effort: "off",
+    contextSummary: "",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    classification: "explicit",
+  });
+  t.after(async () => child.stop());
+  const driver =
+    /** @type {{ request: (command: Record<string, unknown>, timeoutMs?: number) => Promise<unknown> }} */ (
+      /** @type {unknown} */ (child)
+    );
+  const request = driver.request.bind(child);
+  await child.start();
+  return { child, driver, request };
+}
+
+for (const success of [true, false]) {
+  test(`provisional completion stays hidden until abort ${success ? "success discards" : "rejection restores"} it`, async (t) => {
+    const { child, request } = await heldAbortChild(t);
+    const interruption = child.interrupt();
+    const outcome = success ? interruption : assert.rejects(interruption, /mock abort failure/);
+    // interrupt is serialized through a microtask; the subsequent RPC is a wire-order barrier.
+    await Promise.resolve();
+    await request({ type: "get_state" });
+    assert.equal(child.snapshot().lastAssistantText, "late-answer");
+    for (let wait = 0; wait < 2; wait++) {
+      assert.equal(await child.waitForIdle(500), true);
+      assert.equal(child.snapshot().finalAssistantText, undefined, "pending abort never publishes provisional text");
+    }
+    await request({ type: "release_abort", success });
+    await outcome;
+    for (let wait = 0; wait < 2; wait++) {
+      assert.equal(await child.waitForIdle(500), true);
+      assert.equal(child.snapshot().finalAssistantText, success ? undefined : "late-answer");
+    }
+  });
+}
+
+test("late completion and rejected retry cannot revive a successfully interrupted operation", async (t) => {
+  const { child, request } = await heldAbortChild(t);
+  const interruption = child.interrupt();
+  await Promise.resolve();
+  await request({ type: "release_abort", success: true });
+  await interruption;
+  await request({
+    type: "emit_events",
+    events: [
+      { type: "agent_start" },
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "after-abort" }], stopReason: "stop" },
+      },
+      { type: "agent_settled" },
+    ],
+  });
+  assert.equal(child.snapshot().lastAssistantText, "after-abort");
+  assert.equal(child.snapshot().finalAssistantText, undefined);
+  await request({ type: "emit_events", events: [{ type: "agent_start" }] });
+  const retry = assert.rejects(child.interrupt(), /mock abort failure/);
+  await Promise.resolve();
+  await request({ type: "release_abort", success: false });
+  await retry;
+  assert.equal(child.snapshot().finalAssistantText, undefined, "a failed retry does not undo an earlier abort");
+  await child.followUp("normal new operation");
+  assert.equal(child.snapshot().finalAssistantText, undefined);
+  assert.equal(await child.waitForIdle(2_000), true);
+  assert.equal(child.snapshot().finalAssistantText, "answer-2", "only new work clears the interrupt guard");
+});
+
+test("abort timeout and its late rejection never promote provisional completion into new work", async (t) => {
+  const { child, driver, request } = await heldAbortChild(t);
+  driver.request = (command, timeoutMs) => request(command, command.type === "abort" ? 150 : timeoutMs);
+  const outcome = assert.rejects(child.interrupt(), /RPC timeout/);
+  await Promise.resolve();
+  await request({ type: "get_state" });
+  assert.equal(child.snapshot().lastAssistantText, "late-answer");
+  await outcome;
+  assert.equal(child.snapshot().finalAssistantText, undefined);
+  await child.followUp("SLOW_WAIT");
+  await request({ type: "release_abort", success: false });
+  assert.equal(
+    child.snapshot().finalAssistantText,
+    undefined,
+    "a stale abort response cannot restore the prior answer",
+  );
+  assert.equal(await child.waitForIdle(2_000), true);
+  assert.equal(child.snapshot().finalAssistantText, "answer-2");
+});
+
+test("stopping during an abort never promotes its provisional answer", async (t) => {
+  const { child, request } = await heldAbortChild(t);
+  const outcome = assert.rejects(child.interrupt(), /was stopped/);
+  await Promise.resolve();
+  await request({ type: "get_state" });
+  assert.equal(child.snapshot().lastAssistantText, "late-answer");
+  await child.stop();
+  await outcome;
+  assert.equal(child.snapshot().state, "stopped");
+  assert.equal(child.snapshot().finalAssistantText, undefined);
+});
+
+test("new starts and non-final messages invalidate provisional completion before abort rejection", async (t) => {
+  for (const events of [
+    [{ type: "agent_start" }, { type: "agent_settled" }],
+    [{ type: "message_end", message: { role: "assistant", content: [], stopReason: "stop" } }],
+    [
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "working" }], stopReason: "toolUse" },
+      },
+    ],
+    [
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" },
+      },
+    ],
+  ]) {
+    const { child, request } = await heldAbortChild(t);
+    const outcome = assert.rejects(child.interrupt(), /mock abort failure/);
+    await Promise.resolve();
+    await request({ type: "emit_events", events });
+    await request({ type: "release_abort", success: false });
+    await outcome;
+    assert.equal(child.snapshot().finalAssistantText, undefined);
+    await child.stop();
+  }
 });
 
 test("aborted compaction is not counted, and wait on a settled child returns at once", async (t) => {

@@ -601,6 +601,11 @@ Ideas and API patterns used:
   separation between advisory prompts, native tool selection, and whole-process isolation. No documentation text or
   isolation implementation was copied; the router does not implement a sandbox.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
+- Pi `1.3.0`'s published `dist/core/agent-session.js`, `dist/modes/rpc/rpc-mode.js`, and
+  `@earendil-works/pi-agent-core`'s `dist/agent-loop.js` informed the interrupted-child queue recovery: queued user
+  messages emit `message_start` before their assistant response, including steering within an existing run. The subagent
+  tracks that boundary to restore final-answer eligibility only when newly queued work begins. This is protocol
+  compatibility implemented independently; no Pi code was copied, and queue scheduling was not adopted.
 - Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
   `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
   `dist/core/extensions/types.d.ts`. `extensions/subagents/rpc.integration.test.mjs` uses these to launch the pinned Pi
