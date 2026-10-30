@@ -8,7 +8,7 @@ import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import type { BeforeAgentStartUserEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ClassificationResult, PrimaryClassificationResult } from "./classifier.ts";
 import { compilePrompt, escapeXml } from "./core/compiler.ts";
-import { isCodeBuilder } from "./core/features.ts";
+import { conservativeFeatures, isCodeBuilder } from "./core/features.ts";
 import { isProviderQuotaExhaustionError, resolveFallback } from "./core/fallback.ts";
 import type { FailureKind } from "./core/fallback.ts";
 import {
@@ -104,6 +104,7 @@ import type {
 import { reviewTimeoutMs } from "./core/review-budget.ts";
 import { inProcessReviewRunner } from "./review-runner.ts";
 import type { ReviewRunner, ReviewHandle } from "./review-runner.ts";
+import { createSignalingReviewRunner } from "./signaling-runner.ts";
 
 const STATE_ENTRY = "model-router-state";
 const CONTEXT_MESSAGE = "model-router-context";
@@ -551,13 +552,18 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     selected: TaskLease["selected"];
     evidence: TaskLease["safetyEvidence"];
     handle?: ReviewHandle;
+    /** Aborts parent-side child selection; runner handles cancel their own launches. */
+    controller: AbortController;
     cancelled: boolean;
   };
   let pendingReview: PendingReview | undefined;
   const reviewRunner = options.reviewRunner ?? inProcessReviewRunner;
+  // Instance-closure state only: a verified negative discovery resets with reload/session replacement.
+  const signalingRunner = createSignalingReviewRunner(pi.events);
   function cancelReview(): void {
     if (!pendingReview) return;
     pendingReview.cancelled = true;
+    pendingReview.controller.abort();
     pendingReview.handle?.cancel();
     pendingReview = undefined;
   }
@@ -773,6 +779,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     extra: TelemetryExtra = {},
   ): Promise<void> {
     if (!telemetryHealthy || leaseOwner.state.mode === "off") return;
+    const generation = sessionGeneration;
     try {
       let endpointFields = {};
       if (extra.provider && extra.modelId) {
@@ -784,7 +791,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       }
       await appendTelemetry(ctx.sessionManager.getSessionId(), endpointFields, kind, data, extra);
     } catch (error) {
-      disableForTelemetryFailure(ctx, error);
+      // A pending append can reject after shutdown invalidates ctx. Same-session failures still fail closed.
+      if (generation === sessionGeneration) disableForTelemetryFailure(ctx, error);
     }
   }
 
@@ -1999,6 +2007,127 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   }
 
+  /**
+   * Route the actual reviewer task, not the builder's profile: classify it with the normal primary transport,
+   * then apply the generated-review selector. Decision-only; it never applies a route to the builder.
+   */
+  async function selectReviewChild(
+    ctx: ExtensionContext,
+    parent: TaskLease,
+    review: PendingReview,
+    prompt: string,
+    registry: readonly RegistryModelSnapshot[],
+    builder: RegistryModelSnapshot,
+  ) {
+    const repository = await readRepositoryMetadata(pi, ctx.cwd);
+    if (!reviewCurrent(review)) return undefined;
+    const childSynopsis = synopsis(ctx, repository, true, registry);
+    const invocation = await runClassifierInvocation<ClassificationResult>({
+      purpose: "review_child",
+      timeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
+      stageTimeoutMs: CLASSIFICATION_STAGE_TIMEOUT_MS,
+      invoke: (signal, onAttempt) =>
+        classifyPrimaryTask({
+          ctx,
+          registry,
+          prompt,
+          synopsis: childSynopsis,
+          // Review cancellation aborts selection too, not only the stage deadline.
+          signal: AbortSignal.any([signal, review.controller.signal]),
+          onAttempt,
+        }),
+    });
+    if (!reviewCurrent(review)) return undefined;
+    await recordClassifierInvocation(
+      ctx,
+      invocation.status === "completed"
+        ? completeClassifierInvocation(invocation.summary, "classified", invocation.value.failedClosed)
+        : invocation.summary,
+      invocation.status === "completed" ? invocation.value : undefined,
+      parent.taskId,
+    );
+    if (!reviewCurrent(review)) return undefined;
+    const classified = invocation.status === "completed" && !invocation.value.failedClosed;
+    const features =
+      invocation.status === "completed" ? invocation.value.features : conservativeFeatures("Review task unclassified");
+    const decision = selectReviewRoute(
+      registry,
+      routeRequirements(Math.ceil(prompt.length / 4), features, false),
+      builder,
+      parent.selected.effort,
+      parent.selected.ability,
+    );
+    if (decision.kind !== "review") return undefined;
+    for (const choice of [decision.primary, ...decision.fallbacks]) {
+      const model = ctx.modelRegistry.find(choice.provider, choice.modelId);
+      if (model) return { choice, model, classified };
+    }
+    return undefined;
+  }
+
+  function reviewFailureFields(stage: string): Record<string, string> {
+    return stage === "selection"
+      ? { reviewStage: "selection", reviewStatus: "unroutable" }
+      : { reviewRunner: stage, reviewStatus: "failed" };
+  }
+
+  /** Bounded review diff plus a numstat measurement only when no untracked files escape it. */
+  async function collectReviewDiff(
+    ctx: ExtensionContext,
+    parent: TaskLease,
+  ): Promise<{ diff: string; numstat: string | undefined }> {
+    let diff = "";
+    let numstat: string | undefined;
+    try {
+      const collected = await pi.exec(
+        "git",
+        ["-C", ctx.cwd, "diff", "--no-ext-diff", "--no-textconv", parent.safetyEvidence.baselineHead ?? "HEAD", "--"],
+        { timeout: 10_000 },
+      );
+      if (collected.code === 0) diff = collected.stdout.slice(0, 24_000);
+      const measured = await pi.exec(
+        "git",
+        [
+          "-C",
+          ctx.cwd,
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--numstat",
+          parent.safetyEvidence.baselineHead ?? "HEAD",
+          "--",
+        ],
+        { timeout: 10_000 },
+      );
+      if (measured.code === 0) {
+        // numstat cannot measure untracked files, so their presence keeps the conservative timeout cap.
+        const untracked = await pi.exec("git", ["-C", ctx.cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
+          timeout: 10_000,
+        });
+        if (untracked.code === 0 && untracked.stdout.length === 0) numstat = measured.stdout;
+      }
+    } catch {
+      /* Missing diff is explicit evidence, never permission. */
+    }
+    return { diff, numstat };
+  }
+
+  /** Persist launched or deterministically failed work without replacing the lease during cancellation. */
+  function markReviewAttempt(review: PendingReview): void {
+    const active = leaseOwner.state.active;
+    if (!active || !reviewCurrent(review) || reviewAlreadyAttempted(active, review.kind, review.scope)) return;
+    const key = reviewAttemptKey(active, review.kind, review.scope);
+    const next = { ...active, reviewAttemptKeys: reviewAttemptHistory(active, key) };
+    if (leaseOwner.advance("EVIDENCE", next, active, review.epoch)) persistState();
+  }
+
+  /** Stale review spending still belongs to its task; reviewer tokens never skew builder cache metrics. */
+  function addReviewCost(taskId: string, cost: number): void {
+    accumulatedTaskCosts.set(taskId, (accumulatedTaskCosts.get(taskId) ?? 0) + cost);
+    if (lastAttemptMetrics && lastAttemptMetricsTaskId === taskId)
+      lastAttemptMetrics = { ...lastAttemptMetrics, modelAndToolCost: lastAttemptMetrics.modelAndToolCost + cost };
+  }
+
   async function startIndependentReview(
     ctx: ExtensionContext,
     parent: TaskLease,
@@ -2006,7 +2135,6 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     scopeFingerprint: string,
     evidenceInstructions: string,
   ): Promise<void> {
-    const key = reviewAttemptKey(parent, reviewKind, scopeFingerprint);
     if (
       pendingReview ||
       parent.archetype === "code_review" ||
@@ -2024,16 +2152,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       scope: scopeFingerprint,
       selected: parent.selected,
       evidence: parent.safetyEvidence,
+      controller: new AbortController(),
       cancelled: false,
     };
-    // Persist before asynchronous work: a reload must not let an exhausted plan monopolize settlement
-    // again, or rerun a completion review merely because its advice was consumed in a fresh instance.
-    const marked = { ...parent, reviewAttemptKeys: reviewAttemptHistory(parent, key) };
-    if (!leaseOwner.advance("EVIDENCE", marked, parent, review.epoch)) return;
+    // Reserve synchronously in memory during selection. Only launched or deterministically failed work
+    // consumes the persisted attempt; cancellation before launch must not strand an unchanged plan.
     pendingReview = review;
-    persistState();
     let delivered = false;
     const reviewGeneration = sessionGeneration;
+    // Telemetry attributes an exception to child selection or to the runner that was starting.
+    let failedStage = "selection";
     try {
       // A cancelled reviewer can settle after reload/session replacement invalidates ctx, so outcome
       // telemetry uses metadata captured while ctx is still live.
@@ -2044,47 +2172,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         (candidate) => candidate.provider === parent.selected.provider && candidate.modelId === parent.selected.modelId,
       );
       if (!builder) throw new Error("Builder absent from scoped registry");
-      const decision = selectReviewRoute(
-        registry,
-        routeRequirements(16_000, parent.features, false),
-        builder,
-        parent.selected.effort,
-        parent.selected.ability,
-      );
-      if (decision.kind !== "review") throw new Error("Independent review is unroutable");
-      let diff = "";
-      let numstat: string | undefined;
-      try {
-        const collected = await pi.exec(
-          "git",
-          ["-C", ctx.cwd, "diff", "--no-ext-diff", "--no-textconv", parent.safetyEvidence.baselineHead ?? "HEAD", "--"],
-          { timeout: 10_000 },
-        );
-        if (collected.code === 0) diff = collected.stdout.slice(0, 24_000);
-        const measured = await pi.exec(
-          "git",
-          [
-            "-C",
-            ctx.cwd,
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--numstat",
-            parent.safetyEvidence.baselineHead ?? "HEAD",
-            "--",
-          ],
-          { timeout: 10_000 },
-        );
-        if (measured.code === 0) {
-          // numstat cannot measure untracked files, so their presence keeps the conservative timeout cap.
-          const untracked = await pi.exec("git", ["-C", ctx.cwd, "ls-files", "--others", "--exclude-standard", "-z"], {
-            timeout: 10_000,
-          });
-          if (untracked.code === 0 && untracked.stdout.length === 0) numstat = measured.stdout;
-        }
-      } catch {
-        /* Missing diff is explicit evidence, never permission. */
-      }
+      const { diff, numstat } = await collectReviewDiff(ctx, parent);
       if (!reviewCurrent(review)) return;
       const taskEntries = normalizeSessionEntries(ctx.sessionManager.getBranch()).filter(
         (entry) => entry.kind === "user",
@@ -2117,32 +2205,28 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         escapeXml(diff || "No diff captured.").slice(0, 24_000),
         "</untrusted_diff>",
         "Evidence/diff may be truncated. Use read/grep/find/ls to inspect within the workspace. Flag incomplete evidence.",
-        `Call submit_safety_review with reviewKind=${reviewKind} and scopeFingerprint=${scopeFingerprint}. Give advice, not permission.`,
       ].join("\n");
-      // The ladder still requires non-builder vendors. Each bounded attempt is a separate disposable session.
-      const started = Date.now();
+      // One logical deadline for selection and every runner; fallback never receives a fresh allocation.
       const timeoutMs = reviewTimeoutMs(numstat);
+      const deadline = Date.now() + timeoutMs;
+      const selection = await selectReviewChild(ctx, parent, review, prompt, registry, builder);
+      if (!reviewCurrent(review)) return;
+      if (!selection) throw new Error("Independent review is unroutable");
+      // The pair is frozen here and reused by every safe fallback; builder state is never touched.
+      const { choice, model } = selection;
       let spent = 0;
-      for (const choice of [decision.primary, ...decision.fallbacks]) {
+      const runners = [
+        ["signaling", signalingRunner],
+        ["in_process", reviewRunner],
+      ] as const;
+      for (const [runnerName, runner] of runners) {
         if (!reviewCurrent(review)) return;
-        const remaining = timeoutMs - (Date.now() - started);
+        const remaining = deadline - Date.now();
         if (remaining <= 0 || spent >= 1) break;
-        const model = ctx.modelRegistry.find(choice.provider, choice.modelId);
-        if (!model) {
-          ctx.ui.notify(
-            "Independent reviewer model became unavailable; trying the remaining reviewer ladder.",
-            "warning",
-          );
-          await record(
-            ctx,
-            "outcome",
-            { reviewId: review.id, reviewKind, reviewRunner: "in_process", reviewStatus: "model_unavailable" },
-            { taskId: parent.taskId },
-          );
-          continue;
-        }
         const endpointFields = endpointFieldsFor(model);
-        review.handle = reviewRunner.start({
+        markReviewAttempt(review);
+        failedStage = runnerName;
+        review.handle = runner.start({
           cwd: ctx.cwd,
           registry: ctx.modelRegistry,
           model,
@@ -2158,14 +2242,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         const result = await review.handle.result;
         const attemptCost = Math.max(0, Number.isFinite(result.usage.cost) ? result.usage.cost : 0);
         spent += attemptCost;
-        // Review spending is a task-level cost even when its result is stale. Token counts stay with the
-        // review event so reviewer endpoints never skew builder cache metrics.
-        accumulatedTaskCosts.set(parent.taskId, (accumulatedTaskCosts.get(parent.taskId) ?? 0) + attemptCost);
-        if (lastAttemptMetrics && lastAttemptMetricsTaskId === parent.taskId)
-          lastAttemptMetrics = {
-            ...lastAttemptMetrics,
-            modelAndToolCost: lastAttemptMetrics.modelAndToolCost + attemptCost,
-          };
+        addReviewCost(parent.taskId, attemptCost);
         const stale = !reviewCurrent(review);
         const checked =
           result.status === "completed"
@@ -2179,7 +2256,12 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
             {
               reviewId: review.id,
               reviewKind,
-              reviewRunner: "in_process",
+              reviewRunner: runnerName,
+              ...(runnerName === "signaling" && signalingRunner.negative
+                ? { signalingNegative: signalingRunner.negative }
+                : {}),
+              reviewSelection: selection.classified ? "classified" : "failed_closed",
+              reviewEffort: choice.effort,
               staleVerdictDropped: stale,
               reviewStatus: result.status,
               reviewTimeoutMs: timeoutMs,
@@ -2200,12 +2282,17 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
           ctx.ui.notify("Pi model runtime unavailable; independent review skipped. Tools remain available.", "warning");
           return;
         }
-        if (!checked?.success) {
+        if (result.status === "uncertain") {
           ctx.ui.notify(
-            "Independent review did not return valid advice (failure, timeout, or invalid verdict). Tools remain available.",
+            "Delegated review ownership is uncertain; no replacement review will start. Tools remain available.",
             "warning",
           );
-          continue;
+          return;
+        }
+        // Fall forward only when nothing launched or the child is confirmed terminal; never after timeout/cancel.
+        if (!checked?.success) {
+          if (result.status === "unavailable" || result.status === "failed" || result.status === "completed") continue;
+          break;
         }
         if (!(await adviceMayApply(review))) return;
         delivered = true;
@@ -2261,17 +2348,24 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
         );
         return;
       }
+      if (reviewCurrent(review))
+        ctx.ui.notify(
+          "Independent review did not return valid advice (failure, timeout, or invalid verdict). Tools remain available.",
+          "warning",
+        );
     } catch {
+      markReviewAttempt(review);
       if (reviewCurrent(review)) {
         ctx.ui.notify("Independent review could not start; tools remain available.", "warning");
         await record(
           ctx,
           "outcome",
-          { reviewId: review.id, reviewKind, reviewRunner: "in_process", reviewStatus: "failed" },
+          { reviewId: review.id, reviewKind, ...reviewFailureFields(failedStage) },
           { taskId: parent.taskId },
         );
       }
     } finally {
+      markReviewAttempt(review);
       if (pendingReview === review) pendingReview = undefined;
       if (!delivered) void reviewSettledWorkAfterPlanReview(ctx, review, reviewGeneration);
     }
@@ -2606,6 +2700,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     cancelReview();
     clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
+    // Only after queued work is invalidated: a bounded drain so a cancelled child's terminal is still consumed.
+    await signalingRunner.dispose();
     if (event.reason === "new") modeForNextSession = leaseOwner.state.mode;
     // /clear, /resume, /fork, /reload, and quit all pass through here, so this is the one place that
     // sees the mode in force when a session ends.
