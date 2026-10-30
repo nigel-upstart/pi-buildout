@@ -97,7 +97,10 @@ function finishQueuedWork(command) {
 /** @param {{ id: unknown, type: string, message: string }} command */
 function handleControlCommand(command) {
   if (command.type === "abort") handleAbort(command);
-  else if (command.type === "steer" || command.type === "follow_up") handleQueuedWork(command);
+  else if (command.type === "steer" || command.type === "follow_up") {
+    if (abortTimesOut) handleQueuedWork(command);
+    else handleQueue(command);
+  }
   else if (command.type === "finish_queued") finishQueuedWork(command);
   else return false;
   return true;
@@ -125,6 +128,46 @@ function handleAbortTestControl(command) {
     return true;
   }
   return false;
+}
+
+/** @param {{ type: string, id: unknown, message?: unknown }} command */
+function handleQueue(command) {
+  const message = String(command.message);
+  if (message.includes("HOLD_QUEUE")) return;
+  if (message.includes("REJECT_QUEUE")) {
+    send({ id: command.id, type: "response", command: command.type, success: false, error: "mock queue rejection" });
+    return;
+  }
+  if (message.includes("EXPAND_QUEUE")) {
+    // Pi announces the transformed queue entry before acknowledging the request.
+    const queued = [`expanded: ${message}`];
+    send({
+      type: "queue_update",
+      steering: command.type === "steer" ? queued : [],
+      followUp: command.type === "follow_up" ? queued : [],
+    });
+  }
+  send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition: "queued" } });
+}
+
+/** @param {{ type: string, id: unknown, message?: unknown }} command */
+function handleQueue(command) {
+  const message = String(command.message);
+  if (message.includes("HOLD_QUEUE")) return;
+  if (message.includes("REJECT_QUEUE")) {
+    send({ id: command.id, type: "response", command: command.type, success: false, error: "mock queue rejection" });
+    return;
+  }
+  if (message.includes("EXPAND_QUEUE")) {
+    // Pi announces the transformed queue entry before acknowledging the request.
+    const queued = [`expanded: ${message}`];
+    send({
+      type: "queue_update",
+      steering: command.type === "steer" ? queued : [],
+      followUp: command.type === "follow_up" ? queued : [],
+    });
+  }
+  send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition: "queued" } });
 }
 
 const input = readline.createInterface({ input: process.stdin });
