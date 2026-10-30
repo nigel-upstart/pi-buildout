@@ -5,7 +5,7 @@ import { Check, Errors } from "typebox/value";
 import { isCodeBuilder, isStandaloneReviewWork } from "./features.ts";
 import type { TaskFeatures } from "./features.ts";
 
-function stringEnum<const TValues extends readonly string[]>(values: TValues): TUnsafe<TValues[number]> {
+export function stringEnum<const TValues extends readonly string[]>(values: TValues): TUnsafe<TValues[number]> {
   return Type.Unsafe<TValues[number]>({ type: "string", enum: [...values] });
 }
 

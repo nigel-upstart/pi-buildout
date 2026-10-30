@@ -457,6 +457,79 @@ type. Such a deployment is unsuitable for automatic reviews, and the router cann
 restricts no builder tool, and ordinary user delegation is unaffected. A general-purpose child keeps the manager's
 built-in tools; the reviewer prompt asks for read-only inspection but is not a permission boundary.
 
+**Builder-steered delegation** is the second choice, after signaling and before the SDK. One stale-while-refresh
+discovery classifier lives in the extension closure and resets with reload. It sends a bounded, data-only inventory of
+active tools to the primary classifier tiers. The answer is one schema-grounded declarative call plan or `match:false`:
+published argument paths, JSON literals, and bindings for the parent's `task`, `model`, `effort` (or
+`model_with_effort`), and the result tool's `child_id`. There is no executable adapter, `eval`, invented protocol, or
+direct dispatch.
+
+- **Publication.** Each access returns the current publication immediately, including a published no-match. It starts at
+  most one background refresh, shared by concurrent accesses. The first review without a publication uses the SDK and
+  never waits.
+- **Generations.** A change in the tool fingerprint (name, docs, schema, exposure, source, active membership) aborts the
+  flight, including a retry, and advances the generation. Only a schema-valid answer from the current, un-aborted
+  generation may publish. An ignored abort still occupies the single-flight slot until its promise settles; accesses
+  meanwhile retain the stale publication without starting overlapping classification.
+- **Timeout.** The discovery deadline is 60 seconds, separate from the review budget. Expiry aborts the flight, records
+  telemetry, and leaves discovery DIRTY. Only an access after settlement retries; there is no timer or catch/finally
+  retry. Synchronous snapshot/classifier exceptions use the same rejection cleanup, so they cannot orphan the flight;
+  classification still starts eagerly on access.
+- **Isolation.** Documentation must establish it. The cited argument needs exactly one literal value. A verbatim quote
+  naming both extensions and that exact literal (for example "If true, agent gets no extension/MCP tools") must appear
+  in that parameter's published description, or in the tool docs alongside the argument name. Duplicate or overlapping
+  argument paths are rejected. This is lexical grounding, not semantic proof. A field merely called `isolated` proves
+  nothing, so this repository's `contextMode` cannot qualify. Without supported isolation the SDK runs; no tool is
+  blocked.
+- **Dispatch.** Every dispatch rechecks that the tools are callable (active, direct/model-only) and re-validates the
+  bound arguments with Pi's own `validateToolArguments`. Unpublished paths are rejected, and the plan can never choose
+  the task, model, or effort. The builder receives the concrete arguments in a `router-review-delegation` follow-up and
+  runs them through its ordinary tools; event handlers have no public `executeTool`.
+
+`tool_call`/`tool_result` observation is read-only. The router never returns replacement content, details, or error
+state, and never trims wrappers. It accepts only the last nonce-tagged JSON block from the single, exact validated
+spawn. A companion call counts too, but only if it matches its validated template and carries a child id that the
+spawn's output actually returned. The executed input reported by `tool_result` is rechecked, because later `tool_call`
+handlers may mutate it. Verdicts, quarantine evidence, and fallback are all provisional until the delegation run
+settles. A user abort (Escape) cancels the review. No calls, or exactly one verified failed spawn, permits SDK fallback.
+Any off-plan call or unverified companion makes ownership uncertain, even before a spawn or after a failed one. A
+successful spawn without a verdict, a second spawn, a deviating call, a timeout, or cancellation is uncertain or stale,
+because a builder-launched child cannot be cancelled by the router; no replacement starts.
+
+Reported Pi tool usage is accounted once per correlated call ID, including duplicate planned spawns and companion calls
+that make verdict ownership uncertain. Nested descendants and outer-wrapper aggregates are not counted again.
+Cancellation or timeout makes advice stale immediately, but retains accounting for one second, even if cancellation
+precedes the first observed call. Spawn/wait results during that grace can contribute usage, never advice; once the
+delegation run settles, no new call IDs are admitted from later turns. Usage after the grace is best-effort and cannot
+update a settled result. The run remains guarded until it settles independently of the accounting grace, and no new
+attempt overlaps either owner.
+
+The builder must copy the arguments exactly, in its own context and at builder output pricing, and any deviation blocks
+fallback. Tasks over 12,000 characters (most diff-carrying completion reviews) therefore skip the builder path and use
+the SDK.
+
+Discovery publishes only a structurally bindable plan; anything else stays DIRTY for the next access. That check covers
+published paths, required fields at every constructed object depth, fixed literals without type coercion, and bindings
+with placeholder values. Value constraints on bound fields are checked only at dispatch, with the parent's real values;
+the companion call is checked against its template once the child id exists. Argument paths named `__proto__`,
+`prototype`, or `constructor` are rejected. The isolation quote and literal are matched with case, sign, decimals, and
+punctuation preserved.
+
+A verdict completes only if it validates for the review's kind and exact scope. An invalid or foreign verdict from a
+launched child is uncertain, not a fallback. The delegation run itself never triggers planning repair or builder
+fallback.
+
+Candidate quarantine records only high-confidence contract incompatibility: an exact single invocation whose error
+rejects a bound argument by name ("Unknown parameter: isolated"). The extracted name must be one of the bound argument
+paths. Rejected values ("Invalid parameter model: must be ...", "Unknown model"), unbound names, and operational wording
+such as not found, auth, rate limit, timeout, or Pi validation never quarantine. It is keyed by source path, namespace,
+and tool name, plus the invoked and required spawn/result argument schemas with annotations stripped from schema nodes
+only (property names and literal data kept), and exposure. Help-text edits, unused optional fields, unrelated tools, and
+disappearance do not clear it; a meaningful schema change does. A missing companion keeps it only while the spawn
+contract is unchanged. The map holds 64 entries; when full it blocks every candidate rather than evicting evidence.
+Quarantined contracts are excluded from discovery input, so an answer repeating one cannot publish. Adding one aborts
+the flight and advances the generation without an eager refresh.
+
 The **SDK** runner is in-process: `createAgentSession` with `SessionManager.inMemory()`, in-memory settings, and an
 empty `ResourceLoader`. Cache warming is explicitly off so it cannot issue billable requests outside the review budget.
 It loads no extensions (including router/subagents), skills, templates, context files, or MCP servers. Its explicit
@@ -477,13 +550,13 @@ one second per changed line, capped at four hours. Unknown, binary, or unmeasura
 provisional slope lives in `core/review-budget.ts` for later budget-policy adoption. Each SDK session also has at most
 eight model requests and 4,096 output tokens per request. A measured $1 cost threshold stops its subsequent calls; it is
 not a provider-side billing limit and can overshoot by the final bounded request. These request, token, and dollar caps
-apply only to SDK sessions. A signaling child runs under its manager's own limits; the router sees its usage only at
-termination, when reported, and enforces only the shared wall deadline. One logical deadline is computed before child
-selection. Selection and every runner share it and the remaining measured cost budget; fallback gets no fresh
-allocation. Usage/cost/status, `reviewRunner` (`signaling` or `in_process`), `reviewSelection`, `reviewEffort`, and any
-`signalingNegative` reason are recorded in telemetry. Each review attempt's cost is also added to its owning task's
-total and labeled `modelAndToolCost`; reviewer token counts stay out of builder cache metrics. No raw reviewer errors
-are logged.
+apply only to SDK sessions. A signaling or builder-steered child runs under its manager's own limits; the router sees
+signaling usage only at termination, when reported, and enforces only the shared wall deadline. One logical deadline is
+computed before child selection. Selection and every runner share it and the remaining measured cost budget; fallback
+gets no fresh allocation. Usage/cost/status, `reviewRunner` (`signaling`, `builder`, or `in_process`),
+`reviewSelection`, `reviewEffort`, and any `signalingNegative` reason are recorded in telemetry. Each review attempt's
+cost is also added to its owning task's total and labeled `modelAndToolCost`; reviewer token counts stay out of builder
+cache metrics. No raw reviewer errors are logged.
 
 Valid verdicts are delivered as custom follow-up context plus a UI notification. Plan advice triggers a turn; completion
 findings are queued as follow-up context without manufacturing a new turn. Invalid output, timeout, and failure warn the

@@ -160,6 +160,28 @@ listener lifetimes, disposal, and persisted lease history; no Pi code was copied
 the `Symbol.for` registry, compiled `structuredOutput`, workflows, scheduling, worktrees, resume, or any multi-manager
 election.
 
+Builder-steered discovery (`extensions/router/discovery.ts`, `builder-runner.ts`) is original code. Its test fixture
+reproduces the parameter shape and the published `isolated` description of tintinweb's normal `Agent` tool from the same
+`v0.22.0` release `src/index.ts` (MIT). Nothing tintinweb-specific is in the runtime: any tool qualifies only through
+its own published schema and documentation. Stale-while-refresh generations, declarative call plans, and candidate
+quarantine follow the approved design. No upstream code was copied. Installed Pi 1.3.0 `docs/sdk.md`,
+`docs/extensions.md`, `docs/session-format.md`, and `examples/sdk/13-session-runtime.ts` (canonical Pi repository,
+release revision and MIT license above) informed the session-replacement integration: capture plain session identity,
+invalidate discovery before contexts expire, and discard late publication/telemetry failure effects across generations.
+The reset retains an abort-ignoring flight until settlement rather than adopting a new session runtime or copying
+upstream lifecycle code; private context revival and eager discovery retries remain intentionally excluded. Installed Pi
+1.3.0 `ToolResultEventBase`, `AgentSession._afterToolCall`, `NestedToolCallRunner`, and the agent-core
+finalization/event sequence were also inspected as API evidence: executed-input observation precedes execution-end
+mutation accounting, and tool-result usage is execution-local while nested totals are merged later into transcript
+messages. The original router now exempts only revalidated orchestration from implementation evidence and counts only
+reported, correlated call usage once. No upstream code was copied; tool-result rewriting, usage estimates from prose or
+details, and accounting of unrelated/outer-wrapper totals were not adopted. Follow-up accounting separates observed call
+IDs from single-verdict ownership, excludes native nested descendants, and drains stale usage for one second without
+admitting new call IDs after the delegation run settles; the run-overlap guard remains independent. This and eager
+synchronous-classifier rejection cleanup are original repository safeguards using the same documented API boundaries,
+not copied Pi lifecycle/usage code. No manager adapter, new transport, estimated usage, or post-grace accounting
+recovery was adopted.
+
 ## Routing layer (`extensions/router`)
 
 Full design provenance, including the historical conversation export the router's spec derives from and the public

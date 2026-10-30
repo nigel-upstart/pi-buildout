@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { registerSignaling } from "../subagents/signaling.ts";
 
 // The router derives candidates from the operator's model scope, so tests pin it explicitly rather
@@ -279,7 +280,7 @@ async function authorizationLifecycleFixture(options = {}, restoredState) {
     safetyEvidence: { baselineChangedFiles: [], checks: [], mutations: [] },
     manualOverride: false,
   };
-  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review"];
+  let activeTools = ["read", "bash", "submit_action_plan", "submit_safety_review", ...(options.activeExtra ?? [])];
   const makeModel = (provider, id, api) => ({
     provider,
     id,
@@ -311,6 +312,7 @@ async function authorizationLifecycleFixture(options = {}, restoredState) {
     appendEntry: (customType, data) => appended.push({ customType, data }),
     sendMessage: (message, options) => sent.push({ message, options }),
     ...(options.events ? { events: options.events } : {}),
+    getAllTools: () => options.allTools?.() ?? [],
     setModel: async (model) => {
       selectedModels.push(model);
       // The interruption can land while settlement awaits the switch back to the builder.
@@ -6586,6 +6588,392 @@ describe("routerExtension", () => {
     }
   });
 
+  /** Released tintinweb `Agent` subset with its published isolation documentation. */
+  const agentTool = () => ({
+    name: "Agent",
+    description: "Launch a new agent to handle complex, multi-step tasks autonomously.",
+    exposure: "direct",
+    sourceInfo: { path: "/ext/pi-subagents/index.ts", source: "npm", scope: "user", origin: "package" },
+    parameters: Type.Object({
+      prompt: Type.String(),
+      description: Type.String(),
+      subagent_type: Type.String(),
+      model: Type.Optional(Type.String()),
+      thinking: Type.Optional(Type.String()),
+      run_in_background: Type.Optional(Type.Boolean()),
+      isolated: Type.Optional(
+        Type.Boolean({ description: "If true, agent gets no extension/MCP tools \u2014 only built-in tools." }),
+      ),
+    }),
+  });
+  const agentDiscovery = async () => ({
+    match: true,
+    spawnTool: "Agent",
+    spawnArguments: [
+      { path: "prompt", bind: "task" },
+      { path: "description", literal: '"router review"' },
+      { path: "subagent_type", literal: '"general-purpose"' },
+      { path: "model", bind: "model" },
+      { path: "thinking", bind: "effort" },
+      { path: "run_in_background", literal: "false" },
+      { path: "isolated", literal: "true" },
+    ],
+    isolationArgument: "isolated",
+    isolationEvidence: "If true, agent gets no extension/MCP tools",
+  });
+
+  it("falls forward to a builder-steered discovered tool and observes its result without rewriting it", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+    });
+    const model = fixture.ctx.model;
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+      const dispatched = fixture.sent.find((s) => s.message.customType === "router-review-delegation");
+      assert.deepEqual(dispatched.options, { triggerTurn: true, deliverAs: "followUp" });
+      const args = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(dispatched.message.content)[1]);
+      assert.equal(args.isolated, true);
+      assert.match(args.model, /^(anthropic|google-vertex)\//, "the parent-selected reviewer, not the builder");
+      const nonce = /nonce="([a-f0-9]{32})"/.exec(args.prompt)[1];
+      const scopeFingerprint = /scopeFingerprint "([a-f0-9]{64})"/.exec(args.prompt)[1];
+      fixture.hooks.get("tool_call")({ toolCallId: "agent-call", toolName: "Agent", input: args }, fixture.ctx);
+      // The delegation run's own end never drives builder repair/fallback, even on a length stop.
+      await fixture.hooks.get("agent_end")(
+        {
+          messages: [
+            {
+              role: "assistant",
+              provider: "openai-codex",
+              model: "gpt-6-sol",
+              stopReason: "length",
+              content: [],
+              usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } },
+            },
+          ],
+        },
+        fixture.ctx,
+      );
+      assert.equal(fixture.selectedModels.length, 0, "no builder fallback switch during delegation");
+      const advice = {
+        reviewKind: "plan",
+        scopeFingerprint,
+        verdict: "approve",
+        summary: "Builder-steered advice",
+        evidence: ["Read the plan"],
+        findings: ["Steered finding"],
+      };
+      const event = {
+        toolCallId: "agent-call",
+        toolName: "Agent",
+        input: args,
+        content: [
+          {
+            type: "text",
+            text: `Agent done\n<router-result nonce="${nonce}">${JSON.stringify(advice)}</router-result>`,
+          },
+        ],
+        isError: false,
+      };
+      const before = structuredClone(event);
+      assert.equal(await fixture.hooks.get("tool_result")(event, fixture.ctx), undefined);
+      assert.deepEqual(event, before, "the third-party tool result is never modified");
+      // The delegation run settles; only then is the provisional verdict accepted.
+      await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+      await waitForReview(() => fixture.sent.some((s) => /Steered finding/.test(s.message.content)));
+      assert.equal(runner.calls.length, 0, "the SDK fallback is unused");
+      assert.equal(fixture.selectedModels.length, 0);
+      assert.equal(fixture.ctx.model, model);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  for (const kind of ["plan", "completion"]) {
+    it(`keeps exact builder ${kind} review orchestration out of mutation evidence through native tool events`, async () => {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+      });
+      if (kind === "completion") {
+        fixture.parent.lifecycle = {
+          phase: "executing",
+          policy: "plan_review_then_completion_review",
+          taskFingerprint: "task-fingerprint",
+        };
+        fixture.parent.safetyEvidence.mutations = [
+          { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+        ];
+      }
+      try {
+        if (kind === "plan") await launchReview(fixture);
+        else {
+          await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+          await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+        }
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        const dispatch = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message;
+        const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(dispatch.content)[1]);
+        const nonce = /nonce="([a-f0-9]{32})"/.exec(input.prompt)[1];
+        const scopeFingerprint = /scopeFingerprint "([a-f0-9]{64})"/.exec(input.prompt)[1];
+        const evidence = fixture.latestLease().safetyEvidence;
+        await fixture.hooks.get("before_agent_start")(
+          { messageType: "custom", message: dispatch, systemPrompt: "system" },
+          fixture.ctx,
+        );
+        fixture.hooks.get("agent_start")({}, fixture.ctx);
+        fixture.hooks.get("tool_execution_start")(
+          { toolCallId: "review", toolName: "Agent", args: input },
+          fixture.ctx,
+        );
+        fixture.hooks.get("tool_call")({ toolCallId: "review", toolName: "Agent", input }, fixture.ctx);
+        const result = {
+          toolCallId: "review",
+          toolName: "Agent",
+          input,
+          isError: false,
+          content: [
+            {
+              type: "text",
+              text: `<router-result nonce="${nonce}">${JSON.stringify({ reviewKind: kind, scopeFingerprint, verdict: kind === "plan" ? "approve" : "pass", summary: "Native pipeline advice", evidence: ["Inspected scope"], findings: ["Pipeline finding"] })}</router-result>`,
+            },
+          ],
+        };
+        const original = structuredClone(result);
+        assert.equal(await fixture.hooks.get("tool_result")(result, fixture.ctx), undefined);
+        assert.deepEqual(result, original);
+        fixture.hooks.get("tool_execution_end")(
+          { toolCallId: "review", toolName: "Agent", result, isError: false },
+          fixture.ctx,
+        );
+        assert.equal(
+          fixture.latestLease().safetyEvidence,
+          evidence,
+          "orchestration never replaces reviewed implementation evidence",
+        );
+        await fixture.hooks.get("agent_end")({ messages: [] }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await waitForReview(() => fixture.sent.some((s) => /Pipeline finding/.test(s.message.content)));
+        assert.equal(fixture.latestLease().lifecycle.phase, kind === "plan" ? "executing" : "completed");
+        assert.equal(runner.calls.length, 0);
+      } finally {
+        await fixture.hooks.get("session_shutdown")({ reason: "quit" }, fixture.ctx);
+        fixture.restoreEnvironment();
+      }
+    });
+  }
+
+  it("keeps changed execution arguments and unrelated calls as completion mutation evidence", async () => {
+    for (const deviation of ["changed_arguments", "unrelated"]) {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+      });
+      fixture.parent.lifecycle = {
+        phase: "executing",
+        policy: "plan_review_then_completion_review",
+        taskFingerprint: "task-fingerprint",
+      };
+      fixture.parent.safetyEvidence.mutations = [
+        { toolName: "write", inputFingerprint: "a".repeat(64), recordedAt: "before" },
+      ];
+      try {
+        await fixture.hooks.get("session_start")({ reason: "reload" }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        const content = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message.content;
+        const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
+        const event = {
+          toolCallId: "mutation",
+          toolName: deviation === "unrelated" ? "write" : "Agent",
+          input: deviation === "unrelated" ? { path: "changed", content: "x" } : input,
+        };
+        fixture.hooks.get("agent_start")({}, fixture.ctx);
+        fixture.hooks.get("tool_execution_start")(
+          { toolCallId: event.toolCallId, toolName: event.toolName, args: event.input },
+          fixture.ctx,
+        );
+        fixture.hooks.get("tool_call")(event, fixture.ctx);
+        // A later extension mutates the initially exact arguments before execution.
+        if (deviation === "changed_arguments") event.input.isolated = false;
+        const result = { ...event, content: [{ type: "text", text: "done" }], isError: false };
+        await fixture.hooks.get("tool_result")(result, fixture.ctx);
+        fixture.hooks.get("tool_execution_end")(
+          { toolCallId: event.toolCallId, toolName: event.toolName, result, isError: false },
+          fixture.ctx,
+        );
+        assert.equal(fixture.latestLease().safetyEvidence.mutations.length, 2, deviation);
+        await fixture.hooks.get("agent_end")({ messages: [] }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await flushMicrotasks();
+        assert.equal(
+          fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+          false,
+        );
+        assert.equal(runner.calls.length, 0, "a deviated child never authorizes overlapping fallback");
+      } finally {
+        await fixture.hooks.get("session_shutdown")({ reason: "quit" }, fixture.ctx);
+        fixture.restoreEnvironment();
+      }
+    }
+  });
+
+  it("never starts SDK fallback after an off-plan call, including after a failed planned spawn", async () => {
+    for (const failedSpawn of [false, true]) {
+      const runner = controlledRunner();
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        classifyPrimaryTask: childClassifier([]),
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+      });
+      const notes = [];
+      fixture.ctx.ui.notify = (message) => notes.push(message);
+      try {
+        const foreign = { toolCallId: "foreign", toolName: "another_agent_tool", input: { action: "create" } };
+        const original = structuredClone(foreign);
+        assert.equal(fixture.hooks.get("tool_call")(foreign, fixture.ctx), undefined, "ordinary calls stay allowed");
+        await launchReview(fixture);
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        if (failedSpawn) {
+          const content = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message.content;
+          const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
+          fixture.hooks.get("tool_call")({ toolCallId: "planned", toolName: "Agent", input }, fixture.ctx);
+          await fixture.hooks.get("tool_result")(
+            {
+              toolCallId: "planned",
+              toolName: "Agent",
+              input,
+              content: [{ type: "text", text: "Unknown parameter: isolated" }],
+              isError: true,
+            },
+            fixture.ctx,
+          );
+        }
+        assert.equal(fixture.hooks.get("tool_call")(foreign, fixture.ctx), undefined, "observation never blocks");
+        assert.deepEqual(foreign, original);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await waitForReview(() => notes.some((note) => /ownership is uncertain/.test(note)));
+        assert.equal(runner.calls.length, 0, "the unverified child must not overlap an SDK reviewer");
+        assert.equal(fixture.selectedModels.length, 0);
+      } finally {
+        fixture.restoreEnvironment();
+      }
+    }
+  });
+
+  it("charges reported builder tool usage before budgeting SDK fallback", async () => {
+    for (const cost of [0.4, 1.25]) {
+      const runner = controlledRunner();
+      const events = [];
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: agentDiscovery,
+        telemetry: { read: async () => [], append: async (event) => events.push(event) },
+      });
+      try {
+        await launchReview(fixture);
+        await waitForReview(() => fixture.sent.some((s) => s.message.customType === "router-review-delegation"));
+        const content = fixture.sent.find((s) => s.message.customType === "router-review-delegation").message.content;
+        const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(content)[1]);
+        fixture.hooks.get("agent_start")({}, fixture.ctx);
+        fixture.hooks.get("tool_execution_start")(
+          { toolCallId: "failed-review", toolName: "Agent", args: input },
+          fixture.ctx,
+        );
+        fixture.hooks.get("tool_call")({ toolCallId: "failed-review", toolName: "Agent", input }, fixture.ctx);
+        const result = {
+          toolCallId: "failed-review",
+          toolName: "Agent",
+          input,
+          content: [{ type: "text", text: "Unknown parameter: isolated" }],
+          isError: true,
+          usage: {
+            input: 100,
+            output: 20,
+            cacheRead: 30,
+            cacheWrite: 10,
+            totalTokens: 160,
+            cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+          },
+        };
+        await fixture.hooks.get("tool_result")(result, fixture.ctx);
+        fixture.hooks.get("tool_execution_end")(
+          { toolCallId: "failed-review", toolName: "Agent", result, isError: true },
+          fixture.ctx,
+        );
+        await fixture.hooks.get("agent_end")({ messages: [] }, fixture.ctx);
+        await fixture.hooks.get("agent_settled")({ aborted: false }, fixture.ctx);
+        await waitForReview(() => events.some((e) => e.data.reviewRunner === "builder"));
+        const outcome = events.find((e) => e.data.reviewRunner === "builder").data;
+        assert.equal(outcome.reviewCost, cost);
+        assert.equal(outcome.inputTokens, 140);
+        assert.equal(outcome.outputTokens, 20);
+        if (cost < 1) {
+          await waitForReview(() => runner.calls.length === 1);
+          assert.equal(runner.calls[0].request.maxCost, 1 - cost);
+        } else {
+          await flushMicrotasks();
+          assert.equal(runner.calls.length, 0, "reported spend exhausts the budget before any SDK launch");
+        }
+      } finally {
+        await fixture.hooks.get("session_shutdown")({ reason: "quit" }, fixture.ctx);
+        fixture.restoreEnvironment();
+      }
+    }
+  });
+
+  it("still reaches the SDK when tool inventory access throws", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => {
+        throw new Error("inventory unavailable");
+      },
+    });
+    try {
+      await launchReview(fixture, runner);
+      assert.equal(runner.calls.length, 1);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("uses the SDK when no discovery publication exists yet, without waiting for discovery", async () => {
+    const runner = controlledRunner();
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: () => new Promise(() => {}),
+    });
+    try {
+      await launchReview(fixture, runner);
+      assert.equal(
+        fixture.sent.some((s) => s.message.customType === "router-review-delegation"),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("records an unroutable child selection as a selection outcome, not a runner failure", async () => {
     const runner = controlledRunner();
     const fixture = await authorizationLifecycleFixture({
@@ -7258,6 +7646,171 @@ describe("routerExtension", () => {
       }
     });
   }
+
+  for (const outcome of ["published", "failed"]) {
+    it(`ignores late ${outcome} discovery after session replacement without touching stale context`, async () => {
+      const gate = deferred();
+      const runner = controlledRunner();
+      const events = [];
+      let signal;
+      const fixture = await authorizationLifecycleFixture({
+        reviewRunner: runner,
+        allTools: () => [agentTool()],
+        activeExtra: ["Agent"],
+        discoverDelegate: (request) => {
+          signal = request.signal;
+          return gate.promise; // Deliberately ignores abort.
+        },
+        telemetry: { read: async () => [], append: async (event) => events.push(event) },
+      });
+      const { hooks, ctx, restoreEnvironment } = fixture;
+      try {
+        await launchReview(fixture, runner);
+        await hooks.get("session_shutdown")({ reason: "new" }, ctx);
+        const nextCtx = {
+          ...ctx,
+          sessionManager: { ...ctx.sessionManager, getSessionId: () => "replacement", getBranch: () => [] },
+        };
+        await hooks.get("session_start")({ reason: "new" }, nextCtx);
+        const staleAccesses = [];
+        Object.defineProperty(ctx, "sessionManager", {
+          configurable: true,
+          get() {
+            staleAccesses.push("sessionManager");
+            throw new Error("This extension ctx is stale after session replacement or reload.");
+          },
+        });
+        if (outcome === "published") gate.resolve(agentDiscovery());
+        else gate.reject(new Error("late discovery failure"));
+        await flushMicrotasks();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.deepEqual(staleAccesses, [], "late discovery must not read the previous context");
+        assert.equal(signal.aborted, true, "shutdown invalidates and aborts discovery before context expires");
+        assert.equal(
+          events.some((event) => event.data.discovery),
+          false,
+          "old discovery cannot publish or report",
+        );
+        assert.equal(
+          fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode,
+          "active",
+        );
+      } finally {
+        restoreEnvironment();
+      }
+    });
+  }
+
+  it("does not disable a replacement session when an earlier discovery telemetry append fails late", async () => {
+    const gate = deferred();
+    const reached = deferred();
+    const runner = controlledRunner();
+    const notes = [];
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+      telemetry: {
+        read: async () => [],
+        append: (event) => {
+          if (event.data.discovery) {
+            reached.resolve();
+            return gate.promise;
+          }
+          return Promise.resolve();
+        },
+      },
+    });
+    const { hooks, ctx, restoreEnvironment } = fixture;
+    ctx.ui.notify = (message) => notes.push(message);
+    try {
+      await launchReview(fixture);
+      await reached.promise;
+      await hooks.get("session_shutdown")({ reason: "new" }, ctx);
+      const nextCtx = {
+        ...ctx,
+        sessionManager: { ...ctx.sessionManager, getSessionId: () => "replacement", getBranch: () => [] },
+      };
+      await hooks.get("session_start")({ reason: "new" }, nextCtx);
+      gate.reject(new Error("late discovery append failure"));
+      await flushMicrotasks();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(
+        notes.some((note) => /Router telemetry failed/.test(note)),
+        false,
+      );
+      assert.equal(fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode, "active");
+    } finally {
+      restoreEnvironment();
+    }
+  });
+
+  it("disables the same session when discovery telemetry fails after another observation", async () => {
+    const gate = deferred();
+    const reached = deferred();
+    const runner = controlledRunner();
+    const notes = [];
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: async () => ({ match: false }),
+      telemetry: {
+        read: async () => [],
+        append: (event) => {
+          if (event.data.discovery) {
+            reached.resolve();
+            return gate.promise;
+          }
+          return Promise.resolve();
+        },
+      },
+    });
+    fixture.ctx.ui.notify = (message) => notes.push(message);
+    try {
+      await launchReview(fixture, runner);
+      await reached.promise;
+      runner.calls[0].resolve({ status: "failed", usage: { cost: 0, inputTokens: 0, outputTokens: 0 } });
+      await flushMicrotasks();
+      const revised = {
+        ...irreversibleActionPlan(),
+        objective: "Rotate the production credential after rechecking access.",
+      };
+      await fixture.tools.get("submit_action_plan").execute("revised", revised, undefined, undefined, fixture.ctx);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      // Starting another review observes discovery again without replacing the session or its generation.
+      await waitForReview(() => runner.calls.length === 2);
+      gate.reject(new Error("delayed same-session discovery append failure"));
+      await waitForReview(() => notes.some((note) => /Router telemetry failed/.test(note)));
+      assert.equal(fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode, "shadow");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
+  it("still disables the owning live session when discovery telemetry fails", async () => {
+    const notes = [];
+    const fixture = await authorizationLifecycleFixture({
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+      telemetry: {
+        read: async () => [],
+        append: async (event) => {
+          if (event.data.discovery) throw new Error("current discovery append failure");
+        },
+      },
+    });
+    fixture.ctx.ui.notify = (message) => notes.push(message);
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => notes.some((note) => /Router telemetry failed/.test(note)));
+      assert.equal(fixture.appended.findLast((entry) => entry.customType === "model-router-state").data.mode, "shadow");
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
 
   it("records a late cancelled outcome without touching the invalidated context", async () => {
     const runner = controlledRunner();
