@@ -1,44 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   DefaultResourceLoader,
-  ModelRegistry,
-  ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { sdkFixture as fixture, stalledStream, streamMessage } from "./fixtures/pi-sdk.mjs";
 import { inProcessReviewRunner } from "./review-runner.ts";
 
-const noCredentials = {
-  read: async () => undefined,
-  list: async () => [],
-  modify: async () => undefined,
-  delete: async () => {},
-};
-async function fixture(t) {
-  const cwd = await mkdtemp(join(tmpdir(), "router-sdk-review-"));
-  t.after(() => rm(cwd, { recursive: true, force: true }));
-  // Any normal discovery would load these instructions; the review must not see them.
-  await writeFile(join(cwd, "AGENTS.md"), "SHOULD_NOT_LOAD_RECURSIVELY");
-  await mkdir(join(cwd, ".pi", "extensions"), { recursive: true });
-  await writeFile(
-    join(cwd, ".pi", "extensions", "router.ts"),
-    "globalThis.__routerReviewerFactoryLoaded = true; export default () => {};",
-  );
-  const runtime = await ModelRuntime.create({ credentials: noCredentials, modelsPath: null, refreshOnCreate: false });
-  runtime.registerProvider("fixture", {
-    api: "openai-responses",
-    baseUrl: "http://localhost:1",
-    apiKey: "test-only",
-    models: [{ id: "review", name: "Review", input: ["text"], contextWindow: 100_000, maxTokens: 4096 }],
-  });
-  return { cwd, runtime, registry: new ModelRegistry(runtime), model: runtime.getModel("fixture", "review") };
-}
 const scope = "a".repeat(64);
 const verdict = {
   reviewKind: "plan",
@@ -48,31 +19,11 @@ const verdict = {
   evidence: ["Inspected plan"],
   findings: [],
 };
-function streamMessage(model, content, reason = "stop", cost = 0.01) {
-  const message = {
-    role: "assistant",
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    content,
-    stopReason: reason,
-    timestamp: Date.now(),
-    usage: {
-      input: 20,
-      output: 10,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 30,
-      cost: { input: 0, output: cost, cacheRead: 0, cacheWrite: 0, total: cost },
-    },
-  };
-  const stream = createAssistantMessageEventStream();
-  stream.push({ type: "done", reason, message });
-  return stream;
-}
 function request(f) {
   return {
-    ...f,
+    cwd: f.cwd,
+    registry: f.registry,
+    model: f.model,
     effort: "off",
     kind: "plan",
     scopeFingerprint: scope,
@@ -94,7 +45,7 @@ test("SDK reviewer uses parent model access, loads no resources, and exposes rea
   });
   let calls = 0;
   const observed = [];
-  f.runtime.streamSimple = (model, context) => {
+  f.respond = (model, context) => {
     observed.push(context);
     return calls++ === 0
       ? streamMessage(
@@ -167,7 +118,7 @@ test("a real builder session keeps its model, effort, prompt, messages, and tool
   });
   const before = structuredClone(snapshot());
   let calls = 0;
-  f.runtime.streamSimple = (model, _context, options) => {
+  f.respond = (model, _context, options) => {
     assert.ok(options.maxTokens <= 4096);
     return calls++ === 0
       ? streamMessage(
@@ -209,35 +160,10 @@ test("SDK reviewer skips safely when the private runtime field is unavailable", 
 test("SDK reviewer cancels and times out a stalled provider", async (t) => {
   const f = await fixture(t);
   let aborted = 0;
-  f.runtime.streamSimple = (model, _context, options) => {
-    const stream = createAssistantMessageEventStream();
-    options.signal.addEventListener(
-      "abort",
-      () => {
-        aborted++;
-        const message = {
-          role: "assistant",
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          content: [],
-          stopReason: "aborted",
-          timestamp: Date.now(),
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-          },
-        };
-        stream.push({ type: "error", reason: "aborted", error: message });
-      },
-      { once: true },
-    );
-    return stream;
-  };
+  f.respond = (model, _context, options) =>
+    stalledStream(model, options, () => {
+      aborted++;
+    });
   const handle = inProcessReviewRunner.start(request(f));
   await new Promise((resolve) => setTimeout(resolve, 30));
   handle.cancel();
@@ -249,9 +175,9 @@ test("SDK reviewer cancels and times out a stalled provider", async (t) => {
 
 test("SDK reviewer bounds spending and rejects prose-only or malformed verdicts", async (t) => {
   const f = await fixture(t);
-  f.runtime.streamSimple = (model) => streamMessage(model, [{ type: "text", text: "looks good" }]);
+  f.respond = (model) => streamMessage(model, [{ type: "text", text: "looks good" }]);
   assert.equal((await inProcessReviewRunner.start(request(f)).result).status, "failed");
-  f.runtime.streamSimple = (model) =>
+  f.respond = (model) =>
     streamMessage(
       model,
       [
@@ -273,7 +199,7 @@ for (const reason of ["error", "aborted"]) {
   test(`SDK reviewer fails a valid verdict when the session then ends with stopReason ${reason}`, async (t) => {
     const f = await fixture(t);
     let calls = 0;
-    f.runtime.streamSimple = (model) => {
+    f.respond = (model) => {
       if (calls++ === 0)
         return streamMessage(
           model,
@@ -298,7 +224,7 @@ for (const reason of ["error", "aborted"]) {
 
 test("SDK reviewer reports usage from the final aborted message after cancellation or timeout", async (t) => {
   const f = await fixture(t);
-  f.runtime.streamSimple = (model, _context, options) => {
+  f.respond = (model, _context, options) => {
     const stream = createAssistantMessageEventStream();
     options.signal.addEventListener(
       "abort",
@@ -352,7 +278,7 @@ test("SDK reviewer starts no provider request when cancelled while prompt awaits
     });
   });
   let requests = 0;
-  f.runtime.streamSimple = (model) => {
+  f.respond = (model) => {
     requests++;
     return streamMessage(model, []);
   };
