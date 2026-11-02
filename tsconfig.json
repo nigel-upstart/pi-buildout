@@ -26,6 +26,8 @@
     "patches",
     "extensions/otel/**",
     "extensions/router/**/*.test.mjs",
+    // Test-only helpers shared by those excluded router tests.
+    "extensions/router/fixtures/*.mjs",
     "pi-overlay/skill-management.ts",
     "pi-overlay/versions"
   ]
