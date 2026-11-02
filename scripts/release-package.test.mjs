@@ -198,6 +198,7 @@ test("patch package stages only versioned patch data and a patch-only CLI", () =
   const { directory, manifest } = manifests.find(({ name }) => name === "skills-patch");
   execFileSync(process.execPath, [join(root, "scripts", "stage-release-package.mjs"), "skills-patch"]);
   const dist = join(directory, "dist");
+  assert.match(readFileSync(join(dist, "LICENSE"), "utf8"), /Copyright \(c\) 2025 Mario Zechner/);
   assert.equal(statSync(join(dist, "scripts", "install-extensions.sh")).isFile(), true);
   assert.equal(manifest.bin["pi-skills-patch"], "dist/scripts/install-extensions.sh");
   assert.match(readFileSync(join(dist, "scripts", "install-extensions.sh"), "utf8"), /--skip-extensions/);
@@ -209,7 +210,7 @@ test("patch package stages only versioned patch data and a patch-only CLI", () =
       .sort();
     assert.deepEqual(readdirSync(join(dist, "patches", version)).sort(), expected, version);
   }
-  assert.deepEqual(patchVersions.toSorted(), ["pi-1.0.3", "pi-1.0.4", "pi-1.1.0", "pi-1.3.0"]);
+  assert.deepEqual(patchVersions.toSorted(), ["pi-1.0.3", "pi-1.0.4", "pi-1.1.0", "pi-1.3.0", "pi-1.4.0"]);
   assert.equal(readdirSync(dist).includes("extensions"), false);
 
   const binDir = mkdtempSync(join(tmpdir(), "pi-skills-package-"));
