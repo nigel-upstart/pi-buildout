@@ -178,6 +178,14 @@ the supported floor (Pi 1.2.0) and the latest release, each installed in isolati
 `node scripts/pi-contract-canary.mjs <1.2.0|latest>`. A latest release outside `>=1.2.0 <2.0.0` fails as an
 unsupported-upgrade investigation rather than being tested as supported.
 
+Tool arguments cross a second host boundary. Pi validates each model tool call against the tool's JSON Schema with the
+public `validateToolArguments` and hands the extension a coerced copy; from Pi 1.5.0 that validator is
+`@earendil-works/pi-schema`. TypeBox remains how the router authors its schemas and validates locally: the classifier,
+planning, and reviewer paths re-check the normalized value with `typebox/value` and do not coerce. The offline
+`pi-tool-arguments.test.mjs` contract (run by `npm test` and the canary) asserts accept/reject outcomes and normalized
+values, not host error wording, for TypeBox-authored and plain JSON Schema tools, including the documented difference
+that plain JSON Schema got only primitive coercion before Pi 1.5.0.
+
 ## Start mode and enablement continuity
 
 Enablement is sticky. The mode selected with `/route shadow|active|off` survives `/compact` and `/clear`, and by default
