@@ -78,7 +78,7 @@ const mocks = {
         return { id: o.id, name: o.name, task: o.task, state: 'running', model: o.model,
           effort: o.effort, contextMode: o.contextMode ?? 'task_compacted', classification: o.classification,
           startedAt: Date.now(), updatedAt: Date.now(), turns: 0, toolCalls: 0,
-          pendingMessages: 0, compactions: 0, transcriptTail: '', ...f.snapshot }; 
+          pendingMessages: 0, compactions: 0, transcriptTail: '', ...f.snapshot };
       }
     }
   `,

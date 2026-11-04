@@ -540,12 +540,12 @@ test("completion before explicit abort rejection remains available to repeated w
   assert.equal(child.snapshot().finalAssistantText, undefined, "an empty final cannot reuse the recovered answer");
 });
 
-/** @param {import('node:test').TestContext} t */
-async function heldAbortChild(t) {
+/** @param {import('node:test').TestContext} t @param {string} [task] */
+async function heldAbortChild(t, task = "SLOW_WAIT LATE_FINAL HOLD_ABORT") {
   const child = new ManagedSubagent({
     id: "held-abort",
     name: "held-abort",
-    task: "SLOW_WAIT LATE_FINAL HOLD_ABORT",
+    task,
     model: "test/model",
     effort: "off",
     contextSummary: "",
