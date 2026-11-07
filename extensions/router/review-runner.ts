@@ -14,7 +14,7 @@ import type { EffortLevel } from "./core/profiles.ts";
 /** Bounded wait for an aborted request to report its final usage before a terminal result settles. */
 const ABORT_USAGE_GRACE_MS = 1_000;
 
-type ReviewRequest = {
+export type ReviewRequest = {
   cwd: string;
   registry: ExtensionContext["modelRegistry"];
   model: Model<Api>;
@@ -26,13 +26,25 @@ type ReviewRequest = {
   timeoutMs: number;
   maxCost: number;
 };
-type ReviewResult = {
-  status: "completed" | "failed" | "cancelled" | "timeout" | "budget_exceeded" | "runtime_unavailable";
+export type ReviewResult = {
+  /**
+   * `unavailable`: nothing was launched, so another runner may try. `failed`: confirmed terminal failure.
+   * `uncertain`: a child may still run (lost acceptance or unknown terminal state); never launch a replacement.
+   */
+  status:
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "timeout"
+    | "budget_exceeded"
+    | "runtime_unavailable"
+    | "unavailable"
+    | "uncertain";
   verdict?: unknown;
   usage: { cost: number; inputTokens: number; outputTokens: number };
 };
 export type ReviewHandle = { result: Promise<ReviewResult>; cancel(): void };
-/** A future adapter may resolve its promise from event observation; no transport semantics are required here. */
+/** Implemented by the shared-signaling and in-process SDK runners; no transport semantics are required here. */
 export type ReviewRunner = {
   start(request: ReviewRequest): ReviewHandle;
 };
@@ -179,7 +191,10 @@ export const inProcessReviewRunner: ReviewRunner = {
           if (message.stopReason === "error" || message.stopReason === "aborted") terminal ??= "failed";
           if (usage.cost >= request.maxCost) finish("budget_exceeded");
         });
-        await session.prompt(request.prompt, { expandPromptTemplates: false });
+        await session.prompt(
+          `${request.prompt}\nCall submit_safety_review with reviewKind=${request.kind} and scopeFingerprint=${request.scopeFingerprint}. Give advice, not permission.`,
+          { expandPromptTemplates: false },
+        );
         finish(terminal ?? (verdict === undefined ? "failed" : "completed"));
       } catch {
         finish(terminal ?? "failed");
