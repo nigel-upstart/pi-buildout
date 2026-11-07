@@ -2213,6 +2213,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   ): Promise<void> {
     if (
       pendingReview ||
+      builderRunner.ownsReview() ||
       parent.archetype === "code_review" ||
       leaseOwner.state.mode !== "active" ||
       leaseOwner.state.active !== parent ||

@@ -316,6 +316,10 @@ export function createBuilderReviewRunner(deps: {
     delegating(): boolean {
       return runInFlight;
     },
+    /** A cancelled run or its bounded accounting drain still owns the review ladder. */
+    ownsReview(): boolean {
+      return runInFlight || open !== undefined;
+    },
     onSettled(aborted = false): void {
       runInFlight = false;
       const attempt = open;

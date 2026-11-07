@@ -1232,16 +1232,30 @@ test("unrelated optional spawn and companion fields do not clear execution quara
 
 test("a timed-out attempt's run stays guarded until it settles, and no new attempt overlaps it", async () => {
   const h = builderHarness();
+  assert.equal(h.runner.ownsReview(), false);
   assert.equal((await h.runner.start(reviewRequest({ timeoutMs: 5 })).result).status, "timeout");
   assert.equal(h.runner.delegating(), true, "the dispatched run is still executing");
+  assert.equal(h.runner.ownsReview(), true, "usage grace expiry does not release a live run");
   assert.equal((await h.runner.start(reviewRequest()).result).status, "unavailable");
   assert.equal(h.sent.length, 1, "no second dispatch while the first run is alive");
   h.runner.onSettled();
   assert.equal(h.runner.delegating(), false);
+  assert.equal(h.runner.ownsReview(), false);
   const next = h.runner.start(reviewRequest());
   assert.equal(h.sent.length, 2);
   next.cancel();
   assert.equal((await next.result).status, "cancelled");
+});
+
+test("a settled cancelled run retains review ownership only until accounting drains", async () => {
+  const h = builderHarness();
+  const handle = h.runner.start(reviewRequest());
+  handle.cancel();
+  h.runner.onSettled();
+  assert.equal(h.runner.delegating(), false);
+  assert.equal(h.runner.ownsReview(), true, "the settled run still owns late usage");
+  assert.equal((await handle.result).status, "cancelled");
+  assert.equal(h.runner.ownsReview(), false);
 });
 
 test("builder deadline is a timeout without replacement, and cancellation is stale", async () => {

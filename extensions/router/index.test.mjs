@@ -6923,6 +6923,41 @@ describe("routerExtension", () => {
     }
   });
 
+  it("defers the entire replacement review ladder while cancelled builder accounting drains", async () => {
+    const runner = controlledRunner();
+    const prompts = [];
+    const fixture = await authorizationLifecycleFixture({
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier(prompts),
+      allTools: () => [agentTool()],
+      activeExtra: ["Agent"],
+      discoverDelegate: agentDiscovery,
+    });
+    const dispatches = () => fixture.sent.filter((s) => s.message.customType === "router-review-delegation");
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => dispatches().length === 1);
+      const changedPlan = { ...irreversibleActionPlan(), objective: "Rotate a different credential safely." };
+      await fixture.tools
+        .get("submit_action_plan")
+        .execute("changed-plan", changedPlan, undefined, undefined, fixture.ctx);
+      // This settles the old run, but its cancelled attempt still owns the bounded accounting drain.
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(prompts.length, 1, "replacement selection must wait for builder ownership to end");
+      assert.equal(runner.calls.length, 0, "a busy builder must never fall forward to the SDK");
+      assert.equal(dispatches().length, 1);
+      await new Promise((resolve) => setTimeout(resolve, 1_050));
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+      await waitForReview(() => dispatches().length === 2);
+      assert.equal(prompts.length, 2, "a deferred scope remains eligible after ownership ends");
+      assert.equal(runner.calls.length, 0);
+      await fixture.hooks.get("agent_settled")({}, fixture.ctx);
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("charges reported builder tool usage before budgeting SDK fallback", async () => {
     for (const cost of [0.4, 1.25]) {
       const runner = controlledRunner();

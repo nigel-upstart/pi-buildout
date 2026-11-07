@@ -502,7 +502,9 @@ handlers may mutate it. Verdicts, quarantine evidence, and fallback are all prov
 settles. A user abort (Escape) cancels the review. No calls, or exactly one verified failed spawn, permits SDK fallback.
 Any off-plan call or unverified companion makes ownership uncertain, even before a spawn or after a failed one. A
 successful spawn without a verdict, a second spawn, a deviating call, a timeout, or cancellation is uncertain or stale,
-because a builder-launched child cannot be cancelled by the router; no replacement starts.
+because a builder-launched child cannot be cancelled by the router; no replacement starts. The entire review ladder,
+including signaling and child selection, waits while a previous builder delegation owns a live run or its bounded
+accounting drain. A deferred scope remains eligible after that ownership ends.
 
 Reported Pi tool usage is accounted once per correlated call ID, including duplicate planned spawns and companion calls
 that make verdict ownership uncertain. Nested descendants and outer-wrapper aggregates are not counted again.
