@@ -295,6 +295,29 @@ test("isolation needs verbatim published documentation, not a field name or mode
   );
 });
 
+test("isolation evidence must affirm exclusion for the exact condition, not merely mention extensions", () => {
+  for (const description of [
+    "If true, the child loads extensions.",
+    "If true, the child loads no extensions documentation.",
+    "If false, the child loads no extensions. If true, it loads extensions.",
+    "If true, the child loads extensions, but no conversation history.",
+    "If true, the child loads no extensions that are disabled.",
+  ]) {
+    const tool = agentTool();
+    tool.parameters.properties.isolated.description = description;
+    assert.equal(planFromAnswer(agentAnswer({ isolationEvidence: description }), [tool]), undefined, description);
+  }
+  for (const description of [
+    "If true, agent gets no extension/MCP tools — only built-in tools.",
+    "When true, the child receives no extensions.",
+    "If isolated is true, the child loads no extensions.",
+  ]) {
+    const tool = agentTool();
+    tool.parameters.properties.isolated.description = description;
+    assert.ok(planFromAnswer(agentAnswer({ isolationEvidence: description }), [tool]), description);
+  }
+});
+
 test("the isolation literal must be the documented value, once, with no overlapping paths", () => {
   const tools = [agentTool()];
   const withArgs = (spawnArguments) => agentAnswer({ spawnArguments });

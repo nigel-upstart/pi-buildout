@@ -45,6 +45,8 @@ export const DISCOVERY_PROMPT = [
   "Find one tool that launches a separate agent for an arbitrary task and can return its final answer inline",
   "(or a companion result/wait tool). It must accept an explicit model and effort, and its own documentation",
   "must state an argument value that excludes extensions from the child. Otherwise report match:false.",
+  "Isolation evidence must be a verbatim If/When <value>, agent/child gets/loads/has/receives no extensions",
+  "(or extension/MCP tools) statement. Ambiguous or differently phrased documentation is not supported.",
   "Map only published argument names: bind task, model, effort (or model_with_effort when the documented model",
   "form carries an effort suffix), and child_id for the result tool; give other values as JSON literals.",
   "Quote the isolation documentation verbatim in isolationEvidence. Never invent arguments or protocols.",
@@ -123,15 +125,14 @@ function callable(tools: readonly ToolView[], name: string | undefined): ToolVie
 }
 const spaced = (text: string) => text.replace(/\s+/g, " ").trim();
 const normalized = (text: string) => spaced(text).toLowerCase();
-/** Case-sensitive occurrence not embedded in a longer word, number (including decimals), or signed value. */
-function containsToken(text: string, token: string): boolean {
-  for (let at = text.indexOf(token); at >= 0; at = text.indexOf(token, at + 1)) {
-    const before = text.charAt(at - 1);
-    const after = text.charAt(at + token.length);
-    const decimal = after === "." && /\d/.test(text.charAt(at + token.length + 1));
-    if (!(before && /[\w+.-]/.test(before)) && !(after && /[\w+-]/.test(after)) && !decimal) return true;
-  }
-  return false;
+/** Fail closed on prose we cannot tie to a single condition and an explicit extension-exclusion claim. */
+function exclusionClaim(quote: string, token: string, leaf: string): boolean {
+  const match =
+    /^(?:if|when) (.+?), (?:the )?(?:agent|child) (?:gets|loads|has|receives) no (?:extensions|extension(?:\/MCP)? tools)\.?(?: [—-] only built-in tools\.?)?$/i.exec(
+      quote,
+    );
+  const condition = match?.[1];
+  return condition === token || condition === `"${token}"` || condition === `${leaf} is ${token}`;
 }
 
 /** Schema-only answer check plus grounding against the published tools; untrusted model output. */
@@ -174,8 +175,8 @@ function isolationGrounded(plan: DelegationPlan, tools: readonly ToolView[]): bo
     return false;
   }
   const token = typeof literal === "string" ? literal : JSON.stringify(literal);
-  if (!token || !containsToken(quote, token)) return false;
   const leaf = normalized(plan.isolationArgument.split(".").at(-1) ?? "");
+  if (!token || !exclusionClaim(quote, token, leaf)) return false;
   const parameterDocs = typeof parameter.description === "string" ? spaced(parameter.description) : "";
   const toolDocs = spaced([tool.description, ...(tool.promptGuidelines ?? [])].join(" "));
   return parameterDocs.includes(quote) || (toolDocs.includes(quote) && quote.toLowerCase().includes(leaf));

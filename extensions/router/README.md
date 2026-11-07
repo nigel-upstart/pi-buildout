@@ -484,11 +484,13 @@ direct dispatch.
   retry. Synchronous snapshot/classifier exceptions use the same rejection cleanup, so they cannot orphan the flight;
   classification still starts eagerly on access.
 - **Isolation.** Documentation must establish it. The cited argument needs exactly one literal value. A verbatim quote
-  naming both extensions and that exact literal (for example "If true, agent gets no extension/MCP tools") must appear
-  in that parameter's published description, or in the tool docs alongside the argument name. Duplicate or overlapping
-  argument paths are rejected. This is lexical grounding, not semantic proof. A field merely called `isolated` proves
-  nothing, so this repository's `contextMode` cannot qualify. Without supported isolation the SDK runs; no tool is
-  blocked.
+  explicitly excluding extensions for that exact literal (for example "If true, agent gets no extension/MCP tools") must
+  appear in that parameter's published description, or in the tool docs alongside the argument name. Supported claims
+  use `If`/`When` with the exact value (optionally `argument is value`) followed by agent/child
+  `gets`/`loads`/`has`/`receives no extensions` or `no extension/MCP tools`. Other prose, mixed conditions, and partial
+  exclusion claims fail closed to SDK. Duplicate or overlapping argument paths are rejected. Documentation grounding
+  cannot prove a third-party tool's runtime behavior. A field merely called `isolated` proves nothing, so this
+  repository's `contextMode` cannot qualify. Without supported isolation the SDK runs; no tool is blocked.
 - **Dispatch.** Every dispatch rechecks that the tools are callable (active, direct/model-only) and re-validates the
   bound arguments with Pi's own `validateToolArguments`. Unpublished paths are rejected, and the plan can never choose
   the task, model, or effort. The builder receives the concrete arguments in a `router-review-delegation` follow-up and
