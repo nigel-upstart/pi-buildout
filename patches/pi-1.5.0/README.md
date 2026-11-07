@@ -39,3 +39,23 @@ PI_SKILLS_TEST_PACKAGES=/path/to/pi-1.5.0/package npm test
 The directory must match the Pi 1.5.0 checksums in `baseline.sha256` and paths in `baseline.absent`. The suite copies the package to a temporary directory, applies the patch there, and exercises the CLI; it does not modify the supplied package. Multiple package directories can be separated with the platform path delimiter.
 
 The opt-in behavior preserves explicit `--skill` with `--no-skills`, supports session/global/repository activation, and serializes persisted configuration updates. See the patched `docs/skills.md` for commands and configuration format.
+
+To build such a package, extract the npm tarball pinned in `upstream.json` and link its `node_modules` to dependencies installed with `npm ci --ignore-scripts` from the release's `pi-coding-agent-install-package.json` and `pi-coding-agent-install-package-lock.json`. Both files are listed in the release `SHA256SUMS`.
+
+## 1.5.0 regression checks
+
+Pi 1.5.0 fixes three upstream behaviors that pass through the patched seams. The patch keeps each fix as upstream wrote it, and the tests below check that it still holds once the patch is applied. Assertions that depend on a 1.5.0 fix run only for Pi 1.5.0 and newer. Older versioned patches keep their own upstream behavior and run only the version-independent checks.
+
+- **Saved project distrust (#10947).** In a project whose only project resource is `AGENTS.md`, a saved distrust decision makes both `resolveProjectTrusted` (used by `pi skills`) and the patched host's `ctx.isProjectTrusted()` report untrusted. The host is probed offline through an RPC-mode extension. A project with no saved decision stays trusted. After project `.pi/skills` and `.agents/skills` are added, `pi skills list` and `pi skills add` still exclude them. `extensions/subagents/create.test.mjs` checks that an untrusted parent launches children with `--no-approve`.
+- **Skill diagnostic labels (#11521).** The overlay's unresolved-entry warning and upstream validation warnings stay warnings. A real name collision is the only collision diagnostic. Patched interactive mode labels the section `[Skill warnings]`, and the patch itself never rewrites either label.
+- **Path identity (#10488).** A user skill activated by catalog name, by a symlinked alias, and as an explicit session path loads once, with no collision diagnostic. `pi-overlay/skill-management-core.test.mjs` uses Node's `path.win32` rules to check two things: the overlay's ancestor walk stops at a repo root whose drive letter is cased differently, and a user skill reached again through a differently cased walk is catalogued and activated once.
+
+The runtime checks are in `scripts/skills-catalog.test.mjs` (`saved distrust, skill diagnostics, and path aliases survive the patched seams`):
+
+```bash
+PI_SKILLS_TEST_PACKAGES=/path/to/pi-1.5.0/package \
+  node --test --test-name-pattern='pi 1\.5\.0' scripts/skills-catalog.test.mjs
+node --test pi-overlay/skill-management-core.test.mjs extensions/subagents/create.test.mjs
+```
+
+None of these upstream fixes made an overlay workaround obsolete. The overlay's own CLI and catalog trust gating, explicit skill opt-in, and the installer's realpath normalization are kept. If a later rebase finds upstream logic that duplicates an overlay workaround, remove it only as an explicit workaround removal: cite the replacing upstream fix and its minimum Pi version, and keep the behavior for older versioned patches.

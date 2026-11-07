@@ -90,7 +90,9 @@ installer rejects older Pi versions for extension installation even with `--skip
 use `--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every supported pi version;
 for a version other than the pinned or aliased one, the tests that apply the patch to a real package skip unless
 `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
-[`patches/pi-1.0.4/README.md`](patches/pi-1.0.4/README.md#runtime-behavior-tests)). Install
+[`patches/pi-1.0.4/README.md`](patches/pi-1.0.4/README.md#runtime-behavior-tests)). Regression checks for upstream fixes
+that cross the patched seams assert the fixed behavior only from the Pi version that ships the fix; see
+[`patches/pi-1.5.0/README.md`](patches/pi-1.5.0/README.md#150-regression-checks) for the 1.5.0 checks. Install
 [ShellCheck](https://www.shellcheck.net/) and the pinned npm dependencies, which also installs the repository's Git
 hooks:
 
