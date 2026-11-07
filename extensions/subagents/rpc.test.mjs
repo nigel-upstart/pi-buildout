@@ -413,6 +413,36 @@ for (const action of /** @type {const} */ (["followUp", "steer"])) {
     await assertWaits(child, undefined);
   });
 
+  test(`${action} handled input cannot recover a pre-interrupt entry with identical text`, async (t) => {
+    const text = "duplicate task";
+    const { child, request } = await timedOutAbortChild(t, {
+      before: [{ type: "queue_update", steering: [], followUp: [text] }],
+    });
+    await request({ type: "set_queue_disposition", disposition: "handled" });
+    await child[action](text);
+    await request({ type: "emit_events", events: [...start(action, text), ...finish("old-answer")] });
+    await assertWaits(child, undefined);
+  });
+
+  for (const disposition of ["handled", "rejected"]) {
+    for (const announced of [true, false]) {
+      test(`${action} ${disposition} duplicate preserves accepted recovery (announced: ${announced})`, async (t) => {
+        const { child, request } = await timedOutAbortChild(t);
+        const text = "duplicate task";
+        await child[action](text);
+        if (announced) {
+          await request({ type: "emit_events", events: [{ type: "queue_update", steering: [], followUp: [text] }] });
+        }
+        await request({ type: "set_queue_disposition", disposition });
+        const duplicate = child[action](text);
+        if (disposition === "rejected") await assert.rejects(duplicate, /mock queue rejection/);
+        else await duplicate;
+        await request({ type: "emit_events", events: [...start(action, text), ...finish("queued-answer")] });
+        await assertWaits(child, "queued-answer");
+      });
+    }
+  }
+
   for (const rejected of [true, false]) {
     for (const startDuring of [true, false]) {
       const outcome = rejected ? "recovers after a rejected retry" : "stays interrupted after a successful retry";

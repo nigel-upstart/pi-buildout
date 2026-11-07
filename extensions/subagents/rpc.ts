@@ -251,7 +251,8 @@ export class ManagedSubagent {
   // An interrupted operation can still deliver its start and final messages. Queued work only restores answer
   // eligibility when its user message starts, because the interrupted run's agent_start may arrive late.
   private interruptedOperation = false;
-  private queuedAfterInterrupt = new Set<string>();
+  // Each request owns its marker, even when several requests have identical text.
+  private queuedAfterInterrupt = new Map<object, string>();
   // Pi can transform queued input, so each guarded queue request claims the next queue_update addition, which is
   // the exact text its message_start will carry. Uncertain outcomes keep the claim open for late acceptance.
   private queueClaims = new Set<object>();
@@ -261,7 +262,7 @@ export class ManagedSubagent {
     | {
         wasInterrupted: boolean;
         finalAssistantText: string | undefined;
-        queuedAfterInterrupt: Set<string>;
+        queuedAfterInterrupt: Map<object, string>;
         queueClaims: Set<object>;
         queuedWorkStarted: boolean;
       }
@@ -378,7 +379,7 @@ export class ManagedSubagent {
         queueClaims: this.queueClaims,
         queuedWorkStarted: false,
       };
-      this.queuedAfterInterrupt = new Set();
+      this.queuedAfterInterrupt = new Map();
       this.queueClaims = new Set();
       this.state = "interrupting";
       // Interrupted work has no final answer, even if the abort races a completed message.
@@ -524,18 +525,21 @@ export class ManagedSubagent {
     // Register before writing: the child's queue_update and message_start can precede the RPC acknowledgement.
     const claim = this.interruptedOperation ? {} : undefined;
     if (claim) {
-      this.queuedAfterInterrupt.add(message);
+      this.queuedAfterInterrupt.set(claim, message);
       this.queueClaims.add(claim);
     }
     try {
       const response = await this.request({ type, message });
       const data = response.data as Record<string, unknown> | undefined;
       // An input handler consumed the message, so no queue entry will arrive.
-      if (claim && data?.disposition === "handled") this.queueClaims.delete(claim);
+      if (claim && data?.disposition === "handled") {
+        this.queuedAfterInterrupt.delete(claim);
+        this.queueClaims.delete(claim);
+      }
     } catch (error) {
       // Timeouts and write failures do not prove rejection; Pi can still accept the message late.
       if (claim && error instanceof RpcRejectionError) {
-        this.queuedAfterInterrupt.delete(message);
+        this.queuedAfterInterrupt.delete(claim);
         this.queueClaims.delete(claim);
       }
       throw error;
@@ -564,7 +568,7 @@ export class ManagedSubagent {
       const [claim] = recovery.queueClaims;
       if (!claim) return;
       recovery.queueClaims.delete(claim);
-      recovery.queuedAfterInterrupt.add(text);
+      recovery.queuedAfterInterrupt.set(claim, text);
     }
   }
 
@@ -791,11 +795,11 @@ export class ManagedSubagent {
         if (message?.role !== "user") break;
         const text = extractTextContent(message.content);
         const attempt = this.abortAttempt;
-        if (attempt?.queuedAfterInterrupt.has(text)) {
+        if (attempt && [...attempt.queuedAfterInterrupt.values()].includes(text)) {
           // The pending abort may still stop this work; only an explicit rejection makes it current.
           attempt.queuedWorkStarted = true;
           attempt.finalAssistantText = undefined;
-        } else if (this.queuedAfterInterrupt.has(text)) {
+        } else if ([...this.queuedAfterInterrupt.values()].includes(text)) {
           this.interruptedOperation = false;
           this.clearQueuedRecovery();
           this.finalAssistantText = undefined;

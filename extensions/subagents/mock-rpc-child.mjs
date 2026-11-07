@@ -13,6 +13,8 @@ let queuedWork;
 let holdAbort = false;
 /** @type {{ id: unknown } | undefined} */
 let heldAbort;
+/** @type {string | undefined} */
+let nextQueueDisposition;
 
 /** @param {unknown} value */
 function send(value) {
@@ -105,8 +107,13 @@ function handleControlCommand(command) {
   return true;
 }
 
-/** @param {{ type: string, id: unknown, events?: unknown[], success?: boolean }} command */
+/** @param {{ type: string, id: unknown, events?: unknown[], success?: boolean, disposition?: string }} command */
 function handleAbortTestControl(command) {
+  if (command.type === "set_queue_disposition") {
+    nextQueueDisposition = command.disposition;
+    send({ id: command.id, type: "response", success: true });
+    return true;
+  }
   if (command.type === "emit_events") {
     for (const event of command.events ?? []) send(event);
     send({ id: command.id, type: "response", success: true });
@@ -132,8 +139,14 @@ function handleAbortTestControl(command) {
 /** @param {{ type: string, id: unknown, message?: unknown }} command */
 function handleQueue(command) {
   const message = String(command.message);
+  const disposition = nextQueueDisposition;
+  nextQueueDisposition = undefined;
+  if (disposition === "handled") {
+    send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition } });
+    return;
+  }
   if (message.includes("HOLD_QUEUE")) return;
-  if (message.includes("REJECT_QUEUE")) {
+  if (disposition === "rejected" || message.includes("REJECT_QUEUE")) {
     send({ id: command.id, type: "response", command: command.type, success: false, error: "mock queue rejection" });
     return;
   }

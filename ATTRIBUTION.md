@@ -632,8 +632,10 @@ Ideas and API patterns used:
 - Pi `1.3.0`'s published `dist/core/agent-session.js`, `dist/modes/rpc/rpc-mode.js`, and
   `@earendil-works/pi-agent-core`'s `dist/agent-loop.js` informed the interrupted-child queue recovery: queued user
   messages emit `message_start` before their assistant response, including steering within an existing run. The subagent
-  tracks that boundary to restore final-answer eligibility only when newly queued work begins. This is protocol
-  compatibility implemented independently; no Pi code was copied, and queue scheduling was not adopted.
+  tracks that boundary to restore final-answer eligibility only when newly queued work begins. Recovery markers are
+  owned per request so handled or rejected duplicate input cannot retain a stale marker or remove another request's
+  accepted marker; transformed queue text replaces only its owner's raw marker. This is protocol compatibility
+  implemented independently; no Pi code was copied, and queue scheduling was not adopted.
 - Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
   `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
   `dist/core/extensions/types.d.ts`. `extensions/subagents/rpc.integration.test.mjs` uses these to launch the pinned Pi
