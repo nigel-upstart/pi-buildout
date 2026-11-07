@@ -130,5 +130,8 @@ The isolated launch disables discovered/configured extensions, MCP, skills, temp
 not an OS/credential sandbox. Ordinary `subagent` tool defaults are unchanged; `contextMode: none` alone is not
 extension isolation. Signaling children are one-task runs and are stopped before terminal delivery. Results contain
 final assistant text only. Consume marks the settled result synchronously; this manager never auto-notifies the parent.
-Stop/signal terminate only owned children. There are no reviewer roles or verdict semantics. Several simultaneous
-manager responders are unsupported.
+Stop/signal terminate only owned children. Cancellation remains effective during cleanup: abort takes precedence over
+stop, and either suppresses the final answer until the terminal event is published. Publication commits the terminal
+state synchronously; later stop requests are rejected and later aborts cannot change the published result. Session
+shutdown suppresses publication entirely. There are no reviewer roles or verdict semantics. Several simultaneous manager
+responders are unsupported.

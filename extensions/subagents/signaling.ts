@@ -86,10 +86,15 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
     });
   };
   type Terminal = [status: "completed" | "stopped" | "aborted" | "error", error?: string];
-  const outcome = (record: RecordState, controller: AbortController): Terminal => {
-    const snapshot = record.child.snapshot();
+  const cancellationOutcome = (record: RecordState, controller: AbortController): Terminal | undefined => {
     if (controller.signal.aborted) return ["aborted", "Aborted"];
     if (record.stopRequested) return ["stopped", "Stopped"];
+    return undefined;
+  };
+  const outcome = (record: RecordState, controller: AbortController): Terminal => {
+    const cancelled = cancellationOutcome(record, controller);
+    if (cancelled) return cancelled;
+    const snapshot = record.child.snapshot();
     if (snapshot.state === "idle") return ["completed"];
     return ["error", snapshot.error ?? "Child failed"];
   };
@@ -111,7 +116,9 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
       // after the process tree is cleaned up, so a caller's fallback can never overlap this child.
       await record.child.stop();
     }
-    if (terminal && !isClosed()) emitTerminal(record, ...terminal);
+    // Cleanup mutates the child to stopped, so retain its pre-cleanup outcome but let cancellation win until
+    // publication. This check and emitTerminal's terminal flag form one synchronous commit point (no await).
+    if (terminal && !isClosed()) emitTerminal(record, ...(cancellationOutcome(record, controller) ?? terminal));
   };
   const spawn = async (raw: Record<string, unknown>) => {
     const request = spawnRequest(raw);

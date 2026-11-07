@@ -146,6 +146,78 @@ test("a failed child's terminal is published only after its cleanup finishes", a
   assert.equal(terminal[0]?.status, "error");
 });
 
+/** A deterministic async boundary without timer-based scheduling assumptions. */
+function gate() {
+  /** @type {(() => void) | undefined} */
+  let resolve;
+  /** @type {Promise<void>} */
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: () => resolve?.() };
+}
+
+for (const cancellation of ["none", "abort", "stop", "stop then abort", "close"]) {
+  test(`cancellation during cleanup: ${cancellation}`, { timeout: 5000 }, async (t) => {
+    const events = bus();
+    const controller = new AbortController();
+    const cleanupStarted = gate();
+    const cleanupFinished = gate();
+    /** @type {Payload[]} */
+    const terminal = [];
+    let stopped = false;
+    const close = registerSignaling(events, ctx, async () => ({
+      ...child(),
+      stop() {
+        stopped = true;
+        cleanupStarted.resolve();
+        return cleanupFinished.promise;
+      },
+      snapshot() {
+        return { state: stopped ? "stopped" : "idle", finalAssistantText: "FINAL" };
+      },
+    }));
+    t.after(async () => {
+      cleanupFinished.resolve();
+      await close();
+    });
+    events.on("subagents:completed", (/** @type {Payload} */ value) => terminal.push(value));
+    events.on("subagents:failed", (/** @type {Payload} */ value) => terminal.push(value));
+    await rpc(events, "spawn", { ...request(), options: { ...request().options, signal: controller.signal } });
+    await cleanupStarted.promise;
+    assert.equal(terminal.length, 0, "no terminal until process cleanup finishes");
+    assert.equal((await rpc(events, "consume", { agentId: "child" })).success, false);
+
+    /** @type {Promise<Payload> | undefined} */
+    let stopReply;
+    if (cancellation.startsWith("stop")) {
+      stopReply = rpc(events, "stop", { agentId: "child" });
+      assert.equal((await rpc(events, "stop", { agentId: "child" })).success, false);
+    }
+    if (cancellation.includes("abort")) controller.abort();
+    const closing = cancellation === "close" ? close() : undefined;
+    assert.equal(terminal.length, 0, "cancellation must not publish before cleanup either");
+    cleanupFinished.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    if (stopReply) assert.deepEqual(await stopReply, { success: true });
+    if (closing) {
+      await closing;
+      assert.equal(terminal.length, 0, "closing suppresses publication entirely");
+      return;
+    }
+    const status = cancellation.includes("abort") ? "aborted" : cancellation === "stop" ? "stopped" : "completed";
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.status, status);
+    assert.equal(terminal[0]?.result, status === "completed" ? "FINAL" : "");
+    assert.deepEqual(await rpc(events, "consume", { agentId: "child" }), { success: true });
+    assert.equal((await rpc(events, "stop", { agentId: "child" })).error, "Agent is not running");
+    controller.abort();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(terminal.length, 1, "published terminal states are immutable");
+    assert.equal(terminal[0]?.status, status);
+  });
+}
+
 test("shape errors and unknown ownership return error envelopes; missing requestId is ignored", async () => {
   const events = bus();
   let launches = 0;

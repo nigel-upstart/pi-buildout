@@ -144,7 +144,10 @@ and provider documentation informed the fail-closed isolated-model validation: o
 entries are accepted, because the auth bridge does not reproduce parent extension registrations or endpoint overrides.
 This is conceptual API use, not copied code; custom model/provider configuration transport and ambient extension loading
 remain intentionally excluded. Child cleanup precedes terminal delivery as an original integration safeguard against
-overlapping fallback work.
+overlapping fallback work. Cancellation is rechecked after cleanup and committed synchronously with terminal
+publication; this lifecycle safeguard is original, not an upstream state machine or lock implementation. Pi's installed
+1.5.0 `docs/extensions.md` and `examples/extensions/event-bus.ts` were consulted as API references for `pi.events`
+([canonical repository](https://github.com/earendil-works/pi), MIT); no example code was copied or adapted.
 
 ## Routing layer (`extensions/router`)
 
