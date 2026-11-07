@@ -468,6 +468,46 @@ for (const version of patchVersions()) {
         "catalog discovery does not activate skills that were not explicitly enabled",
       );
 
+      // Exercise each activation surface against the real versioned loader, not just the shared core.
+      const optInAgentDir = join(fixtureRoot, "opt-in-agent");
+      const catalogOnlySkill = join(optInAgentDir, "skills", "catalog-only");
+      const repoSkill = join(fixtureRoot, "repo-enabled");
+      await writeSkill(catalogOnlySkill, "catalog-only", "inactive until explicitly enabled");
+      await writeSkill(repoSkill, "repo-enabled", "repository activation fixture");
+      const optInSettings = SettingsManager.create(cwd, optInAgentDir, { projectTrusted: false });
+      const optInOptions = { cwd, agentDir: optInAgentDir, settingsManager: optInSettings };
+      const defaultLoader = new DefaultResourceLoader(optInOptions);
+      await defaultLoader.reload();
+      assert.deepEqual(defaultLoader.getSkills().skills, [], "discovered directory skills start inactive");
+
+      await runGit(cwd, ["remote", "add", "origin", "https://example.com/other/repo.git"]);
+      await runGit(cwd, ["remote", "add", "upstream", "ssh://git@example.com:22/org/repo.git"]);
+      await writeJson(join(optInAgentDir, "skills.json"), { enabled: ["catalog-only"] });
+      await writeJson(join(optInAgentDir, "repo-skills.json"), {
+        "example.com:org/repo": { enabled: [repoSkill] },
+      });
+      await defaultLoader.reload();
+      assert.deepEqual(
+        defaultLoader.getSkills().skills.map((skill) => skill.name),
+        ["catalog-only", "repo-enabled"],
+        "global and repository activation use the canonical upstream identity",
+      );
+
+      const disabledLoader = new DefaultResourceLoader({ ...optInOptions, noSkills: true });
+      await disabledLoader.reload();
+      assert.deepEqual(disabledLoader.getSkills().skills, [], "--no-skills suppresses both persisted scopes");
+      const explicitLoader = new DefaultResourceLoader({
+        ...optInOptions,
+        noSkills: true,
+        additionalSkillPaths: [repoSkill],
+      });
+      await explicitLoader.reload();
+      assert.deepEqual(
+        explicitLoader.getSkills().skills.map((skill) => skill.name),
+        ["repo-enabled"],
+        "explicit session/CLI skill paths survive --no-skills",
+      );
+
       const untrustedSettings = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
       const untrustedCatalog = await getSkillCatalog({ cwd, agentDir, settingsManager: untrustedSettings });
       const untrustedByName = new Map(untrustedCatalog.map((skill) => [skill.name, skill]));

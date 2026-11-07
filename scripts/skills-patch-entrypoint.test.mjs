@@ -32,14 +32,14 @@ function manifestChecksum(manifest, path) {
 }
 
 /**
- * Pi 1.1.0 and 1.3.0 split the bundled bin: `dist/bundle/cli.js` enables Node's compile cache and then loads
+ * Pi 1.1.0, 1.3.0, and 1.4.0 split the bundled bin: `dist/bundle/cli.js` enables Node's compile cache and then loads
  * `dist/bundle/cli-runtime.js` through `createRequire(...)`, and only the latter holds the bundled runtime. The
  * patch therefore replaces `cli-runtime.js` and leaves upstream's `cli.js` alone, which keeps the compile cache
  * and relies on `require()` of an ES module graph. Both manifests pin that loader to its upstream bytes, so the
  * installer refuses a package whose loader differs; the stand-in below is checked against that same checksum, which
  * makes it byte-identical to the published loader rather than a lookalike.
  */
-for (const version of ["1.1.0", "1.3.0"]) {
+for (const version of ["1.1.0", "1.3.0", "1.4.0"]) {
   const patchDirectory = fileURLToPath(new URL(`../patches/pi-${version}/`, import.meta.url));
   test(`pi ${version} bundled CLI loader reaches the patched unbundled runtime through cli-runtime.js`, async (context) => {
     const [patch, baselineManifest, patchedManifest] = await Promise.all([
