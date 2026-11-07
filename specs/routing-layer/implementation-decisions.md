@@ -15,6 +15,19 @@ validated by pi-ai's `validateToolArguments`. It removes extension-local depende
 stage remains, enum/range/additional-property checks remain enforced, and the provider sees the exact same schema used
 at runtime.
 
+**Validation boundary (Pi 1.5):** TypeBox is an authoring, static-type, and local-validation choice, not the host's
+tool-argument validator. Pi validates every model tool call against the tool's JSON Schema before an extension sees it:
+from Pi 1.5.0, `validateToolArguments` compiles that schema with `@earendil-works/pi-schema` and returns a coerced
+structured clone (numeric and boolean strings, a single value wrapped into a one-item array, a fractional integer
+truncated, `null` in a string position as `"null"`); Pi 1.2.0-1.4.x applied TypeBox `Value.Convert` to TypeBox-authored
+schemas with the same results and only primitive coercion to plain JSON Schema. Router tool schemas are
+TypeBox-authored, so their accept/reject outcomes are unchanged across the supported range; only host error wording
+differs. The router's local `typebox/value` checks then validate the normalized value strictly and never coerce, so
+persisted, restored, and other untrusted data keep strict validation. Raw host validator errors include the received
+arguments and are never persisted; classifier telemetry keeps only error counts.
+`extensions/router/pi-tool-arguments.test.mjs` pins these outcomes offline at the pinned Pi and in the floor/latest Pi
+contract canary.
+
 ## S2 — Keep the user message native
 
 **Decision:** compile model-specific system scaffolding but leave the request in pi's native user message instead of

@@ -9,17 +9,8 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import {
-  AgentSession,
-  createAgentSession,
-  DefaultResourceLoader,
-  ModelRegistry,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-  VERSION,
-} from "@earendil-works/pi-coding-agent";
-import { sdkFixture, streamMessage } from "./fixtures/pi-sdk.mjs";
+import { AgentSession, ModelRegistry, ModelRuntime, VERSION } from "@earendil-works/pi-coding-agent";
+import { parentSession, sdkFixture, streamMessage } from "./fixtures/pi-sdk.mjs";
 import { inProcessReviewRunner } from "./review-runner.ts";
 
 const DRIFT = "Pi contract drift";
@@ -38,39 +29,6 @@ function privateRuntime(registry) {
     if (typeof runtime[method] !== "function")
       throw new Error(`${DRIFT}: ModelRuntime.${method} is no longer callable.`);
   return runtime;
-}
-
-/** A real parent session whose only extensions are the supplied inline factories. */
-async function parentSession(t, f, extensionFactories, options = {}) {
-  const loader = new DefaultResourceLoader({
-    cwd: f.cwd,
-    agentDir: f.cwd,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    agentsFilesOverride: () => ({ agentsFiles: [] }),
-    extensionFactories,
-  });
-  await loader.reload();
-  const { session } = await createAgentSession({
-    cwd: f.cwd,
-    agentDir: f.cwd,
-    resourceLoader: loader,
-    modelRuntime: f.runtime,
-    model: f.model,
-    thinkingLevel: "off",
-    sessionManager: SessionManager.inMemory(f.cwd),
-    settingsManager: SettingsManager.inMemory({
-      cacheWarming: "off",
-      compaction: { enabled: false },
-      retry: { enabled: false },
-      ...options.settings,
-    }),
-  });
-  t.after(() => session.dispose());
-  await session.bindExtensions({});
-  return session;
 }
 
 const scope = "c".repeat(64);

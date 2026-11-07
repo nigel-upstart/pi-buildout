@@ -16,7 +16,11 @@ const ROOT_PACKAGE = "@earendil-works/pi-coding-agent";
 const SCOPE = "@earendil-works/";
 const REGISTRY = "https://registry.npmjs.org/";
 const repository = fileURLToPath(new URL("..", import.meta.url));
-const CONTRACT_TESTS = ["extensions/router/pi-contract.test.mjs", "extensions/router/review-runner.test.mjs"];
+const CONTRACT_TESTS = [
+  "extensions/router/pi-contract.test.mjs",
+  "extensions/router/pi-tool-arguments.test.mjs",
+  "extensions/router/review-runner.test.mjs",
+];
 
 /** Whether a resolved release is inside SUPPORTED_RANGE. Prereleases and malformed versions are not. */
 export function isSupportedPi(version) {

@@ -5,7 +5,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRegistry,
+  ModelRuntime,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 
 const noCredentials = {
   read: async () => undefined,
@@ -62,6 +69,39 @@ export async function sdkFixture(t) {
   f.model = runtime.getModel("fixture", "review");
   f.reasoningModel = runtime.getModel("fixture", "reasoning");
   return f;
+}
+
+/** A real parent session whose only extensions are the supplied inline factories. */
+export async function parentSession(t, f, extensionFactories, options = {}) {
+  const loader = new DefaultResourceLoader({
+    cwd: f.cwd,
+    agentDir: f.cwd,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    agentsFilesOverride: () => ({ agentsFiles: [] }),
+    extensionFactories,
+  });
+  await loader.reload();
+  const { session } = await createAgentSession({
+    cwd: f.cwd,
+    agentDir: f.cwd,
+    resourceLoader: loader,
+    modelRuntime: f.runtime,
+    model: f.model,
+    thinkingLevel: "off",
+    sessionManager: SessionManager.inMemory(f.cwd),
+    settingsManager: SettingsManager.inMemory({
+      cacheWarming: "off",
+      compaction: { enabled: false },
+      retry: { enabled: false },
+      ...options.settings,
+    }),
+  });
+  t.after(() => session.dispose());
+  await session.bindExtensions({});
+  return session;
 }
 
 function usage(input, output, cost) {
