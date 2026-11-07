@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import { buildKickoffPrompt } from "./rpc.ts";
 
 // Mock only the extension's external boundaries. Exercise its real create dispatcher,
@@ -117,13 +119,26 @@ async function harness(t, forbidHistory = false) {
   t.after(async () => rm(dir, { recursive: true, force: true }));
   /** @type {import('@earendil-works/pi-coding-agent').ToolDefinition | undefined} */
   let tool;
+  /** @type {Record<string, (event: unknown, ctx: unknown) => unknown>} */
+  const lifecycle = {};
+  const emitter = new EventEmitter();
+  const events = {
+    emit: (/** @type {string} */ name, /** @type {unknown} */ value) => emitter.emit(name, value),
+    on(/** @type {string} */ name, /** @type {(value: unknown) => void} */ callback) {
+      emitter.on(name, callback);
+      return () => emitter.off(name, callback);
+    },
+  };
   subagentsExtension(
     /** @type {import('@earendil-works/pi-coding-agent').ExtensionAPI} */ (
       /** @type {unknown} */ ({
         registerTool: (/** @type {import('@earendil-works/pi-coding-agent').ToolDefinition} */ registered) => {
           tool = registered;
         },
-        on() {},
+        on(/** @type {string} */ name, /** @type {(event: unknown, ctx: unknown) => unknown} */ handler) {
+          lifecycle[name] = handler;
+        },
+        events,
         getThinkingLevel: () => "high",
       })
     ),
@@ -163,7 +178,19 @@ async function harness(t, forbidHistory = false) {
   const registered = tool;
   /** @param {Record<string, unknown>} args @param {AbortSignal} [signal] */
   const execute = (args, signal) => registered.execute("test-call", args, signal, undefined, ctx);
-  return { execute, tool: registered };
+  return { execute, tool: registered, ctx, lifecycle, events };
+}
+
+/** @param {{emit: Function, on: Function}} events @param {string} method @param {Record<string, unknown>} fields */
+function rpc(events, method, fields = {}) {
+  const requestId = `req-${method}-${String(Math.random())}`;
+  return new Promise((resolve) => {
+    const off = events.on(`subagents:rpc:${method}:reply:${requestId}`, (/** @type {unknown} */ reply) => {
+      off();
+      resolve(/** @type {Record<string, unknown>} */ (reply));
+    });
+    events.emit(`subagents:rpc:${method}`, { requestId, ...fields });
+  });
 }
 
 test("default and explicit task_compacted preserve bounded task compaction", async (t) => {
@@ -425,4 +452,140 @@ test("wait preserves terminal errors and cancellation without stopping the child
   abort.abort();
   await assert.rejects(execute({ action: "wait", id }, abort.signal), /wait was aborted/);
   assert.equal(fixture.stops, 0);
+});
+
+test("signaling spawn rejects extension-only models before constructing a child", async (t) => {
+  const { ctx, lifecycle, events } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  for (const model of [
+    { ...getModel("openai", "o3"), provider: "test", id: "model" },
+    { ...getModel("openai", "o3"), id: "extension-only-model" },
+    { ...getModel("openai", "o3"), api: "extension-only-api" },
+    // Same provider, id, and API, but an extension-overridden endpoint.
+    { ...getModel("openai", "o3"), baseUrl: "https://extension-proxy.invalid/v1" },
+  ]) {
+    ctx.modelRegistry.getAvailable = () => [model];
+    const reply = await rpc(events, "spawn", {
+      type: "general-purpose",
+      prompt: "Generic TASK",
+      options: {
+        description: "extension-only",
+        model: `${model.provider}/${model.id}`,
+        thinkingLevel: "high",
+        isolated: true,
+        inheritContext: false,
+      },
+    });
+    assert.equal(reply.success, false, JSON.stringify(reply));
+    assert.match(String(reply.error), /isolated.*built-in.*extension/i);
+    assert.equal(fixture.launches.length, 0, "reject before spawning any process");
+  }
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+/** A promise with its resolver; the tsconfig lib predates Promise.withResolvers. */
+function gate() {
+  /** @type {((value: unknown) => void) | undefined} */
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: (/** @type {unknown} */ value) => resolve?.(value) };
+}
+
+test("aborting a signaling spawn during child startup stops the new child at once", async (t) => {
+  const { ctx, lifecycle, events } = await harness(t, true);
+  const builtin = getModel("openai", "o3");
+  const originalAvailable = ctx.modelRegistry.getAvailable;
+  ctx.modelRegistry.getAvailable = () => [...originalAvailable(), builtin];
+  await lifecycle.session_start?.({}, ctx);
+  const startedGate = gate();
+  const releaseGate = gate();
+  fixture.start = async () => {
+    startedGate.resolve(undefined);
+    await releaseGate.promise;
+  };
+  const abort = new AbortController();
+  const reply = rpc(events, "spawn", {
+    type: "general-purpose",
+    prompt: "Generic TASK",
+    options: {
+      description: "held-start",
+      model: "openai/o3",
+      thinkingLevel: "high",
+      isolated: true,
+      inheritContext: false,
+      signal: abort.signal,
+    },
+  });
+  await startedGate.promise;
+  abort.abort();
+  assert.equal(fixture.stops, 1, "the child is stopped while its startup RPC is still pending");
+  releaseGate.resolve(undefined);
+  const result = await reply;
+  assert.equal(result.success, false);
+  fixture.start = undefined;
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("signaling spawn launches an isolated task-only child with the explicit pair; tool defaults are unchanged", async (t) => {
+  const { execute, ctx, lifecycle, events } = await harness(t, true);
+  const builtin = getModel("openai", "o3");
+  const originalAvailable = ctx.modelRegistry.getAvailable;
+  ctx.modelRegistry.getAvailable = () => [...originalAvailable(), builtin];
+  await lifecycle.session_start?.({}, ctx);
+  assert.deepEqual(await rpc(events, "ping"), { success: true, data: { version: 2 } });
+  const reply = await rpc(events, "spawn", {
+    type: "general-purpose",
+    prompt: "Generic TASK",
+    options: {
+      description: "token-1",
+      model: "openai/o3",
+      thinkingLevel: "high",
+      isolated: true,
+      inheritContext: false,
+    },
+  });
+  assert.equal(reply.success, true, JSON.stringify(reply));
+  const isolated = fixture.launches[0];
+  assert.ok(isolated);
+  assert.equal(fixture.utilityPrompts.length, 0, "explicit model+effort must skip the manager classifier");
+  assert.equal(fixture.compactions, 0);
+  assert.equal(isolated.classification, "explicit");
+  assert.equal(isolated.model, "openai/o3");
+  assert.equal(isolated.effort, "high");
+  assert.equal(isolated.contextMode, "none");
+  assert.equal(buildKickoffPrompt(isolated.task, isolated.contextSummary), "Task:\nGeneric TASK");
+  for (const flag of [
+    "--no-extensions",
+    "--no-mcp",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-context-files",
+  ])
+    assert.ok(isolated.args.includes(flag), flag);
+  for (const flag of ["--system-prompt", "--append-system-prompt"])
+    assert.equal(isolated.args[isolated.args.indexOf(flag) + 1], "", `${flag} is overridden with an empty value`);
+  const loaded = isolated.args.flatMap((arg, index) => (isolated.args[index - 1] === "--extension" ? [arg] : []));
+  assert.equal(loaded.length, 1);
+  assert.match(loaded[0] ?? "", /auth-bridge\.ts$/);
+
+  // An unadvertised `isolated` argument on the ordinary tool is ignored.
+  await execute({
+    action: "create",
+    task: "Ordinary",
+    isolated: true,
+    contextMode: "none",
+    model: "test/model",
+    effort: "high",
+  });
+  const ordinary = fixture.launches[1];
+  assert.ok(ordinary);
+  assert.equal(ordinary.args.includes("--no-extensions"), false, "ordinary tool must not gain resource isolation");
+  assert.ok(
+    ordinary.args.some((arg) => /index\.ts$/.test(arg)),
+    "ordinary child keeps its manager extension",
+  );
+  await lifecycle.session_shutdown?.({}, ctx);
 });
