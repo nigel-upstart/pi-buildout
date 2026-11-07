@@ -128,6 +128,27 @@ research and intended reuse, not a claim that code has landed. No upstream code 
   Workflow layout draws from this repository’s `.github/workflows/patch-drift.yml`; new action versions and org
   allowlist compatibility remain implementation-time checks. No networked pre-commit hook is proposed.
 
+## Generic compatible subagent signaling
+
+The implementation in `extensions/subagents/signaling.ts` is an original compatible implementation of the documented
+`tintinweb/pi-subagents` protocol-2 subset (MIT), not copied code. Sources: <https://github.com/tintinweb/pi-subagents>,
+release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`) and documentation/source snapshot
+`ca93a5247e72e7053fcd10bea7125d6c4205f949`, `docs/rpc.md`, `src/cross-extension-rpc.ts`, and terminal emission in
+`src/index.ts`. Used: ping/spawn/consume/stop names, reply envelopes, generic task/model/thinking options, final
+results, and synchronous consumption. Not adopted: steer, workflow/profile systems, registry singleton, scheduling,
+worktrees, proactive parent notifications, or protocol dialect shims. Pi 1.2.0 source
+`06a466935536f8c9bcacb2d5efc0fc021be1bdff` and installed 1.3.0 CLI resource suppression flags establish the isolated
+launch behavior, including empty `--system-prompt` and `--append-system-prompt` overrides to exclude ambient prompt
+files independently of context files; no Pi code was copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters
+and provider documentation informed the fail-closed isolated-model validation: only bundled provider/model/API/endpoint
+entries are accepted, because the auth bridge does not reproduce parent extension registrations or endpoint overrides.
+This is conceptual API use, not copied code; custom model/provider configuration transport and ambient extension loading
+remain intentionally excluded. Child cleanup precedes terminal delivery as an original integration safeguard against
+overlapping fallback work. Cancellation is rechecked after cleanup and committed synchronously with terminal
+publication; this lifecycle safeguard is original, not an upstream state machine or lock implementation. Pi's installed
+1.5.0 `docs/extensions.md` and `examples/extensions/event-bus.ts` were consulted as API references for `pi.events`
+([canonical repository](https://github.com/earendil-works/pi), MIT); no example code was copied or adapted.
+
 ## Routing layer (`extensions/router`)
 
 Full design provenance, including the historical conversation export the router's spec derives from and the public
@@ -538,6 +559,27 @@ are reused byte-for-byte from 1.1.0 because Pi 1.3.0's `src/cli.ts`, `src/rpc-en
 unchanged. The published `dist/bundle/cli.js` loader remains unchanged and checksum-pinned. Upstream changes elsewhere
 in 1.3.0, including those near the seams, were not adopted. No complete Pi source checkout is committed.
 
+## Pi 1.4.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.4.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `4a080252f06caf63a525d7873c5d94d3c23887e0` (`v1.4.0`)
+- Source archive: `pi-1.4.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.4.0.tgz`, pinned by SHA-256 and registry integrity
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.4.0/integration.patch`](pi-overlay/versions/1.4.0/integration.patch) adapts the existing opt-in
+skills seam to Pi 1.4.0's MIT-licensed TypeScript sources and documentation. The generated
+[`skills.patch`](patches/pi-1.4.0/skills.patch) modifies the resource loader, slash-command list, CLI and interactive
+entry points, and skill documentation. These are modified-code patches containing upstream context, not merely
+conceptual inspiration. The skill-management modules remain this repository's original implementation, reusing Pi's
+package/resource discovery, project-trust, and locking APIs. Catalog skills remain inactive until explicitly enabled;
+explicit `--skill` paths still load with `--no-skills`. Original hand-written entrypoint wrappers route CLI and RPC
+execution through the patched unbundled runtime while preserving process setup; the published CLI loader stays unchanged
+and checksum-pinned. Pi's automatic loading of all discovered skills, generated bundle chunks, and unrelated 1.4.0
+behavior are not adopted into this overlay. No complete upstream source checkout is committed; the upstream MIT notice
+is retained in the root `LICENSE`, which also ships with the standalone patch package.
+
 ## Pi 1.5.0 `/skills` runtime patch
 
 - Source: `@earendil-works/pi-coding-agent@1.5.0`
@@ -567,21 +609,22 @@ not adopted. No complete Pi source checkout is committed.
 - Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`,
   `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`,
   `@earendil-works/pi-coding-agent@1.1.0`, `@earendil-works/pi-coding-agent@1.3.0`, and
-  `@earendil-works/pi-coding-agent@1.5.0`
+  `@earendil-works/pi-coding-agent@1.4.0`, and `@earendil-works/pi-coding-agent@1.5.0`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
   `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`),
   `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), and `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`),
-  taken from the corresponding signed release tag, and `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`) and
-  `f9a26365568127461c47a07a37dcb42c140a3ac5` (`v1.5.0`), each taken from its lightweight, unsigned release tag
+  taken from the corresponding signed release tag, and `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`), taken from
+  its lightweight, unsigned release tag; the 1.4.0 and 1.5.0 revisions are recorded above
 - Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
   `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, `pi-1.1.0-source.tar.gz`, `pi-1.3.0-source.tar.gz`, and
-  `pi-1.5.0-source.tar.gz`, each verified against upstream's published `SHA256SUMS` for that release
+  `pi-1.4.0-source.tar.gz`, and `pi-1.5.0-source.tar.gz`, each verified against upstream's published `SHA256SUMS` for
+  that release
 - License declared by the package: MIT
 
 [`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
 `patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, `patches/pi-1.1.0/`,
-`patches/pi-1.3.0/`, and `patches/pi-1.5.0/` are generated from it.
+`patches/pi-1.3.0/`, `patches/pi-1.4.0/`, and `patches/pi-1.5.0/` are generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
@@ -654,6 +697,13 @@ Ideas and API patterns used:
   separation between advisory prompts, native tool selection, and whole-process isolation. No documentation text or
   isolation implementation was copied; the router does not implement a sandbox.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
+- Pi `1.3.0`'s published `dist/core/agent-session.js`, `dist/modes/rpc/rpc-mode.js`, and
+  `@earendil-works/pi-agent-core`'s `dist/agent-loop.js` informed the interrupted-child queue recovery: queued user
+  messages emit `message_start` before their assistant response, including steering within an existing run. The subagent
+  tracks that boundary to restore final-answer eligibility only when newly queued work begins. Recovery markers are
+  owned per request so handled or rejected duplicate input cannot retain a stale marker or remove another request's
+  accepted marker; transformed queue text replaces only its owner's raw marker. This is protocol compatibility
+  implemented independently; no Pi code was copied, and queue scheduling was not adopted.
 - Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
   `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
   `dist/core/extensions/types.d.ts`. `extensions/subagents/rpc.integration.test.mjs` uses these to launch the pinned Pi

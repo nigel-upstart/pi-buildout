@@ -20,6 +20,31 @@ The extension's `subagent` tool supports `create`, `list`, `status`, `wait`, `st
 `stop`. Creation is asynchronous and returns a direct-child id. `wait` is explicit and bounded: timing out never stops
 the child.
 
+## Waiting for results versus inspecting diagnostics
+
+Use the existing `wait` action when this turn needs a child's result. A settled wait returns status metadata and only
+the bounded `lastAssistantText` (up to 45,000 characters), not the delegated task or working transcript. If there is no
+final assistant text, or the latest turn failed, stopped, or still has queued messages, it returns metadata only; it
+never substitutes stale final text or transcript text. Final text is the current operation's completed, non-empty
+response: working text before a tool call, an empty final message, interrupted work, and an earlier operation's answer
+do not count. Failure/stopped state and errors remain visible, so “settled” does not imply success. Usage metadata is
+retained.
+
+When an answer completes during an interrupt attempt, it stays hidden until the abort outcome is known. An explicit
+abort rejection restores the completed answer; a successful abort discards it. An unknown outcome such as an RPC timeout
+keeps it hidden, including after a late abort response, until new work is sent. Work queued with `steer` or `follow_up`
+after such an outcome becomes the current operation when the child starts it, matched by the text Pi actually queues
+after input handlers and prompt expansion. A queue request that times out may still be accepted late, so only an
+explicit rejection drops it, and an explicitly rejected interrupt retry leaves that queued work recoverable.
+
+A timeout returns a concise still-active receipt and status metadata only—no partial assistant output, task echo,
+transcript, tool arguments, or stderr. It does not stop or interrupt the child. Call `wait` again for the result.
+Cancellation likewise does not stop the child. These output rules apply to both the displayed content and result
+details.
+
+Use `status` explicitly for diagnostics, including the task, transcript tail, current tool, and stderr. Its behavior is
+unchanged. There is no output-mode parameter or transcript-tail selection API.
+
 ## Context and model selection
 
 `create` accepts optional `contextMode: "task_compacted" | "none"`. The default, `task_compacted`, preserves existing
@@ -88,3 +113,25 @@ standard `npm test` glob.
 node --test extensions/subagents/*.test.mjs
 pi -e extensions/subagents/index.ts --list-models > /dev/null
 ```
+
+## Generic extension signaling
+
+After session start, the manager answers the verified tintinweb 0.22.0 protocol-2 subset: `subagents:rpc:ping`, `spawn`,
+`consume`, `stop`, with per-request `:reply:<requestId>` envelopes and `subagents:completed`/`failed` events. Every
+request requires a unique nonempty `requestId`. Spawn uses top-level `type: "general-purpose"`, `prompt`, and
+`options: {description, model, thinkingLevel, isolated: true, inheritContext: false, signal?}`. Both model and effort
+are explicit (no second classifier); unknown optional fields are ignored, invalid required fields return an error.
+Isolated signaling accepts only models in Pi's bundled catalog with the same API and endpoint; extension-only models,
+custom catalog entries, and endpoint overrides are rejected before launch. Model definitions and custom streaming
+implementations are not bridged.
+
+The isolated launch disables discovered/configured extensions, MCP, skills, templates, themes, context files, and
+`SYSTEM.md`/`APPEND_SYSTEM.md` prompt files, loading only the explicit minimal auth bridge. This is resource selection,
+not an OS/credential sandbox. Ordinary `subagent` tool defaults are unchanged; `contextMode: none` alone is not
+extension isolation. Signaling children are one-task runs and are stopped before terminal delivery. Results contain
+final assistant text only. Consume marks the settled result synchronously; this manager never auto-notifies the parent.
+Stop/signal terminate only owned children. Cancellation remains effective during cleanup: abort takes precedence over
+stop, and either suppresses the final answer until the terminal event is published. Publication commits the terminal
+state synchronously; later stop requests are rejected and later aborts cannot change the published result. Session
+shutdown suppresses publication entirely. There are no reviewer roles or verdict semantics. Several simultaneous manager
+responders are unsupported.

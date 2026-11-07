@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { completeSimple, StringEnum } from "@earendil-works/pi-ai/compat";
+import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import {
   buildSessionContext,
@@ -32,10 +33,12 @@ import {
 } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
 import { ManagedSubagent } from "./rpc.ts";
+import { isolatedChildArgs, registerSignaling } from "./signaling.ts";
 import type { ChildSnapshot } from "./rpc.ts";
 
 const MAX_CLASSIFIER_CONTEXT_CHARS = 24_000;
 const MAX_STATUS_TEXT_CHARS = 45_000;
+const MAX_WAIT_TEXT_CHARS = 45_000;
 const MAX_ROOT_CHILDREN = 8;
 const MAX_NESTED_CHILDREN = 2;
 const MAX_RETAINED_CHILDREN = 32;
@@ -50,7 +53,7 @@ const AUTH_BRIDGE_PATH = join(dirname(SELF_EXTENSION_PATH), "auth-bridge.ts");
 const SubagentParameters = Type.Object({
   action: StringEnum(["create", "list", "status", "wait", "steer", "follow_up", "interrupt", "stop"] as const, {
     description:
-      "create a child; inspect it; explicitly wait for it; steer now; queue follow_up; interrupt its current operation; or stop its process",
+      "create a child; inspect transcript diagnostics with status; wait for only its final text and metadata (no partial output on timeout); steer now; queue follow_up; interrupt its current operation; or stop its process",
   }),
   task: Type.Optional(
     Type.String({
@@ -81,7 +84,7 @@ const SubagentParameters = Type.Object({
   timeoutMs: Type.Optional(
     Type.Integer({
       description:
-        "For wait only: maximum time in milliseconds without stopping the child. Use 120000 for 120 seconds (default 120000, max 600000).",
+        "For wait only: maximum time in milliseconds without stopping the child. Settled waits return final assistant text and metadata only; timeouts return metadata without partial output. Wait again or use status for transcript diagnostics. Use 120000 for 120 seconds (default 120000, max 600000).",
       minimum: 1,
       maximum: 600_000,
     }),
@@ -89,6 +92,23 @@ const SubagentParameters = Type.Object({
 });
 
 type PiModel = NonNullable<ExtensionContext["model"]>;
+
+// Parent extension registrations do not exist in the resource-isolated child.
+// The auth bridge carries credentials/headers, not model or stream definitions.
+function assertIsolatedModel(model: PiModel): void {
+  const provider = getBuiltinProviders().find((candidate) => candidate === model.provider);
+  // An extension can also override a bundled model's endpoint, which the child cannot reproduce.
+  if (
+    !provider ||
+    !getBuiltinModels(provider).some(
+      (candidate) => candidate.id === model.id && candidate.api === model.api && candidate.baseUrl === model.baseUrl,
+    )
+  ) {
+    throw new Error(
+      `Isolated spawn requires a built-in model at its bundled endpoint; '${model.provider}/${model.id}' may depend on a parent extension, custom catalog, or endpoint override that is not bridged.`,
+    );
+  }
+}
 
 type Selection = {
   model: PiModel;
@@ -363,7 +383,7 @@ ${catalog}`;
   }
 }
 
-function resolvePiInvocation(args: string[]): { command: string; args: string[] } {
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
   if (currentScript && !currentScript.startsWith("/$bunfs/root/") && existsSync(currentScript)) {
     return { command: process.execPath, args: [currentScript, ...args] };
@@ -467,6 +487,52 @@ function formatSnapshot(snapshot: ChildSnapshot): string {
   return lines.join("\n");
 }
 
+/** Process diagnostics embed the child's stderr as a JSON string; wait keeps the summary, status keeps all. */
+function withoutStderr(error: string): string {
+  return error.replace(/, stderr="(?:[^"\\]|\\.)*"/g, "");
+}
+
+// Deliberately select metadata rather than spreading the diagnostic snapshot:
+// wait must not return task echoes, tool arguments, stderr, or transcript previews.
+function waitSnapshot(snapshot: ChildSnapshot, settled: boolean) {
+  return {
+    id: snapshot.id,
+    name: snapshot.name,
+    state: snapshot.state,
+    model: snapshot.model,
+    effort: snapshot.effort,
+    contextMode: snapshot.contextMode,
+    classification: snapshot.classification,
+    pid: snapshot.pid,
+    startedAt: snapshot.startedAt,
+    updatedAt: snapshot.updatedAt,
+    turns: snapshot.turns,
+    toolCalls: snapshot.toolCalls,
+    pendingMessages: snapshot.pendingMessages,
+    compactions: snapshot.compactions,
+    stats: snapshot.stats,
+    sessionFile: snapshot.sessionFile,
+    ...(snapshot.error ? { error: withoutStderr(snapshot.error) } : {}),
+    ...(settled && snapshot.state === "idle" && snapshot.pendingMessages === 0 && snapshot.finalAssistantText?.trim()
+      ? { lastAssistantText: truncateMiddle(snapshot.finalAssistantText.trim(), MAX_WAIT_TEXT_CHARS) }
+      : {}),
+  };
+}
+
+function formatWaitSnapshot(snapshot: ReturnType<typeof waitSnapshot>): string {
+  const lines = [
+    `state=${snapshot.state} model=${snapshot.model} effort=${snapshot.effort} contextMode=${snapshot.contextMode} turns=${String(snapshot.turns)} tools=${String(snapshot.toolCalls)} queued=${String(snapshot.pendingMessages)}`,
+  ];
+  if (snapshot.stats) {
+    lines.push(
+      `usage: tokens=${formatTokenCount(snapshot.stats.tokens.total)} cost=$${snapshot.stats.cost.toFixed(4)} compactions=${String(snapshot.compactions)}`,
+    );
+  }
+  if (snapshot.error) lines.push(`error: ${snapshot.error}`);
+  if (snapshot.lastAssistantText) lines.push(`\nFinal assistant text:\n${snapshot.lastAssistantText}`);
+  return lines.join("\n");
+}
+
 export default function subagentsExtension(pi: ExtensionAPI) {
   const children = new Map<string, ManagedSubagent>();
   let pendingCreates = 0;
@@ -487,17 +553,144 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     }
   };
 
+  const launch = async (
+    params: {
+      task?: string;
+      model?: string;
+      effort?: ThinkingLevel;
+      name?: string;
+      contextMode?: "none" | "task_compacted";
+      isolated?: boolean;
+    },
+    ctx: ExtensionContext,
+    signal?: AbortSignal,
+  ) => {
+    pruneChildren();
+    if (!params.task?.trim()) throw new Error("Creating a subagent requires a non-empty task.");
+    assertCreationActive();
+    const depth = currentDepth();
+    if (depth >= MAX_DEPTH) throw new Error(`Subagent depth limit (${String(MAX_DEPTH)}) reached.`);
+    const childLimit = depth === 0 ? MAX_ROOT_CHILDREN : MAX_NESTED_CHILDREN;
+    // Count live OS processes, including one still exiting after failure.
+    // Reserve a slot before the first await so parallel create tool calls
+    // cannot bypass the cap.
+    const active = [...children.values()].filter((child) => child.isAlive());
+    if (active.length + pendingCreates >= childLimit) {
+      throw new Error(
+        `This session already has ${String(childLimit)} active or starting direct children; stop one before creating another.`,
+      );
+    }
+
+    pendingCreates++;
+    try {
+      const task = params.task.trim();
+      const contextMode = params.contextMode ?? "task_compacted";
+      const compacted =
+        contextMode === "none" ? { summary: "", fallback: false } : await compactContextForTask(pi, ctx, task, signal);
+      throwIfAborted(signal);
+      assertCreationActive();
+      const routingContext = truncateMiddle(compacted.summary, MAX_CLASSIFIER_CONTEXT_CHARS);
+      const selection = await selectModel(pi, ctx, task, routingContext, params.model, params.effort, signal);
+      throwIfAborted(signal);
+      assertCreationActive();
+      if (params.isolated) assertIsolatedModel(selection.model);
+      // ExtensionContext exposes models as Model<any>, while the registry accepts Model<Api>.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+      const childAuth = await ctx.modelRegistry.getApiKeyAndHeaders(selection.model);
+      throwIfAborted(signal);
+      if (!childAuth.ok) throw new Error(`Could not resolve child model auth: ${childAuth.error}`);
+      const childHeaders = stringProviderHeaders(childAuth.headers);
+      const id = shortId();
+      const name = childName(params.name, id);
+      const existingSessionId = ctx.sessionManager.getSessionId();
+      const parentSessionId = existingSessionId ? existingSessionId : "ephemeral";
+      const sessionDir = join(getAgentDir(), "subagents", parentSessionId, id);
+      await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+      throwIfAborted(signal);
+      assertCreationActive();
+      const args = [
+        "--mode",
+        "rpc",
+        "--session-dir",
+        sessionDir,
+        "--name",
+        name,
+        "--model",
+        `${selection.model.provider}/${selection.model.id}`,
+        "--thinking",
+        selection.effort,
+        ...(params.isolated
+          ? isolatedChildArgs(AUTH_BRIDGE_PATH)
+          : ["--extension", SELF_EXTENSION_PATH, "--extension", AUTH_BRIDGE_PATH]),
+        ctx.isProjectTrusted() ? "--approve" : "--no-approve",
+      ];
+      const invocation = getPiInvocation(args);
+      throwIfAborted(signal);
+      const child = new ManagedSubagent({
+        id,
+        name,
+        task,
+        model: `${selection.model.provider}/${selection.model.id}`,
+        effort: selection.effort,
+        contextMode,
+        contextSummary: boundContextForModel(routingContext, task, selection.model, MAX_CLASSIFIER_CONTEXT_CHARS),
+        cwd: ctx.cwd,
+        command: invocation.command,
+        args: invocation.args,
+        env: childEnvironment(depth + 1, selection.model.provider, {
+          ...(childAuth.apiKey ? { apiKey: childAuth.apiKey } : {}),
+          ...(childHeaders ? { headers: childHeaders } : {}),
+        }),
+        ownsProcessGroup: depth === 0,
+        classification: selection.source,
+        ...(selection.rationale ? { classificationRationale: selection.rationale } : {}),
+      });
+      throwIfAborted(signal);
+      children.set(id, child);
+      // A startup RPC can be held indefinitely; cancellation must not wait for it to stop the new process.
+      let stopping: Promise<void> | undefined;
+      const stopOnAbort = () => {
+        stopping ??= child.stop();
+      };
+      signal?.addEventListener("abort", stopOnAbort, { once: true });
+      try {
+        throwIfAborted(signal);
+        await child.start();
+        throwIfAborted(signal);
+        assertCreationActive();
+      } catch (error) {
+        await (stopping ?? child.stop());
+        throw error;
+      } finally {
+        signal?.removeEventListener("abort", stopOnAbort);
+      }
+      return { child, contextMode, compactionFallback: compacted.fallback };
+    } finally {
+      pendingCreates--;
+    }
+  };
+
+  let closeSignaling: (() => Promise<void>) | undefined;
+  pi.on("session_start", async (_event, ctx) => {
+    await closeSignaling?.();
+    closeSignaling = registerSignaling(
+      pi.events,
+      ctx,
+      async (request, childCtx, signal) => (await launch(request, childCtx, signal)).child,
+    );
+  });
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
     description:
-      "Create and control isolated, asynchronous child Pi sessions. Use action=create whenever the user naturally asks to create a subagent, ask a subagent to do work, or delegate work. Preserve any user-requested model and effort. Creation defaults to contextMode=task_compacted for task-specific parent conversation context; contextMode=none skips parent conversation and compaction, starting with only the supplied task. Neither mode isolates files, credentials, project instructions, settings, skills, or extensions. Creation automatically classifies model/effort when either is omitted and returns immediately with an id. Use status to spy on a direct child's transcript and usage, wait only when the current request needs its result synchronously, steer to interrupt its direction at the next turn boundary, follow_up to queue later work, interrupt to abort the current operation while retaining the session, and stop to terminate it. Each process can see and control only children it created; child results never enter the parent context unless status or wait is explicitly requested.",
+      "Create and control isolated, asynchronous child Pi sessions. Use action=create whenever the user naturally asks to create a subagent, ask a subagent to do work, or delegate work. Preserve any user-requested model and effort. Creation defaults to contextMode=task_compacted for task-specific parent conversation context; contextMode=none skips parent conversation and compaction, starting with only the supplied task. Neither mode isolates files, credentials, project instructions, settings, skills, or extensions. Creation automatically classifies model/effort when either is omitted and returns immediately with an id. Use status to spy on a direct child's transcript and usage, wait only when the current request needs its result synchronously (status metadata and bounded final assistant text only; timeout returns metadata without partial output, and can be followed by another wait), steer to interrupt its direction at the next turn boundary, follow_up to queue later work, interrupt to abort the current operation while retaining the session, and stop to terminate it. Each process can see and control only children it created; child results never enter the parent context unless status or wait is explicitly requested.",
     promptSnippet:
       "Create, inspect, wait for, steer, queue messages for, interrupt, or stop isolated asynchronous child Pi sessions",
     promptGuidelines: [
       "Use subagent with action=create when the user asks in natural language to create, ask, launch, or delegate to a subagent; pass through any explicit model and reasoning effort.",
       "For creation without parent conversation, set contextMode=none and supply the complete task. The default task_compacted preserves task-specific context; none skips compaction but does not isolate files, credentials, project instructions, settings, skills, or extensions.",
-      "Use subagent status to inspect child work; use subagent wait only when this turn must consume the result. Child completion is intentionally not pushed into the parent conversation.",
+      "Use subagent status for transcript diagnostics. Use subagent wait only when this turn must consume the result: it returns status metadata and bounded final assistant text, never the task or working transcript. A timeout returns metadata only without stopping the child; wait again as needed. Child completion is intentionally not pushed into the parent conversation.",
     ],
     parameters: SubagentParameters,
 
@@ -505,119 +698,20 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // eslint-disable-next-line sonarjs/cognitive-complexity
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (params.action === "create") {
-        pruneChildren();
-        if (!params.task?.trim()) throw new Error("Creating a subagent requires a non-empty task.");
-        assertCreationActive();
-        const depth = currentDepth();
-        if (depth >= MAX_DEPTH) throw new Error(`Subagent depth limit (${String(MAX_DEPTH)}) reached.`);
-        const childLimit = depth === 0 ? MAX_ROOT_CHILDREN : MAX_NESTED_CHILDREN;
-        // Count live OS processes, including one still exiting after failure.
-        // Reserve a slot before the first await so parallel create tool calls
-        // cannot bypass the cap.
-        const active = [...children.values()].filter((child) => child.isAlive());
-        if (active.length + pendingCreates >= childLimit) {
-          throw new Error(
-            `This session already has ${String(childLimit)} active or starting direct children; stop one before creating another.`,
-          );
-        }
-
-        pendingCreates++;
-        try {
-          const task = params.task.trim();
-          const contextMode = params.contextMode ?? "task_compacted";
-          const compacted =
-            contextMode === "none"
-              ? { summary: "", fallback: false }
-              : await compactContextForTask(pi, ctx, task, signal);
-          throwIfAborted(signal);
-          assertCreationActive();
-          const routingContext = truncateMiddle(compacted.summary, MAX_CLASSIFIER_CONTEXT_CHARS);
-          const selection = await selectModel(pi, ctx, task, routingContext, params.model, params.effort, signal);
-          throwIfAborted(signal);
-          assertCreationActive();
-          // ExtensionContext exposes models as Model<any>, while the registry accepts Model<Api>.
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-          const childAuth = await ctx.modelRegistry.getApiKeyAndHeaders(selection.model);
-          throwIfAborted(signal);
-          if (!childAuth.ok) throw new Error(`Could not resolve child model auth: ${childAuth.error}`);
-          const childHeaders = stringProviderHeaders(childAuth.headers);
-          const id = shortId();
-          const name = childName(params.name, id);
-          const existingSessionId = ctx.sessionManager.getSessionId();
-          const parentSessionId = existingSessionId ? existingSessionId : "ephemeral";
-          const sessionDir = join(getAgentDir(), "subagents", parentSessionId, id);
-          await mkdir(sessionDir, { recursive: true, mode: 0o700 });
-          throwIfAborted(signal);
-          assertCreationActive();
-          const args = [
-            "--mode",
-            "rpc",
-            "--session-dir",
-            sessionDir,
-            "--name",
-            name,
-            "--model",
-            `${selection.model.provider}/${selection.model.id}`,
-            "--thinking",
-            selection.effort,
-            "--extension",
-            SELF_EXTENSION_PATH,
-            "--extension",
-            AUTH_BRIDGE_PATH,
-            ctx.isProjectTrusted() ? "--approve" : "--no-approve",
-          ];
-          const invocation = resolvePiInvocation(args);
-          throwIfAborted(signal);
-          const child = new ManagedSubagent({
-            id,
-            name,
-            task,
-            model: `${selection.model.provider}/${selection.model.id}`,
-            effort: selection.effort,
-            contextMode,
-            contextSummary: boundContextForModel(routingContext, task, selection.model, MAX_CLASSIFIER_CONTEXT_CHARS),
-            cwd: ctx.cwd,
-            command: invocation.command,
-            args: invocation.args,
-            env: childEnvironment(depth + 1, selection.model.provider, {
-              ...(childAuth.apiKey ? { apiKey: childAuth.apiKey } : {}),
-              ...(childHeaders ? { headers: childHeaders } : {}),
-            }),
-            ownsProcessGroup: depth === 0,
-            classification: selection.source,
-            ...(selection.rationale ? { classificationRationale: selection.rationale } : {}),
-          });
-          throwIfAborted(signal);
-          children.set(id, child);
-          try {
-            throwIfAborted(signal);
-            await child.start();
-            throwIfAborted(signal);
-            assertCreationActive();
-          } catch (error) {
-            await child.stop();
-            throw error;
-          }
-          const warning = compacted.fallback
-            ? " Targeted compaction failed open, so the child started with fresh context."
-            : "";
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Created ${id} (${name}) with ${selection.model.provider}/${selection.model.id} at ${selection.effort} effort.${warning} It is running asynchronously; use subagent status with id=${id} to spy, or wait only when this turn needs the result.`,
-              },
-            ],
-            details: {
-              action: "create",
-              child: snapshotSummary(child.snapshot()),
-              contextMode,
-              compactionFallback: compacted.fallback,
+        // The ordinary tool never isolates resources; only the signaling subset does.
+        const { child, contextMode, compactionFallback } = await launch({ ...params, isolated: false }, ctx, signal);
+        const warning = compactionFallback
+          ? " Targeted compaction failed open, so the child started with fresh context."
+          : "";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Created ${child.id} (${child.name}) with ${child.model} at ${child.effort} effort.${warning} It is running asynchronously; use subagent status with id=${child.id} to spy, or wait only when this turn needs the result.`,
             },
-          };
-        } finally {
-          pendingCreates--;
-        }
+          ],
+          details: { action: "create", child: snapshotSummary(child.snapshot()), contextMode, compactionFallback },
+        };
       }
 
       if (params.action === "list") {
@@ -652,12 +746,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       if (params.action === "wait") {
         const settled = await child.waitForIdle(params.timeoutMs ?? 120_000, signal);
         await child.refresh();
-        const snapshot = child.snapshot();
+        const snapshot = waitSnapshot(child.snapshot(), settled);
         const heading = settled
           ? `Subagent ${params.id} settled.`
-          : `Wait timed out; subagent ${params.id} is still active.`;
+          : `Wait timed out; subagent ${params.id} is still active. Wait again for its result.`;
         return {
-          content: [{ type: "text", text: `${heading}\n\n${formatSnapshot(snapshot)}` }],
+          content: [{ type: "text", text: `${heading}\n\n${formatWaitSnapshot(snapshot)}` }],
           details: { action: "wait", settled, child: snapshot },
         };
       }
@@ -716,6 +810,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    await closeSignaling?.();
     await Promise.allSettled([...children.values()].map((child) => child.stop()));
     children.clear();
   });

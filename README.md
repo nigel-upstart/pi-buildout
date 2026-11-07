@@ -59,7 +59,8 @@ checkpoints, and the exact publish commands. Nothing is published by the reposit
 ### Where the `/skills` patch comes from
 
 The patch is **generated, not hand-authored**. Reviewed TypeScript in [`pi-overlay`](pi-overlay) is the source of truth,
-and `patches/pi-1.0.3/*`, `patches/pi-1.0.4/*`, `patches/pi-1.1.0/*`, `patches/pi-1.3.0/*`, and `patches/pi-1.5.0/*` are
+and `patches/pi-1.0.3/*`, `patches/pi-1.0.4/*`, `patches/pi-1.1.0/*`, `patches/pi-1.3.0/*`, `patches/pi-1.4.0/*`, and
+`patches/pi-1.5.0/*` are
 produced from it:
 
 ```bash
@@ -69,6 +70,7 @@ node scripts/build-pi-patch.mjs --version 1.0.3 --check # check the 1.0.3 patch
 node scripts/build-pi-patch.mjs --version 1.0.4 --check # check the 1.0.4 patch
 node scripts/build-pi-patch.mjs --version 1.1.0 --check # check the 1.1.0 patch
 node scripts/build-pi-patch.mjs --version 1.3.0 --check # check the 1.3.0 patch
+node scripts/build-pi-patch.mjs --version 1.4.0 --check # check the 1.4.0 patch
 node scripts/build-pi-patch.mjs --version 1.5.0 --check # check the 1.5.0 patch
 ```
 
@@ -86,7 +88,7 @@ router's cost tests pin that model registry. The vendored OTel extension keeps i
 installer rejects older Pi versions for extension installation even with `--skip-skill-loading-patch`; patch-only mode
 (`--skip-extensions`) retains its Pi 1.0.1 minimum. It discovers managed installs through the launcher's
 `install/current-version` file, as well as npm bins, Homebrew wrappers, and npm-backed shims. Only the exact Pi versions
-`1.0.3`, `1.0.4`, `1.1.0`, `1.3.0`, and `1.5.0` have checksum-verified `/skills` patches; for other compatible versions,
+`1.0.3`, `1.0.4`, `1.1.0`, `1.3.0`, `1.4.0`, and `1.5.0` have checksum-verified `/skills` patches; for other compatible versions,
 use `--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every supported pi version;
 for a version other than the pinned or aliased one, the tests that apply the patch to a real package skip unless
 `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see

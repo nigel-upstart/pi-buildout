@@ -1,6 +1,6 @@
 {
   "name": "@upstart/pi-router-otel",
-  "version": "0.1.1-alpha.4",
+  "version": "0.1.1-alpha.6",
   "type": "module",
   "description": "Upstart Pi router and OpenTelemetry extensions bundled together",
   "license": "SEE LICENSE IN dist/LICENSE",
@@ -26,7 +26,7 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": ">=1.2.0 <2.0.0",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
