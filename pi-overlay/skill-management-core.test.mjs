@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { win32 } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -482,6 +483,81 @@ test("runSkillsCommand reports active skills and an empty state", async () => {
   const empty = createEnvironment();
   const none = await runSkillsCommand(empty.env, ["active"], { cwd: "/work", agentDir: "/agent" });
   assert.deepEqual(none.lines, ["Skills: none"]);
+});
+
+/**
+ * A fake environment with Windows path rules, for Pi 1.5.0's mixed drive-letter casing fix (#10488). Pi now
+ * compares resource paths case-insensitively on Windows; the overlay's own ancestor walk and catalog must not
+ * reintroduce a second copy of the same directory or skill when callers spell the drive differently.
+ *
+ * @param {{ cwd: string; toplevel?: string; skillsByDir: Record<string, string> }} options
+ */
+function createWindowsEnvironment({ cwd, toplevel, skillsByDir }) {
+  const { env, store } = createEnvironment({ git: toplevel ? { "rev-parse --show-toplevel": toplevel } : {} });
+  env.path = win32;
+  env.homedir = () => "C:\\Users\\dev";
+  store.set(win32.resolve(cwd), "");
+  /** @type {string[]} */
+  const loadedDirs = [];
+  env.loadSkillsFromDir = ({ dir }) => {
+    loadedDirs.push(dir);
+    const name = Object.entries(skillsByDir).find(([key]) => key.toLowerCase() === dir.toLowerCase())?.[1];
+    return {
+      skills: name ? [{ name, description: `${name} fixture`, filePath: win32.join(dir, name, "SKILL.md") }] : [],
+    };
+  };
+  return { env, store, loadedDirs };
+}
+
+test("getSkillCatalogDirs stops the ancestor walk at a repo root spelled with a different drive-letter case", () => {
+  const { env } = createWindowsEnvironment({
+    cwd: "c:\\Work\\Repo\\pkg",
+    toplevel: "C:/work/repo",
+    skillsByDir: {},
+  });
+  assert.deepEqual(
+    getSkillCatalogDirs(env, {
+      cwd: "c:\\Work\\Repo\\pkg",
+      agentDir: "C:\\Users\\dev\\.pi\\agent",
+      projectTrusted: true,
+    }),
+    [
+      "C:\\Users\\dev\\.pi\\agent\\skills",
+      "C:\\Users\\dev\\.agents\\skills",
+      "c:\\Work\\Repo\\pkg\\.pi\\skills",
+      "c:\\Work\\Repo\\pkg\\.agents\\skills",
+      "c:\\Work\\Repo\\.agents\\skills",
+    ],
+    "the walk includes the repo root once and never escapes above it",
+  );
+});
+
+test("a user skill reached again through a differently cased ancestor walk is catalogued and activated once", async () => {
+  const cwd = "c:\\users\\dev\\project";
+  const { env, store, loadedDirs } = createWindowsEnvironment({
+    cwd,
+    skillsByDir: { "C:\\Users\\dev\\.agents\\skills": "personal" },
+  });
+  const agentDir = "C:\\Users\\dev\\.pi\\agent";
+  store.set(win32.join(agentDir, "skills.json"), JSON.stringify({ enabled: ["personal"] }));
+  const settingsManager = { isProjectTrusted: () => true };
+
+  const result = await resolveActiveSkillPaths(env, {
+    cwd,
+    agentDir,
+    settingsManager,
+    resolvedSkillResources: [],
+    resolveResourcePath: (path) => path,
+  });
+
+  assert.ok(
+    loadedDirs.includes("c:\\users\\dev\\.agents\\skills"),
+    "fixture precondition: without a repo the ancestor walk revisits the user directory under another spelling",
+  );
+  assert.deepEqual(result, {
+    paths: ["C:\\Users\\dev\\.agents\\skills\\personal\\SKILL.md"],
+    diagnostics: [],
+  });
 });
 
 test("resolveActiveSkillPaths reuses package resources resolved by the resource loader", async () => {
