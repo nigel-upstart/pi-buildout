@@ -218,7 +218,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         const version =
           ping.kind === "reply" && ping.value.success === true ? record(ping.value.data)?.version : undefined;
         // Only a well-formed success naming another protocol version proves incompatibility.
-        if (typeof version === "number" && version !== 2) negative = "unsupported_protocol";
+        if (typeof version === "number" && Number.isFinite(version) && version !== 2) negative = "unsupported_protocol";
         if (version !== 2) {
           // Error envelopes and unexpected payloads fail this attempt only; the next review probes again.
           finish("unavailable");

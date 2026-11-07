@@ -266,6 +266,25 @@ test("negative discovery caches only verified absence or incompatible protocol",
   assert.equal(spawnError.spawns.length, 1);
 });
 
+test("non-finite ping versions never cache incompatibility and a later valid manager is probed", async () => {
+  for (const version of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    const bus = createEventBus();
+    const behavior = { version };
+    const seen = releasedManager(bus, behavior);
+    const runner = createSignalingReviewRunner(bus);
+    try {
+      assert.equal((await runner.start(request()).result).status, "unavailable");
+      assert.equal(runner.negative, undefined, "malformed discovery is not evidence of incompatibility");
+      behavior.version = 2;
+      assert.equal((await runner.start(request()).result).status, "completed");
+      assert.equal(seen.pings, 2, "the next review must probe again");
+      assert.equal(seen.spawns.length, 1);
+    } finally {
+      await runner.dispose();
+    }
+  }
+});
+
 test("malformed acceptance is uncertain: abort, no resend, and a late terminal is still consumed", async () => {
   const bus = createEventBus();
   const seen = releasedManager(bus, { spawn: "malformed", terminal: "never" });
