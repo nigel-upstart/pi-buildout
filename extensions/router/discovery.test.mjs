@@ -1062,6 +1062,27 @@ test("structurally invalid answers stay DIRTY; prototype paths and imprecise lit
   );
 });
 
+test("nested inherited argument names build private objects without mutating shared built-ins", () => {
+  for (const name of ["toString", "valueOf", "hasOwnProperty"]) {
+    const tool = agentTool();
+    tool.parameters.properties[name] = Type.Object({ routerPolluted: Type.Boolean() });
+    const answer = agentAnswer({
+      spawnArguments: [...agentAnswer().spawnArguments, { path: `${name}.routerPolluted`, literal: "true" }],
+    });
+    const inherited = Object.prototype[name];
+    try {
+      const plan = planFromAnswer(answer, [tool]);
+      assert.equal(inherited.routerPolluted, undefined, "publication must not write to inherited functions");
+      assert.ok(plan);
+      const call = bindPlan(plan, [tool], values);
+      assert.equal(inherited.routerPolluted, undefined, "dispatch must not write to inherited functions");
+      assert.deepEqual(call.arguments[name], { routerPolluted: true });
+    } finally {
+      delete inherited.routerPolluted;
+    }
+  }
+});
+
 test("a missing companion retains quarantine only while the spawn contract is unchanged", () => {
   const quarantine = createQuarantine();
   const tools = [managerTool()];

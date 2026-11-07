@@ -253,7 +253,10 @@ export function bindPlan(
       }
       const keys = entry.path.split(".");
       let node = args;
-      for (const key of keys.slice(0, -1)) node = (node[key] ??= {}) as Record<string, unknown>;
+      for (const key of keys.slice(0, -1)) {
+        if (!Object.hasOwn(node, key)) node[key] = {};
+        node = node[key] as Record<string, unknown>;
+      }
       node[keys.at(-1) ?? ""] = value;
     }
     if (!requiredPresent(tool.parameters, args)) return undefined;
