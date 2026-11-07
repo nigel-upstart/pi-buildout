@@ -59,7 +59,12 @@ import { parseRouterMode, UNKNOWN_LAST_MODE } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteChoice, RouteDecision, RouteSample } from "./core/routing.ts";
 import { buildSessionSynopsis } from "./core/synopsis.ts";
 import type { RepositoryMetadata, SessionSynopsis } from "./core/synopsis.ts";
-import { classifyTaskPrimaryWithPi, classifyTaskSecondaryWithPi, classifyTaskWithPi } from "./pi-classifier.ts";
+import {
+  callStructuredWithPi,
+  classifyTaskPrimaryWithPi,
+  classifyTaskSecondaryWithPi,
+  classifyTaskWithPi,
+} from "./pi-classifier.ts";
 import {
   buildRegistrySnapshot,
   EMPTY_SCOPE,
@@ -105,6 +110,9 @@ import { reviewTimeoutMs } from "./core/review-budget.ts";
 import { inProcessReviewRunner } from "./review-runner.ts";
 import type { ReviewRunner, ReviewHandle } from "./review-runner.ts";
 import { createSignalingReviewRunner } from "./signaling-runner.ts";
+import { createBuilderReviewRunner } from "./builder-runner.ts";
+import { createDiscovery, createQuarantine, describeTools, DISCOVERY_PROMPT, DISCOVERY_TOOL } from "./discovery.ts";
+import type { ToolView } from "./discovery.ts";
 
 const STATE_ENTRY = "model-router-state";
 const CONTEXT_MESSAGE = "model-router-context";
@@ -421,6 +429,8 @@ type RouterExtensionOptions = {
   /** Secondary classifier override used asynchronously after an escalated primary result. */
   classifySecondaryTask?: typeof classifyTaskSecondaryWithPi;
   secondaryReconciliationPolicy?: SecondaryReconciliationPolicy;
+  /** Delegation-discovery classifier override for tests; production uses the primary classifier tiers. */
+  discoverDelegate?: typeof callStructuredWithPi;
 };
 
 export function supportsRouterPiVersion(version: string): boolean {
@@ -560,6 +570,72 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   const reviewRunner = options.reviewRunner ?? inProcessReviewRunner;
   // Instance-closure state only: a verified negative discovery resets with reload/session replacement.
   const signalingRunner = createSignalingReviewRunner(pi.events);
+  // Builder-steered fallback: closure-scoped SWR discovery and candidate quarantine, reset with the instance.
+  let discoveryOwner: { ctx: ExtensionContext; sessionId: string; generation: number } | undefined;
+  const toolViews = (): ToolView[] => {
+    const active = new Set(pi.getActiveTools());
+    return pi.getAllTools().map((tool) => ({ ...tool, active: active.has(tool.name) }));
+  };
+  const quarantine = createQuarantine();
+  const discovery = createDiscovery({
+    tools: toolViews,
+    excluded: (tool, tools) => quarantine.blocks(tool, tools),
+    classify: (tools, signal) => {
+      const owner = discoveryOwner;
+      if (owner?.generation !== sessionGeneration) return Promise.reject(new Error("No session context"));
+      return (options.discoverDelegate ?? callStructuredWithPi)({
+        ctx: owner.ctx,
+        registry: buildRegistrySnapshot(owner.ctx, scope),
+        tool: DISCOVERY_TOOL,
+        systemPrompt: DISCOVERY_PROMPT,
+        userPrompt: describeTools(tools),
+        signal,
+      });
+    },
+    onEvent: (event) => {
+      recordDiscoveryOutcome({
+        discovery: event.kind,
+        discoveryGeneration: event.generation,
+        discoveryFingerprint: event.fingerprint,
+      });
+    },
+  });
+  const builderRunner = createBuilderReviewRunner({
+    observe: () => discovery.observe(),
+    tools: toolViews,
+    blocked: (call, tools) => quarantine.blocks(call.tool, tools),
+    quarantine: (call, reason) => {
+      quarantine.add(call, reason);
+      // Eligibility changed: abort any flight, advance the generation, and refresh only on next access.
+      discovery.invalidate();
+      recordDiscoveryOutcome({ candidateQuarantined: reason });
+    },
+    dispatch: (content) => {
+      pi.sendMessage(
+        { customType: "router-review-delegation", content, display: true },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    },
+  });
+  /** Never read an expired context, including when an already-started append rejects after replacement. */
+  function recordDiscoveryOutcome(data: Record<string, unknown>): void {
+    const owner = discoveryOwner;
+    if (owner?.generation !== sessionGeneration) return;
+    void appendTelemetry(owner.sessionId, {}, "outcome", data, {}).catch((error: unknown) => {
+      const current = discoveryOwner;
+      if (current?.sessionId === owner.sessionId && owner.generation === sessionGeneration)
+        disableForTelemetryFailure(current.ctx, error);
+    });
+  }
+  /** Warm SWR discovery without making its availability a prerequisite for the shared review lifecycle. */
+  function observeDelegationDiscovery(ctx: ExtensionContext): void {
+    discoveryOwner = { ctx, sessionId: ctx.sessionManager.getSessionId(), generation: sessionGeneration };
+    try {
+      discovery.observe();
+    } catch {
+      /* Discovery is best-effort; the builder runner then reports unavailable. */
+    }
+  }
   function cancelReview(): void {
     if (!pendingReview) return;
     pendingReview.cancelled = true;
@@ -2167,6 +2243,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       // telemetry uses metadata captured while ctx is still live.
       const sessionId = ctx.sessionManager.getSessionId();
       const generation = sessionGeneration;
+      // One access starts at most one background refresh, never awaited.
+      observeDelegationDiscovery(ctx);
       const registry = buildRegistrySnapshot(ctx, scope);
       const builder = registry.find(
         (candidate) => candidate.provider === parent.selected.provider && candidate.modelId === parent.selected.modelId,
@@ -2217,6 +2295,7 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       let spent = 0;
       const runners = [
         ["signaling", signalingRunner],
+        ["builder", builderRunner],
         ["in_process", reviewRunner],
       ] as const;
       for (const [runnerName, runner] of runners) {
@@ -2697,6 +2776,10 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
 
   pi.on("session_shutdown", async (event, ctx) => {
     sessionGeneration++;
+    // Session replacement retains this extension instance; drop its context and session-local discovery evidence.
+    discoveryOwner = undefined;
+    discovery.reset();
+    quarantine.reset();
     cancelReview();
     clearPendingInput(ctx);
     await abortSecondaryWork(undefined, "session_shutdown");
@@ -3379,7 +3462,16 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
     }
   });
 
+  // Observational only: review results are parsed, never replaced, trimmed, or marked as errors.
+  pi.on("tool_result", (event) => {
+    builderRunner.onToolResult(event);
+    // Only the actually executed, exact review call is orchestration rather than builder implementation.
+    // Later tool_call handlers may have changed its arguments; deviations retain normal mutation tracking.
+    if (builderRunner.isValidatedOrchestration(event)) potentiallyMutatingCalls.delete(event.toolCallId);
+  });
+
   pi.on("tool_call", (event) => {
+    builderRunner.onToolCall(event);
     // Advisory observation only: lifecycle progress never determines whether a tool may run.
     if (leaseOwner.state.mode !== "active") return undefined;
     if (event.toolName === "bash") {
@@ -3493,6 +3585,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
       lastAttemptMetrics = undefined;
       return;
     }
+    // A delegation-only run never drives planning repair or builder fallback: reviews never change the builder.
+    if (builderRunner.delegating()) return;
     const deterministicVerificationFailed =
       isActiveAttempt && [...deterministicCheckResults.values()].some((passed) => !passed);
     const planValidationMissing =
@@ -3564,6 +3658,8 @@ export default function routerExtension(pi: ExtensionAPI, options: RouterExtensi
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    // A builder-steered delegation run ends its observation window here.
+    builderRunner.onSettled(_event.aborted);
     // The settled run is bound to the epoch at its agent_end (or, without one, before the drain). Same-epoch
     // secondary reconciliation still applies, but input, a boundary, or a mode change since then supersedes it.
     const runEpoch = runEndEpoch ?? leaseOwner.epoch;
