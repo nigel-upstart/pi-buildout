@@ -181,6 +181,48 @@ test("early terminal usage survives malformed acceptance without authorizing adv
   }
 });
 
+test("malformed acceptance drains billed terminal usage without authorizing advice or replacement", async () => {
+  for (const completed of [true, false]) {
+    for (const synchronous of [true, false]) {
+      const bus = createEventBus();
+      const seen = releasedManager(bus, { spawn: "malformed", terminal: "never" });
+      const terminal = (spawn) =>
+        bus.emit(completed ? "subagents:completed" : "subagents:failed", {
+          id: "agent-1",
+          description: spawn.options.description,
+          result: block(nonceOf(spawn.prompt)),
+          usage: { input: 10, output: 5, cacheRead: 2, cost: { total: 0.03 } },
+        });
+      if (synchronous)
+        bus.on("subagents:rpc:spawn", (spawn) => {
+          spawn.options.signal.addEventListener("abort", () => terminal(spawn), { once: true });
+        });
+      const runner = createSignalingReviewRunner(bus);
+      const handle = runner.start(request({ timeoutMs: 100 }));
+      try {
+        for (let i = 0; i < 50 && seen.spawns.length === 0; i++) await tick();
+        assert.equal(seen.spawns.length, 1);
+        const spawn = seen.spawns[0];
+        // An abort handler can publish inline, or process cleanup can finish after the deadline.
+        if (!synchronous) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          terminal(spawn);
+        }
+        const result = await handle.result;
+        assert.equal(result.status, "uncertain");
+        assert.equal(result.verdict, undefined);
+        assert.deepEqual(result.usage, { cost: 0.03, inputTokens: 12, outputTokens: 5 });
+        assert.equal(spawn.options.signal.aborted, true);
+        assert.deepEqual(seen.consumeRequests, ["agent-1"]);
+        assert.equal(seen.spawns.length, 1, "never resent");
+        assert.equal(runner.negative, undefined);
+      } finally {
+        await runner.dispose();
+      }
+    }
+  }
+});
+
 test("invalid or failed terminal output is still consumed and reported as confirmed failure", async () => {
   for (const behavior of [{ result: "no verdict block" }, { terminal: "failed" }, { result: block("0".repeat(32)) }]) {
     const bus = createEventBus();
@@ -227,8 +269,11 @@ test("negative discovery caches only verified absence or incompatible protocol",
 test("malformed acceptance is uncertain: abort, no resend, and a late terminal is still consumed", async () => {
   const bus = createEventBus();
   const seen = releasedManager(bus, { spawn: "malformed", terminal: "never" });
+  const started = Date.now();
   const result = await createSignalingReviewRunner(bus).start(request()).result;
   assert.equal(result.status, "uncertain");
+  assert.ok(Date.now() - started >= 900, "waits briefly for billed usage");
+  assert.ok(Date.now() - started < 3_000, "missing terminal cannot block indefinitely");
   assert.equal(seen.spawns.length, 1);
   assert.equal(seen.spawns[0].options.signal.aborted, true);
   bus.emit("subagents:completed", { id: "agent-1", description: seen.spawns[0].options.description, result: "late" });

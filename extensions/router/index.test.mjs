@@ -6534,6 +6534,55 @@ describe("routerExtension", () => {
     }
   });
 
+  it("accounts for billed usage after malformed signaling acceptance without delivering advice or falling back", async () => {
+    const events = createEventBus();
+    const seen = signalingManager(events, { spawn: "malformed" });
+    events.on("subagents:rpc:spawn", (raw) => {
+      raw.options.signal.addEventListener(
+        "abort",
+        () => {
+          setTimeout(
+            () =>
+              events.emit("subagents:completed", {
+                id: "tw-1",
+                description: raw.options.description,
+                result: "unaccepted advice",
+                usage: { input: 10, output: 5, cacheRead: 2, cost: { total: 0.03 } },
+              }),
+            10,
+          );
+        },
+        { once: true },
+      );
+    });
+    const runner = controlledRunner();
+    const telemetry = [];
+    const fixture = await authorizationLifecycleFixture({
+      events,
+      reviewRunner: runner,
+      classifyPrimaryTask: childClassifier([]),
+      telemetry: { read: async () => [], append: async (event) => telemetry.push(event) },
+    });
+    try {
+      await launchReview(fixture);
+      await waitForReview(() => telemetry.some((event) => event.data.reviewStatus === "uncertain"));
+      const outcome = telemetry.find((event) => event.data.reviewStatus === "uncertain");
+      assert.equal(outcome.data.reviewCost, 0.03);
+      assert.equal(outcome.data.inputTokens, 12);
+      assert.equal(outcome.data.outputTokens, 5);
+      assert.equal(outcome.data.verdictValid, false);
+      assert.equal(runner.calls.length, 0, "uncertain ownership prohibits SDK fallback");
+      assert.equal(seen.spawns.length, 1);
+      assert.deepEqual(seen.consumed, ["tw-1"]);
+      assert.equal(
+        fixture.sent.some((s) => /Independent review advice/.test(s.message.content)),
+        false,
+      );
+    } finally {
+      fixture.restoreEnvironment();
+    }
+  });
+
   it("launches nothing when the review is cancelled during parent-side child selection", async () => {
     const events = createEventBus();
     const seen = signalingManager(events);

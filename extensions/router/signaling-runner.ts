@@ -19,7 +19,7 @@ const CONTROL_WAIT_MS = 5_000;
 const SPAWN_WAIT_MS = 120_000;
 /** Shutdown waits this long for cancelled children's terminal events so they can still be consumed. */
 const DRAIN_WAIT_MS = 2_000;
-/** A cancelled or timed-out review waits this long for its child's terminal event to report billed usage. */
+/** A stale review waits this long for its child's terminal event to report billed usage. */
 const USAGE_GRACE_MS = 1_000;
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -120,8 +120,8 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         resolveResult = resolve;
       });
       let finished = false;
-      // Cancellation or the deadline makes the attempt stale at once; its result waits briefly for usage.
-      let stale: "timeout" | "cancelled" | undefined;
+      // Cancellation, deadline, or uncertain ownership withholds advice at once; usage drains briefly.
+      let stale: "timeout" | "cancelled" | "uncertain" | undefined;
       let graceTimer: ReturnType<typeof setTimeout> | undefined;
       let spawnRequested = false;
       // Read through a function: cancellation and deadlines mutate this across awaits.
@@ -181,7 +181,7 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         if (childId || stale) settle(terminal);
         else early = terminal;
       };
-      const expire = (status: "timeout" | "cancelled") => {
+      const expire = (status: "timeout" | "cancelled" | "uncertain") => {
         if (finished || stale) return;
         // Stale before cancellation; stop acknowledgement is not proof of physical exit.
         stale = status;
@@ -266,9 +266,8 @@ export function createSignalingReviewRunner(bus: Bus | undefined): SignalingRevi
         }
         if (typeof accepted !== "string" || !accepted || (early && early.id !== accepted)) {
           // Lost or malformed acceptance: abort, keep listening to consume, and never resend.
-          controller.abort();
-          // Cancellation/deadline owns settlement now; a lost reply must not truncate its usage grace.
-          if (!stale) finish("uncertain", { usage: early?.usage ?? zero });
+          // Preserve any cancellation/deadline already draining; otherwise drain as uncertain.
+          expire("uncertain");
           return;
         }
         childId = accepted;
