@@ -214,7 +214,8 @@ export function transportFromCandidates(
 async function callClassifierModel(
   ctx: ExtensionContext,
   candidate: ClassifierModel,
-  request: ClassifierRequest,
+  request: Pick<ClassifierRequest, "systemPrompt" | "userPrompt" | "signal">,
+  tool: Tool = CLASSIFIER_TOOL,
 ): Promise<ClassifierTransportResult> {
   const model = ctx.modelRegistry.find(candidate.model.provider, candidate.model.id);
   if (!model) throw new Error(`Classifier endpoint disappeared from registry: ${candidateLabel(candidate)}`);
@@ -237,7 +238,7 @@ async function callClassifierModel(
           timestamp: Date.now(),
         },
       ],
-      tools: [CLASSIFIER_TOOL],
+      tools: [tool],
     },
     {
       ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
@@ -247,7 +248,7 @@ async function callClassifierModel(
       maxTokens: 4_096,
       maxRetries: 1,
       reasoning: "low",
-      onPayload: (payload) => requireToolCall(payload, model.api, CLASSIFIER_TOOL_NAME),
+      onPayload: (payload) => requireToolCall(payload, model.api, tool.name),
     },
   );
   if (response.stopReason === "aborted") {
@@ -258,13 +259,11 @@ async function callClassifierModel(
   if (response.stopReason === "error") {
     throw new Error(response.errorMessage ?? "Classifier stopped with error");
   }
-  const toolCall = response.content.find(
-    (content) => content.type === "toolCall" && content.name === CLASSIFIER_TOOL_NAME,
-  );
+  const toolCall = response.content.find((content) => content.type === "toolCall" && content.name === tool.name);
   if (toolCall?.type !== "toolCall") {
-    throw new Error("Classifier did not return the required report_task_features tool call");
+    throw new Error(`Classifier did not return the required ${tool.name} tool call`);
   }
-  const validatedArguments: unknown = validateToolArguments(CLASSIFIER_TOOL, toolCall);
+  const validatedArguments: unknown = validateToolArguments(tool, toolCall);
   return {
     arguments: validatedArguments,
     provider: candidate.model.provider,
@@ -279,6 +278,27 @@ async function callClassifierModel(
       cost: response.usage.cost.total,
     },
   };
+}
+
+/** One schema-validated structured answer from the primary classifier tiers (manager discovery). */
+export async function callStructuredWithPi(input: {
+  ctx: ExtensionContext;
+  registry: readonly RegistryModelSnapshot[];
+  tool: Tool;
+  systemPrompt: string;
+  userPrompt: string;
+  signal: AbortSignal;
+}): Promise<unknown> {
+  const failures: string[] = [];
+  for (const candidate of selectClassifierModels(input.registry).primary) {
+    try {
+      return (await callClassifierModel(input.ctx, candidate, input, input.tool)).arguments;
+    } catch (error) {
+      if (input.signal.aborted || isClassifierCancellationError(error)) throw error;
+      failures.push(`${candidateLabel(candidate)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`No ${input.tool.name} candidate succeeded: ${failures.join(" | ") || "none configured"}`);
 }
 
 function transportFor(ctx: ExtensionContext, candidates: readonly ClassifierModel[]): ClassifierTransport {
