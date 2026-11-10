@@ -125,8 +125,9 @@ definition validated at runtime. The [design-source reconciliation](source-basis
 from the historical feature example.
 
 The classifier does not have a `response_format`-style structured-output knob available to it (see `decisions.md`).
-Enforce the schema by forcing a **tool call** whose parameters are the TypeBox schema, and validate the returned
-arguments — never accept free-form JSON parsed out of prose.
+Enforce the schema by forcing a **tool call** whose parameters are the TypeBox-authored JSON Schema, and validate the
+returned arguments — never accept free-form JSON parsed out of prose. Pi's host validator coerces the arguments against
+that JSON Schema first; the router then validates the normalized value locally (see implementation decision S1).
 
 ### Confidence and escalation
 

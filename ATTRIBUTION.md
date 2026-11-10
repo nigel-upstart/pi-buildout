@@ -250,6 +250,28 @@ Only behavior was used: no Pi code, tests, or documentation prose was copied or 
 public `ctx.modelRegistry.streamSimple()`-backed agent loop replacing the accepted private runtime field, Pi's own
 provider test suites, `RpcClient`, a historical version matrix, and any upstream `main` (unreleased) lane.
 
+### Pi tool-argument validation and coercion contract
+
+- Sources: published `@earendil-works/pi-ai` `1.5.0` (tag `v1.5.0`, commit `f9a26365568127461c47a07a37dcb42c140a3ac5`)
+  `dist/utils/validation.js` and `@earendil-works/pi-schema` `1.5.0` `dist/coerce.js` (whose coercion rules are declared
+  as ported from TypeBox 1.3.27 `Value.Convert`, MIT, with `LICENSES/typebox-LICENSE`); `pi-ai` `1.2.0` and `1.3.0`
+  `dist/utils/validation.js` (TypeBox `Value.Convert` for TypeBox-authored schemas, primitive coercion for plain JSON
+  Schema)
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/ai`, `packages/schema`)
+- License declared by the repository and packages: MIT
+
+Use: `extensions/router/pi-tool-arguments.test.mjs` asserts the observed behavior of the public `validateToolArguments`
+at the floor, pinned, and latest Pi: which classifier, planning, reviewer, and subagent arguments are normalized or
+rejected, that the result is a copy that leaves the transcript's arguments unchanged, and the documented pre-1.5
+difference for plain JSON Schema. Only behavior was used: no Pi, pi-schema, or TypeBox code, tests, or prose was copied
+or modified. Intentionally not adopted: pi-schema as a local validator, coercing local validation of persisted or
+restored data, assertions on host error wording, and Pi's own validation test suites. Review follow-up also inspected Pi
+`1.3.0`'s published `dist/compat.js` and `dist/providers/faux.js` to capture the actual post-clone classifier response
+through the public API-provider stream, rather than testing the untouched input fixture. Pi `1.5.0`'s `docs/sdk.md`,
+`docs/custom-provider.md`, and `examples/sdk/{06-extensions,12-full-control}.ts` informed the real in-memory router
+session that verifies emitted telemetry. These are conceptual API uses, not copied implementation; production
+transports, live inference, and persistent session storage are intentionally excluded.
+
 ### Pi model catalog: GPT-6.1 Sol pricing
 
 - Source: bundled `@earendil-works/pi-ai` provider catalog shipped with `@earendil-works/pi-coding-agent`
