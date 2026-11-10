@@ -100,8 +100,8 @@ no upstream source.
 
 ## Reproducibility
 
-For 1.0.3, 1.0.4, 1.1.0, 1.3.0, 1.4.0, and 1.5.0, the clean build reproduces all four pre-existing runtime files tracked by
-each patch byte-for-byte before the overlay is applied. No normalization is applied. If that ever stops holding,
+For 1.0.3, 1.0.4, 1.1.0, 1.3.0, 1.4.0, and 1.5.0, the clean build reproduces all four pre-existing runtime files tracked
+by each patch byte-for-byte before the overlay is applied. No normalization is applied. If that ever stops holding,
 generation fails rather than emitting a patch carrying toolchain noise.
 
 The pipeline never rebuilds `dist/bundle/` or its content-hashed chunks. It replaces `cli-runtime.js` and `rpc-entry.js`
@@ -114,13 +114,13 @@ Pi 1.1.0, 1.3.0, 1.4.0, and 1.5.0 RPC wrappers preserve upstream's process marke
 `workspaceBuildOrder` follows upstream's root build script. Pi 1.0.3 builds `packages/codemode`, `packages/mcp`, and
 `packages/durable` before the agent package. Pi 1.0.4 and 1.1.0 also build `packages/env` before `packages/agent`. Pi
 1.3.0 keeps that order but no longer builds `packages/protocol`, `packages/client`, or `packages/server`, which its
-source archive no longer contains. Pi 1.4.0 puts `packages/telemetry` first, ahead of `packages/chord` and `packages/tui`,
-and otherwise retains the 1.3.0 order. Pi 1.5.0 adds `packages/schema` and builds `packages/telemetry` and
-`packages/schema` before `packages/chord`.
+source archive no longer contains. Pi 1.4.0 puts `packages/telemetry` first, ahead of `packages/chord` and
+`packages/tui`, and otherwise retains the 1.3.0 order. Pi 1.5.0 adds `packages/schema` and builds `packages/telemetry`
+and `packages/schema` before `packages/chord`.
 
 `npm run patches:build` and `npm run patches:check` pass `--all`, so every version under `versions/` is regenerated and
 checked, not only the one the development dependencies pin. Use `node scripts/build-pi-patch.mjs --version <version>`
 for a single version.
 
-Pi 1.0.3, 1.0.4, 1.1.0, 1.3.0, 1.4.0, and 1.5.0 build with the released `typescript` `7.0.2` (`tsc`). If a pinned compiler is
-withdrawn or its emit changes, reproducibility breaks; the scheduled drift job is the detector.
+Pi 1.0.3, 1.0.4, 1.1.0, 1.3.0, 1.4.0, and 1.5.0 build with the released `typescript` `7.0.2` (`tsc`). If a pinned
+compiler is withdrawn or its emit changes, reproducibility breaks; the scheduled drift job is the detector.
