@@ -208,7 +208,12 @@ at the floor, pinned, and latest Pi: which classifier, planning, reviewer, and s
 rejected, that the result is a copy that leaves the transcript's arguments unchanged, and the documented pre-1.5
 difference for plain JSON Schema. Only behavior was used: no Pi, pi-schema, or TypeBox code, tests, or prose was copied
 or modified. Intentionally not adopted: pi-schema as a local validator, coercing local validation of persisted or
-restored data, assertions on host error wording, and Pi's own validation test suites.
+restored data, assertions on host error wording, and Pi's own validation test suites. Review follow-up also inspected Pi
+`1.3.0`'s published `dist/compat.js` and `dist/providers/faux.js` to capture the actual post-clone classifier response
+through the public API-provider stream, rather than testing the untouched input fixture. Pi `1.5.0`'s `docs/sdk.md`,
+`docs/custom-provider.md`, and `examples/sdk/{06-extensions,12-full-control}.ts` informed the real in-memory router
+session that verifies emitted telemetry. These are conceptual API uses, not copied implementation; production
+transports, live inference, and persistent session storage are intentionally excluded.
 
 ### Pi model catalog: GPT-6.1 Sol pricing
 

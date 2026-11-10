@@ -24,7 +24,9 @@ schemas with the same results and only primitive coercion to plain JSON Schema. 
 TypeBox-authored, so their accept/reject outcomes are unchanged across the supported range; only host error wording
 differs. The router's local `typebox/value` checks then validate the normalized value strictly and never coerce, so
 persisted, restored, and other untrusted data keep strict validation. Raw host validator errors include the received
-arguments and are never persisted; classifier telemetry keeps only error counts.
+arguments. Router classifier telemetry removes these free-form errors and keeps only error counts. This guarantee does
+not cover ordinary Pi session transcripts: host-rejected planning or subagent calls produce error tool results that can
+persist the raw validator error and received arguments alongside the original assistant tool call.
 `extensions/router/pi-tool-arguments.test.mjs` pins these outcomes offline at the pinned Pi and in the floor/latest Pi
 contract canary.
 

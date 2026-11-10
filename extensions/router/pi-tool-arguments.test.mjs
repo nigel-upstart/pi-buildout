@@ -6,10 +6,12 @@
 // (accept/reject and the normalized value), never host error wording, and run offline under ordinary
 // `npm test` and the scheduled floor/latest Pi contract canary (scripts/pi-contract-canary.mjs).
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { describe, it, test } from "node:test";
 import {
   fauxAssistantMessage,
   fauxToolCall,
+  getApiProvider,
   registerFauxProvider,
   validateToolArguments,
 } from "@earendil-works/pi-ai/compat";
@@ -19,9 +21,9 @@ import { conservativeFeatures, TaskFeaturesSchema, validateTaskFeatures } from "
 import { ProgramPlanSchema, validateProgramPlan } from "./core/planning.ts";
 import { ActionPlanSchema, validateActionPlan } from "./core/safety.ts";
 import { parentSession, sdkFixture, streamMessage } from "./fixtures/pi-sdk.mjs";
+import routerExtension from "./index.ts";
 import { classifyTaskWithPi } from "./pi-classifier.ts";
 import { inProcessReviewRunner } from "./review-runner.ts";
-import { sanitizeClassifierAttempt } from "./telemetry.ts";
 
 const [major, minor] = VERSION.split(".").map(Number);
 /**
@@ -101,10 +103,17 @@ function toolCall(name, args) {
 }
 
 /** Run the public validator and assert it never modified the original tool-call arguments. */
-function validate(parameters, args) {
+function validate(parameters, args, { rejects = false } = {}) {
   const original = structuredClone(args);
   try {
-    return validateToolArguments({ name: "report_task_features", description: "", parameters }, toolCall("t", args));
+    const run = () =>
+      validateToolArguments({ name: "report_task_features", description: "", parameters }, toolCall("t", args));
+    // Only the host call is inside assert.throws; an immutability failure must fail the test itself.
+    if (rejects) {
+      assert.throws(run, Error);
+      return;
+    }
+    return run();
   } finally {
     assert.deepEqual(args, original, "the original tool-call arguments are unchanged");
   }
@@ -116,7 +125,7 @@ describe(`Pi ${VERSION} public tool-argument validator with the classifier schem
       const normalizes = !structural || form === "TypeBox-authored" || PI_SCHEMA_HOST;
       it(`${form}: ${name}${normalizes ? "" : " (rejected before Pi 1.5)"}`, () => {
         if (!normalizes) {
-          assert.throws(() => validate(schema, args), Error);
+          validate(schema, args, { rejects: true });
           return;
         }
         const value = validate(schema, args);
@@ -129,7 +138,7 @@ describe(`Pi ${VERSION} public tool-argument validator with the classifier schem
     }
     for (const [name, args] of Object.entries(REJECTED))
       it(`${form}: rejects ${name}`, () => {
-        assert.throws(() => validate(schema, args), Error);
+        validate(schema, args, { rejects: true });
       });
   }
 
@@ -144,13 +153,26 @@ describe(`Pi ${VERSION} public tool-argument validator with the classifier schem
 });
 
 /** A classifier invocation against one faux provider endpoint, returning every response in order. */
-async function classify(t, responses) {
+async function classify(t, responses, delivered = []) {
   const faux = registerFauxProvider({
     api: `router-tool-arguments-${String(Math.random()).slice(2)}`,
     provider: "router-tool-arguments",
     models: [{ id: "classifier-fixture" }],
   });
   t.after(() => faux.unregister());
+  // Observe the response returned to complete(), after the faux provider's own cloning.
+  const provider = getApiProvider(faux.api);
+  const stream = provider.stream;
+  t.mock.method(provider, "stream", (...args) => {
+    const response = stream(...args);
+    const result = response.result.bind(response);
+    t.mock.method(response, "result", async () => {
+      const message = await result();
+      delivered.push(...message.content.filter((content) => content.type === "toolCall"));
+      return message;
+    });
+    return response;
+  });
   faux.setResponses(responses.map((args) => fauxAssistantMessage([fauxToolCall("report_task_features", args)])));
   return classifyTaskWithPi({
     ctx: {
@@ -181,24 +203,69 @@ describe(`Pi ${VERSION} router classifier path`, () => {
   it("consumes the host-normalized features and leaves the model's tool-call arguments unchanged", async (t) => {
     const args = { ...base, confidence: "0.95", expectedFilesRead: "12", evidence: "Touches one module" };
     const original = structuredClone(args);
-    const result = await classify(t, [args]);
+    const delivered = [];
+    const result = await classify(t, [args], delivered);
     assert.equal(result.failedClosed, false);
     assert.equal(result.attempts[0]?.valid, true);
     assert.deepEqual(result.features, { ...base, expectedFilesRead: 12, evidence: ["Touches one module"] });
-    assert.deepEqual(args, original);
+    assert.equal(delivered.length, 1);
+    assert.notEqual(delivered[0].arguments, args, "the provider cloned the fixture");
+    assert.deepEqual(delivered[0].arguments, original, "the classifier leaves its received arguments unchanged");
   });
 
   it("fails closed on host-rejected arguments without persisting the raw validator error", async (t) => {
     const secret = "RAW-ARGUMENT-SENTINEL-41";
     const invalid = { ...base, risk: "extreme", evidence: [secret] };
-    const result = await classify(t, [invalid, invalid]);
+    const f = await sdkFixture(t);
+    const environment = {
+      PI_ROUTER_MODE: "shadow",
+      PI_ROUTER_MODEL_SCOPE: "*",
+      PI_ROUTER_ENDPOINT_HEALTH_PATH: join(f.cwd, "no-health.json"),
+      PI_ROUTER_LAST_MODE_PATH: join(f.cwd, "last-mode.jsonl"),
+    };
+    for (const [key, value] of Object.entries(environment)) {
+      const previous = process.env[key];
+      process.env[key] = value;
+      t.after(() => {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+      });
+    }
+    const events = [];
+    let result;
+    const session = await parentSession(t, f, [
+      (pi) =>
+        routerExtension(pi, {
+          telemetry: {
+            append: async (event) => events.push(structuredClone(event)),
+            read: async () => [],
+          },
+          classifyTask: async () => {
+            result = await classify(t, [invalid, invalid]);
+            return result;
+          },
+        }),
+    ]);
+    f.respond = (model) => streamMessage(model, []);
+    await session.prompt("Implement the change");
     assert.equal(result.failedClosed, true);
     assert.deepEqual(result.features, conservativeFeatures("Primary classifier failed schema validation"));
     assert.equal(result.attempts.length, 2);
     assert.ok(result.attempts.every((attempt) => attempt.valid === false));
-    const persisted = JSON.stringify(result.attempts.map(sanitizeClassifierAttempt));
-    assert.doesNotMatch(persisted, new RegExp(secret), "telemetry never carries the received arguments");
-    for (const attempt of JSON.parse(persisted)) assert.ok(attempt.errorCount > 0 && attempt.errors.length === 0);
+    for (const attempt of result.attempts)
+      assert.ok(
+        attempt.errors.some((error) => error.includes(secret)),
+        "the raw host error contains the sentinel",
+      );
+    const attempts = events.filter(({ kind }) => kind === "classifier_attempt");
+    const decisions = events.filter(({ kind }) => kind === "route_decision");
+    assert.equal(attempts.length, 2, "the router emitted both rejected attempts");
+    assert.equal(decisions.length, 1, "the router emitted a route decision");
+    for (const attempt of [...attempts.map(({ data }) => data), ...decisions[0].data.classifierAttempts]) {
+      assert.ok(attempt.errorCount > 0);
+      assert.deepEqual(attempt.errors, []);
+    }
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(secret), "emitted telemetry never carries raw arguments");
   });
 });
 
