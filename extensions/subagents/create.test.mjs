@@ -248,6 +248,16 @@ test("none with explicit model and effort bypasses classification", async (t) =>
   assert.equal(fixture.launches[0]?.contextSummary, "");
 });
 
+test("an untrusted parent project launches the child with --no-approve", async (t) => {
+  // The host's ctx.isProjectTrusted() honours a saved distrust decision from Pi 1.5.0 (#10947); the child must
+  // inherit that decision rather than re-prompting or trusting the project.
+  const { execute } = await harness(t, true);
+  await execute({ action: "create", task: "Do the task", contextMode: "none", model: "test/model", effort: "high" });
+  const args = fixture.launches[0]?.args ?? [];
+  assert.ok(args.includes("--no-approve"));
+  assert.equal(args.includes("--approve"), false);
+});
+
 test("default compaction failure still warns and launches fresh", async (t) => {
   const { execute } = await harness(t);
   fixture.failCompaction = true;

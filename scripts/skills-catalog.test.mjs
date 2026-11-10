@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { applyPatchFile } from "./build-pi-patch.mjs";
+import { applyPatchFile, sortVersions } from "./build-pi-patch.mjs";
 import { findCleanPackage, patchDirectoryFor, patchVersions, repositoryRoot } from "./skills-patch-packages.mjs";
 
 // The catalog fixture replaces HOME, but the installer locates pi through PI_PACKAGE_DIR and
@@ -74,18 +74,20 @@ function testEnvironment(overrides = {}) {
   return env;
 }
 
-async function runPatchedCli(target, args, { agentDir, cwd, home = process.env.HOME }) {
+async function runPatchedCli(target, args, { agentDir, cwd, home = process.env.HOME, input, env = {} }) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [join(target, "dist", "bundle", "cli.js"), ...args], {
       cwd,
       env: testEnvironment({
         ...(home === undefined ? {} : { HOME: home }),
+        ...env,
         PI_CODING_AGENT_DIR: agentDir,
         PI_OFFLINE: "1",
         PI_SKIP_VERSION_CHECK: "1",
       }),
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -525,6 +527,220 @@ for (const version of patchVersions()) {
       } else {
         process.env.HOME = previousHome;
       }
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+/** True when `version` is `minimum` or newer. */
+function isAtLeast(version, minimum) {
+  return sortVersions([version, minimum])[0] === minimum;
+}
+
+/**
+ * Starts the patched host in RPC mode with an extension that records `ctx.isProjectTrusted()` at session start.
+ * RPC mode starts a session without a model or provider request, so this stays offline.
+ */
+let trustProbeRuns = 0;
+async function probeHostProjectTrust(patchedPackage, { agentDir, cwd, home, probeRoot }) {
+  trustProbeRuns += 1;
+  const extension = join(probeRoot, "trust-probe.mjs");
+  const output = join(probeRoot, `trust-${String(trustProbeRuns)}.json`);
+  await mkdir(probeRoot, { recursive: true });
+  await writeFile(
+    extension,
+    `import { writeFileSync } from "node:fs";\n` +
+      `export default function (pi) {\n` +
+      `  pi.on("session_start", (_event, ctx) => {\n` +
+      `    writeFileSync(process.env.PI_TRUST_PROBE_OUTPUT, JSON.stringify({ trusted: ctx.isProjectTrusted() }));\n` +
+      `  });\n` +
+      `}\n`,
+  );
+  const result = await runPatchedCli(patchedPackage, ["--mode", "rpc", "--no-session", "--extension", extension], {
+    agentDir,
+    cwd,
+    home,
+    input: `${JSON.stringify({ type: "get_state" })}\n`,
+    env: { PI_TRUST_PROBE_OUTPUT: output },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(await readFile(output, "utf8")).trusted;
+}
+
+// Regressions for upstream fixes that cross the patched seams: saved project distrust, skill diagnostic labels,
+// and path identity between catalog names and explicit paths. Assertions about the fixed upstream behaviour run
+// only for the versions that carry the fix; older versioned patches keep their own upstream behaviour.
+for (const version of patchVersions()) {
+  const patchDirectory = patchDirectoryFor(version);
+
+  test(`pi ${version}: saved distrust, skill diagnostics, and path aliases survive the patched seams`, async (t) => {
+    const { packageRoot, problem } = await findCleanPackage(version);
+    if (packageRoot === undefined) {
+      t.skip(problem);
+      return;
+    }
+
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "pi-skills-regressions-"));
+    const patchedPackage = join(temporaryRoot, "package");
+    const fixtureRoot = join(temporaryRoot, "fixtures");
+    const home = join(fixtureRoot, "home");
+    const agentDir = join(fixtureRoot, "agent");
+    const previousHome = process.env.HOME;
+    const previousGitEnvironment = new Map(gitEnvironmentKeys.map((key) => [key, process.env[key]]));
+
+    try {
+      for (const key of gitEnvironmentKeys) delete process.env[key];
+      process.env.HOME = home;
+      await mkdir(home, { recursive: true });
+      try {
+        await copyPackage(packageRoot, patchedPackage, patchDirectory);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+          t.skip("the patch utility is unavailable");
+          return;
+        }
+        throw error;
+      }
+
+      const moduleUrl = (relativePath) => pathToFileURL(join(patchedPackage, relativePath)).href;
+      const [{ SettingsManager }, { DefaultResourceLoader }, { ProjectTrustStore }, { resolveProjectTrusted }] =
+        await Promise.all([
+          import(moduleUrl("dist/core/settings-manager.js")),
+          import(moduleUrl("dist/core/resource-loader.js")),
+          import(moduleUrl("dist/core/trust-manager.js")),
+          import(moduleUrl("dist/core/project-trust.js")),
+        ]);
+
+      // Pi 1.5.0 (#10947): a saved "do not trust" decision holds for a project whose only project resource is
+      // AGENTS.md. `pi skills` resolves trust through resolveProjectTrusted; the host's ctx.isProjectTrusted()
+      // comes from the patched main.js and is what the subagents extension maps to --approve/--no-approve.
+      await writeSkill(join(agentDir, "skills", "global-only"), "global-only", "user catalog skill");
+      const distrusted = await realpath(await mkdtemp(join(fixtureRoot, "distrusted-")));
+      const undecided = await realpath(await mkdtemp(join(fixtureRoot, "undecided-")));
+      for (const project of [distrusted, undecided]) {
+        await runGit(project, ["init", "--quiet"]);
+        await writeFile(join(project, "AGENTS.md"), "# Project instructions\n");
+      }
+      const trustStore = new ProjectTrustStore(agentDir);
+      trustStore.set(distrusted, false);
+      const probeRoot = join(fixtureRoot, "probe");
+      if (isAtLeast(version, "1.5.0")) {
+        assert.equal(
+          await resolveProjectTrusted({ cwd: distrusted, trustStore, defaultProjectTrust: "always" }),
+          false,
+          "the skills CLI trust resolution honours a saved distrust decision",
+        );
+        assert.equal(
+          await probeHostProjectTrust(patchedPackage, { agentDir, cwd: distrusted, home, probeRoot }),
+          false,
+          "the patched host reports the saved distrust to extensions",
+        );
+      }
+      assert.equal(
+        await probeHostProjectTrust(patchedPackage, { agentDir, cwd: undecided, home, probeRoot }),
+        true,
+        "a project with no trust-requiring resources and no saved decision stays trusted",
+      );
+
+      // Adding project-local skills to the distrusted project must not surface them through the patched catalog.
+      await writeSkill(join(distrusted, ".pi", "skills", "project-config"), "project-config", "project .pi skill");
+      await writeSkill(join(distrusted, ".agents", "skills", "project-agents"), "project-agents", "project skill");
+      const distrustedList = await runPatchedCli(patchedPackage, ["skills", "list"], {
+        agentDir,
+        cwd: distrusted,
+        home,
+      });
+      assert.equal(distrustedList.code, 0, distrustedList.stderr);
+      assert.deepEqual(distrustedList.stdout.trim().split("\n"), ["global-only\tuser catalog skill"]);
+      const projectAdd = await runPatchedCli(patchedPackage, ["skills", "add", "project-agents", "--global"], {
+        agentDir,
+        cwd: distrusted,
+        home,
+      });
+      assert.equal(projectAdd.code, 1, "a distrusted project-local skill is not in the catalog");
+      assert.equal(
+        await probeHostProjectTrust(patchedPackage, { agentDir, cwd: distrusted, home, probeRoot }),
+        false,
+        "the host stays untrusted once project-local skills exist",
+      );
+
+      // Pi 1.5.0 (#11521): non-collision skill warnings, including the overlay's unresolved-entry warning, render
+      // under [Skill warnings]; real name collisions stay distinguishable as collision diagnostics.
+      const diagnosticsAgentDir = join(fixtureRoot, "diagnostics-agent");
+      const duplicateA = join(fixtureRoot, "duplicates", "a", "duplicate");
+      const duplicateB = join(fixtureRoot, "duplicates", "b", "duplicate");
+      const invalid = join(fixtureRoot, "invalid", "bad-name");
+      await Promise.all([
+        writeSkill(duplicateA, "duplicate", "first duplicate"),
+        writeSkill(duplicateB, "duplicate", "second duplicate"),
+        writeSkill(invalid, "Bad_Name", "invalid name fixture"),
+      ]);
+      await writeJson(join(diagnosticsAgentDir, "skills.json"), {
+        enabled: ["missing-skill", duplicateA, duplicateB, invalid],
+      });
+      const diagnosticsLoader = new DefaultResourceLoader({
+        cwd: undecided,
+        agentDir: diagnosticsAgentDir,
+        settingsManager: SettingsManager.create(undecided, diagnosticsAgentDir, { projectTrusted: false }),
+      });
+      await diagnosticsLoader.reload();
+      const { diagnostics } = diagnosticsLoader.getSkills();
+      assert.ok(
+        diagnostics.some(
+          (d) =>
+            d.type === "warning" && d.message === "Active skill could not be resolved" && d.path === "missing-skill",
+        ),
+        "an unresolved active entry is a warning, not a collision",
+      );
+      assert.ok(
+        diagnostics.some((d) => d.type === "warning" && d.path === join(invalid, "SKILL.md")),
+        "upstream validation warnings still reach the loader",
+      );
+      assert.deepEqual(
+        diagnostics.filter((d) => d.type === "collision").map((d) => d.collision?.name),
+        ["duplicate"],
+        "only the real name collision is a collision",
+      );
+      const interactive = await readFile(join(patchedPackage, "dist/modes/interactive/interactive-mode.js"), "utf8");
+      const patchText = await readFile(join(patchDirectory, "skills.patch"), "utf8");
+      assert.doesNotMatch(patchText, /\[Skill (?:warnings|conflicts)\]/u, "the patch never rewrites the label");
+      if (isAtLeast(version, "1.5.0")) {
+        assert.match(interactive, /\[Skill warnings\]/u);
+        assert.doesNotMatch(interactive, /\[Skill conflicts\]/u);
+      }
+
+      // Pi 1.5.0 (#10488) folds path identity through getResourcePathKey. A skill activated by catalog name and
+      // by an aliased path must still load once through the patched resolver and loader merge.
+      const aliasAgentDir = join(fixtureRoot, "alias-agent");
+      const aliasedSkill = join(aliasAgentDir, "skills", "aliased");
+      await writeSkill(aliasedSkill, "aliased", "path identity fixture");
+      const alias = join(fixtureRoot, "alias-link");
+      await symlink(aliasedSkill, alias, process.platform === "win32" ? "junction" : "dir");
+      await writeJson(join(aliasAgentDir, "skills.json"), { enabled: ["aliased", alias, `${aliasedSkill}/`] });
+      const aliasLoader = new DefaultResourceLoader({
+        cwd: undecided,
+        agentDir: aliasAgentDir,
+        settingsManager: SettingsManager.create(undecided, aliasAgentDir, { projectTrusted: false }),
+        additionalSkillPaths: [aliasedSkill],
+      });
+      await aliasLoader.reload();
+      assert.deepEqual(
+        aliasLoader.getSkills().skills.map((skill) => skill.name),
+        ["aliased"],
+        "the same user skill reached by name, alias, and session path loads once",
+      );
+      assert.deepEqual(
+        aliasLoader.getSkills().diagnostics.filter((d) => d.type === "collision"),
+        [],
+        "aliases of one skill are not reported as a collision",
+      );
+    } finally {
+      for (const [key, value] of previousGitEnvironment) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await rm(temporaryRoot, { recursive: true, force: true });
     }
   });
