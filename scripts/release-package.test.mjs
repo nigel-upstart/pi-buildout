@@ -229,7 +229,15 @@ test("patch package stages only versioned patch data and a patch-only CLI", () =
       .sort();
     assert.deepEqual(readdirSync(join(dist, "patches", version)).sort(), expected, version);
   }
-  assert.deepEqual(patchVersions.toSorted(), ["pi-1.0.3", "pi-1.0.4", "pi-1.1.0", "pi-1.3.0", "pi-1.4.0", "pi-1.5.0"]);
+  assert.deepEqual(patchVersions.toSorted(), [
+    "pi-1.0.3",
+    "pi-1.0.4",
+    "pi-1.1.0",
+    "pi-1.3.0",
+    "pi-1.4.0",
+    "pi-1.5.0",
+    "pi-1.5.2",
+  ]);
   assert.equal(readdirSync(dist).includes("extensions"), false);
 
   const binDir = mkdtempSync(join(tmpdir(), "pi-skills-package-"));
