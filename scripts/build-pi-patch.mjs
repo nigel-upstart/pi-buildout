@@ -364,7 +364,7 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
 }
 
 /** Applies the generated patch to a fresh baseline copy and confirms it reproduces `patched.sha256`. */
-function assertPatchApplies(workDir, baselineRoot, patchText, patchedManifest) {
+export function assertPatchApplies(workDir, baselineRoot, patchText, patchedManifest) {
   const stage = join(workDir, "apply-check");
   rmSync(stage, { recursive: true, force: true });
   cpSync(baselineRoot, stage, { recursive: true });
@@ -388,7 +388,7 @@ function assertPatchApplies(workDir, baselineRoot, patchText, patchedManifest) {
  * `patched.sha256` and hard-exits when a state manifest has neither a checksum nor an absent entry for a
  * path, so an incomplete state artifact breaks installation for everyone, not only for upgraders.
  */
-function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
+export function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
   const installerPaths = parseChecksumManifest(readFileSync(join(outputDir, "patched.sha256"), "utf-8")).map(
     (entry) => entry.path,
   );

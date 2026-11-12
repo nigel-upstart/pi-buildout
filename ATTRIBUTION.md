@@ -943,6 +943,14 @@ The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from 
 router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
 evidence review; only the version numbers are shared with upstream.
 
+### Shell-free patch application regressions (`c541ff594`)
+
+Copied regression tests from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+`c541ff5945fba2facf7946a979c36ac620493d72`, in `scripts/build-pi-patch.test.mjs`. The fork already applies patch data
+through stdin with argument arrays; two existing verification helpers are exported for tests covering hostile directory
+names, literal patch contents, forward/reverse failures, missing inputs, and migration round trips. Upstream's older
+generation pipeline and single-version artifact tests were not substituted for this fork's generation checks.
+
 ### Legacy ownership regression coverage (`c5cb5cb44`)
 
 Adapted copied tests from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
