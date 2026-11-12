@@ -20,7 +20,9 @@ async function fixture(context, version = "1.1.0", name = "@earendil-works/pi-co
   await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name, version }));
   await writeFile(join(agent, "package.json"), JSON.stringify({ name: "unrelated-parent", version: "0.0.0" }));
   await writeFile(join(agent, "install", "current-version"), `${version}\n`);
-  await writeFile(join(bin, "pi"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await writeFile(join(bin, "pi"), "#!/bin/sh\n# PI_MANAGED_INSTALL_ROOT=\n# /install/current-version\nexit 99\n", {
+    mode: 0o755,
+  });
   // Prevent npm's global root from accidentally supplying a real Pi to a negative test.
   await writeFile(join(bin, "npm"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   return { directory, agent, bin, packageRoot };
@@ -106,10 +108,10 @@ test("installer accepts the 1.0.1 patch-only boundary and newer versions before 
 });
 
 test("installer finds and patches managed Pi through a launcher symlink without PI_PACKAGE_DIR", async (context) => {
-  const layout = await fixture(context);
   const source = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
   // The dev dependency is the version the patch was built for; the test must follow the pin, not hard-code it.
   const { version } = JSON.parse(await readFile(join(source, "package.json"), "utf8"));
+  const layout = await fixture(context, version);
   const patchDir = join(root, "patches", `pi-${version}`);
   const baseline = await readFile(join(patchDir, "baseline.sha256"), "utf8");
   await copyFile(join(source, "package.json"), join(layout.packageRoot, "package.json"));
