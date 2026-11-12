@@ -943,6 +943,14 @@ The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from 
 router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
 evidence review; only the version numbers are shared with upstream.
 
+### Legacy ownership regression coverage (`c5cb5cb44`)
+
+Adapted copied tests from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+`c5cb5cb446f2666d5c9d4892abcf1c24c0bc1a5a`. `scripts/install-ownership.test.mjs` checks unknown legacy files, symlinks,
+directories, and ownership changes during extension replacement. The fork already implements preflight and deletion-time
+ownership checks; the tests retain its Pi discovery requirement, router installation, and optional OTel packaging.
+Upstream's extension-only discovery bypass and installer replacement were not adopted.
+
 ### Compatible release-safety port (`dabb54b1d`, npm publication #79)
 
 - Source: `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>
