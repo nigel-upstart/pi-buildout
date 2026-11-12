@@ -78,9 +78,14 @@ overlay in [`pi-overlay/`](../../../../pi-overlay), and `patches/pi-<version>/*`
 3. Touch upstream files only through `pi-overlay/versions/<version>/integration.patch`, and only to add an import and a
    call site. The pipeline enforces a line budget on those edits and fails the build if it is exceeded, so logic that
    grows inside an upstream file is a build error rather than a review comment.
-4. Run `npm run patches:build`, then `npm test`. Both regenerate and check every version under `pi-overlay/versions/`;
-   add `PI_SKILLS_TEST_PACKAGES=<clean package dir>` so the dispatch and catalog tests also run against a version the
-   development dependencies do not pin.
+4. Run `npm run patches:build`, `npm run patches:check`, then `npm test`. The first two regenerate/check every version
+   under `pi-overlay/versions/`; `npm test` runs offline artifact and behavior checks, not regeneration. Add
+   `PI_SKILLS_TEST_PACKAGES=<clean package dir>` so dispatch and catalog tests also run against a version the
+   development dependencies do not pin. Multiple clean package directories use the platform path delimiter.
+5. Before changing a shipped patch, preserve its real patched package tree. Generate a recognized migration with
+   `node scripts/build-pi-upgrade.mjs --version <version> --label <state> --from <old tree> --patched <new tree>` for
+   every supported version whose output changes. Use this fork's shipped bytes, not upstream's state checksums, and
+   verify the builder's migration round-trip and the catalog suite's installer upgrade checks.
 
 To support a new pi release, add `pi-overlay/versions/<version>/` with an `upstream.json` (pinned source archive and npm
 tarball checksums, `gitHead`, the release's workspace build order, tracked files), an `integration.patch` rebased by
@@ -159,17 +164,26 @@ Catalog resolution is asynchronous. It keeps fixed global and trusted-project di
 precedence behavior. Both `runSkillsCommand()` callers must await it and pass the active `SettingsManager`; name-based
 activation in `DefaultResourceLoader` awaits that same catalog so package and settings names resolve consistently.
 
-Starting with the 0.85.1 patch, normalize user-provided local skill sources with Pi's `resolvePath()` before storing or
-adding them to a session, so tilde and explicit relative forms become stable absolute paths. A bare relative name
-becomes an absolute path only when that path holds at least one skill, as found by Pi's own `loadSkills()`; otherwise it
-stays a catalog name, including when it names an existing folder without skills. A catalog skill of the same name always
-wins, so a local folder never shadows one; reach such a folder through an explicit `./` path. "Catalog" means the one
-the command can see: this fork's one-shot `pi skills add … --global` does not resolve project trust, so there a folder
-can still win over a project-only catalog skill of the same name. Use the same normalization when matching an existing
-entry for removal, and when a bare name matches nothing, retry with its resolved path without requiring that path to
-exist, so an entry persisted as a path stays removable after the path is deleted. Compare stored bare entries literally:
-user input is normalized before it is stored, so a stored bare value is a catalog name, not a path relative to the
-current directory.
+Resolve user-provided local skill sources with Pi's `resolvePath()` before adding them to a session or choosing their
+persisted spelling. A bare relative name becomes a path only when that path holds at least one skill, as found by Pi's
+own `loadSkills()`; otherwise it stays a catalog name, including when it names an existing folder without skills. A
+catalog skill of the same name always wins, so a local folder never shadows one; reach such a folder through an explicit
+`./` path. "Catalog" means the one the command can see: this fork's one-shot `pi skills add … --global` does not resolve
+project trust, so there a folder can still win over a project-only catalog skill of the same name. Use the same
+normalization when matching an existing entry for removal, and when a bare name matches nothing, retry with its resolved
+path without requiring that path to exist, so an entry persisted as a path stays removable after the path is deleted.
+Compare stored bare entries literally: user input is normalized before it is stored, so a stored bare value is a catalog
+name, not a path relative to the current directory.
+
+`/skills` arguments never pass through a shell. Expand `$NAME` and `${NAME}` in path sources before `resolvePath()`, and
+treat a source starting with `$` as a path. Leave unset references literal, but name unset variables when a path cannot
+be found. With `--repo`, store checkout-local paths relative to the repository root so one configuration works across
+clones and worktrees with the same remote. Otherwise preserve portable `~`/variable spellings, and store other paths
+absolute (under `~` when inside the home directory). `$PWD`/`$OLDPWD` are not portable: freeze the path they named.
+Expand persisted paths whenever skills load or reload. Relative repository entries resolve against the checkout root;
+relative global entries resolve against the working directory, with a diagnostic when an old entry cannot resolve.
+Compare persisted path entries by their real paths so equivalent spellings deduplicate and match removal. Existing
+absolute entries are not automatically rewritten; remove and re-add to obtain portable persistence.
 
 Also protect the complete persisted-skill read-modify-write transaction with Pi's existing `proper-lockfile`-based
 synchronous lock pattern. Use a distinct lock path for `skills.json` and `repo-skills.json`, wait for contention without
@@ -183,7 +197,9 @@ Create temp skills and temp agent dirs. Exercise these behaviors without network
 - `additionalSkillPaths` loads a session skill
 - `agentDir/skills.json` enables a global skill
 - `agentDir/repo-skills.json` enables a repo skill by normalized upstream URL
-- tilde and relative sources are persisted as absolute paths and can be removed through their original spelling
+- repository paths inside the checkout persist relative to its root and resolve in another clone of the same remote
+- `~` and `$NAME`/`${NAME}` sources persist as typed, other paths persist absolute, and all can be removed through any
+  equivalent spelling
 - non-default remote ports stay distinct while explicit default ports retain canonical repository keys
 - non-object top-level JSON values fail strict configuration reads
 - concurrent global and repository updates preserve every requested change and clean up their lock files

@@ -344,7 +344,7 @@ for (const version of patchVersions()) {
       const normalizedConfig = JSON.parse(await readFile(join(normalizedPathAgentDir, "skills.json"), "utf8"));
       const canonicalCwd = await realpath(cwd);
       assert.deepEqual(normalizedConfig.enabled, [
-        homeSkill,
+        "~/skills/home-skill",
         join(canonicalCwd, "relative-skill"),
         join(canonicalCwd, "bare-relative-skill"),
       ]);
@@ -358,7 +358,7 @@ for (const version of patchVersions()) {
       });
       assert.equal(removedBare.code, 0, removedBare.stderr);
       assert.deepEqual(JSON.parse(await readFile(join(normalizedPathAgentDir, "skills.json"), "utf8")).enabled, [
-        homeSkill,
+        "~/skills/home-skill",
         join(canonicalCwd, "relative-skill"),
       ]);
 
@@ -454,6 +454,104 @@ for (const version of patchVersions()) {
       assert.equal(repoConfig[repoKey].enabled.length, seededEntries.length + concurrentSources.length);
       assert.deepEqual(new Set(repoConfig[repoKey].enabled), new Set([...seededEntries, ...concurrentSources]));
       assert.equal(await exists(`${repoConfigPath}.lock`), false);
+
+      // `/skills` arguments never pass through a shell, so the module expands variables itself. A spelling that
+      // resolves now is persisted as typed and expanded again whenever skills load.
+      const variableRoot = join(fixtureRoot, "variable-paths");
+      const variableSkill = join(variableRoot, "skills", "expanded");
+      await writeSkill(variableSkill, "expanded-variable", "variable fixture");
+      const variableAgentDir = join(variableRoot, "agent");
+      const variableOptions = {
+        agentDir: variableAgentDir,
+        cwd,
+        env: { PI_SKILLS_FIXTURE: join(variableRoot, "skills") },
+      };
+      const variableAdd = await runPatchedCli(
+        patchedPackage,
+        ["skills", "add", "${PI_SKILLS_FIXTURE}/expanded", "--global"],
+        variableOptions,
+      );
+      assert.equal(variableAdd.code, 0, variableAdd.stderr);
+      const variableConfig = JSON.parse(await readFile(join(variableAgentDir, "skills.json"), "utf8"));
+      assert.deepEqual(variableConfig.enabled, ["${PI_SKILLS_FIXTURE}/expanded"]);
+      const previousVariable = process.env.PI_SKILLS_FIXTURE;
+      try {
+        process.env.PI_SKILLS_FIXTURE = join(variableRoot, "skills");
+        const variableLoader = new DefaultResourceLoader({
+          cwd,
+          agentDir: variableAgentDir,
+          settingsManager: SettingsManager.create(cwd, variableAgentDir, { projectTrusted: false }),
+        });
+        await variableLoader.reload();
+        assert.deepEqual(
+          variableLoader.getSkills().skills.map((skill) => skill.name),
+          ["expanded-variable"],
+        );
+        const movedRoot = join(variableRoot, "moved");
+        await writeSkill(join(movedRoot, "expanded"), "expanded-after-reload", "reload fixture");
+        process.env.PI_SKILLS_FIXTURE = movedRoot;
+        await variableLoader.reload();
+        assert.deepEqual(
+          variableLoader.getSkills().skills.map((skill) => skill.name),
+          ["expanded-after-reload"],
+        );
+        assert.deepEqual(JSON.parse(await readFile(join(variableAgentDir, "skills.json"), "utf8")).enabled, [
+          "${PI_SKILLS_FIXTURE}/expanded",
+        ]);
+      } finally {
+        if (previousVariable === undefined) delete process.env.PI_SKILLS_FIXTURE;
+        else process.env.PI_SKILLS_FIXTURE = previousVariable;
+      }
+      const variableRemove = await runPatchedCli(
+        patchedPackage,
+        ["skills", "remove", "$PI_SKILLS_FIXTURE/expanded", "--global"],
+        variableOptions,
+      );
+      assert.equal(variableRemove.code, 0, variableRemove.stderr);
+      assert.deepEqual(JSON.parse(await readFile(join(variableAgentDir, "skills.json"), "utf8")).enabled, []);
+      const unsetVariable = await runPatchedCli(
+        patchedPackage,
+        ["skills", "add", "$PI_SKILLS_UNSET_FIXTURE/expanded", "--global"],
+        variableOptions,
+      );
+      assert.equal(unsetVariable.code, 1);
+      assert.match(unsetVariable.stderr, /environment variable \$PI_SKILLS_UNSET_FIXTURE is not set/u);
+
+      // A checkout-relative entry follows the remote identity, but activating another clone's
+      // files requires that clone's own project-trust decision.
+      const cloneRoot = join(fixtureRoot, "clones");
+      const [firstClone, secondClone] = [join(cloneRoot, "first"), join(cloneRoot, "second")];
+      const cloneAgentDir = join(cloneRoot, "agent");
+      for (const clone of [firstClone, secondClone]) {
+        await mkdir(clone, { recursive: true });
+        await runGit(clone, ["init", "--quiet"]);
+        await runGit(clone, ["remote", "add", "origin", "https://example.com/org/cloned.git"]);
+        await writeSkill(join(clone, ".agents", "skills", "cloned"), "cloned-skill", "clone fixture");
+      }
+      const cloneAdd = await runPatchedCli(patchedPackage, ["skills", "add", "./.agents/skills/cloned", "--repo"], {
+        agentDir: cloneAgentDir,
+        cwd: firstClone,
+      });
+      assert.equal(cloneAdd.code, 0, cloneAdd.stderr);
+      const cloneConfig = JSON.parse(await readFile(join(cloneAgentDir, "repo-skills.json"), "utf8"));
+      assert.deepEqual(cloneConfig["example.com:org/cloned"].enabled, [".agents/skills/cloned"]);
+      const cloneLoader = new DefaultResourceLoader({
+        cwd: secondClone,
+        agentDir: cloneAgentDir,
+        settingsManager: SettingsManager.create(secondClone, cloneAgentDir, { projectTrusted: false }),
+      });
+      await cloneLoader.reload();
+      assert.deepEqual(cloneLoader.getSkills().skills, [], "an untrusted clone cannot supply active skill metadata");
+      const trustedCloneLoader = new DefaultResourceLoader({
+        cwd: secondClone,
+        agentDir: cloneAgentDir,
+        settingsManager: SettingsManager.create(secondClone, cloneAgentDir, { projectTrusted: true }),
+      });
+      await trustedCloneLoader.reload();
+      assert.deepEqual(
+        trustedCloneLoader.getSkills().skills.map((skill) => [skill.name, skill.filePath]),
+        [["cloned-skill", join(await realpath(secondClone), ".agents", "skills", "cloned", "SKILL.md")]],
+      );
 
       // Entry resolution lives in the skill-management module, so DefaultResourceLoader keeps no skill API.
       const entryContext = { cwd, agentDir, settingsManager, resolveResourcePath: (path) => path };
