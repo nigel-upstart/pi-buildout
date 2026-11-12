@@ -912,7 +912,8 @@ standalone patch are separate packages. The OTel source is redistributed with it
 
 - Source: `zew1me/pi-buildout`
 - Canonical repository: <https://github.com/zew1me/pi-buildout>
-- Revision last synced: `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28)
+- Revision last selectively synced: `7965f313e6c2219a9e88310e202c6f97e0b2d431` (2026-11-11)
+- Sync dispositions and intentional deferrals: [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md#2026-11-12-selective-sync-7965f313)
 - License declared by the source: MIT (© 2026 Nigel Stuke)
 
 This repository is a fork of `zew1me/pi-buildout`. Upstream changes are ported by cherry-picking commits rather than by
@@ -1034,6 +1035,25 @@ and adversarial schedules for actual router handlers and their ledger/model wait
 properties are original code. We did not adopt XState's persisted snapshot format, v6 alpha APIs, a global asynchronous
 handler queue, or make the telemetry ledger a state source. We did not copy fast-check examples or its implementation;
 the existing Node test runner remains in place.
+
+## Upstream RPC integration test hardening and fixture isolation
+
+- Source: `zew1me/pi-buildout` commit `cd2ea61a5c73ee266821cfd292b36faca3b55a49` (`#85`)
+- Canonical repository: <https://github.com/zew1me/pi-buildout>
+- License: MIT (© 2026 Nigel Stuke)
+
+The RPC integration test in `extensions/subagents/rpc.integration.test.mjs` was enhanced with test-hardening
+improvements ported from upstream. Changes include pinned Pi version assertion (respecting the canary
+`PI_TEST_PACKAGE_ENTRY` override), early cleanup registration before resource acquisition, timeout and abort-signal
+awareness in the `waitFor` polling function, explicit server connection cleanup with `closeAllConnections()`, and
+expanded test options for longer timeouts. Both the main RPC protocol test and the isolation regression test receive
+these robustness improvements. The real-RPC integration test exercises the documented RPC patterns against the pinned Pi
+CLI with a test-only provider registered through `ExtensionAPI.registerProvider` and a deterministic loopback streaming
+endpoint; no Pi provider or RPC client code was copied. The isolation test fixture with ambient extension/context
+loading, control, and isolated verification remains original code.
+
+The port retains the fork's `isolatedChildArgs`/auth-bridge launch path in both protocol and isolation coverage; Pi's
+pinned runtime is asserted unless the contract canary supplies an explicit package override.
 
 ## Upstream `/skills` path expansion and portable persistence
 
