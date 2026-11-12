@@ -951,6 +951,16 @@ through stdin with argument arrays; two existing verification helpers are export
 names, literal patch contents, forward/reverse failures, missing inputs, and migration round trips. Upstream's older
 generation pipeline and single-version artifact tests were not substituted for this fork's generation checks.
 
+### Managed-install discovery (`f594d8305`)
+
+Modified code and copied regression tests from MIT-licensed `zew1me/pi-buildout`,
+<https://github.com/zew1me/pi-buildout>, revision `f594d83056dc61913145833f0e5a2ff395586925`:
+`scripts/install-extensions.sh` positively recognizes managed launchers or metadata, verifies the pointer against the
+active package version, and fails closed when a recognized install is broken. `scripts/install-discovery.test.mjs`
+covers managed layouts, unrelated sibling installs, exact package identity, Homebrew, and shim fallback. Existing
+fixture launchers now identify themselves explicitly. Unlike upstream, extension-only installation still discovers Pi
+and checks the fork's router host-version floor; upstream's discovery bypass was intentionally not adopted.
+
 ### Legacy ownership regression coverage (`c5cb5cb44`)
 
 Adapted copied tests from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision

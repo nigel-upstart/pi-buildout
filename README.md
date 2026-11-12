@@ -87,10 +87,15 @@ custom-run preparation semantics introduced in 1.2.0). The test suite pins Pi `1
 router's cost tests pin that model registry. The vendored OTel extension keeps its own Pi `1.1.0` development pin. The
 installer rejects older Pi versions for extension installation even with `--skip-skill-loading-patch`; patch-only mode
 (`--skip-extensions`) retains its Pi 1.0.1 minimum. It discovers managed installs through the launcher's
-`install/current-version` file, as well as npm bins, Homebrew wrappers, and npm-backed shims. Only the exact Pi versions
-`1.0.3`, `1.0.4`, `1.1.0`, `1.3.0`, `1.4.0`, `1.5.0`, and `1.5.2` have checksum-verified `/skills` patches; for other
-compatible versions, use `--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for every
-supported pi version; for a version other than the pinned or aliased one, the tests that apply the patch to a real
+`install/current-version` file, as well as npm bins, Homebrew wrappers, and npm-backed shims. Managed launchers are
+recognized by both literal `PI_MANAGED_INSTALL_ROOT=` and `/install/current-version` signatures, or a
+`managed-install.json` marker declaring `kind: pi-managed-install`, numeric `schemaVersion: 1`, and
+`layout: releases-v1`. Launchers are inspected, never executed. A recognized but broken managed install fails without
+falling back to an unrelated global Pi; its active package version must match the pointer. Unrelated sibling `install`
+directories do not override ordinary wrapper discovery. Extension installation still requires Pi >=1.2.0. Only the exact
+Pi versions `1.0.3`, `1.0.4`, `1.1.0`, `1.3.0`, `1.4.0`, `1.5.0`, and `1.5.2` have checksum-verified `/skills` patches;
+for other compatible versions, use `--skip-skill-loading-patch` to install extensions. The `/skills` patch tests run for
+every supported pi version; for a version other than the pinned or aliased one, the tests that apply the patch to a real
 package skip unless `PI_SKILLS_TEST_PACKAGES` names a clean package of that version (see
 [`patches/pi-1.0.4/README.md`](patches/pi-1.0.4/README.md#runtime-behavior-tests)). Regression checks for upstream fixes
 that cross the patched seams assert the fixed behavior only from the Pi version that ships the fix; see
