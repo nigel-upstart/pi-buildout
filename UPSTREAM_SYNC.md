@@ -7,22 +7,62 @@ recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this
 
 ## Current state
 
-| Field               | Value                                                   |
-| ------------------- | ------------------------------------------------------- |
-| Upstream remote     | `zew1me` → <https://github.com/zew1me/pi-buildout.git>  |
-| Upstream branch     | `main`                                                  |
-| Last synced SHA     | `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28) |
-| Last sync date      | 2026-09-29                                              |
-| Previous sync point | `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22) |
-| Sync branch         | `chore/sync-upstream-zew1me`                            |
-| Outbound fixes owed | None from the current support update                    |
+| Field               | Value                                                                       |
+| ------------------- | --------------------------------------------------------------------------- |
+| Upstream remote     | `upstream` → <https://github.com/zew1me/pi-buildout.git>                    |
+| Upstream branch     | `main`                                                                      |
+| Last synced SHA     | `7965f313e6c2219a9e88310e202c6f97e0b2d431` (2026-11-11), selectively ported |
+| Last sync date      | 2026-11-12                                                                  |
+| Previous sync point | `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28)                     |
+| Sync branch         | `chore/sync-upstream-7965f313`                                              |
+| Outbound fixes owed | None identified in this sync                                                |
 
 To find the next batch of upstream work:
 
 ```bash
-git fetch zew1me
-git log --oneline 867d931ee84de52e46e1b456d95338c236a804d5..zew1me/main
+git fetch upstream
+git log --oneline 7965f313e6c2219a9e88310e202c6f97e0b2d431..upstream/main
 ```
+
+## 2026-11-12 selective sync (`7965f313`)
+
+All upstream mainline commits since the previous checkpoint were compared with the fork's current implementation.
+Representative equivalents are committed separately; already-present behavior is recorded rather than reintroduced.
+
+| Upstream   | Change                                                | Disposition                                                                                                                                                 |
+| ---------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0ab8b5bc` | Pi 0.99.2 and 1.0.3 patches (#70)                     | 1.0.3 already in `d8231cdb` (#90); retired 0.99.2 not restored                                                                                              |
+| `3b57a458` | Pi 1.0.4 patch (#71)                                  | Already in `60c5c721` (#95)                                                                                                                                 |
+| `6b47f96c` | Pi 1.0.1 development minimum (#73)                    | Equivalent support update `86fae744` (#113); newer 1.3.0 pins retained                                                                                      |
+| `fe4aa4bb` | Pi 1.1.0 patch (#72)                                  | Already in `cbeb426e` (#106)                                                                                                                                |
+| `8993c4a1` | Retire pre-1.0.0 patches (#75)                        | Already removed by `86fae744` (#113)                                                                                                                        |
+| `a5983a48` | Pi 1.3.0 patch (#77)                                  | Already in `a5edd8ba` (#126)                                                                                                                                |
+| `c543eeaa` | Expand skill paths and persist portable entries (#74) | Adapted source/tests; all seven supported versions regenerated with fork-specific migrations                                                                |
+| `59d2979a` | Carry path expansion into 1.3.0 (#78)                 | Included in the same representative path-behavior port; local 1.4.0/1.5.0/1.5.2 included too                                                                |
+| `dabb54b1` | npm publication (#79)                                 | Selectively adapted manifest validation, script-enabled packing, verified archive publication, and consumer-archive tests; internal release policy retained |
+| `e60cfcca` | Drop pre-1.0.3 support (#80)                          | Artifact retirement already equivalent; keep the fork's 1.0.1 patch-only discovery floor and 1.2.0 extension floor                                          |
+| `edcd1c14` | Pi 1.4.0 patch (#82)                                  | Already in `7ef2339c` / #148; newer 1.5.0/1.5.2 support retained                                                                                            |
+| `c5cb5cb4` | Legacy extension ownership (#87)                      | Existing checks retained; copied/adapted exhaustive ownership and replacement-race tests                                                                    |
+| `c541ff59` | Shell-free patch application (#88)                    | Existing stdin/argument-array implementation retained; hostile-path and failure regressions ported                                                          |
+| `60d9503a` | Unsampled live descendant escalation (#83)            | Equivalent in `107f1c74` (#145), including later lifecycle fixes                                                                                            |
+| `f594d830` | Intended-package discovery (#86)                      | Adapted positive managed-install recognition, pointer/package version agreement, fail-closed behavior, and fixtures                                         |
+| `cd2ea61a` | Pinned real-Pi RPC fixtures (#85)                     | Adapted version assertion, early cleanup, bounded tests, abort-aware waits; retained canary overrides and auth-bridge isolation                             |
+| `aea28633` | RPC failure diagnostics (#84)                         | Equivalent in `0f992fbc` (#118); final-only wait behavior retained                                                                                          |
+| `7965f313` | Creation without parent conversation (#89)            | Already in `fe4e325a` (#138); generic signaling and newer lifecycle safeguards retained                                                                     |
+
+The path port preserves project-trust semantics and the 48-line runtime seam budget. Each supported version recognizes
+its previously shipped patched state through `pre-expansion` manifests and upgrade patches; upstream checksum bytes were
+not substituted for this fork's shipped artifacts. Regeneration checks, migration round trips, and real-package
+catalog/dispatch/entrypoint suites passed for all seven versions. An existing RPC abort-race fixture was also made
+explicit-control-only after the full suite exposed its 150ms auto-completion race under load; production RPC behavior
+was not changed.
+
+Public npm publication, trusted publishing/provenance, upstream scope/names, automatic version-driven releases, and
+non-alpha channels are not adopted. CodeArtifact publishing remains manual and package-selective. Registry conflict,
+idempotency, and backward-tag preflight from upstream are deferred: its unauthenticated public-registry lookup is not
+compatible with this fork's authenticated internal registry. The selected local safeguards do not claim to make
+multi-package publication atomic or to reconcile remote registry state. Separate dry runs remain previews, not approvals
+bound to a later invocation's tarballs.
 
 ## 2026-10-08 supported Pi baseline (#109)
 

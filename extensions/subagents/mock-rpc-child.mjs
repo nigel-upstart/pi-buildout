@@ -216,7 +216,9 @@ input.on("line", (line) => {
     }
     setTimeout(
       () => {
-        if (operation !== activeOperation || !streaming || abortTimesOut) return;
+        // Abort-race fixtures finish through explicit control, not this ordinary
+        // response timer. A busy parent may not issue abort within 150ms.
+        if (operation !== activeOperation || !streaming || abortTimesOut || holdAbort || lateFinal) return;
         if (String(command.message).includes("ABORTED_COMPACT")) {
           // An aborted compaction must not count toward the compaction total.
           send({ type: "compaction_end", aborted: true, result: undefined });

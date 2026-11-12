@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,10 +22,11 @@ const exists = (path) =>
     () => false,
   );
 
-/** @param {() => boolean} predicate @param {string} label */
-async function waitFor(predicate, label) {
+/** @param {() => boolean} predicate @param {string} label @param {AbortSignal} signal */
+async function waitFor(predicate, label, signal) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
+    signal.throwIfAborted();
     if (Date.now() > deadline) assert.fail(`Timed out waiting for ${label}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -84,133 +85,57 @@ function streamAnswer(response) {
   response.end("data: [DONE]\n\n");
 }
 
-test("ManagedSubagent speaks Pi's real RPC protocol for prompt, follow-up, state, stats, and shutdown", async (t) => {
-  const { server, requests, holdNextResponse, releaseHeld } = createCompletionServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve(undefined));
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  const tempDir = await mkdtemp(join(tmpdir(), "pi-subagent-rpc-integration-"));
-  const child = new ManagedSubagent({
-    id: "piRpcIT001",
-    name: "pi-rpc-integration",
-    task: "Return the integration answer",
-    model: "rpc-test/integration-model",
-    effort: "off",
-    contextSummary: "",
-    cwd: tempDir,
-    command: process.execPath,
-    args: [
-      piCli,
-      "--mode",
-      "rpc",
-      "--session-dir",
-      join(tempDir, "sessions"),
-      "--name",
-      "rpc-integration",
-      "--model",
-      "rpc-test/integration-model",
-      "--thinking",
-      "off",
-      "--extension",
-      providerExtension,
-      ...isolatedChildArgs(fileURLToPath(new URL("./auth-bridge.ts", import.meta.url))),
-      "--no-tools",
-      "--no-session",
-      "--approve",
-    ],
-    env: {
-      ...process.env,
-      PI_RPC_TEST_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-      PI_RPC_TEST_API_KEY: "integration-test-only",
-      PI_OFFLINE: "1",
-      PI_CODING_AGENT_DIR: join(tempDir, "agent"),
-    },
-    classification: "explicit",
-  });
-  t.after(async () => {
-    await child.stop();
-    await new Promise((resolve) => server.close(resolve));
-    await rm(tempDir, { recursive: true, force: true });
-  });
+test(
+  "ManagedSubagent speaks Pi's real RPC protocol for prompt, follow-up, state, stats, and shutdown",
+  {
+    timeout: 90_000,
+  },
+  async (t) => {
+    if (!process.env.PI_TEST_PACKAGE_ENTRY) {
+      const installed = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+      const repository = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+      assert.equal(
+        installed.version,
+        repository.devDependencies["@earendil-works/pi-coding-agent"],
+        "the integration test must launch the repository-pinned Pi version",
+      );
+      t.diagnostic(`Real Pi RPC version: ${installed.version}`);
+    }
 
-  await child.start();
-  assert.equal(await child.waitForIdle(timeoutMs), true, "initial prompt should settle through Pi RPC");
-  await child.refresh();
-  let snapshot = child.snapshot();
-  assert.equal(snapshot.state, "idle");
-  assert.equal(snapshot.lastAssistantText, "rpc integration answer");
-  assert.equal(snapshot.error, undefined);
-  assert.ok(snapshot.stats, "get_session_stats should return actual Pi session stats");
-  assert.equal(requests.length, 1, "Pi should make one request to the local deterministic provider");
-
-  // An idle child is re-prompted with `prompt`. Hold that completion in flight so the next
-  // followUp() runs while Pi is streaming and therefore sends the real `follow_up` RPC command.
-  holdNextResponse();
-  await child.followUp("Run a second deterministic prompt");
-  await waitFor(() => requests.length === 2, "Pi to request the second completion");
-  assert.equal(child.snapshot().state, "running", "the child must be streaming before follow_up");
-  await child.followUp(`Queued follow-up ${followUpMarker}`);
-  releaseHeld();
-  await waitFor(() => {
-    const current = child.snapshot();
-    return requests.length >= 3 && current.turns >= 3 && current.state === "idle";
-  }, "the queued follow_up turn to complete");
-  assert.equal(requests.length, 3, "the queued follow_up should produce exactly one more model request");
-  assert.match(JSON.stringify(requests[2]), new RegExp(followUpMarker), "follow_up text should reach the model");
-  await child.refresh();
-  snapshot = child.snapshot();
-  assert.equal(snapshot.state, "idle");
-  assert.equal(snapshot.pendingMessages, 0, "Pi should report the follow_up queue as drained");
-  assert.equal(snapshot.turns, 3);
-  assert.equal(snapshot.lastAssistantText, "rpc integration answer");
-  assert.equal(snapshot.error, undefined);
-
-  await child.stop();
-  assert.equal(child.snapshot().state, "stopped", "stop should close the real Pi RPC process cleanly");
-});
-
-test("isolated launch excludes ambient project/global extensions and context files that otherwise load", async (t) => {
-  const { server, requests } = createCompletionServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve(undefined));
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  const tempDir = await mkdtemp(join(tmpdir(), "pi-subagent-isolation-integration-"));
-  t.after(async () => {
-    await new Promise((resolve) => server.close(resolve));
-    await rm(tempDir, { recursive: true, force: true });
-  });
-  const agentDir = join(tempDir, "agent");
-  const projectSentinel = join(tempDir, "project-router-loaded");
-  const globalSentinel = join(tempDir, "global-router-loaded");
-  // Installed routers are usually configured through settings rather than discovered.
-  const configuredSentinel = join(tempDir, "configured-router-loaded");
-  /** @param {string} sentinel */
-  const routerShaped = (sentinel) =>
-    `import {writeFileSync} from 'node:fs'; export default function(){writeFileSync(${JSON.stringify(sentinel)},'loaded')}`;
-  await mkdir(join(tempDir, ".pi", "extensions"), { recursive: true });
-  await mkdir(join(agentDir, "extensions"), { recursive: true });
-  await writeFile(join(tempDir, ".pi", "extensions", "router.ts"), routerShaped(projectSentinel));
-  await writeFile(join(agentDir, "extensions", "router.ts"), routerShaped(globalSentinel));
-  const configuredPath = join(tempDir, "configured", "router.ts");
-  await mkdir(join(tempDir, "configured"), { recursive: true });
-  await writeFile(configuredPath, routerShaped(configuredSentinel));
-  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ extensions: [configuredPath] }));
-  await writeFile(join(tempDir, "AGENTS.md"), "AMBIENT_CONTEXT_FILE_MARKER\n");
-  // Pi discovers these prompt files separately from context files.
-  await writeFile(join(tempDir, ".pi", "SYSTEM.md"), "AMBIENT_SYSTEM_PROMPT_MARKER\n");
-  await writeFile(join(agentDir, "APPEND_SYSTEM.md"), "AMBIENT_APPEND_PROMPT_MARKER\n");
-
-  /** @param {string} id @param {string[]} resourceArgs */
-  const runOnce = async (id, resourceArgs) => {
-    const child = new ManagedSubagent({
-      id,
-      name: id,
+    const { server, requests, holdNextResponse, releaseHeld } = createCompletionServer();
+    /** @type {string | undefined} */
+    let tempDir;
+    /** @type {ManagedSubagent | undefined} */
+    let child;
+    // Register before any resource acquisition, including listen/spawn failures.
+    t.after(async () => {
+      if (child?.snapshot().error) t.diagnostic(child.snapshot().stderr ?? "Child failed without stderr");
+      try {
+        await child?.stop();
+      } finally {
+        try {
+          if (server.listening) {
+            await new Promise((resolve, reject) => {
+              server.close((error) => (error ? reject(error) : resolve(undefined)));
+              // A failed assertion can leave a held completion or keep-alive socket.
+              server.closeAllConnections();
+            });
+          }
+        } finally {
+          if (tempDir) await rm(tempDir, { recursive: true, force: true });
+        }
+      }
+    });
+    tempDir = await mkdtemp(join(tmpdir(), "pi-subagent-rpc-integration-"));
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve(undefined));
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    child = new ManagedSubagent({
+      id: "piRpcIT001",
+      name: "pi-rpc-integration",
       task: "Return the integration answer",
       model: "rpc-test/integration-model",
       effort: "off",
@@ -221,13 +146,17 @@ test("isolated launch excludes ambient project/global extensions and context fil
         piCli,
         "--mode",
         "rpc",
+        "--session-dir",
+        join(tempDir, "sessions"),
+        "--name",
+        "rpc-integration",
         "--model",
         "rpc-test/integration-model",
         "--thinking",
         "off",
         "--extension",
         providerExtension,
-        ...resourceArgs,
+        ...isolatedChildArgs(fileURLToPath(new URL("./auth-bridge.ts", import.meta.url))),
         "--no-tools",
         "--no-session",
         "--approve",
@@ -237,37 +166,167 @@ test("isolated launch excludes ambient project/global extensions and context fil
         PI_RPC_TEST_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
         PI_RPC_TEST_API_KEY: "integration-test-only",
         PI_OFFLINE: "1",
-        PI_CODING_AGENT_DIR: agentDir,
+        // Never read or mutate the developer's settings, auth, trust, or packages.
+        PI_CODING_AGENT_DIR: join(tempDir, "agent"),
       },
       classification: "explicit",
     });
-    try {
-      await child.start();
-      assert.equal(await child.waitForIdle(timeoutMs), true, `${id} should settle`);
-      assert.equal(child.snapshot().lastAssistantText, "rpc integration answer");
-    } finally {
-      await child.stop();
-    }
-  };
 
-  // Control: the same fixture loads ambient resources without the isolation flags,
-  // so the isolated assertion below cannot pass vacuously.
-  await runOnce("ambientCtl", []);
-  assert.equal(await exists(projectSentinel), true, "control should load the project extension");
-  assert.equal(await exists(globalSentinel), true, "control should load the global extension");
-  assert.equal(await exists(configuredSentinel), true, "control should load the configured extension");
-  assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_CONTEXT_FILE_MARKER/);
-  assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_SYSTEM_PROMPT_MARKER/);
-  assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_APPEND_PROMPT_MARKER/);
-  await rm(projectSentinel);
-  await rm(globalSentinel);
-  await rm(configuredSentinel);
+    await child.start();
+    assert.equal(await child.waitForIdle(timeoutMs, t.signal), true, "initial prompt should settle through Pi RPC");
+    await child.refresh();
+    let snapshot = child.snapshot();
+    assert.equal(snapshot.state, "idle");
+    assert.equal(snapshot.lastAssistantText, "rpc integration answer");
+    assert.equal(snapshot.error, undefined);
+    assert.ok(snapshot.stats, "get_session_stats should return actual Pi session stats");
+    assert.equal(requests.length, 1, "Pi should make one request to the local deterministic provider");
 
-  await runOnce("isolatedIT", isolatedChildArgs(fileURLToPath(new URL("./auth-bridge.ts", import.meta.url))));
-  assert.equal(await exists(projectSentinel), false, "isolated child must not load project extensions");
-  assert.equal(await exists(globalSentinel), false, "isolated child must not load global extensions");
-  assert.equal(await exists(configuredSentinel), false, "isolated child must not load configured extensions");
-  assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_CONTEXT_FILE_MARKER/);
-  assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_SYSTEM_PROMPT_MARKER/);
-  assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_APPEND_PROMPT_MARKER/);
-});
+    // An idle child is re-prompted with `prompt`. Hold that completion in flight so the next
+    // followUp() runs while Pi is streaming and therefore sends the real `follow_up` RPC command.
+    holdNextResponse();
+    await child.followUp("Run a second deterministic prompt");
+    await waitFor(() => requests.length === 2, "Pi to request the second completion", t.signal);
+    assert.equal(child.snapshot().state, "running", "the child must be streaming before follow_up");
+    await child.followUp(`Queued follow-up ${followUpMarker}`);
+    releaseHeld();
+    await waitFor(
+      () => {
+        const current = child?.snapshot();
+        return requests.length >= 3 && !!current && current.turns >= 3 && current.state === "idle";
+      },
+      "the queued follow_up turn to complete",
+      t.signal,
+    );
+    assert.equal(requests.length, 3, "the queued follow_up should produce exactly one more model request");
+    assert.match(JSON.stringify(requests[2]), new RegExp(followUpMarker), "follow_up text should reach the model");
+    await child.refresh();
+    snapshot = child.snapshot();
+    assert.equal(snapshot.state, "idle");
+    assert.equal(snapshot.pendingMessages, 0, "Pi should report the follow_up queue as drained");
+    assert.equal(snapshot.turns, 3);
+    assert.equal(snapshot.lastAssistantText, "rpc integration answer");
+    assert.equal(snapshot.error, undefined);
+
+    await child.stop();
+    assert.equal(child.snapshot().state, "stopped", "stop should close the real Pi RPC process cleanly");
+  },
+);
+
+test(
+  "isolated launch excludes ambient project/global extensions and context files that otherwise load",
+  {
+    timeout: 90_000,
+  },
+  async (t) => {
+    const { server, requests } = createCompletionServer();
+    /** @type {string | undefined} */
+    let tempDir;
+    // Register before any resource acquisition, including listen/spawn failures.
+    t.after(async () => {
+      try {
+        if (server.listening) {
+          await new Promise((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve(undefined)));
+            // A failed assertion can leave held completions or keep-alive sockets.
+            server.closeAllConnections();
+          });
+        }
+      } finally {
+        if (tempDir) await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve(undefined));
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    tempDir = await mkdtemp(join(tmpdir(), "pi-subagent-isolation-integration-"));
+    const agentDir = join(tempDir, "agent");
+    const projectSentinel = join(tempDir, "project-router-loaded");
+    const globalSentinel = join(tempDir, "global-router-loaded");
+    // Installed routers are usually configured through settings rather than discovered.
+    const configuredSentinel = join(tempDir, "configured-router-loaded");
+    /** @param {string} sentinel */
+    const routerShaped = (sentinel) =>
+      `import {writeFileSync} from 'node:fs'; export default function(){writeFileSync(${JSON.stringify(sentinel)},'loaded')}`;
+    await mkdir(join(tempDir, ".pi", "extensions"), { recursive: true });
+    await mkdir(join(agentDir, "extensions"), { recursive: true });
+    await writeFile(join(tempDir, ".pi", "extensions", "router.ts"), routerShaped(projectSentinel));
+    await writeFile(join(agentDir, "extensions", "router.ts"), routerShaped(globalSentinel));
+    const configuredPath = join(tempDir, "configured", "router.ts");
+    await mkdir(join(tempDir, "configured"), { recursive: true });
+    await writeFile(configuredPath, routerShaped(configuredSentinel));
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ extensions: [configuredPath] }));
+    await writeFile(join(tempDir, "AGENTS.md"), "AMBIENT_CONTEXT_FILE_MARKER\n");
+    // Pi discovers these prompt files separately from context files.
+    await writeFile(join(tempDir, ".pi", "SYSTEM.md"), "AMBIENT_SYSTEM_PROMPT_MARKER\n");
+    await writeFile(join(agentDir, "APPEND_SYSTEM.md"), "AMBIENT_APPEND_PROMPT_MARKER\n");
+
+    /** @param {string} id @param {string[]} resourceArgs */
+    const runOnce = async (id, resourceArgs) => {
+      const child = new ManagedSubagent({
+        id,
+        name: id,
+        task: "Return the integration answer",
+        model: "rpc-test/integration-model",
+        effort: "off",
+        contextSummary: "",
+        cwd: tempDir,
+        command: process.execPath,
+        args: [
+          piCli,
+          "--mode",
+          "rpc",
+          "--model",
+          "rpc-test/integration-model",
+          "--thinking",
+          "off",
+          "--extension",
+          providerExtension,
+          ...resourceArgs,
+          "--no-tools",
+          "--no-session",
+          "--approve",
+        ],
+        env: {
+          ...process.env,
+          PI_RPC_TEST_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+          PI_RPC_TEST_API_KEY: "integration-test-only",
+          PI_OFFLINE: "1",
+          PI_CODING_AGENT_DIR: agentDir,
+        },
+        classification: "explicit",
+      });
+      try {
+        await child.start();
+        assert.equal(await child.waitForIdle(timeoutMs, t.signal), true, `${id} should settle`);
+        assert.equal(child.snapshot().lastAssistantText, "rpc integration answer");
+      } finally {
+        await child.stop();
+      }
+    };
+
+    // Control: the same fixture loads ambient resources without the isolation flags,
+    // so the isolated assertion below cannot pass vacuously.
+    await runOnce("ambientCtl", []);
+    assert.equal(await exists(projectSentinel), true, "control should load the project extension");
+    assert.equal(await exists(globalSentinel), true, "control should load the global extension");
+    assert.equal(await exists(configuredSentinel), true, "control should load the configured extension");
+    assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_CONTEXT_FILE_MARKER/);
+    assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_SYSTEM_PROMPT_MARKER/);
+    assert.match(JSON.stringify(requests.at(-1)), /AMBIENT_APPEND_PROMPT_MARKER/);
+    await rm(projectSentinel);
+    await rm(globalSentinel);
+    await rm(configuredSentinel);
+
+    await runOnce("isolatedIT", isolatedChildArgs(fileURLToPath(new URL("./auth-bridge.ts", import.meta.url))));
+    assert.equal(await exists(projectSentinel), false, "isolated child must not load project extensions");
+    assert.equal(await exists(globalSentinel), false, "isolated child must not load global extensions");
+    assert.equal(await exists(configuredSentinel), false, "isolated child must not load configured extensions");
+    assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_CONTEXT_FILE_MARKER/);
+    assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_SYSTEM_PROMPT_MARKER/);
+    assert.doesNotMatch(JSON.stringify(requests.at(-1)), /AMBIENT_APPEND_PROMPT_MARKER/);
+  },
+);
