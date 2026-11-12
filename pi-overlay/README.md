@@ -79,6 +79,19 @@ Registering `/skills` from a Pi **extension** was evaluated and rejected. The ex
 is the whole point of the `resource-loader` change — and cannot serve non-interactive `pi skills …`. Worth revisiting if
 Pi ever exposes the resource loader to extensions.
 
+## Portable path behavior and upgrades
+
+The shared core expands `$NAME`/`${NAME}` path references at load/reload time, keeps portable `~`/variable spellings,
+and persists checkout-local repository paths relative to the checkout root. Each checkout must independently be trusted
+before its checkout-relative entries activate. Session inputs expand immediately; `$PWD`/`$OLDPWD` paths are frozen
+rather than retained as portable spellings. Unset variables remain literal and are named in unresolved-path diagnostics.
+Catalog names and project-trust policy are unchanged.
+
+All seven retained versions carry `pre-expansion-patched.sha256` and `pre-expansion-upgrade.patch`, generated from this
+fork's previously shipped package trees. Upstream's state hashes cannot substitute for these because the fork retains
+its own trust-scoped CLI behavior. The builder verifies reverse migration to the exact old checksums; the catalog tests
+exercise recognized-state installation, idempotency, and unknown/mixed-state rejection.
+
 ## Source acquisition
 
 Per version, `versions/<version>/upstream.json` pins the inputs. Two properties make this reproducible:

@@ -978,3 +978,37 @@ and adversarial schedules for actual router handlers and their ledger/model wait
 properties are original code. We did not adopt XState's persisted snapshot format, v6 alpha APIs, a global asynchronous
 handler queue, or make the telemetry ledger a state source. We did not copy fast-check examples or its implementation;
 the existing Node test runner remains in place.
+
+## Upstream `/skills` path expansion and portable persistence
+
+- Source: `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>
+- Revisions reviewed: `c543eeaa071c973b09bfaed19c012a06b804a9b2` (`#74`) and `59d2979a0a7832e435c8a5db7a3dd35067244610`
+  (`#78`)
+- Declared license: MIT (© 2026 Nigel Stuke); the repository's MIT license notice is retained.
+
+Copied and adapted code, not conceptual inspiration alone: the shared skill-management overlay and focused tests now
+expand `$NAME`/`${NAME}` path references, preserve portable configuration spellings for load-time expansion, persist
+checkout-local repository paths relative to the checkout root, match equivalent real paths, and diagnose unresolved
+variables and legacy relative entries. The upstream skill guidance, documentation seam, and catalog regression fixtures
+were adapted to this fork's per-version test loop. The second revision supplies the Pi 1.3.0 documentation/migration
+pattern; its Git-hook environment isolation was already implemented locally.
+
+This fork preserves `commandNeedsProjectTrust`, catalog precedence, serialized configuration updates, and the local
+Windows/path-identity regressions. It generates all artifacts and recognized `pre-expansion` migrations from this fork's
+actual shipped trees for Pi 1.0.3, 1.0.4, 1.1.0, 1.3.0, 1.4.0, 1.5.0, and 1.5.2. Upstream's generated patch bytes and
+old-state checksums were intentionally not copied, because they omit the fork's trust changes. No retired version,
+dependency baseline change, installer policy change, or unrelated upstream feature was adopted in this behavior port.
+
+Verification covers every retained version: clean-source builds reproduce the published baseline, regeneration reports
+no artifact drift, all seven `pre-expansion` migrations round-trip to their exact shipped checksums, and the runtime
+catalog/dispatch suites exercise recognized-state upgrades, variable expansion on reload, unset-variable diagnostics,
+equivalent-path removal, cross-clone repository paths, catalog trust/precedence, saved distrust, and path aliases. The
+shared core additionally checks portable versus `$PWD`/`$OLDPWD` persistence, literal dollar paths, session mutations,
+and the retained Windows path regressions. Baselines and CLI/RPC wrappers are unchanged; the upstream seam stays at 48
+edited runtime lines per version.
+
+Review hardening is original fork code: checkout-relative activation now requires that checkout's project-trust
+decision, resolved command targets are not expanded a second time, and Windows home-relative paths follow Pi's native
+separator semantics. The latter behavior was checked against MIT-licensed Pi 1.5.2 `dist/utils/paths.js` at the already
+recorded `b4afdddf44e059c67ccf5097e5317d913521b470` release, <https://github.com/earendil-works/pi>; no Pi path-helper
+code was copied. CLI examples quote variable paths so shells preserve their portable spelling.
