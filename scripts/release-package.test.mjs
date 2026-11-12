@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,12 +12,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isBuiltin } from "node:module";
+import ts from "typescript";
+import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import { packPackages, readSelectedPackages } from "./release-packages.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const registry = "https://code-artifacts-prod-801997600626.d.codeartifact.us-east-1.amazonaws.com/npm/npm-prod/";
 const extensionPackages = {
   clear: ["clear"],
   effort: ["effort"],
@@ -27,153 +28,253 @@ const extensionPackages = {
   "router-otel": ["router", "otel"],
   subagents: ["subagents"],
 };
-const manifests = [...Object.keys(extensionPackages), "skills-patch"].map((name) => {
-  const directory = join(root, "packages", `pi-${name}`);
-  return { name, directory, manifest: JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) };
-});
+const kinds = [...Object.keys(extensionPackages), "skills-patch"];
+const manifests = readSelectedPackages(kinds);
 
-test("release CLI defaults to selected-package dry runs and requires an explicit publish flag", () => {
-  const binDir = mkdtempSync(join(tmpdir(), "pi-release-cli-"));
-  const log = join(binDir, "calls.jsonl");
-  const npm = join(binDir, "npm");
-  writeFileSync(
-    npm,
-    [
-      "#!/usr/bin/env node",
-      `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), publishFlag: process.env.PI_CODEARTIFACT_PUBLISH }) + String.fromCharCode(10));`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(npm, 0o755);
-  const cli = join(root, "scripts", "release-packages.mjs");
-  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, PI_CODEARTIFACT_PUBLISH: "" };
-  try {
-    const dryRun = spawnSync(process.execPath, [cli, "--package", "clear,effort", "-p", "clear"], {
-      cwd: root,
-      env,
-      encoding: "utf8",
+function listFiles(base, relativePath = "") {
+  return readdirSync(join(base, relativePath), { withFileTypes: true }).flatMap((entry) => {
+    const child = join(relativePath, entry.name);
+    if (entry.isDirectory()) return listFiles(base, child);
+    assert.equal(entry.isFile(), true, `unexpected non-file: ${child}`);
+    return [child];
+  });
+}
+
+function runtimeFiles(extension) {
+  const base = join(root, "extensions", extension);
+  const files =
+    extension === "otel"
+      ? listFiles(join(base, "src")).map((path) => join("src", path))
+      : readdirSync(base, { withFileTypes: true })
+          .filter((entry) => entry.isFile())
+          .map((entry) => entry.name);
+  if (extension === "router") files.push(...listFiles(join(base, "core")).map((path) => join("core", path)));
+  return files.filter((path) => path.endsWith(".ts") && !path.includes(".test."));
+}
+
+function packageFixture(context, kind) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), `pi-consumer-${kind}-`));
+  context.after(() => rmSync(temporaryRoot, { recursive: true, force: true }));
+  const checkout = join(temporaryRoot, "checkout");
+  // Never stage into the shared working tree. Lifecycle scripts run against a disposable
+  // checkout, while the loader later sees only the extracted consumer archive outside it.
+  for (const path of [
+    "LICENSE",
+    "ATTRIBUTION.md",
+    "scripts/stage-release-package.mjs",
+    "scripts/install-extensions.sh",
+    `packages/pi-${kind}`,
+  ]) {
+    cpSync(join(root, path), join(checkout, path), {
+      recursive: true,
+      filter: (path) => !["dist", "node_modules"].includes(path.split(sep).at(-1)),
     });
-    assert.equal(dryRun.status, 0, dryRun.stderr);
-    const calls = readFileSync(log, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    assert.equal(calls.length, 2);
-    assert.deepEqual(
-      calls.map(({ args }) => args),
-      [
-        ["pack", "--dry-run", "--json"],
-        ["pack", "--dry-run", "--json"],
-      ],
-    );
-    assert.match(calls[0].cwd, /packages[\\/]pi-clear$/);
-    assert.match(calls[1].cwd, /packages[\\/]pi-effort$/);
-    assert.equal(calls[0].publishFlag, "");
-
-    const publish = spawnSync(process.execPath, [cli, "--package", "clear", "--publish"], {
-      cwd: root,
-      env,
-      encoding: "utf8",
+  }
+  for (const extension of extensionPackages[kind] ?? []) {
+    cpSync(join(root, "extensions", extension), join(checkout, "extensions", extension), {
+      recursive: true,
+      filter: (path) => !["dist", "node_modules"].includes(path.split(sep).at(-1)),
     });
-    assert.equal(publish.status, 0, publish.stderr);
-    const publishCall = JSON.parse(readFileSync(log, "utf8").trim().split("\n").at(-1));
-    assert.deepEqual(publishCall.args, ["publish", "--registry", registry, "--tag", "alpha"]);
-    assert.equal(publishCall.publishFlag, "1");
-
-    const invalid = spawnSync(process.execPath, [cli, "--package", "all"], { cwd: root, encoding: "utf8" });
-    assert.equal(invalid.status, 1);
-    assert.match(invalid.stderr, /Unknown package name/);
-    const missing = spawnSync(process.execPath, [cli], { cwd: root, encoding: "utf8" });
-    assert.equal(missing.status, 1);
-    assert.match(missing.stderr, /Select at least one package/);
-  } finally {
-    rmSync(binDir, { recursive: true, force: true });
   }
-});
-
-test("all selected packages are validated before any package is published", () => {
-  const tempRoot = mkdtempSync(join(tmpdir(), "pi-release-validation-"));
-  const binDir = join(tempRoot, "bin");
-  const log = join(tempRoot, "calls.jsonl");
-  mkdirSync(binDir);
-  const cliDir = join(tempRoot, "scripts");
-  mkdirSync(cliDir);
-  copyFileSync(join(root, "scripts", "release-packages.mjs"), join(cliDir, "release-packages.mjs"));
-  for (const name of ["clear", "effort"]) {
-    const packageDir = join(tempRoot, "packages", `pi-${name}`);
-    mkdirSync(packageDir, { recursive: true });
-    writeFileSync(
-      join(packageDir, "package.json"),
-      JSON.stringify({
-        name: `pi-${name}`,
-        version: "1.0.0-alpha.1",
-        publishConfig: { registry },
-      }),
-    );
-  }
-  writeFileSync(
-    join(tempRoot, "packages", "pi-effort", "package.json"),
-    JSON.stringify({ name: "pi-effort", version: "1.0.0", publishConfig: { registry } }),
+  if (kind === "skills-patch") cpSync(join(root, "patches"), join(checkout, "patches"), { recursive: true });
+  const output = join(temporaryRoot, "archives");
+  const [archive] = packPackages(readSelectedPackages([kind], checkout), output, (command, args, options) =>
+    execFileSync(command, args, {
+      ...options,
+      env: { ...process.env, npm_config_ignore_scripts: "true", NPM_CONFIG_IGNORE_SCRIPTS: "true" },
+    }),
   );
-  const npm = join(binDir, "npm");
-  writeFileSync(
-    npm,
-    [
-      "#!/usr/bin/env node",
-      `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + String.fromCharCode(10));`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(npm, 0o755);
-  try {
-    const result = spawnSync(
-      process.execPath,
-      [join(cliDir, "release-packages.mjs"), "--package", "clear,effort", "--publish"],
-      {
-        cwd: tempRoot,
-        env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
-        encoding: "utf8",
-      },
-    );
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /pi-effort must target the approved CodeArtifact registry and use an alpha.N version/);
-    assert.equal(existsSync(log), false);
-  } finally {
-    rmSync(tempRoot, { recursive: true, force: true });
-  }
-});
+  const extract = join(temporaryRoot, "consumer");
+  mkdirSync(extract);
+  execFileSync("tar", ["-xzf", join(output, archive.filename), "-C", extract]);
+  const packageRoot = join(extract, "package");
+  return { temporaryRoot, packageRoot, files: listFiles(packageRoot).toSorted() };
+}
 
-test("packages are independent alpha releases guarded against public npm and latest", () => {
-  for (const { directory, manifest } of manifests) {
-    assert.match(manifest.version, /^\d+\.\d+\.\d+-alpha\.\d+$/);
-    assert.equal(manifest.publishConfig.registry, registry);
-    assert.notEqual(manifest.private, true);
-    const env = {
-      ...process.env,
-      npm_config_registry: registry,
-      npm_config_tag: "alpha",
-      PI_CODEARTIFACT_PUBLISH: "1",
-    };
-    const guard = join(root, "scripts", "check-release-registry.mjs");
-    assert.equal(spawnSync(process.execPath, [guard], { cwd: directory, env }).status, 0);
-    for (const overrides of [
-      { npm_config_registry: "https://registry.npmjs.org/" },
-      { npm_config_tag: "latest" },
-      { PI_CODEARTIFACT_PUBLISH: "0" },
-    ]) {
-      assert.equal(spawnSync(process.execPath, [guard], { cwd: directory, env: { ...env, ...overrides } }).status, 1);
+function assertPayload(packed, kind) {
+  const expected = ["package.json", "README.md", "dist/LICENSE", "dist/ATTRIBUTION.md"];
+  for (const extension of extensionPackages[kind] ?? []) {
+    expected.push(...runtimeFiles(extension).map((path) => `dist/extensions/${extension}/${path}`));
+    if (extension === "otel") {
+      expected.push("dist/extensions/otel/LICENSE");
+      expected.push(
+        ...readdirSync(join(root, "extensions", "otel"))
+          .filter((path) => /^NOTICE(?:\..+)?$/.test(path))
+          .map((path) => `dist/extensions/otel/${path}`),
+      );
     }
   }
-});
-
-test("each extension package stages only its own runtime files and host peers", () => {
-  for (const { name, directory, manifest } of manifests.filter(({ name }) => name !== "skills-patch")) {
-    execFileSync(process.execPath, [join(root, "scripts", "stage-release-package.mjs"), name]);
-    const staged = join(directory, "dist", "extensions");
-    assert.deepEqual(readdirSync(staged).sort(), extensionPackages[name].toSorted());
-    for (const entry of manifest.pi.extensions) assert.equal(statSync(join(directory, entry)).isFile(), true);
-    for (const peer of Object.keys(manifest.peerDependencies)) assert.equal(manifest.dependencies?.[peer], undefined);
+  if (kind === "skills-patch") {
+    expected.push("dist/scripts/install-extensions.sh");
+    expected.push(
+      ...listFiles(join(root, "patches"))
+        .filter((path) => /^pi-[^/]+\//.test(path) && /(?:\.(?:patch|sha256|absent)|-absent)$/.test(path))
+        .map((path) => `dist/patches/${path}`),
+    );
   }
+  assert.deepEqual(
+    packed.files,
+    expected.toSorted(),
+    `${kind} tarball must contain exactly its approved consumer payload`,
+  );
+  for (const path of packed.files) {
+    assert.doesNotMatch(path, /(?:^|\/)(?:node_modules|test|eval|fixtures|\.github)\/|\.test\.|(?:^|\/)\.env(?:\.|$)/);
+  }
+  assert.equal(
+    readFileSync(join(packed.packageRoot, "dist", "LICENSE"), "utf8"),
+    readFileSync(join(root, "LICENSE"), "utf8"),
+  );
+  assert.equal(
+    readFileSync(join(packed.packageRoot, "dist", "ATTRIBUTION.md"), "utf8"),
+    readFileSync(join(root, "ATTRIBUTION.md"), "utf8"),
+  );
+}
+
+function importedSpecifiers(source, filename) {
+  const specs = new Set();
+  const visit = (node) => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    )
+      specs.add(node.moduleSpecifier.text);
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === "require")) &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteralLike(node.arguments[0])
+    )
+      specs.add(node.arguments[0].text);
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true));
+  return [...specs];
+}
+
+function assertImportClosure(packageRoot, manifest) {
+  const files = new Set(listFiles(packageRoot).map((path) => resolve(packageRoot, path)));
+  const declared = new Set([
+    ...Object.keys(manifest.dependencies ?? {}),
+    ...Object.keys(manifest.peerDependencies ?? {}),
+  ]);
+  for (const file of files) {
+    if (!file.endsWith(".ts")) continue;
+    for (const specifier of importedSpecifiers(readFileSync(file, "utf8"), file)) {
+      if (isBuiltin(specifier)) continue;
+      if (specifier.startsWith(".")) {
+        const target = resolve(dirname(file), specifier);
+        // OTel retains upstream NodeNext .js specifiers; Pi's jiti loader resolves these
+        // to the shipped .ts sources. Check the target inside the archive, never the repo.
+        const candidates = [target, `${target}.ts`, `${target}.js`, join(target, "index.ts"), join(target, "index.js")];
+        if (target.endsWith(".js")) candidates.push(target.replace(/\.js$/, ".ts"));
+        assert.equal(
+          candidates.some((path) => path.startsWith(`${packageRoot}${sep}`) && files.has(path)),
+          true,
+          `${relative(packageRoot, file)} missing packaged import: ${specifier}`,
+        );
+      } else {
+        const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
+        assert.equal(
+          declared.has(name),
+          true,
+          `${relative(packageRoot, file)} imports undeclared package: ${specifier}`,
+        );
+      }
+    }
+  }
+}
+
+for (const kind of kinds) {
+  test(`${kind} consumer archive has exact payload, closed imports and loads through Pi`, async (context) => {
+    const packed = packageFixture(context, kind);
+    const manifest = JSON.parse(readFileSync(join(packed.packageRoot, "package.json"), "utf8"));
+    assertPayload(packed, kind);
+    assertImportClosure(packed.packageRoot, manifest);
+    assert.deepEqual(manifest.files, ["dist"]);
+    for (const peer of Object.keys(manifest.peerDependencies ?? {}))
+      assert.equal(manifest.dependencies?.[peer], undefined);
+    const cwd = join(packed.temporaryRoot, "workspace");
+    const agentDir = join(packed.temporaryRoot, "agent");
+    mkdirSync(cwd);
+    mkdirSync(agentDir);
+    if (Object.keys(manifest.dependencies ?? {}).length) {
+      // Match Pi's consumer behavior: runtime deps only, no automatically installed host
+      // peers, no lifecycle scripts, no CodeArtifact credentials or checkout node_modules.
+      const userConfig = join(packed.temporaryRoot, "npmrc");
+      writeFileSync(userConfig, "");
+      execFileSync(
+        "npm",
+        [
+          "install",
+          "--omit=dev",
+          "--legacy-peer-deps",
+          "--ignore-scripts",
+          "--no-package-lock",
+          "--no-audit",
+          "--no-fund",
+          "--prefer-offline",
+          "--min-release-age=0",
+          "--registry=https://registry.npmjs.org/",
+        ],
+        {
+          cwd: packed.packageRoot,
+          env: { ...process.env, NPM_CONFIG_USERCONFIG: userConfig },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+    }
+    const loaded = await discoverAndLoadExtensions([packed.packageRoot], cwd, agentDir);
+    try {
+      assert.deepEqual(loaded.errors, [], `${kind} failed to load from its consumer archive`);
+      assert.equal(loaded.extensions.length, extensionPackages[kind]?.length ?? 0);
+      assert.deepEqual(
+        loaded.extensions.map(({ resolvedPath }) => relative(packed.packageRoot, resolvedPath)).toSorted(),
+        (manifest.pi?.extensions ?? []).map((path) => path.replace(/^\.\//, "")).toSorted(),
+      );
+    } finally {
+      // Factory loading does not emit session_start (no telemetry/processes are started).
+      loaded.runtime.invalidate();
+    }
+    if (kind === "router-otel") {
+      assert.match(readFileSync(join(packed.packageRoot, "dist/extensions/otel/LICENSE"), "utf8"), /Apache License/);
+      for (const extension of ["router", "otel"]) {
+        const source = JSON.parse(readFileSync(join(root, "extensions", extension, "package.json"), "utf8"));
+        for (const [name, version] of Object.entries(source.dependencies))
+          assert.equal(manifest.dependencies[name], version);
+      }
+      assert.equal(manifest.dependencies.xstate, "5.33.2");
+      for (const name of ["shell-quote", "shlex"]) assert.equal(manifest.dependencies[name], undefined);
+    }
+    if (kind === "skills-patch") {
+      assert.equal(manifest.bin["pi-skills-patch"], "dist/scripts/install-extensions.sh");
+      const installer = join(packed.packageRoot, manifest.bin["pi-skills-patch"]);
+      assert.ok(statSync(installer).mode & 0o111, "packaged CLI must be executable");
+      const binary = join(packed.temporaryRoot, "pi-skills-patch");
+      symlinkSync(installer, binary);
+      const help = execFileSync(binary, ["--help"], { encoding: "utf8" });
+      assert.match(help, /apply only the version-checked/i);
+      assert.doesNotMatch(help, /without-otel/);
+      const noWork = spawnSync(binary, ["--skip-skill-loading-patch"], { encoding: "utf8" });
+      assert.equal(noWork.status, 2);
+      assert.match(noWork.stderr, /nothing to install/);
+    }
+  });
+}
+
+test("archive import closure accepts NodeNext .js-to-.ts but rejects missing or undeclared imports", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-closure-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(join(directory, "index.ts"), 'export { value } from "./helper.js";\n');
+  writeFileSync(join(directory, "helper.ts"), "export const value = 1;\n");
+  assert.doesNotThrow(() => assertImportClosure(directory, {}));
+  rmSync(join(directory, "helper.ts"));
+  assert.throws(() => assertImportClosure(directory, {}), /missing packaged import: \.\/helper.js/);
+  writeFileSync(join(directory, "index.ts"), 'void import("undeclared-runtime/subpath");\n');
+  assert.throws(() => assertImportClosure(directory, {}), /undeclared package/);
+  writeFileSync(join(directory, "index.ts"), 'import "../outside.ts";\n');
+  assert.throws(() => assertImportClosure(directory, {}), /missing packaged import/);
 });
 
 test("router-otel and subagents declare the supported Pi host range", () => {
@@ -184,73 +285,12 @@ test("router-otel and subagents declare the supported Pi host range", () => {
     for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] - b[index];
     return 0;
   };
-  for (const { name, manifest } of manifests.filter(({ name }) => ["router-otel", "subagents"].includes(name))) {
+  for (const { kind, manifest } of manifests.filter(({ kind }) => ["router-otel", "subagents"].includes(kind))) {
     const range = manifest.peerDependencies["@earendil-works/pi-coding-agent"];
-    assert.equal(range, supported, name);
-    // One inclusive floor and one exclusive next-major ceiling, with no other comparator.
+    assert.equal(range, supported, kind);
     const [, floor, ceiling] = /^>=(\d+\.\d+\.\d+) <(\d+\.\d+\.\d+)$/.exec(range) ?? [];
     const accepts = (version) => compare(version, floor) >= 0 && compare(version, ceiling) < 0;
     for (const version of ["1.2.0", "1.2.1", "1.3.0", "1.99.0"]) assert.equal(accepts(version), true, version);
     for (const version of ["1.1.9", "1.0.0", "2.0.0", "2.1.0"]) assert.equal(accepts(version), false, version);
-  }
-});
-
-test("router and OTel share dependencies and keep the vendored license", () => {
-  const { directory, manifest } = manifests.find(({ name }) => name === "router-otel");
-  execFileSync(process.execPath, [join(root, "scripts", "stage-release-package.mjs"), "router-otel"]);
-  const staged = join(directory, "dist", "extensions");
-  assert.match(readFileSync(join(staged, "otel", "LICENSE"), "utf8"), /Apache License/);
-  assert.deepEqual(
-    readdirSync(join(staged, "router", "core")).filter((name) => name.endsWith(".test.mjs")),
-    [],
-  );
-  for (const removed of ["shell-quote", "shlex"]) assert.equal(manifest.dependencies[removed], undefined);
-  const router = JSON.parse(readFileSync(join(root, "extensions", "router", "package.json"), "utf8"));
-  for (const [name, version] of Object.entries(router.dependencies)) assert.equal(manifest.dependencies[name], version);
-  assert.equal(manifest.dependencies.xstate, "5.33.2");
-  assert.ok(readFileSync(join(staged, "router", "core", "lease-machine.ts"), "utf8").includes("xstate"));
-  const otel = JSON.parse(readFileSync(join(root, "extensions", "otel", "package.json"), "utf8"));
-  for (const [name, version] of Object.entries(otel.dependencies)) assert.equal(manifest.dependencies[name], version);
-});
-
-test("patch package stages only versioned patch data and a patch-only CLI", () => {
-  const { directory, manifest } = manifests.find(({ name }) => name === "skills-patch");
-  execFileSync(process.execPath, [join(root, "scripts", "stage-release-package.mjs"), "skills-patch"]);
-  const dist = join(directory, "dist");
-  assert.match(readFileSync(join(dist, "LICENSE"), "utf8"), /Copyright \(c\) 2025 Mario Zechner/);
-  assert.equal(statSync(join(dist, "scripts", "install-extensions.sh")).isFile(), true);
-  assert.equal(manifest.bin["pi-skills-patch"], "dist/scripts/install-extensions.sh");
-  assert.match(readFileSync(join(dist, "scripts", "install-extensions.sh"), "utf8"), /--skip-extensions/);
-  const patchVersions = readdirSync(join(root, "patches")).filter((name) => /^pi-\d/.test(name));
-  assert.deepEqual(readdirSync(join(dist, "patches")).sort(), patchVersions.toSorted());
-  for (const version of patchVersions) {
-    const expected = readdirSync(join(root, "patches", version))
-      .filter((name) => /(?:\.(?:patch|sha256|absent)|-absent)$/.test(name))
-      .sort();
-    assert.deepEqual(readdirSync(join(dist, "patches", version)).sort(), expected, version);
-  }
-  assert.deepEqual(patchVersions.toSorted(), [
-    "pi-1.0.3",
-    "pi-1.0.4",
-    "pi-1.1.0",
-    "pi-1.3.0",
-    "pi-1.4.0",
-    "pi-1.5.0",
-    "pi-1.5.2",
-  ]);
-  assert.equal(readdirSync(dist).includes("extensions"), false);
-
-  const binDir = mkdtempSync(join(tmpdir(), "pi-skills-package-"));
-  try {
-    const binary = join(binDir, "pi-skills-patch");
-    symlinkSync(join(dist, manifest.bin["pi-skills-patch"].replace("dist/", "")), binary);
-    const help = execFileSync(binary, ["--help"], { encoding: "utf8" });
-    assert.match(help, /apply only the version-checked/i);
-    assert.doesNotMatch(help, /without-otel/);
-    const noWork = spawnSync(binary, ["--skip-skill-loading-patch"], { encoding: "utf8" });
-    assert.equal(noWork.status, 2);
-    assert.match(noWork.stderr, /nothing to install/);
-  } finally {
-    rmSync(binDir, { recursive: true, force: true });
   }
 });
