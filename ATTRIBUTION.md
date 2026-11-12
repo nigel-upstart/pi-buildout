@@ -943,6 +943,36 @@ The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from 
 router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
 evidence review; only the version numbers are shared with upstream.
 
+### Compatible release-safety port (`dabb54b1d`, npm publication #79)
+
+- Source: `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>
+- Revision reviewed: `dabb54b1d753ffb60f5fe36da48828bb77a08028`
+- Declared license: MIT (© 2026 Nigel Stuke); the root `LICENSE` retains its copyright and permission notice.
+
+Copied and modified code, not conceptual inspiration alone: `scripts/release-packages.mjs` adapts upstream's strict
+release-manifest/version validation, explicit lifecycle-script enabling for packing, SHA-512 archive integrity helpers,
+release receipts, and validation of every selected archive before publication. The guard in
+`scripts/check-release-registry.mjs` shares this fork's selected-package identity and alpha-only validation. The port
+retains manual `--package` selection, explicit `--publish` approval, `@upstart` identities, and the fixed internal
+CodeArtifact endpoint. Tarball publication adds explicit CLI policy checks and embedded-manifest validation because npm
+cannot be relied on to execute the checkout's `prepublishOnly` hook for a tarball. Receipts bind the packed bytes within
+one publish invocation; earlier dry runs remain previews, not persistent approvals.
+
+`scripts/release-package.test.mjs` and `scripts/release-publish.test.mjs` adapt upstream's extracted consumer-archive,
+minimal-payload, import-closure, Pi-loader, and modified-archive regression-test patterns. The fork extends coverage to
+all six packages, including the combined router/OTel package, vendored Apache notices, NodeNext `.js` imports resolving
+to shipped `.ts` sources, isolated disposable checkouts, and equivalent CLI/lifecycle guards. Pi's MIT-licensed SDK,
+extension, and package documentation and SDK extension example from `@earendil-works/pi-coding-agent@1.5.2`
+(<https://github.com/earendil-works/pi>) were reviewed for loader behavior and host-provided dependencies; no Pi loader
+or SDK implementation code was copied.
+
+Intentionally not adopted: public npm publishing, public-access metadata, trusted-publishing/OIDC or provenance CI,
+automatic main-branch releases, Git-base/version-bump release selection, stable/beta/rc channels, or recursive staging
+of router evaluation/test trees. Registry version preflight, conflict reconciliation, identical-version recovery, and
+backward-dist-tag network policy are deferred rather than imported into this manual CodeArtifact workflow. Consumer
+setup, human checkpoints, and independent package versions remain unchanged; `packages/README.md` documents the local
+archive safeguards and temporary receipt lifecycle.
+
 ## Pi 1.1.0 supported-install discovery and registry refresh
 
 - Source: [Pi installer](https://pi.dev/install.sh) and `@earendil-works/pi-coding-agent@1.1.0` /

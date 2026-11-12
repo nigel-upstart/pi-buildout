@@ -96,6 +96,16 @@ Repeat `--package` to select more packages. After reviewing the dry-run output a
 repository's fixed CodeArtifact URL; it does not choose or bump versions. Authenticate npm against that registry using
 the setup below first. Publishing is a write operation and must be explicitly requested with `--publish`.
 
+With `--publish`, the CLI packs and validates **all selected packages before the first registry write**, then publishes
+those exact tarballs rather than repacking their directories. A temporary integrity receipt records each package's name,
+version, archive filename, and SHA-512 integrity. The CLI checks archive hashes and embedded manifests before
+publication and rechecks each archive's hash immediately before publishing it. Temporary archives and receipts are
+automatically removed when the command returns, including on errors. Separate dry runs remain previews; they do not
+create a persistent receipt or bind a later publish invocation to previously reviewed bytes.
+
+This is local archive validation, not registry preflight: the CLI does not query existing versions, reconcile version
+conflicts, or reconcile dist-tags. Keep the human availability, identity, and artifact checkpoints above.
+
 These are the underlying AWS/npm operations, **not** `umt` or changes to a persistent `~/.npmrc`. Set `RW_PROFILE` to
 the publish-capable SSO profile actually configured on the machine (create one interactively with
 `aws configure sso --profile ...` if needed). Keep the terminal private; never echo or commit the token. Use a working
@@ -132,13 +142,15 @@ done
 npm run release:packages -- --package router-otel --publish
 
 # Or use npm directly for one package, if needed:
-(cd packages/pi-router-otel && PI_CODEARTIFACT_PUBLISH=1 npm publish --registry "$REGISTRY" --tag alpha)
+(cd packages/pi-router-otel && PI_CODEARTIFACT_PUBLISH=1 npm publish --registry "$REGISTRY" --tag alpha --ignore-scripts=false)
 ```
 
-The `prepublishOnly` gate refuses publishing unless the effective registry is that exact CodeArtifact endpoint, the
-package version has an `-alpha.N` suffix, `--tag alpha` is present, and `PI_CODEARTIFACT_PUBLISH=1` is set. This guards
-against publishing accidentally to the repository's public npm registry; **it does not replace a human check of the
-artifact and identity**. The token expires after roughly 12 hours.
+For direct directory publishing, the `prepublishOnly` gate requires the selected package's expected `@upstart` identity,
+a non-private manifest, a strict `-alpha.N` version, the exact CodeArtifact endpoint, `--tag alpha`, and
+`PI_CODEARTIFACT_PUBLISH=1`. Keep lifecycle scripts enabled when using npm directly. Tarball publishing does not run
+that checkout hook, so the CLI enforces equivalent manifest, registry, tag, and explicit opt-in checks itself. These
+guards protect against accidental publication to the repository's public npm registry; **they do not replace a human
+check of the artifact and identity**. The token expires after roughly 12 hours.
 
 After a publish, use `npm view @upstart/pi-router-otel@0.1.1-alpha.6 --registry "$REGISTRY"` (or the chosen package) and
 test a fresh consumer install with the scoped registry/token configured. Re-run Pi's `/reload` if already running. Do
