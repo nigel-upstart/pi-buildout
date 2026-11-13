@@ -154,7 +154,7 @@ export function createBuilderReviewRunner(deps: {
       try {
         const plan = deps.observe()?.plan;
         const tools = deps.tools();
-        // A published observation is not permission: recheck reachability, schema, and isolation now.
+        // Recheck the published observation's reachability, schema, and isolation now.
         call = plan
           ? bindPlan(plan, tools, {
               task,
@@ -217,7 +217,7 @@ export function createBuilderReviewRunner(deps: {
       runInFlight = true;
       deps.dispatch(
         [
-          "Router review delegation (advisory; it blocks nothing and grants no permission).",
+          "Router review delegation.",
           `Call the \`${call.tool.name}\` tool exactly once with these validated arguments:`,
           "```json",
           JSON.stringify(call.arguments, null, 2),

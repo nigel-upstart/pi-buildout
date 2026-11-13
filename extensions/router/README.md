@@ -56,9 +56,9 @@ Safety is an explicit persisted **advisory** lease lifecycle, not an inference f
   a read-only, provider-independent completion review.
 - High-risk irreversible actions and high-risk reversible non-code work use one `plan_review_then_completion_review`
   policy. In `planning`, inspect preconditions and call `submit_action_plan` with targets, steps, effects, verification,
-  rollback, abort conditions, and `toolNames`. The different-vendor review gives advice, not permission. Approval
-  advances to `executing`; concerns recommend revising and resubmitting. No phase blocks tools or narrows the builder's
-  tool set. Only router-owned validators are shown or hidden by phase.
+  rollback, abort conditions, and `toolNames`. Approval from the different-vendor review advances to `executing`;
+  concerns recommend revising and resubmitting. No phase blocks tools or narrows the builder's tool set. Only
+  router-owned validators are shown or hidden by phase.
 - Automatic completion reviews remain limited to the existing high-risk policies. Missing action plans, possible
   mutations during a pending plan review, and missing completion evidence produce human-facing warning notes and
   `advisory_step_skipped` telemetry at most once per step per lease. Mutation detection is heuristic. These skipped
@@ -72,11 +72,11 @@ Safety is an explicit persisted **advisory** lease lifecycle, not an inference f
   Old action-plan callers use `toolNames` instead of `authorizedToolNames`; irreversible steps are no longer mandatory.
 
 `submit_implementation_plan` validates implementation-plan DAGs throughout active routing, including a planning
-follow-up kept on a research lease. It preserves the task and model and grants no execution permission. Planning routes
-still require validation; telemetry records `planningLease` to distinguish other routes' optional submissions.
+follow-up kept on a research lease. It preserves the task and model. Planning routes still require validation; telemetry
+records `planningLease` to distinguish other routes' optional submissions.
 
 - Unattended or indefinite external-effect loops retain pre-action advice and completion review even at medium
-  classifier risk; this is not authorization.
+  classifier risk.
 - The classifier rates `actionMode` and `risk` by what the agent itself is asked to execute, not by what a later human
   review, merge, `terraform apply`, or deploy does with the output. Local edits, commits, non-force pushes to a
   non-default branch, and opening, updating, or marking pull requests ready are `reversible_mutation` at any scale, so
@@ -625,7 +625,7 @@ The safety workflow lives in the lease's lifecycle phase. Each task starts in th
 Generated reviews do not install child leases or switch the builder model. Pending review ownership is runtime-only;
 legacy persisted review children restore their builder instead. A verdict advances the current builder via `EVIDENCE`.
 
-The merged `plan_review_then_completion_review` policy recommends pre-action advice, not authorization:
+The merged `plan_review_then_completion_review` policy recommends pre-action review:
 
 ```mermaid
 stateDiagram-v2
@@ -641,8 +641,8 @@ stateDiagram-v2
   [*] --> ordinary: ordinary policy
 ```
 
-The review scope and start epoch identify stale advice; neither binds an execution grant. A review crossing new input or
-a boundary is cancelled and its stale verdict is dropped. The builder stays installed and the boundary survives.
+The review scope and start epoch identify stale advice. A review crossing new input or a boundary is cancelled and its
+stale verdict is dropped. The builder stays installed and the boundary survives.
 
 ```mermaid
 sequenceDiagram

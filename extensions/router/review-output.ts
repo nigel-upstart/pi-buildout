@@ -17,7 +17,6 @@ export function reviewOutputContract(nonce: string, kind: SafetyReviewKind, scop
     `Finish with exactly one block: an opening router-result tag with attribute nonce="${nonce}", one JSON object, then the closing tag.`,
     `The JSON object has exactly: reviewKind "${kind}", scopeFingerprint "${scopeFingerprint}", verdict, summary, evidence (1-100 strings), findings (0-100 strings).`,
     `verdict is one of: ${VERDICTS_BY_KIND[kind].join(", ")}.`,
-    "Give advice, not permission.",
   ].join("\n");
 }
 
