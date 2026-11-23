@@ -695,28 +695,56 @@ catalog skills, generated bundle chunks, and unrelated auth, session-fork, and U
 overlay; those features remain upstream's implementation in the host package. No complete upstream checkout is
 committed. The upstream MIT notice remains in root `LICENSE` and ships with the standalone patch package.
 
+## Pi 1.6.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.6.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `faac585884ae2c013a6b1400f3e9e77f10b34bac` (`v1.6.0`)
+- Source archive: `pi-1.6.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.6.0.tgz`, pinned by SHA-256 and registry integrity
+- Declared license: MIT
+- Port source: MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+  `18417b62c5286706746168c2efcf07a7a13a7290` (`#93`); the root `LICENSE` retains its notice.
+
+Copied and modified code: the [1.6.0 integration patch](pi-overlay/versions/1.6.0/integration.patch), pinned input
+manifest, and CLI/RPC replacements adapt the existing seam to Pi 1.6.0's TypeScript sources and skill documentation. The
+[generated patch](patches/pi-1.6.0/skills.patch) is regenerated here, not copied from the port source, using the fork's
+shared overlay with its trust-scoped CLI, resolved-path handling, portable persistence, and Windows-tilde semantics
+intact. It modifies the resource loader, slash-command list, CLI and interactive entry points, and docs, within the same
+48-line runtime seam budget, and adds this repository's skill-management modules. It reuses Pi's package/resource
+discovery, trust APIs, and the previously attributed `proper-lockfile` pattern. The unchanged compile-cache loader is
+checksum-pinned; the CLI/RPC wrappers retain process markers and HTTP-dispatcher setup. The patch README, overlay
+documentation, and isolated 1.6.0 runtime smoke steps in the patch-drift workflow are adapted from the port source. The
+fork retains regeneration for every supported version and its multi-package test fixture interface, rather than
+upstream's reduced version matrix and single-package environment variables.
+
+Intentionally not adopted: upstream's removal of Pi 1.0.4, its generated skill-management bytes, Pi's automatic
+skill-loading policy, or unrelated 1.6.0 runtime behavior. All historical supported patches, manual internal publishing,
+router/OTel, and development pins remain unchanged; no source checkout or bundled chunks are vendored.
+
 ## Pi `/skills` TypeScript overlay
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`,
   `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`,
   `@earendil-works/pi-coding-agent@1.1.0`, `@earendil-works/pi-coding-agent@1.3.0`, and
-  `@earendil-works/pi-coding-agent@1.4.0`, `@earendil-works/pi-coding-agent@1.5.0`, and
-  `@earendil-works/pi-coding-agent@1.5.2`
+  `@earendil-works/pi-coding-agent@1.4.0`, `@earendil-works/pi-coding-agent@1.5.0`,
+  `@earendil-works/pi-coding-agent@1.5.2`, and `@earendil-works/pi-coding-agent@1.6.0`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
   `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`),
   `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), and `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`),
   taken from the corresponding signed release tag, and `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`), taken from
-  its lightweight, unsigned release tag; the 1.4.0, 1.5.0, and 1.5.2 revisions are recorded above
+  its lightweight, unsigned release tag; the 1.4.0, 1.5.0, 1.5.2, and 1.6.0 revisions are recorded above
 - Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
   `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, `pi-1.1.0-source.tar.gz`, `pi-1.3.0-source.tar.gz`, and
-  `pi-1.4.0-source.tar.gz`, `pi-1.5.0-source.tar.gz`, and `pi-1.5.2-source.tar.gz`, each verified against upstream's
-  published `SHA256SUMS` for that release
+  `pi-1.4.0-source.tar.gz`, `pi-1.5.0-source.tar.gz`, `pi-1.5.2-source.tar.gz`, and `pi-1.6.0-source.tar.gz`, each
+  verified against upstream's published `SHA256SUMS` for that release
 - License declared by the package: MIT
 
 [`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
 `patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, `patches/pi-1.1.0/`,
-`patches/pi-1.3.0/`, `patches/pi-1.4.0/`, `patches/pi-1.5.0/`, and `patches/pi-1.5.2/` are generated from it.
+`patches/pi-1.3.0/`, `patches/pi-1.4.0/`, `patches/pi-1.5.0/`, `patches/pi-1.5.2/`, and `patches/pi-1.6.0/` are
+generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
