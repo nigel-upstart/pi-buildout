@@ -1004,9 +1004,11 @@ publishing and development pins remain unchanged. The root `LICENSE` retains the
 
 A follow-up adds original handling for global `core.hooksPath` and `diff.noPrefix`: temporary commits use an empty hook
 directory and diffs force installer-compatible `a/` and `b/` prefixes. Conceptual review input came from the
-[CodeRabbit](https://www.coderabbit.ai/) CLI's review of fork revision `1895427`; no code or license notice was supplied
-or copied. The same regression fixture now uses a rejecting global commit hook and prefix-suppressing global config, and
-verifies canonical patch application and that no developer hook ran.
+[CodeRabbit](https://www.coderabbit.ai/) CLI's reviews of fork revisions `1895427` and `59f5696`; no code or license
+notice was supplied or copied. The same regression fixture now uses a rejecting global commit hook and
+prefix-suppressing global config, and verifies canonical patch application and that no developer hook ran. Git's config
+serializer writes fixture hook paths containing `#`, so the regression does not silently test a truncated path. The
+upstream-check example also stops on fetch failure rather than inspecting a stale ref.
 
 ### Managed-install discovery (`f594d8305`)
 
