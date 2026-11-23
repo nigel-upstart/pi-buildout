@@ -61,6 +61,83 @@ function rateLimitError(provider) {
 }
 
 describe("selectClassifierModels", () => {
+  it("prefers Luna latest then Haiku latest before the versioned stack, with Haiku 4.5 last", () => {
+    const selected = selectClassifierModels([
+      snapshot("anthropic", "claude-haiku-4-5"),
+      snapshot("google", "gemini-3.5-flash-lite"),
+      snapshot("anthropic", "claude-haiku-5-5"),
+      snapshot("anthropic", "claude-haiku-latest"),
+      snapshot("github-copilot", "mai-code-1.1-flash", { vendor: "microsoft" }),
+      snapshot("openai-codex", "gpt-5.6-luna"),
+      snapshot("openai-codex", "gpt-6-luna"),
+      snapshot("openai-codex", "gpt-luna-latest"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.id),
+      [
+        "gpt-luna-latest",
+        "claude-haiku-latest",
+        "gpt-6-luna",
+        "gpt-5.6-luna",
+        "mai-code-1.1-flash",
+        "claude-haiku-5-5",
+        "gemini-3.5-flash-lite",
+        "claude-haiku-4-5",
+      ],
+    );
+  });
+
+  for (const modelId of ["gpt-luna-latest", "claude-haiku-latest", "claude-haiku-5-5", "claude-haiku-5.5"]) {
+    it(`classifies successfully with only scoped ${modelId}`, async () => {
+      const faux = registerFauxProvider({
+        api: `router-haiku-${modelId}-test`,
+        provider: `router-haiku-${modelId}-test`,
+        models: [{ id: "haiku-fixture" }],
+      });
+      const features = { ...conservativeFeatures("fixture"), confidence: 0.95, risk: "low" };
+      faux.setResponses([fauxAssistantMessage([fauxToolCall("report_task_features", features)])]);
+      const lookups = [];
+      const provider = modelId.startsWith("gpt-") ? "openai-codex" : "anthropic";
+      try {
+        const result = await classifyTaskWithPi({
+          ctx: {
+            modelRegistry: {
+              find: (provider, id) => {
+                lookups.push(`${provider}/${id}`);
+                return faux.getModel();
+              },
+              getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture" }),
+            },
+          },
+          registry: [snapshot(provider, modelId)],
+          prompt: "Explain this function",
+          synopsis: {},
+        });
+        assert.equal(result.failedClosed, false);
+        assert.equal(result.escalated, false);
+        assert.deepEqual(result.features, features);
+        assert.deepEqual(lookups, [`${provider}/${modelId}`]);
+        assert.equal(result.attempts.length, 1);
+        assert.equal(result.attempts[0].valid, true);
+      } finally {
+        faux.unregister();
+      }
+    });
+  }
+
+  it("skips unavailable or tool-incapable new classifier endpoints", () => {
+    const selected = selectClassifierModels([
+      snapshot("openai-codex", "gpt-luna-latest", { available: false }),
+      snapshot("anthropic", "claude-haiku-latest", { available: false }),
+      snapshot("anthropic", "claude-haiku-5-5", { toolCapable: false }),
+      snapshot("anthropic", "claude-haiku-4-5"),
+    ]);
+    assert.deepEqual(
+      selected.primary.map((entry) => entry.model.id),
+      ["claude-haiku-4-5"],
+    );
+  });
+
   it("selects exact configured IDs from different model vendors", () => {
     const selected = selectClassifierModels([
       snapshot("openai-codex", "gpt-6-luna"),
@@ -307,7 +384,7 @@ describe("selectClassifierModels", () => {
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => entry.model.id),
-      ["claude-haiku-4-5", "gemini-3.5-flash-lite"],
+      ["gemini-3.5-flash-lite", "claude-haiku-4-5"],
     );
 
     const geminiOnly = selectClassifierModels([
