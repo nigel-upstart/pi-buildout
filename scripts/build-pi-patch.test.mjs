@@ -216,7 +216,7 @@ for (const version of overlayVersions) {
 }
 
 test("buildUnifiedDiff isolates hook Git state, signing, hooks, and diff prefixes", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "pi-diff-isolation-"));
+  const root = mkdtempSync(join(tmpdir(), "pi-diff-isolation-#"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, "home");
   const parent = join(root, "parent");
@@ -229,11 +229,14 @@ test("buildUnifiedDiff isolates hook Git state, signing, hooks, and diff prefixe
   writeFileSync(join(hooks, "prepare-commit-msg"), `#!/bin/sh\necho ran > "${hookMarker}"\nexit 9\n`, { mode: 0o755 });
   writeFileSync(
     join(home, ".gitconfig"),
-    `[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = missing-pi-test-signer\n[diff]\n\tnoPrefix = true\n[core]\n\thooksPath = ${hooks}\n`,
+    "[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = missing-pi-test-signer\n[diff]\n\tnoPrefix = true\n",
   );
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   Object.assign(env, { HOME: home, XDG_CONFIG_HOME: home });
   const git = (...args) => execFileSync("git", args, { cwd: parent, env, encoding: "utf8" });
+  // Git quotes comment characters and platform-specific separators in the configured hook path.
+  git("config", "--file", join(home, ".gitconfig"), "core.hooksPath", hooks);
+  assert.equal(git("config", "--get", "core.hooksPath").trim(), hooks);
   git("init", "--quiet");
   writeFileSync(join(parent, "keep.txt"), "committed\n");
   git("add", "keep.txt");

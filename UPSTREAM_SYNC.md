@@ -21,8 +21,8 @@ below instead. Attribution for the ported material is recorded in
 To find the next batch of upstream work:
 
 ```bash
-git fetch https://github.com/zew1me/pi-buildout.git main:refs/remotes/zew1me/main
-git log --oneline 18417b62c5286706746168c2efcf07a7a13a7290..zew1me/main
+git fetch https://github.com/zew1me/pi-buildout.git main:refs/remotes/zew1me/main \
+  && git log --oneline 18417b62c5286706746168c2efcf07a7a13a7290..zew1me/main
 ```
 
 The local remote named `upstream` currently points at `nigel-upstart/pi-buildout`, not the external source; the explicit
