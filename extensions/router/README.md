@@ -149,14 +149,16 @@ this field still load. See
 The concrete tier lists live in [`pi-classifier.ts`](pi-classifier.ts) (`PRIMARY_CLASSIFIER_TIERS` and
 `SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR`); this section states only the expectations they must meet.
 
-- Classifiers are chosen only from the operator's scoped registry, by logical model ID. Every scoped endpoint serving a
-  tier is a candidate: an available, tool-capable endpoint without a recurring health failure, ordered by endpoint cost
-  within its tier. The classifier forces a tool call, so an endpoint whose API cannot require one is never usable.
+- The classifier selects only scoped, available, healthy tool-capable endpoints, ordered by endpoint cost within each
+  tier. Reasoning models must support **low** effort; the classifier never uses medium or higher, regardless of the
+  eventual agent route. It requires a schema-valid tool result, not a plain-text answer.
 - Primary preference is `gpt-luna-latest`, `claude-haiku-latest`, GPT-6 Luna, GPT-5.6 Luna, MAI-Code Flash, Haiku 5.5,
-  Gemini 3.5 Flash Lite, then Haiku 4.5 last. Latest aliases are used only when their exact logical IDs are present in
-  scope; no alias is invented.
-- The primary is a fast, inexpensive tier. Candidates are tried in order, and any failure other than cancellation or a
-  timeout (for example a rate limit or missing credentials) falls through to the next endpoint and then the next tier.
+  Gemini 3.5 Flash Lite, Haiku 4.5, then Sonnet 5.5 as a last resort. Latest aliases are used only when present in
+  scope.
+- Sonnet 5.5 low leads the Anthropic secondary tier; Sonnet 5 stays as its availability fallback. Sonnet 5.5 rejects
+  forced tool choice, so that endpoint uses automatic tool choice with up-front thinking disabled and still requires the
+  expected validated tool call. Failures other than cancellation or timeout fall through to the next candidate. The
+  report's Sonnet-low time figure is **21 CursorBench agent steps per task**, not measured classifier latency.
 - A primary that reports low confidence or high/critical risk escalates to a secondary. The secondary must come from a
   different model **vendor** from the one that actually answered the primary; a different endpoint is not enough, so a
   Bedrock-served Claude is still an Anthropic secondary. Each primary vendor lists secondary tiers from every other
@@ -369,32 +371,39 @@ for a positive write rate, `no_write_line_item` when reads are priced but writes
 prices are capability proxies rather than marginal billed costs, so Copilot has no effective-cost value and follows all
 eligible token-billed routes.
 
-Bedrock GPT-6.2 Astra, GPT-6.2/6.1/6 Sol, GPT-5.6 Terra, and GPT-6 Luna are excluded above 272,000 estimated finished
-tokens until their registry entries supply a long-context rate; the router never extends their short-context rates
-beyond that boundary. Residency remains a scope choice, not an ordering preference: scope in only the regional inference
-profiles permitted for the workload and scope out Global or other profiles that violate the requirement. Cost ordering
-never adds or revives an out-of-scope endpoint.
+Bedrock GPT-6.2 Astra, GPT-6.2/6.1/6 Sol, GPT-6.1/5.6 Terra, and GPT-6 Luna are excluded above 272,000 estimated
+finished tokens until their registry entries supply a long-context rate; the router never extends their short-context
+rates beyond that boundary. Residency remains a scope choice, not an ordering preference: scope in only the regional
+inference profiles permitted for the workload and scope out Global or other profiles that violate the requirement. Cost
+ordering never adds or revives an out-of-scope endpoint.
 
-Direct `google` endpoints are eligible only for `code_review`, preserving the low direct-Gemini request quota for an
-independent reviewer. Gemini 3.8 Flash at high effort leads the Google review ladder when its exact ID is available;
-`google-vertex` and other scoped surfaces may still serve ordinary older-Gemini policy entries.
+### November 2026 model policy
 
-Median repository implementation uses Opus 5.5 at medium as the default and keeps Sol high as its cross-provider
-challenger. The router discovers endpoints from the scoped Pi registry and admits model IDs through explicit routing
-ladders with validated prompt profiles and evidence priors. GPT-6.2 Sol and Astra lead their respective GPT ladders when
-eligible. Older generations remain available for fallback, and mature route telemetry can rank them by observed cost to
-done. Pi must expose the GPT-6.2 IDs through its model catalog or a configured provider before the router can use them.
-GPT-6.2 starts with its predecessors' priors pending direct evidence.
+- **Routine implementation and ordinary planning:** Sol high is the usual cost-to-done choice; Opus 5.5 is no longer
+  pinned. Keep it for availability, independent review, and language slices where measured evidence still favors it.
+- **Terminal-heavy and stacked-PR work:** prefer GPT-6.2 Sol max, then 6.1 Sol max if eligible. On Terminal-Bench 4.1
+  with Codex they resolve 61.5% and 60.9%; on Artificial Analysis their max-effort Intelligence Index tasks cost
+  $1.01
+  and $1.27. Opus 5.5 max still resolves 65.8% with Claude Code, but costs $10.04 on the separate Intelligence
+  Index benchmark. Keep Sol high as a fallback and for routine work; the stack preference defers to language evidence.
+- **Mid-tier options:** GPT-6.1 Terra max is eligible for procedural, terminal, and synthesis routes. Its 59.61 report
+  percentile sets the ability band; its cost-to-done prior reprices GPT-5.6 Terra max's measured token mix at GPT-6.1
+  rates. Haiku 5.5 xhigh is a read-only extraction and standalone-review fallback: CursorBench 4.1 scores it at 45.2 for
+  $0.56 per task, versus Sonnet 5.5 high at 43.8 for $1.41. That's not schema or review accuracy.
+- **Read-only frontier work:** large program planning prefers GPT-6.2 Astra max, then Gemini 4 Neon xhigh, then eligible
+  Sol max. Critical risk and mutating consequence still disqualify benchmark-only options, including Astra max; use
+  qualified Sol max or Astra high for critical advisory work. Neither a newer version nor a higher benchmark percentile
+  supplies missing rollout reliability, context peaks, or wall time.
+- **Review:** Gemini 4 Neon high leads standalone read-only review and Google's independent reviewer ladder. On
+  CursorBench 4.1 it scores 63.7 for $6.54 per task versus xhigh at 65.4 for $10.67. Older Google models remain
+  available to tracked review. Neon requires a scoped endpoint with the requested effort: Vertex can qualify when
+  configured, and Copilot can qualify if it exposes the exact ID. Direct `google` remains review-only.
 
-GPT-6 Luna/Sol and Opus 5.5 inherit their GPT-5.6 Luna/Sol and Opus 5 quality, reliability, and latency priors. These
-estimates assume comparable behavior until local telemetry matures. Their cost per pass is repriced from the report's
-verified list rates (GPT-6 Sol at half of GPT-5.6 Sol, Luna at roughly 0.48 of GPT-5.6 Luna, Opus 5.5 at 0.54-0.61 of
-Opus 5) applied to the source rows' own measured token mix. Measured language-specific routes still override that
-default. GPT-6 Astra high uses its refreshed direct measurements, including DataCurve's corrected $5.36 cost per pass
-(with Sol-high proxies only for the three omitted reliability/context fields), and appears only in high-intelligence
-planning, highest-risk advisory, and independent-review ladders. The bounded read-only classification and extraction
-ladders retain MiniMax M2.5 and GPT-OSS 120B and add Kimi K2.5 plus Kimi K2 Thinking. Kimi remains structurally barred
-from mutating work because its current quality evidence is single-attempt.
+The [November evidence snapshot](core/effectiveness-data.ts) holds exact-effort ability scores, separate from the
+DeepSWE cost-to-done priors. Sol and Astra high retain their predecessor proxies where current rollouts are missing. No
+report time percentile is substituted for local wall time. Mature route telemetry still takes precedence over bootstrap
+preferences. The bounded classification and extraction **agent** routes retain their open-weight fallbacks; the
+classifiers that choose those routes have their own low-effort policy described above.
 
 Endpoint tiers remain in route and lease records and break equal-effective-cost ties. Every endpoint for the selected
 logical model and effort still precedes every different-model fallback.
@@ -410,12 +419,11 @@ logical model and effort still precedes every different-model fallback.
   unresolved secondary classification. Unknown tools and arbitrary shell commands remain subject to Pi and the execution
   environment, not router command parsing.
 - Unknown, unavailable, over-context, unsupported-effort, or unprofiled candidates are excluded.
-- Executing work across a dependent pull-request stack is distinct from planning one. The stack route is restricted to
-  exact current-generation IDs (`gpt-6-sol/high` and `claude-opus-5-5/high`, plus their same-model availability
-  backups), so routing cannot silently hand stack mutation to older generations or the broader Sonnet tier.
-- Effort is capped at each model family's measured saturation tier, low-effort tiers with high measured regression
-  breakage are barred from repository-mutating routes, and candidates whose measured p90 peak context exceeds the window
-  headroom are excluded before scoring.
+- Executing a dependent pull-request stack is distinct from planning one. The stack route uses the declared Sol and Opus
+  ladder, not the benchmark-only models used for read-only plans.
+- Effort is capped at the model's saturation tier unless an archetype explicitly allows a higher tier. Low-effort tiers
+  with high measured regression breakage are barred from repository-mutating routes. Measured p90 peak context and the
+  task's context estimate must both fit the window headroom.
 - A validated provider-diverse classifier result may serve as failover, but complete classification failure retains the
   current selection instead of manufacturing evidence for a premium route.
 - The request remains a native user message and is never paraphrased into system policy.

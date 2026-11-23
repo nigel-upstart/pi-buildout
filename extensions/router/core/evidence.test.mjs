@@ -222,10 +222,10 @@ describe("ability bands", () => {
     assert.equal(evidenceAbility("claude-opus-5-5", "high"), 4);
     assert.equal(evidenceAbility("claude-opus-5-5", "medium"), 3);
     assert.equal(evidenceAbility("claude-opus-5-5", "low"), 2);
-    assert.equal(evidenceAbility("gpt-6.1-sol", "max"), 4);
+    assert.equal(evidenceAbility("gpt-6.1-sol", "max"), 3);
     assert.equal(evidenceAbility("gpt-6.1-sol", "high"), 3);
     assert.equal(evidenceAbility("gpt-6.1-sol", "medium"), 2);
-    assert.equal(evidenceAbility("gpt-6-sol", "max"), 4);
+    assert.equal(evidenceAbility("gpt-6-sol", "max"), 2);
     assert.equal(evidenceAbility("gpt-6-sol", "high"), 3);
     assert.equal(evidenceAbility("gpt-6-sol", "medium"), 2);
     assert.equal(evidenceAbility("claude-fable-5", "xhigh"), 4);
@@ -237,6 +237,33 @@ describe("ability bands", () => {
     // Consensus-only fallback for a model with no rollout row.
     assert.equal(evidenceAbility("claude-haiku-4-5", "low"), 1);
     assert.equal(evidenceAbility("model-with-no-evidence", "high"), undefined);
+  });
+
+  it("uses latest exact-effort bands without filling in unmeasured rollout fields", () => {
+    assert.equal(evidenceAbility("gpt-6.2-sol", "max"), 3);
+    assert.equal(evidenceAbility("gpt-6.1-terra", "max"), 2);
+    assert.equal(evidenceAbility("gpt-6.2-astra", "max"), 4);
+    assert.equal(evidenceAbility("gemini-4-neon", "high"), 4);
+    assert.equal(evidenceAbility("gemini-4-neon", "xhigh"), 4);
+    assert.equal(evidenceAbility("gemini-4-neon", "max"), undefined);
+    assert.equal(evidenceAbility("claude-haiku-5-5", "xhigh"), 2);
+    assert.equal(evidenceAbility("claude-haiku-5-5", "high"), undefined);
+    assert.equal(findEvidencePrior("claude-haiku-5-5", "xhigh"), undefined);
+    assert.equal(findEvidencePrior("gemini-4-neon", "xhigh"), undefined);
+    assert.equal(findEvidencePrior("gpt-6.2-astra", "max"), undefined);
+  });
+
+  it("reprices only Terra max and preserves the predecessor's rollout guards", () => {
+    const terra = findEvidencePrior("gpt-6.1-terra", "max");
+    const source = findEvidencePrior("gpt-5.6-terra", "max");
+    assert.ok(terra && source);
+    assert.equal(findEvidencePrior("gpt-6.1-terra", "high"), undefined);
+    const { modelId, costPerPassUsd, ...behavior } = terra;
+    assert.equal(modelId, "gpt-6.1-terra");
+    const ratio =
+      (260_839_828 + 3_902_142_976 * 0.05 + 32_444_320 * 5) / (260_839_828 * 2 + 3_902_142_976 * 0.2 + 32_444_320 * 12);
+    assert.equal(costPerPassUsd, source.costPerPassUsd * ratio);
+    assert.deepEqual({ modelId: source.modelId, costPerPassUsd: source.costPerPassUsd, ...behavior }, source);
   });
 });
 

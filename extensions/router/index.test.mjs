@@ -728,6 +728,8 @@ function standardRoutingModels() {
     routingModel("anthropic", "claude-opus-5-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
     routingModel("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
     routingModel("openai-codex", "gpt-5.6-terra", { input: 4, output: 24, cacheRead: 0.4, cacheWrite: 5 }),
+    // Keep a distinct correction target for tests that cross from routine implementation to critical risk.
+    routingModel("openai-codex", "gpt-6-astra"),
   ];
 }
 
@@ -3907,7 +3909,8 @@ describe("routerExtension", () => {
         return primaryClassificationResult({ confidence: 0.6 });
       },
       classifySecondaryTask: async () => secondary.promise,
-      models: standardRoutingModels(),
+      // Exercise a cross-profile correction, not only a model switch within the OpenAI profile.
+      models: standardRoutingModels().filter(({ id }) => id !== "gpt-6-sol"),
       mode: "active",
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-idle-swap",
@@ -4037,7 +4040,8 @@ describe("routerExtension", () => {
         return primaryClassificationResult({ confidence: 0.6 });
       },
       classifySecondaryTask: async () => secondary.promise,
-      models: standardRoutingModels(),
+      // Exercise a cross-profile correction, not only a model switch within the OpenAI profile.
+      models: standardRoutingModels().filter(({ id }) => id !== "gpt-6-sol"),
       mode: "active",
       prompt: "Implement one bounded repository change",
       sessionId: "async-secondary-next-run-tuple",

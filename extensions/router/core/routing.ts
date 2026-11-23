@@ -220,6 +220,7 @@ const BEDROCK_GPT_MODELS: ReadonlySet<string> = new Set([
   "gpt-6.2-sol",
   "gpt-6.1-sol",
   "gpt-6-sol",
+  "gpt-6.1-terra",
   "gpt-5.6-terra",
   "gpt-6-luna",
 ]);
@@ -472,16 +473,8 @@ function evaluateEndpoint(
     });
     return undefined;
   }
-  // A candidate backed only by single-attempt evidence is confined to read-only consequence.
-  //
-  // The ability floor cannot do this job, and relying on it would be the trap. MiniMax M2.5 derives
-  // band 2 from that source, which clears the irreversible floor outright, so band gating alone would
-  // admit it to exactly the work its evidence cannot speak to: the source measured a single attempt per
-  // instance, so regression breakage, partial credit, repeat determinism, wall time and peak context
-  // were never observed. Five of the six terms the cost-to-done model consumes are missing.
-  //
-  // Read-only consequence is where the absence of those five terms cannot hurt: nothing the candidate
-  // produces changes state, so a wrong answer costs a retry rather than a repository.
+  // An ability band can clear the irreversible floor without measuring same-task reliability
+  // or regression safety. Benchmark-only candidates cannot serve mutating or critical work.
   if (ref.singleAttemptEvidence === true && effectiveConsequence(archetype, context) !== "read_only") {
     exclusions.push({
       candidate: key,
@@ -753,6 +746,25 @@ function sampleFor(
   );
 }
 
+function preferDeclaredPrimary(
+  ordered: { group: CandidateGroup }[],
+  archetype: Archetype,
+  language: RoutableLanguage | undefined,
+): void {
+  const policy = BOOTSTRAP_ROUTE_POLICIES[archetype];
+  if (!policy.preferPrimary) return;
+  const confidence = languageEvidence(language)?.confidence;
+  if (policy.preferPrimary.deferToLanguageEvidence && confidence && confidence !== "none") return;
+  for (const ref of policy.primary) {
+    const index = ordered.findIndex(
+      ({ group }) => group.logicalModelId === ref.logicalModelId && group.effort === ref.effort,
+    );
+    if (index < 0) continue;
+    if (index > 0) ordered.unshift(...ordered.splice(index, 1));
+    return;
+  }
+}
+
 function orderGroups(
   groups: CandidateGroup[],
   archetype: Archetype,
@@ -831,21 +843,7 @@ function orderGroups(
   // Candidates without evidence keep their declared policy order behind every scored candidate.
   const unscored = scored.filter((entry) => entry.evidence === undefined);
   const ordered = [...ranked, ...unscored];
-  // A pinned primary is a deliberate capability-first prior. A corpus-wide default may defer to
-  // the measured language policy; either way the pin only reorders and never adds a candidate.
-  const configuredPin = BOOTSTRAP_ROUTE_POLICIES[archetype].pinnedPrimary;
-  const pin =
-    configuredPin?.deferToLanguageEvidence &&
-    languagePolicy?.confidence !== undefined &&
-    languagePolicy.confidence !== "none"
-      ? undefined
-      : configuredPin;
-  const pinIndex = pin
-    ? ordered.findIndex(
-        (entry) => entry.group.logicalModelId === pin.logicalModelId && entry.group.effort === pin.effort,
-      )
-    : -1;
-  if (pinIndex > 0) ordered.unshift(...ordered.splice(pinIndex, 1));
+  preferDeclaredPrimary(ordered, archetype, context.language);
   return {
     mature: false,
     controlledHoldout: false,

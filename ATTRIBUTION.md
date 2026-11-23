@@ -393,7 +393,7 @@ from a local research corpus and the public benchmark captures it aggregates.
 
 - Source: local `llm-effectiveness` research corpus (`~/outputs/llm-effectiveness`), normalization version `2.0`
 - Initial revision reviewed: capture dated 2026-07-25, spend data through 2026-07-19
-- Latest revision reviewed:
+- September revision reviewed:
   [`teamupstart/ai-acceleration` PR #650](https://github.com/teamupstart/ai-acceleration/pull/650) at
   `a99c2d0145952f99ad92f6d786ef0aa19fa15c97`, report data through 2026-09-22; latest remote `main` reviewed at
   [`392b967c5ec3ea8d63078ddbc31a8b16a1f22836`](https://github.com/teamupstart/ai-acceleration/commit/392b967c5ec3ea8d63078ddbc31a8b16a1f22836)
@@ -453,6 +453,40 @@ Intentionally not adopted: no raw benchmark score is copied into runtime policy,
 incompatible benchmarks, no Artificial Analysis GitHub Copilot price is treated as a real cost, and no
 unsupported-vendor model (Kimi, Grok, GLM, Muse) is made a routing candidate. Benchmark pass rates are treated strictly
 as pre-telemetry ordering priors and never as the router's acceptance signal.
+
+### November model-policy refresh
+
+- Source: [`teamupstart/ai-acceleration` LLM Effectiveness report][nov-report], revision
+  `036e072f667b012b548c8fc3766d8f36856efdfc`, normalization `2.2`, data through 2026-11-23.
+- Measurements used: [CursorBench 4.1](https://cursor.com/evals) and
+  [Artificial Analysis Intelligence Index v5](https://artificialanalysis.ai/) captured 2026-11-20;
+  [Terminal-Bench 4.1](https://www.tbench.ai/?efforts=all&version=4.1) captured 2026-11-23;
+  [DataCurve DeepSWE v1.1](https://deepswe.datacurve.ai/data/v1.1) capture from 2026-09-22.
+- License: internal report; no license identified for the benchmark captures used here.
+
+Use: selected exact-effort `model_consensus.performance_best` values are transcribed into
+[`effectiveness-data.ts`](extensions/router/core/effectiveness-data.ts) as ability-band inputs. The application policy
+uses the Terminal-Bench Sol/Astra/Opus comparison and the CursorBench Haiku/Sonnet/Neon cost and step tradeoff as
+qualitative priors. The existing Terra rollout prior is repriced using the 5.6 max token totals in
+`datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv` and 5.6/6.1 rates in
+`artificialanalysis.ai/pricing-source-data.csv`; only price changes, not measured behavior. The report's leaderboard
+algorithm, data pipeline, blanket Opus recommendation, raw benchmark data, and website code were not copied. Task cost,
+step count, model output throughput, and cross-source percentiles do not stand in for router latency, success, or
+same-task reliability.
+
+Classifier compatibility references: [Claude Sonnet 5.5 release notes][sonnet55-tool-use], [Amazon Bedrock adaptive
+thinking][bedrock-adaptive-thinking], and the MIT-licensed
+[`earendil-works/pi` v1.3.0](https://github.com/earendil-works/pi/tree/v1.3.0) and
+[v1.6.0](https://github.com/earendil-works/pi/tree/v1.6.0) `pi-ai` completion interface. The provider docs (no revision
+or license declared) inform `auto` tool choice, `between_tools` thinking, low effort, and the Converse field placement.
+The Pi API is called rather than reimplemented. No documentation prose, SDK code, or native classifier API
+implementation was copied.
+
+[nov-report]:
+  https://github.com/teamupstart/ai-acceleration/tree/036e072f667b012b548c8fc3766d8f36856efdfc/llm_effectiveness
+[sonnet55-tool-use]:
+  https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5#forced-tool-use-is-not-supported
+[bedrock-adaptive-thinking]: https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html
 
 ### Scoped-model analysis refresh
 

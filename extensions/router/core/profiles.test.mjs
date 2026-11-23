@@ -24,13 +24,6 @@ function policyNamedTriples() {
     for (const ref of [...policy.primary, ...policy.fallback]) {
       triples.push({ archetype: policy.archetype, logicalModelId: ref.logicalModelId, effort: ref.effort });
     }
-    if (policy.pinnedPrimary) {
-      triples.push({
-        archetype: policy.archetype,
-        logicalModelId: policy.pinnedPrimary.logicalModelId,
-        effort: policy.pinnedPrimary.effort,
-      });
-    }
     for (const ref of HARD_TASK_ESCALATION_REFS) {
       triples.push({ archetype: policy.archetype, logicalModelId: ref.logicalModelId, effort: ref.effort });
     }
@@ -193,9 +186,16 @@ describe("canonical eligibility does not over-admit", () => {
 });
 
 describe("review-only Gemini 3.8", () => {
-  it("leads Google's reviewer availability chain and resolves no general-work profile", () => {
+  it("stays in Google's reviewer availability chain and resolves no general-work profile", () => {
     const googleReviewers = reviewerRefs("google", 4);
-    assert.equal(googleReviewers[0]?.logicalModelId, "gemini-3.8-flash");
+    assert.deepEqual(
+      googleReviewers.slice(0, 3).map((ref) => [ref.logicalModelId, ref.effort]),
+      [
+        ["gemini-4-neon", "high"],
+        ["gemini-4-neon", "xhigh"],
+        ["gemini-3.8-flash", "high"],
+      ],
+    );
     assert.equal(
       findPromptProfile("google", "gemini-3.8-flash", "code_review", "high")?.id,
       "google-gemini-3.8-review-v1",

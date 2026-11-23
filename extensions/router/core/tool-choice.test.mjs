@@ -70,6 +70,21 @@ describe("requireToolCall", () => {
     );
   });
 
+  it("uses auto and low between-tools thinking for Bedrock Sonnet 5.5", () => {
+    const tools = [{ toolSpec: { name: "report" } }];
+    const payload = { toolConfig: { tools }, additionalModelRequestFields: { other: "preserved" } };
+    const actual = requireToolCall(payload, "bedrock-converse-stream", "report", "global.anthropic.claude-sonnet-5-5");
+    assert.deepEqual(actual, {
+      toolConfig: { tools, toolChoice: { auto: {} } },
+      additionalModelRequestFields: {
+        other: "preserved",
+        thinking: { type: "between_tools" },
+        output_config: { effort: "low" },
+      },
+    });
+    assert.deepEqual(payload, { toolConfig: { tools }, additionalModelRequestFields: { other: "preserved" } });
+  });
+
   it("fails closed for a Bedrock payload that carries no tool specs", () => {
     assert.throws(() => requireToolCall({ modelId: "model" }, "bedrock-converse-stream", "report"), /toolConfig/);
     for (const toolConfig of [{}, { tools: [] }, { tools: "report" }]) {
