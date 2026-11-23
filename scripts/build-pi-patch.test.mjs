@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,6 +214,76 @@ for (const version of overlayVersions) {
     );
   });
 }
+
+test("buildUnifiedDiff isolates hook Git state and disables global commit signing", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-diff-isolation-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const parent = join(root, "parent");
+  const baseline = join(root, "baseline");
+  const patched = join(root, "patched");
+  for (const directory of [home, parent, baseline, patched]) mkdirSync(directory);
+  writeFileSync(join(home, ".gitconfig"), "[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = missing-pi-test-signer\n");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  Object.assign(env, { HOME: home, XDG_CONFIG_HOME: home });
+  const git = (...args) => execFileSync("git", args, { cwd: parent, env, encoding: "utf8" });
+  git("init", "--quiet");
+  writeFileSync(join(parent, "keep.txt"), "committed\n");
+  git("add", "keep.txt");
+  git(
+    "-c",
+    "commit.gpgSign=false",
+    "-c",
+    "user.name=test",
+    "-c",
+    "user.email=test@example.invalid",
+    "commit",
+    "-qm",
+    "parent",
+  );
+  writeFileSync(join(parent, "keep.txt"), "staged\n");
+  git("add", "keep.txt");
+  const head = git("rev-parse", "HEAD");
+  const index = readFileSync(join(parent, ".git/index"));
+  writeFileSync(join(baseline, "example.js"), "before\n");
+  writeFileSync(join(patched, "example.js"), "after\n");
+  const moduleUrl = new URL("./build-pi-patch.mjs", import.meta.url).href;
+  const patchText = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+      import { buildUnifiedDiff } from ${JSON.stringify(moduleUrl)};
+      process.stdout.write(buildUnifiedDiff(...${JSON.stringify([root, baseline, patched, { trackedFiles: [{ path: "example.js" }] }])}));
+    `,
+    ],
+    {
+      cwd: parent,
+      encoding: "utf8",
+      env: {
+        ...env,
+        GIT_DIR: join(parent, ".git"),
+        GIT_WORK_TREE: parent,
+        GIT_INDEX_FILE: join(parent, ".git/index"),
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "commit.gpgSign",
+        GIT_CONFIG_VALUE_0: "true",
+      },
+    },
+  );
+  assert.match(patchText, /--- a\/example\.js\n\+\+\+ b\/example\.js/u);
+  assert.match(patchText, /-before\n\+after/u);
+  assert.equal(git("rev-parse", "HEAD"), head, "the invoking repository's HEAD stays untouched");
+  assert.deepEqual(readFileSync(join(parent, ".git/index")), index, "the invoking index stays untouched");
+  assert.equal(readFileSync(join(parent, "keep.txt"), "utf8"), "staged\n");
+  assertPatchApplies(
+    root,
+    baseline,
+    patchText,
+    formatChecksumManifest([{ path: "example.js", sha256: sha256File(join(patched, "example.js")) }]),
+  );
+});
 
 function patchFixture(t, name = "ordinary") {
   const root = mkdtempSync(join(tmpdir(), "pi-shell-safe-"));
