@@ -71,9 +71,9 @@
     },
     "expected": {
       "archetype": "median_repository_implementation",
-      "primaryModel": "claude-opus-5-5",
-      "primaryEffort": "medium",
-      "fallbackModel": "gpt-6-sol"
+      "primaryModel": "gpt-6.2-sol",
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-5-5"
     }
   },
   {
@@ -91,8 +91,8 @@
     "expected": {
       "archetype": "terminal_heavy_implementation",
       "primaryModel": "gpt-6.2-sol",
-      "primaryEffort": "high",
-      "fallbackModel": "claude-opus-5-5"
+      "primaryEffort": "max",
+      "fallbackModel": "gpt-6.1-terra"
     }
   },
   {
@@ -129,8 +129,9 @@
     },
     "expected": {
       "archetype": "code_review",
-      "primaryVendor": "openai",
-      "primaryModel": "gpt-6.2-sol",
+      "primaryVendor": "google",
+      "primaryModel": "gemini-4-neon",
+      "primaryEffort": "high",
       "fallbackVendor": "anthropic"
     }
   },
@@ -154,7 +155,7 @@
       "archetype": "stacked_pr_implementation",
       "fallbackEffort": "high",
       "primaryModel": "gpt-6.2-sol",
-      "primaryEffort": "high",
+      "primaryEffort": "max",
       "fallbackModel": "claude-opus-5-5",
       "allowedModels": [
         "gpt-6.2-sol",
@@ -182,9 +183,9 @@
     },
     "expected": {
       "archetype": "implementation_planning",
-      "primaryModel": "claude-opus-5-5",
+      "primaryModel": "gpt-6.2-sol",
       "primaryEffort": "high",
-      "fallbackModel": "gpt-6-sol"
+      "fallbackModel": "claude-opus-5-5"
     }
   },
   {
@@ -200,9 +201,9 @@
     },
     "expected": {
       "archetype": "large_program_planning",
-      "primaryModel": "claude-opus-5-5",
-      "primaryEffort": "xhigh",
-      "fallbackModel": "claude-fable-5"
+      "primaryModel": "gpt-6.2-astra",
+      "primaryEffort": "max",
+      "fallbackModel": "gemini-4-neon"
     }
   },
   {
@@ -238,7 +239,7 @@
     },
     "expected": {
       "archetype": "highest_risk_advisory",
-      "primaryModel": "claude-opus-5-5",
+      "primaryModel": "gpt-6.2-sol",
       "primaryEffort": "max",
       "fallbackModel": "gpt-6-sol"
     }
@@ -287,9 +288,9 @@
     },
     "expected": {
       "archetype": "median_repository_implementation",
-      "primaryModel": "claude-opus-5-5",
-      "primaryEffort": "medium",
-      "fallbackModel": "gpt-6-sol"
+      "primaryModel": "gpt-6.2-sol",
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-5-5"
     }
   },
   {
@@ -336,9 +337,9 @@
     },
     "expected": {
       "archetype": "median_repository_implementation",
-      "primaryModel": "claude-opus-5-5",
-      "primaryEffort": "medium",
-      "fallbackModel": "gpt-6-sol"
+      "primaryModel": "gpt-6.2-sol",
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-5-5"
     }
   },
   {
@@ -360,9 +361,9 @@
     },
     "expected": {
       "archetype": "median_repository_implementation",
-      "primaryModel": "claude-opus-5-5",
-      "primaryEffort": "medium",
-      "fallbackModel": "gpt-6-sol"
+      "primaryModel": "gpt-6.2-sol",
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-5-5"
     }
   },
   {
@@ -384,9 +385,9 @@
     },
     "expected": {
       "archetype": "median_repository_implementation",
-      "primaryModel": "claude-opus-5-5",
-      "primaryEffort": "medium",
-      "fallbackModel": "gpt-6-sol"
+      "primaryModel": "gpt-6.2-sol",
+      "primaryEffort": "high",
+      "fallbackModel": "claude-opus-5-5"
     }
   }
 ]

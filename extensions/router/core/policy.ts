@@ -5,7 +5,7 @@ import { MODEL_VENDORS } from "./profiles.ts";
 import { canonicalModelId } from "./scope.ts";
 import type { EffortLevel, ModelVendor } from "./profiles.ts";
 
-export const POLICY_VERSION = "router-policy-v10";
+export const POLICY_VERSION = "router-policy-v11";
 
 /**
  * Backward-compatible endpoint classification retained for lease validation and diagnostics. Tiers
@@ -38,10 +38,9 @@ export type CandidateRef = {
    */
   scopedFrugal?: boolean;
   /**
-   * Backed only by single-attempt benchmark evidence. `core/routing.ts` refuses such a candidate
-   * outside read-only consequence, because the source never measured regression breakage, partial
-   * credit, repeat determinism, wall time or peak context — five of the six terms the cost-to-done
-   * model consumes. An ability band derived from that source is therefore not permission to mutate.
+   * The exact configuration has benchmark ability evidence but no routing-grade rollout prior.
+   * The router confines it to read-only consequence. Agreement across unrelated benchmarks does
+   * not establish same-task reliability or safety for mutating work.
    */
   singleAttemptEvidence?: boolean;
   allowAlias: boolean;
@@ -56,6 +55,7 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "gpt-6-luna": "openai",
   "gpt-6-astra": "openai",
   "gpt-5.6-terra": "openai",
+  "gpt-6.1-terra": "openai",
   "gpt-6-sol": "openai",
   "gpt-6.1-sol": "openai",
   "gpt-6.2-sol": "openai",
@@ -66,6 +66,8 @@ export const MODEL_VENDOR: Readonly<Record<string, ModelVendor>> = {
   "claude-fable-5": "anthropic",
   "claude-sonnet-5": "anthropic",
   "claude-haiku-4-5": "anthropic",
+  "claude-haiku-5-5": "anthropic",
+  "gemini-4-neon": "google",
   "gemini-3.8-flash": "google",
   "gemini-3.6-flash": "google",
   "gemini-2.5-pro": "google",
@@ -108,22 +110,33 @@ function candidates(logicalModelId: string, effort: EffortLevel): CandidateRef[]
   ];
 }
 
+function readOnlyCandidates(modelId: string, effort: EffortLevel): CandidateRef[] {
+  return candidates(modelId, effort).map((ref) => ({ ...ref, singleAttemptEvidence: true }));
+}
+
 const LUNA_MEDIUM = candidates("gpt-6-luna", "medium");
 const LUNA_HIGH = candidates("gpt-6-luna", "high");
 const LUNA_MAX = candidates("gpt-6-luna", "max");
 const TERRA_MEDIUM = candidates("gpt-5.6-terra", "medium");
 const TERRA_HIGH = candidates("gpt-5.6-terra", "high");
-const TERRA_MAX = candidates("gpt-5.6-terra", "max");
+const TERRA_61_MAX = candidates("gpt-6.1-terra", "max");
+const TERRA_MAX = [...TERRA_61_MAX, ...candidates("gpt-5.6-terra", "max")];
 const GPT_OSS_HIGH = candidates("gpt-oss-120b", "high");
 // Declare successors newest first so availability ladders and equal evidence scores prefer them.
 // Each generation still resolves to its own scoped endpoints and telemetry.
-const SOL_MODELS = ["gpt-6.2-sol", "gpt-6.1-sol", "gpt-6-sol"];
+const CURRENT_SOL_MODELS = ["gpt-6.2-sol", "gpt-6.1-sol"];
+const SOL_MODELS = [...CURRENT_SOL_MODELS, "gpt-6-sol"];
 const SOL_LOW = SOL_MODELS.flatMap((id) => candidates(id, "low"));
 const SOL_MEDIUM = SOL_MODELS.flatMap((id) => candidates(id, "medium"));
 const SOL_HIGH = SOL_MODELS.flatMap((id) => candidates(id, "high"));
-const SOL_MAX = SOL_MODELS.flatMap((id) => candidates(id, "max"));
+const SOL_MAX = CURRENT_SOL_MODELS.flatMap((id) => candidates(id, "max"));
+const LEGACY_SOL_MAX = candidates("gpt-6-sol", "max");
 const ASTRA_HIGH = [...candidates("gpt-6.2-astra", "high"), ...candidates("gpt-6-astra", "high")];
-const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
+const ASTRA_MAX = readOnlyCandidates("gpt-6.2-astra", "max");
+const HAIKU_LOW = [...readOnlyCandidates("claude-haiku-5-5", "low"), ...candidates("claude-haiku-4-5", "low")];
+const HAIKU_XHIGH = readOnlyCandidates("claude-haiku-5-5", "xhigh");
+const NEON_XHIGH = readOnlyCandidates("gemini-4-neon", "xhigh");
+const NEON_REVIEW = [...readOnlyCandidates("gemini-4-neon", "high"), ...NEON_XHIGH];
 /**
  * MiniMax M2.5, admitted to the bounded read-only ladders only.
  *
@@ -148,17 +161,13 @@ const HAIKU_LOW = candidates("claude-haiku-4-5", "low");
  * read-only work is also no more dangerous than being second on it, because the confinement above is
  * what bounds the damage, not the position in the chain.
  *
- * Haiku is retained behind it rather than replaced. The reason is availability, not capability: this
- * endpoint is text-only, so an image-bearing bounded task excludes it on the capability gate, and
- * Haiku is then the cheapest image-capable rung before the ladder jumps to gpt-5.6-terra at roughly
- * 2.4x its effective rate. Ordering MiniMax first is safe precisely because that gate handles the
- * exception without ordering having to.
+ * Keep the image-capable Haiku fallback because MiniMax accepts only text.
  *
  * `low` follows the rung it displaces. No source measures this model per effort — the submissions ran
  * at a "high reasoning" setting and measured agentic repository work, not bounded classification — so
  * the effort is chosen to match the rung rather than claimed as measured.
  */
-const MINIMAX_LOW = candidates("minimax-m2.5", "low").map((ref) => ({ ...ref, singleAttemptEvidence: true }));
+const MINIMAX_LOW = readOnlyCandidates("minimax-m2.5", "low");
 /**
  * Reachable Kimi open-weight rungs, confined to read-only work because their quality evidence is
  * single-attempt. Both sit within the approximate Haiku-to-Luna capability range and stay within 3x
@@ -166,16 +175,11 @@ const MINIMAX_LOW = candidates("minimax-m2.5", "low").map((ref) => ({ ...ref, si
  * SWE-bench Verified, supports image input, and leads the retained Ruby split at 68.2%; K2 Thinking
  * resolves 63.4% and Artificial Analysis records 120.98 output tokens/s versus Haiku's 81.09.
  */
-const KIMI_25_LOW = candidates("kimi-k2.5", "low").map((ref) => ({ ...ref, singleAttemptEvidence: true }));
-const KIMI_THINKING_LOW = candidates("kimi-k2-thinking", "low").map((ref) => ({
-  ...ref,
-  singleAttemptEvidence: true,
-}));
+const KIMI_25_LOW = readOnlyCandidates("kimi-k2.5", "low");
+const KIMI_THINKING_LOW = readOnlyCandidates("kimi-k2-thinking", "low");
 const OPUS_LOW = candidates("claude-opus-5-5", "low");
 const OPUS_MEDIUM = candidates("claude-opus-5-5", "medium");
 const OPUS_HIGH = candidates("claude-opus-5-5", "high");
-const OPUS_XHIGH = candidates("claude-opus-5-5", "xhigh");
-const OPUS_MAX = candidates("claude-opus-5-5", "max");
 const FABLE_XHIGH = candidates("claude-fable-5", "xhigh");
 const OPUS_46_HIGH = candidates("claude-opus-4-6", "high").map((ref) => ({ ...ref, scopedFrugal: true }));
 /**
@@ -190,14 +194,9 @@ const GEMINI_GENERAL_HIGH = [
   ...candidates("gemini-2.5-flash", "high"),
 ];
 
-/**
- * Review-only Google chain. Gemini 3.8 Flash at high effort leads on the refreshed corroborated
- * evidence: 69.2 CursorBench and 73.8% DeepSWE, with consensus performance_best 93.55 (band 4).
- * Its dedicated prompt profile resolves only for code_review, and direct Google is admitted only
- * there. Older generations remain availability fallbacks because a weaker independent review is
- * preferable to losing the Google reviewer entirely.
- */
-const GEMINI_REVIEW_HIGH = [...candidates("gemini-3.8-flash", "high"), ...GEMINI_GENERAL_HIGH];
+// Neon high is close to xhigh on CursorBench 4.1 (63.7 vs 65.4) at $6.54 vs $10.67 per task.
+// Require an exact scoped endpoint and supported effort; keep older Google models for availability.
+const GEMINI_REVIEW = [...NEON_REVIEW, ...candidates("gemini-3.8-flash", "high"), ...GEMINI_GENERAL_HIGH];
 
 export type BootstrapRoutePolicy = {
   archetype: Archetype;
@@ -229,14 +228,10 @@ export type BootstrapRoutePolicy = {
    */
   evidenceRanked: boolean;
   /**
-   * Deliberate policy prior that outranks the evidence cost objective for this archetype's first
-   * attempt. It may encode a refreshed corpus-wide default or a capability-first choice whose failure
-   * cost is paid downstream. Fallbacks stay evidence-ranked, and the pin is ignored when the pinned
-   * choice is not eligible.
+   * Prior that outranks the bootstrap cost objective for the first eligible entry in `primary`.
+   * Other choices stay evidence-ranked; no endpoint or consequence gate is relaxed.
    */
-  pinnedPrimary?: {
-    logicalModelId: string;
-    effort: EffortLevel;
+  preferPrimary?: {
     reason: string;
     /** Keep a measured language-specific route when one exists instead of applying the corpus-wide default. */
     deferToLanguageEvidence?: boolean;
@@ -246,52 +241,10 @@ export type BootstrapRoutePolicy = {
 export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> = {
   fast_classification: {
     archetype: "fast_classification",
-    // gpt-6-luna at medium, not low. Both are authorized for read-only consequence and both bill at
-    // the same rate, so the choice is token volume: medium takes 22 median steps against low's 12, but
-    // low is the worst-measured configuration in the corpus (1.6% pass, 27.7% regression breakage,
-    // consensus 0.0) and measures below the claude-haiku-4-5 rung behind it. Nothing justifies leading
-    // with it.
-    //
-    // Medium being the primary is safe without an effort-policy exception, and deliberately relies on a
-    // gate that already exists rather than a new one. gpt-6-luna declares an agentic minimum of high,
-    // which authorizeEffort applies whenever consequence reaches reversible, so a classification-shaped
-    // task that actually mutates or carries critical risk has medium refused for it and falls through to
-    // luna@high. The refusal is measured, not assumed: 23.5% regression breakage at medium against 9.1%
-    // at high. See decisions.md for the tradeoff this accepts.
+    // This is the agent answering a bounded task, not the classifier itself. Luna at medium is
+    // adequate for read-only work; the measured regression cliff below high excludes it from
+    // reversible work. Irreversible work also excludes band-1 Luna high, leaving Sol/Opus medium.
     primary: LUNA_MEDIUM,
-    // The cheap band-1 tiers serve ordinary classification. The band-2+ entry exists so a
-    // classification task carrying critical risk or an irreversible action mode is still routable;
-    // core/policy.test.mjs enforces that it stays.
-    //
-    // luna@high sits directly behind luna@medium so the first response to rising consequence is more
-    // effort on the same model rather than a different model, which is both cheaper and the only
-    // transition in this ladder backed by a per-effort measurement.
-    //
-    // minimax-m2.5 displaces claude-haiku-4-5 as the cheap rung and Haiku is retained behind it as the
-    // cheapest image-capable fallback; see MINIMAX_LOW for why that ordering is safe.
-    //
-    // gpt-oss-120b at high effort precedes gpt-5.6-terra at medium: this archetype is not
-    // evidence-ranked, so the declared order is the executed order, and on the only comparable
-    // measurement the two share, gpt-oss leads (consensus performance_best 36.5 against terra@medium's
-    // 16.3) while also sitting at the corpus cost floor. terra@medium's measured agentic behavior does
-    // not rescue the comparison either: 35.1% pass with a 14.7% regression-break rate, the worst of
-    // any tier in this ladder. It stays in the ladder only as the availability backup for gpt-oss,
-    // which is reachable on a single Amazon Bedrock route and is therefore absent on most machines.
-    //
-    // gpt-6-sol at medium is gone. Under the pi 0.84.1 registry it was strictly dominated by the
-    // claude-opus-5-5 medium rung behind it, which is a higher ability band (3 against 2) and a lower
-    // effective rate (6.161 against 7.442), so it added a rung without adding a reason. Pi 0.85.1 cuts
-    // Sol below Opus 5 (6.532 against 7.423 at the current Bedrock weight), so the cut now rests on
-    // the ability band alone; see specs/routing-layer/registry-refresh-2026-09-22.md.
-    //
-    // claude-opus-5-5 at high replaces it as the second high-consequence rung, and the reason is
-    // routability rather than capability. Irreversible consequence bars every band-1 rung here and the
-    // read-only confinement bars minimax-m2.5, so without a second survivor this ladder had exactly one
-    // eligible logical candidate for critical-risk work. selectOrdinaryRoute requires a primary AND at
-    // least one fallback, so one survivor is unroutable unless that model happens to expose two scoped
-    // endpoints - which makes safety-relevant routability depend on how an operator scoped their
-    // registry. Opus 5 at high is the same model one effort up, keeping this ladder's rule that rising
-    // consequence buys more effort before it buys a different model.
     fallback: [
       ...LUNA_HIGH,
       ...MINIMAX_LOW,
@@ -300,8 +253,8 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
       ...GPT_OSS_HIGH,
       ...HAIKU_LOW,
       ...TERRA_MEDIUM,
+      ...SOL_MEDIUM,
       ...OPUS_MEDIUM,
-      ...OPUS_HIGH,
     ],
     qualityFloor: 0.96,
     deterministicPassFloor: 0.96,
@@ -312,15 +265,14 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   exact_extraction: {
     archetype: "exact_extraction",
     primary: TERRA_MEDIUM,
-    // minimax-m2.5 joins on the same basis as in fast_classification and sits ahead of the rung it
-    // displaces. The rest of this ladder is deliberately untouched: gpt-6-sol was removed only from
-    // fast_classification, because schema-emission fidelity is what orders this archetype and no source
-    // measures it, so there is no evidence here to justify dropping a rung.
+    // Haiku xhigh is a bounded read-only fallback, not a schema-fidelity claim. Keep inexpensive
+    // rungs ahead of it; CursorBench measures multi-step coding, not extraction.
     fallback: [
       ...MINIMAX_LOW,
       ...KIMI_25_LOW,
       ...KIMI_THINKING_LOW,
       ...HAIKU_LOW,
+      ...HAIKU_XHIGH,
       ...SOL_LOW,
       ...GPT_OSS_HIGH,
       ...SOL_MEDIUM,
@@ -335,21 +287,9 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   deliberate_tool_workflow: {
     archetype: "deliberate_tool_workflow",
     primary: SOL_MEDIUM,
-    // gpt-5.4 at medium is gone from this ladder. It was carried only as a legacy fallback and had no
-    // rollout row at that effort at all; the one gpt-5.4 configuration the corpus does measure (xhigh)
-    // passes 51.8% with 12.4% regression breakage for $10.91 per pass, worse than every tier above it.
-    // Two current-generation entries replace it:
-    //
-    //  - gpt-5.6-terra at high is the cheap rung this archetype was reaching for: 53.8% pass at $2.11
-    //    per pass and 315s median, which is cheaper and faster than sol@medium ($3.05, 355s) for
-    //    procedural work whose steps are dictated rather than designed. Its consensus band is 43.0, so
-    //    it is band 1 and consequence gating bars it from the irreversible checkpoints in this
-    //    archetype on its own; it serves the local_read and reversible members of the same ladder.
-    //  - claude-opus-5-5 at medium is the non-OpenAI tail, and the closest measured neighbour of the Sol
-    //    tiers (68.1% pass and consensus 79.0 against sol@high's 69.3% and 79.9, $4.86 per pass against
-    //    sol@medium's $3.05, 588s median against 355s). It gives a workflow with external side effects a
-    //    vendor alternative, which an all-OpenAI ladder could not.
-    fallback: [...SOL_HIGH, ...SOL_LOW, ...TERRA_HIGH, ...OPUS_MEDIUM],
+    // Terra supplies cheaper workflow alternatives where their effort, context, and consequence
+    // fit. Keep Opus medium as an independent availability fallback.
+    fallback: [...SOL_HIGH, ...SOL_LOW, ...TERRA_HIGH, ...TERRA_61_MAX, ...OPUS_MEDIUM],
     qualityFloor: 0.8,
     deterministicPassFloor: 0.61,
     allowSuperSaturation: false,
@@ -358,40 +298,40 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   },
   median_repository_implementation: {
     archetype: "median_repository_implementation",
-    primary: OPUS_MEDIUM,
-    fallback: [...SOL_HIGH, ...OPUS_HIGH, ...TERRA_HIGH, ...OPUS_46_HIGH],
+    primary: SOL_HIGH,
+    fallback: [...OPUS_MEDIUM, ...OPUS_HIGH, ...TERRA_HIGH, ...OPUS_46_HIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.68,
     allowSuperSaturation: false,
     mutatesRepository: true,
     evidenceRanked: true,
-    pinnedPrimary: {
-      logicalModelId: "claude-opus-5-5",
-      effort: "medium",
-      reason:
-        "the refreshed effectiveness report recommends Opus low/medium as the default agentic coding route and Sol high as the challenger; measured language-specific routing remains authoritative",
-      deferToLanguageEvidence: true,
-    },
   },
   stacked_pr_implementation: {
     archetype: "stacked_pr_implementation",
-    primary: OPUS_HIGH,
-    fallback: [...SOL_HIGH, ...SOL_MAX],
+    primary: SOL_MAX,
+    fallback: [...SOL_HIGH, ...OPUS_HIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.72,
-    allowSuperSaturation: false,
+    allowSuperSaturation: true,
     mutatesRepository: true,
     evidenceRanked: true,
+    preferPrimary: {
+      reason: "use current Sol max for stack-wide work while retaining the language-specific evidence order",
+      deferToLanguageEvidence: true,
+    },
   },
   terminal_heavy_implementation: {
     archetype: "terminal_heavy_implementation",
-    primary: SOL_HIGH,
-    fallback: [...OPUS_HIGH, ...TERRA_MAX, ...TERRA_HIGH],
+    primary: SOL_MAX,
+    fallback: [...SOL_HIGH, ...TERRA_MAX, ...TERRA_HIGH, ...OPUS_HIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.69,
-    allowSuperSaturation: false,
+    allowSuperSaturation: true,
     mutatesRepository: true,
     evidenceRanked: true,
+    preferPrimary: {
+      reason: "Sol 6.2 and 6.1 at max resolve 61.5% and 60.9% on Terminal-Bench 4.1 with Codex",
+    },
   },
   algorithmic_iterative_coding: {
     archetype: "algorithmic_iterative_coding",
@@ -405,60 +345,44 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   },
   code_review: {
     archetype: "code_review",
-    primary: OPUS_HIGH,
-    fallback: SOL_HIGH,
+    primary: NEON_REVIEW,
+    fallback: [...SOL_HIGH, ...OPUS_HIGH, ...HAIKU_XHIGH],
     qualityFloor: 0.75,
     deterministicPassFloor: 0.72,
     allowSuperSaturation: false,
     mutatesRepository: false,
     evidenceRanked: true,
+    preferPrimary: { reason: "prefer Neon high for read-only review; xhigh is a scoped alternative" },
   },
   implementation_planning: {
     archetype: "implementation_planning",
-    primary: OPUS_HIGH,
-    fallback: [...SOL_HIGH, ...ASTRA_HIGH, ...FABLE_XHIGH],
+    primary: SOL_HIGH,
+    fallback: [...ASTRA_HIGH, ...OPUS_HIGH, ...FABLE_XHIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.72,
     allowSuperSaturation: false,
     mutatesRepository: false,
     evidenceRanked: true,
-    pinnedPrimary: {
-      logicalModelId: "claude-opus-5-5",
-      effort: "high",
-      reason:
-        "planning is capability-first: Opus 5 holds the top consensus band (92.2) and the lowest regression breakage, and a defective plan propagates across every pull request it authorizes",
-    },
   },
   large_program_planning: {
     archetype: "large_program_planning",
-    primary: OPUS_XHIGH,
-    fallback: [...ASTRA_HIGH, ...SOL_MAX, ...FABLE_XHIGH],
+    primary: [...ASTRA_MAX, ...NEON_XHIGH, ...SOL_MAX],
+    fallback: [...ASTRA_HIGH, ...SOL_HIGH, ...LEGACY_SOL_MAX, ...OPUS_HIGH, ...FABLE_XHIGH],
     qualityFloor: 0.7,
     deterministicPassFloor: 0.72,
     allowSuperSaturation: true,
     mutatesRepository: false,
     evidenceRanked: true,
-    pinnedPrimary: {
-      logicalModelId: "claude-opus-5-5",
-      effort: "xhigh",
-      reason:
-        "program planning is capability-first and long-horizon; Opus 5 at xhigh leads the corpus (72.5% pass, consensus 97.1) and Fable 5 at xhigh costs 1.5x more per pass for less",
+    preferPrimary: {
+      reason: "prefer corroborated frontier capability for large plans within the consequence and context bounds",
     },
   },
   long_context_synthesis: {
     archetype: "long_context_synthesis",
-    primary: OPUS_MEDIUM,
-    // gpt-5.5 at xhigh used to hold the OpenAI tail here on its long-context numbers: 0% context
-    // overflow, p90 peak context 219,152, and the highest partial credit on failure in the ladder
-    // (83.1%), which is what a synthesis route degrades into when it does not fully succeed. It is
-    // retired anyway, because gpt-5.6-terra at max matches the shape and beats it on every number that
-    // matters: 69.6% pass against 67.0%, $7.10 per pass against $10.78, 928s median against 1,588s,
-    // consensus 84.7 against 68.8, with the same 0% overflow at a comparable p90 peak of 266,934. Terra
-    // is also effort-hungry rather than saturated early, so max is its measured top tier and not a
-    // super-saturation reach. claude-opus-4-6 precedes it because a scoped-frugal candidate is admitted
-    // only where step count binds, and where it is admitted its 23.6 median API calls are the cheapest
-    // way through a large-document pass.
-    fallback: [...SOL_HIGH, ...OPUS_46_HIGH, ...TERRA_MAX],
+    primary: SOL_HIGH,
+    // Keep Terra's context-efficient max workload where the endpoint can fit its measured peak
+    // below half the window. Scoped Opus 4.6 remains relevant only where step count binds.
+    fallback: [...OPUS_MEDIUM, ...OPUS_46_HIGH, ...TERRA_MAX],
     qualityFloor: 0.72,
     deterministicPassFloor: 0.68,
     allowSuperSaturation: false,
@@ -467,18 +391,15 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
   },
   highest_risk_advisory: {
     archetype: "highest_risk_advisory",
-    primary: OPUS_MAX,
-    fallback: [...ASTRA_HIGH, ...SOL_MAX, ...OPUS_HIGH],
+    primary: [...ASTRA_MAX, ...SOL_MAX, ...ASTRA_HIGH],
+    fallback: [...SOL_HIGH, ...LEGACY_SOL_MAX, ...OPUS_HIGH, ...OPUS_MEDIUM],
     qualityFloor: 0.8,
     deterministicPassFloor: 0.73,
     allowSuperSaturation: true,
     mutatesRepository: false,
     evidenceRanked: true,
-    pinnedPrimary: {
-      logicalModelId: "claude-opus-5-5",
-      effort: "max",
-      reason:
-        "highest-risk work is quality-first: Opus 5 at max leads determinism (54.9% all-repeat pass) and regression safety (5.2% corpus-wide), and the cost of a wrong verdict is not paid inside the task",
+    preferPrimary: {
+      reason: "use Astra max only for read-only consequence, then favor qualified Sol max or Astra high",
     },
   },
 };
@@ -497,14 +418,13 @@ export const BOOTSTRAP_ROUTE_POLICIES: Record<Archetype, BootstrapRoutePolicy> =
  * The ability-1 OpenAI and Anthropic rungs are also absent. A reviewer must be able to reason about
  * a diff, and the lowest-band configurations either cliff catastrophically (gpt-6-luna at low
  * effort passes 1.5% and breaks previously passing tests at 27.7%) or carry no agentic measurement
- * at all (claude-haiku-4-5). Google's review-only rung leads with Gemini 3.8 Flash at high effort
- * (band 4), then degrades through older generations when that endpoint is unavailable. The rung is
- * intentionally an ordered availability chain rather than a set of equal-ability configurations.
+ * at all (claude-haiku-4-5). Google's rung leads with Gemini 4 Neon, then falls back through older
+ * generations as needed. It is an ordered availability chain rather than a set of equal bands.
  */
 const REVIEWER_TIERS: Partial<Record<ModelVendor, readonly (readonly CandidateRef[])[]>> = {
-  openai: [ASTRA_HIGH, SOL_MEDIUM, SOL_HIGH, SOL_MAX],
+  openai: [ASTRA_HIGH, SOL_MEDIUM, SOL_HIGH],
   anthropic: [OPUS_LOW, OPUS_MEDIUM, OPUS_HIGH, FABLE_XHIGH],
-  google: [GEMINI_REVIEW_HIGH],
+  google: [GEMINI_REVIEW],
 };
 
 /** Vendors that actually declare a reviewer ladder, in MODEL_VENDORS order. */
@@ -550,6 +470,10 @@ export function reviewerRefs(vendor: ModelVendor, minimumAbility: number): reado
   // A vendor with no declared ladder contributes no reviewer rather than throwing, so the review
   // path stays defined for every member of an arbitrarily sized vendor set.
   if (!tiers || tiers.length === 0) return [];
-  const eligibleTiers = tiers.filter((tier) => (tier[0]?.ability ?? 0) >= minimumAbility);
-  return eligibleTiers.length > 0 ? eligibleTiers.flat() : [...(tiers.at(-1) ?? [])];
+  const band = (tier: readonly CandidateRef[]) => tier[0]?.ability ?? 0;
+  const preferred = tiers.filter((tier) => band(tier) >= minimumAbility);
+  // Stronger catalogue entries can be out of scope or unsupported on a given machine. Try the
+  // strongest remaining lower band before losing the vendor and failing the independence floor.
+  const below = tiers.filter((tier) => band(tier) < minimumAbility).sort((a, b) => band(b) - band(a));
+  return [...preferred, ...below].flat();
 }

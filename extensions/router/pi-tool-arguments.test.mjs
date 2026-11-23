@@ -160,11 +160,11 @@ async function classify(t, responses, delivered = []) {
     models: [{ id: "classifier-fixture" }],
   });
   t.after(() => faux.unregister());
-  // Observe the response returned to complete(), after the faux provider's own cloning.
+  // Observe the response returned to completeSimple(), after the faux provider's own cloning.
   const provider = getApiProvider(faux.api);
-  const stream = provider.stream;
-  t.mock.method(provider, "stream", (...args) => {
-    const response = stream(...args);
+  const streamSimple = provider.streamSimple;
+  t.mock.method(provider, "streamSimple", (...args) => {
+    const response = streamSimple(...args);
     const result = response.result.bind(response);
     t.mock.method(response, "result", async () => {
       const message = await result();

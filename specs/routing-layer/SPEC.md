@@ -190,10 +190,10 @@ Deterministic, not LLM-assisted:
   estimate rather than an exact count.
 - Prompt-profile compatibility (a model without a validated profile for the archetype/effort is not eligible).
 - Review-provider exclusion uses the model's canonical vendor, not merely the endpoint/gateway name: select one
-  candidate from every reviewer-ladder vendor other than the builder's vendor, require at least two, and prefer the
-  closest reviewer at or above the builder's effective ability. If a vendor has no model at that level, select its
-  strongest eligible model and record the ceiling mismatch. Google's availability rung leads with Gemini 3.8 Flash at
-  high effort and degrades to older Gemini generations when 3.8 is unavailable.
+  candidate from every reviewer-ladder vendor other than the builder's vendor and require at least two vendors. Prefer
+  eligible tiers at or above the builder's ability. When none remain for a vendor, try its strongest eligible lower tier
+  and record the ceiling mismatch. Google's ladder starts with Gemini 4 Neon high, then xhigh, then Gemini 3.8 Flash and
+  older availability options.
 - Ordinary routes should keep a different-vendor candidate in the chain wherever one is eligible. This is a property of
   the candidate pools rather than an enforced filter: ordering is driven by measured cost-to-done, so the router does
   not reject an all-one-vendor chain when that is what eligibility leaves. Direct `google` endpoints are reserved for
@@ -263,20 +263,20 @@ meaning of its explicit kind: plan advice (`plan`) or completion findings. No ki
 These are starting priors to encode in the eligible-candidate registry, expected to be superseded by measured telemetry
 per route:
 
-| Archetype                                   | First choice                                                                                     | Required secondary                                                                |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| Fast classification/routing                 | fast/low-effort model                                                                            | different-provider fast model                                                     |
-| Exact extraction, rigid schema              | precise model, low/medium effort                                                                 | fast fallback                                                                     |
-| Deliberate non-coding tool workflow         | mid-tier agentic model, medium effort                                                            | same-family fallback, medium                                                      |
-| Median repository implementation (1 PR)     | Opus 5 medium as refreshed corpus-wide default; measured language route may override             | Sol high as different-vendor challenger                                           |
-| Dependent PR-stack implementation (2–100)   | current-generation coding model, high effort                                                     | top different-provider agent, high; current-generation same-vendor fallback       |
-| Terminal-heavy implementation               | step-efficient coding model, high effort                                                         | different-provider high-effort fallback                                           |
-| Algorithmic/rapid iterative coding          | fast iterative model, medium effort                                                              | strong coding model, medium                                                       |
-| Code review                                 | standalone: feature-ranked review model; tracked: closest non-builder reviewer ≥ builder ability | standalone ordinary fallback chain; tracked candidates from every eligible vendor |
-| Ordinary implementation planning (2–10 PRs) | pinned top planning model, high                                                                  | different-provider planning model, high                                           |
-| Large program planning (11–100 PRs)         | pinned top long-run planning model, xhigh                                                        | different-provider planning model, high/max                                       |
-| Long-context synthesis                      | context-efficient model whose measured peak stays under half the window                          | different-provider fallback                                                       |
-| Highest-risk ambiguous advisory work        | pinned top reasoning model, max                                                                  | different-provider top reasoning model                                            |
+| Archetype                                   | Bootstrap preference                                                  | Fallback shape                                           |
+| ------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------- |
+| Fast classification (agent response)        | Luna medium; the separate classifier runs at low effort               | Cheap bounded models, then consequence-eligible Sol/Opus |
+| Exact extraction, rigid schema              | Terra medium                                                          | Cheap rungs, then bounded Haiku xhigh or stronger models |
+| Deliberate non-coding tool workflow         | Evidence-ranked Sol/Terra/Opus                                        | Includes Terra 6.1 max when the endpoint fits            |
+| Median repository implementation (1 PR)     | Usually Sol high by cost-to-done                                      | Opus remains competitive on measured language slices     |
+| Dependent PR-stack implementation (2–100)   | Current Sol max; defers to language evidence                          | Sol high and Opus high                                   |
+| Terminal-heavy implementation               | Current Sol max                                                       | Sol high, Terra max, and other eligible fallbacks        |
+| Algorithmic/rapid iterative coding          | Evidence-ranked Sol medium/Opus medium and other bounded coding tiers | Scoped same- and different-vendor options                |
+| Code review                                 | Standalone: Neon high for read-only; tracked: non-builder vendors     | Standalone fallback chain; tracked vendor alternatives   |
+| Ordinary implementation planning (2–10 PRs) | Usually Sol high by cost-to-done                                      | Astra high, Opus high, and other eligible tiers          |
+| Large program planning (11–100 PRs)         | Read-only: Astra 6.2 max, Neon xhigh, then qualified Sol max          | Evidence-ranked fallbacks                                |
+| Long-context synthesis                      | Context-efficient model with measured peak under half the window      | Includes Terra max where the context and effort fit      |
+| Highest-risk ambiguous advisory work        | Qualified Sol max or Astra high when consequence is irreversible      | Evidence-ranked fallbacks; Astra max is read-only        |
 
 The bounded read-only ladders also carry four enabled open-weight availability options. MiniMax M2.5 and `gpt-oss-120b`
 remain, while Kimi K2.5 and Kimi K2 Thinking join as low-effort fallbacks. The Kimi endpoints are each within three
@@ -286,17 +286,16 @@ and a strong Ruby slice, while K2 Thinking contributes output speed comparable t
 without an exact-version quality result or without a compensating benefit remain out of policy. The full candidate
 comparison is in [`scoped-model-analysis-2026-09-10.md`](scoped-model-analysis-2026-09-10.md).
 
-Gemini 3.8 Flash at high effort is a tracked-review candidate only. Its two-source refreshed evidence establishes a
-review ability band but not the regression, repeatability, latency-tail, and overflow priors needed for general
-cost-to-done routing. Direct Gemini API endpoints are therefore consumed only by `code_review`; expected endpoint
-failures continue through the independent reviewer fallback chain.
+Gemini 3.8 Flash high remains tracked-review only. Neon high and xhigh use exact-effort benchmark ability bands without
+synthesizing cost-to-done metrics. Neon, Haiku 5.5 xhigh, and Astra 6.2 max are excluded above read-only consequence.
+Direct Gemini API endpoints still serve only `code_review`; Vertex and other scoped endpoints may serve the read-only
+program-planning route.
 
-Four archetypes carry a **pinned** first choice. Median repository implementation uses Opus 5 at medium as the refreshed
-corpus-wide coding default and Sol high as its challenger; that default defers to a measured language-specific route.
-Planning, program planning, and highest-risk advisory work order by capability rather than expected completion cost,
-because a defective plan or a wrong high-risk verdict is paid by the downstream pull requests it authorizes rather than
-inside the task. A pin only reorders an already-authorized pool, is ignored when the pinned choice is ineligible, and
-leaves fallbacks evidence-ranked. Every other archetype is ordered purely by measured cost-to-done.
+An archetype may prefer the first eligible candidate in its declared primary ladder during bootstrap. This is a bounded
+override of evidence order, not an authorization: it does not bypass model scope, effort, context, health, or
+consequence gates. Other candidates stay evidence-ranked. Bounded agent-response archetypes keep declared order rather
+than using coding rollout performance as a proxy for single-shot classification or extraction. Mature telemetry still
+takes precedence.
 
 Minimum capability is gated on what a wrong result costs, derived from the task's own `actionMode`, `risk`, and
 `verificationStrength` rather than from its archetype label. `information_only` and `local_read` work has no capability

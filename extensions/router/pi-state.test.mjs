@@ -36,12 +36,14 @@ describe("modelAbility", () => {
     assert.equal(modelAbility("claude-opus-5-5", "high"), 4);
     assert.equal(modelAbility("claude-opus-5-5", "medium"), 3);
     assert.equal(modelAbility("claude-opus-5-5", "low"), 2);
-    assert.equal(modelAbility("gpt-6-sol", "max"), 4);
+    assert.equal(modelAbility("gpt-6-sol", "max"), 2);
     assert.equal(modelAbility("gpt-6-sol", "high"), 3);
+    assert.equal(modelAbility("gpt-6.2-sol", "max"), 3);
     assert.equal(modelAbility("claude-sonnet-5", "high"), 1);
     assert.equal(modelAbility("gpt-5.6-terra", "high"), 1);
     // A resale endpoint resolves to the same band as the model it serves.
     assert.equal(modelAbility("global.anthropic.claude-opus-5-5", "high"), 4);
+    assert.equal(modelAbility("claude-haiku-5.5", "xhigh"), 2);
   });
 
   it("falls back to a pessimistic heuristic only for unmeasured models", () => {

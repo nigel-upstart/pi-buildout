@@ -1,5 +1,6 @@
 import { EVIDENCE_PRIOR_ROWS } from "./evidence-data.ts";
 import type { EvidenceLanguagePrior, EvidencePriorRow } from "./evidence-data.ts";
+import { NOVEMBER_CONSENSUS_BEST, TERRA_MAX_PROXY } from "./effectiveness-data.ts";
 import { SINGLE_ATTEMPT_PRIOR_ROWS } from "./single-attempt-data.ts";
 import type { SingleAttemptPriorRow } from "./single-attempt-data.ts";
 
@@ -125,17 +126,17 @@ type GenerationProxy = {
  * measured cost per pass is scaled by that ratio. Nothing else is rescaled, because a rate cut
  * changes what an attempt costs, not how often it passes.
  *
- * Sources: teamupstart/ai-acceleration PR #650 at a99c2d0145952f99ad92f6d786ef0aa19fa15c97, checked in as
- * specs/routing-layer/generation-evidence-2026-09-22.json; evidence.test.mjs asserts this table and the
- * Astra row below agree with it, so drift fails the build.
- * Rates are `artificialanalysis.ai/pricing-source-data.csv` (vendor list prices retrieved
- * 2026-09-22 for the new releases; 2026-09-09 and 2026-07-25 for the sources). Token totals are
- * `datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv` (capture 2026-09-22), with uncached
- * input = total_input_tokens - total_cache_tokens. Cache writes have no separate token column, so they
- * are priced inside uncached input at the input rate; every proxy scales its write rate by the same
- * factor as its input rate, so this does not bias the ratio.
+ * The September priors and Astra high are pinned in specs/routing-layer/generation-evidence-2026-09-22.json.
+ * The 6.1 Terra max rates and token mix are part of the November evidence snapshot.
+ * Both use `artificialanalysis.ai/pricing-source-data.csv` and DeepSWE's `rollout_metrics_by_config.csv`.
+ * Uncached input = total_input_tokens - total_cache_tokens. Cache writes are included in uncached input;
+ * their rates scale by the same factor as input, so the missing split does not bias the ratio.
  */
 const GENERATION_PROXIES: Readonly<Record<string, GenerationProxy>> = {
+  // Only max is admitted for 6.1 Terra. The November report directly measures its ability, not
+  // its rollout costs or safety fields. Reprice 5.6 Terra's measured max workload; keep its
+  // time, reliability, and context guards as proxies until comparable 6.1 rollouts are available.
+  "gpt-6.1-terra": TERRA_MAX_PROXY,
   "gpt-6-luna": {
     sourceModelId: "gpt-5.6-luna",
     sourceRates: { input: 0.2, cacheRead: 0.02, output: 1.2 },
@@ -214,10 +215,10 @@ function generationProxyPrior(
   proxy: GenerationProxy,
   effort: EffortLevel,
 ): EvidencePriorRow | undefined {
-  const source = EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === proxy.sourceModelId && row.effort === effort);
-  if (!source) return undefined;
   const ratio = generationProxyCostRatio(modelId, effort);
-  if (ratio === undefined) throw new Error(`${modelId}@${effort} proxy has no measured source token mix`);
+  if (ratio === undefined) return undefined;
+  const source = EVIDENCE_PRIOR_ROWS.find((row) => row.modelId === proxy.sourceModelId && row.effort === effort);
+  if (!source) throw new Error(`${modelId}@${effort} proxy has no measured source prior`);
   return { ...source, modelId, costPerPassUsd: source.costPerPassUsd * ratio };
 }
 
@@ -342,9 +343,14 @@ const CONSENSUS_ONLY_ABILITY: Readonly<Record<string, AbilityTier>> = {
 };
 
 export function evidenceAbility(modelId: string, effort: EffortLevel): AbilityTier | undefined {
+  const key = `${modelId}@${effort}`;
+  // An exact measurement for the current generation supersedes the ability of a proxy. It does
+  // not supply the missing cost-to-done terms or replace any of the rollout guards.
+  const currentConsensusBest = NOVEMBER_CONSENSUS_BEST[key];
+  if (currentConsensusBest !== undefined) return abilityFromConsensus(currentConsensusBest);
   const row = findEvidencePrior(modelId, effort);
   if (row?.consensusBest !== undefined) return abilityFromConsensus(row.consensusBest);
-  const freshConsensusBest = FRESH_CONSENSUS_BEST[`${modelId}@${effort}`];
+  const freshConsensusBest = FRESH_CONSENSUS_BEST[key];
   if (freshConsensusBest !== undefined) return abilityFromConsensus(freshConsensusBest);
   const consensusOnly = CONSENSUS_ONLY_ABILITY[modelId];
   if (consensusOnly !== undefined) return consensusOnly;

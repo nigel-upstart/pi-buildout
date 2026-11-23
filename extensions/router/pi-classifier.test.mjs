@@ -61,8 +61,9 @@ function rateLimitError(provider) {
 }
 
 describe("selectClassifierModels", () => {
-  it("prefers Luna latest then Haiku latest before the versioned stack, with Haiku 4.5 last", () => {
+  it("keeps the cheap primary ladder ahead of Sonnet 5.5", () => {
     const selected = selectClassifierModels([
+      snapshot("anthropic", "claude-sonnet-5-5"),
       snapshot("anthropic", "claude-haiku-4-5"),
       snapshot("google", "gemini-3.5-flash-lite"),
       snapshot("anthropic", "claude-haiku-5-5"),
@@ -83,8 +84,23 @@ describe("selectClassifierModels", () => {
         "claude-haiku-5-5",
         "gemini-3.5-flash-lite",
         "claude-haiku-4-5",
+        "claude-sonnet-5-5",
       ],
     );
+  });
+
+  it("offers current Sonnet as an independent secondary before legacy Sonnet", () => {
+    const models = [
+      snapshot("openai-codex", "gpt-6-luna"),
+      snapshot("anthropic", "claude-sonnet-5"),
+      snapshot("github-copilot", "claude-sonnet-5.5"),
+    ];
+    assert.deepEqual(
+      selectClassifierModels(models).secondary.map(({ model }) => model.id),
+      ["claude-sonnet-5.5", "claude-sonnet-5"],
+    );
+    const anthropicPrimary = selectClassifierModels(models.slice(1));
+    assert.deepEqual(anthropicPrimary.secondary, []);
   });
 
   for (const modelId of ["gpt-luna-latest", "claude-haiku-latest", "claude-haiku-5-5", "claude-haiku-5.5"]) {
@@ -125,16 +141,18 @@ describe("selectClassifierModels", () => {
     });
   }
 
-  it("skips unavailable or tool-incapable new classifier endpoints", () => {
+  it("skips unavailable, tool-incapable, and medium-or-higher-only reasoners", () => {
     const selected = selectClassifierModels([
       snapshot("openai-codex", "gpt-luna-latest", { available: false }),
       snapshot("anthropic", "claude-haiku-latest", { available: false }),
       snapshot("anthropic", "claude-haiku-5-5", { toolCapable: false }),
+      snapshot("anthropic", "claude-sonnet-5-5", { supportedEfforts: ["medium", "high"] }),
+      snapshot("google", "gemini-3.5-flash-lite", { reasoning: false, supportedEfforts: ["off"] }),
       snapshot("anthropic", "claude-haiku-4-5"),
     ]);
     assert.deepEqual(
       selected.primary.map((entry) => entry.model.id),
-      ["claude-haiku-4-5"],
+      ["gemini-3.5-flash-lite", "claude-haiku-4-5"],
     );
   });
 
@@ -586,6 +604,74 @@ describe("selectClassifierModels", () => {
 });
 
 describe("classifier request options", () => {
+  it("serializes Sonnet 5.5 at low effort and accepts only its validated tool response", async (t) => {
+    const model = getModel("anthropic", "claude-sonnet-5-5");
+    const features = { ...conservativeFeatures("fixture"), confidence: 0.95, risk: "low" };
+    const usage = { input_tokens: 10, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+    const fetch = t.mock.method(globalThis, "fetch", () => {
+      const wantsText = fetch.mock.callCount() > 0;
+      const events = [
+        {
+          type: "message_start",
+          message: { id: "msg_fixture", type: "message", role: "assistant", model: model.id, content: [], usage },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: wantsText
+            ? { type: "text", text: JSON.stringify(features) }
+            : { type: "tool_use", id: "toolu_fixture", name: "report_task_features", input: {} },
+        },
+        ...(!wantsText
+          ? [
+              {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: JSON.stringify(features) },
+              },
+            ]
+          : []),
+        { type: "content_block_stop", index: 0 },
+        {
+          type: "message_delta",
+          delta: { stop_reason: wantsText ? "end_turn" : "tool_use" },
+          usage: { output_tokens: 20 },
+        },
+        { type: "message_stop" },
+      ];
+      return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const classify = () =>
+      classifyTaskWithPi({
+        ctx: {
+          modelRegistry: {
+            find: () => model,
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture", baseUrl: "https://anthropic.invalid" }),
+          },
+        },
+        registry: [snapshot("anthropic", model.id)],
+        prompt: "Explain this function",
+        synopsis: {},
+      });
+    const valid = await classify();
+    assert.equal(valid.failedClosed, false);
+    assert.deepEqual(valid.features, features);
+    assert.equal(fetch.mock.callCount(), 1);
+    const [, { body }] = fetch.mock.calls[0].arguments;
+    const payload = JSON.parse(body);
+    assert.equal(payload.output_config.effort, "low");
+    assert.deepEqual(payload.thinking, { type: "between_tools" });
+    assert.deepEqual(payload.tool_choice, { type: "auto" });
+    assert.equal(payload.max_tokens, 4_096);
+
+    const plainText = await classify();
+    assert.equal(plainText.failedClosed, true);
+    assert.equal(plainText.attempts.length, 2);
+    assert.ok(plainText.attempts.every(({ valid }) => !valid));
+  });
+
   it("sends low reasoning effort and forces the classifier tool in the Codex HTTP body", async (t) => {
     const model = getModel("openai-codex", "gpt-6-luna");
     const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture" } }));
@@ -634,7 +720,10 @@ describe("classifier request options", () => {
     assert.equal(fetch.mock.callCount(), 1);
     const [, { headers, body }] = fetch.mock.calls[0].arguments;
     const payload = JSON.parse(headers.get("content-encoding") === "zstd" ? zstdDecompressSync(body).toString() : body);
-    assert.equal(payload.reasoning?.effort, "low");
+    // Newer Codex adapters carry the effective effort in configuration_update items and leave
+    // a fixed top-level effort for cache compatibility. Older adapters send it at the top level.
+    const update = payload.input.findLast((item) => item.type === "configuration_update");
+    assert.equal(update ? update.reasoning?.effort : payload.reasoning?.effort, "low");
     assert.deepEqual(payload.tool_choice, { type: "function", name: "report_task_features" });
     assert.equal(result.failedClosed, false);
     assert.equal(result.attempts[0]?.valid, true);

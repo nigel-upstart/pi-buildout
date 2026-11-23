@@ -213,14 +213,12 @@ describe("abilityFromSingleAttempt", () => {
   });
 });
 
-describe("existing candidates keep their bands unchanged", () => {
-  it("does not route any existing candidate through the single-attempt class", () => {
-    // Regression guard for the whole point of the separate class: adding it must not have moved any
-    // band that the multi-trial and consensus sources already decide.
+describe("SWE-bench single-attempt evidence precedence", () => {
+  it("does not replace bands set by rollout priors or consensus", () => {
     assert.equal(evidenceAbility("claude-opus-5-5", "high"), 4);
     assert.equal(evidenceAbility("claude-opus-5-5", "medium"), 3);
     assert.equal(evidenceAbility("claude-opus-5-5", "low"), 2);
-    assert.equal(evidenceAbility("gpt-6-sol", "max"), 4);
+    assert.equal(evidenceAbility("gpt-6-sol", "max"), 2);
     assert.equal(evidenceAbility("gpt-6-sol", "high"), 3);
     assert.equal(evidenceAbility("gpt-6-sol", "medium"), 2);
     assert.equal(evidenceAbility("claude-fable-5", "xhigh"), 4);
