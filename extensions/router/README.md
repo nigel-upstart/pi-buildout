@@ -152,6 +152,9 @@ The concrete tier lists live in [`pi-classifier.ts`](pi-classifier.ts) (`PRIMARY
 - Classifiers are chosen only from the operator's scoped registry, by logical model ID. Every scoped endpoint serving a
   tier is a candidate: an available, tool-capable endpoint without a recurring health failure, ordered by endpoint cost
   within its tier. The classifier forces a tool call, so an endpoint whose API cannot require one is never usable.
+- Primary preference is `gpt-luna-latest`, `claude-haiku-latest`, GPT-6 Luna, GPT-5.6 Luna, MAI-Code Flash, Haiku 5.5,
+  Gemini 3.5 Flash Lite, then Haiku 4.5 last. Latest aliases are used only when their exact logical IDs are present in
+  scope; no alias is invented.
 - The primary is a fast, inexpensive tier. Candidates are tried in order, and any failure other than cancellation or a
   timeout (for example a rate limit or missing credentials) falls through to the next endpoint and then the next tier.
 - A primary that reports low confidence or high/critical risk escalates to a secondary. The secondary must come from a

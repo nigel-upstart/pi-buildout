@@ -38,20 +38,22 @@ type ClassifierModel = {
 };
 
 // Logical classifier tiers are resolved only against the operator's scoped registry snapshot.
-// Luna remains preferred over Haiku regardless of endpoint cost; the shared endpoint comparator
-// orders alternatives serving the same logical model. We do not guess an older Sonnet ID: an exact
-// endpoint must canonicalize to one of these validated logical model IDs. GPT-5.6 Luna stays listed
-// after GPT-6 Luna because many scoped registries (including every Amazon Bedrock region today) still
-// serve only the 5.6 generation; dropping it silently pushed every primary onto Haiku.
-// Microsoft's MAI-Code Flash is a Luna-class fast model reached through GitHub Copilot, so it is the
-// next primary once every Luna endpoint has failed, ahead of Haiku. Gemini 3.5 Flash Lite is the
-// last-resort primary. Every classifier call runs at low reasoning effort regardless of tier.
+// Scoped Luna latest and Haiku latest aliases lead, followed by the versioned stack.
+// The shared endpoint comparator orders alternatives serving the same logical model. We do not
+// invent aliases or guess an older Sonnet ID: an endpoint must canonicalize to a listed ID.
+// GPT-5.6 Luna remains behind GPT-6 Luna for scoped registries still serving the older generation.
+// MAI-Code Flash follows the versioned Lunas, then Haiku 5.5 and Gemini 3.5 Flash Lite.
+// Haiku 4.5 remains the last-resort primary.
+// Every classifier call runs at low reasoning effort regardless of tier.
 const PRIMARY_CLASSIFIER_TIERS = [
+  "gpt-luna-latest",
+  "claude-haiku-latest",
   "gpt-6-luna",
   "gpt-5.6-luna",
   "mai-code-1.1-flash",
-  "claude-haiku-4-5",
+  "claude-haiku-5-5",
   "gemini-3.5-flash-lite",
+  "claude-haiku-4-5",
 ] as const;
 
 // Microsoft tiers that may reconcile a non-Microsoft primary. Listed after the stronger established
