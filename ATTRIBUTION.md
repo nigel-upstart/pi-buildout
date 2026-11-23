@@ -963,6 +963,16 @@ through stdin with argument arrays; two existing verification helpers are export
 names, literal patch contents, forward/reverse failures, missing inputs, and migration round trips. Upstream's older
 generation pipeline and single-version artifact tests were not substituted for this fork's generation checks.
 
+### Patch-builder Git isolation (`18afa44d`)
+
+Copied and modified code from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+`18afa44d84d2fdede1842791f3688708b574ffd7`: `scripts/build-pi-patch.mjs` strips inherited `GIT_*` variables for its
+throwaway diff repository and explicitly disables signing of the baseline commit. The fork adds original regression
+coverage proving a signing-enabled global configuration cannot block generation and an invoking repository's HEAD,
+index, and worktree remain untouched. This adoption is independent of upstream's automatic public npm alpha-release
+workflow, preparation script, and release documentation, none of which were adopted; manual internal CodeArtifact
+publishing and development pins remain unchanged. The root `LICENSE` retains the source's MIT notice.
+
 ### Managed-install discovery (`f594d8305`)
 
 Modified code and copied regression tests from MIT-licensed `zew1me/pi-buildout`,
