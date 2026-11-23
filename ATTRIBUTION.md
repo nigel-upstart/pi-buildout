@@ -951,13 +951,14 @@ standalone patch are separate packages. The OTel source is redistributed with it
 
 - Source: `zew1me/pi-buildout`
 - Canonical repository: <https://github.com/zew1me/pi-buildout>
-- Revision last selectively synced: `7965f313e6c2219a9e88310e202c6f97e0b2d431` (2026-11-11)
-- Sync dispositions and intentional deferrals: [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md#2026-11-12-selective-sync-7965f313)
+- Revision last selectively synced: `18417b62c5286706746168c2efcf07a7a13a7290` (2026-11-21)
+- Sync dispositions and intentional deferrals: [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md#2026-11-23-selective-sync-18417b62)
 - License declared by the source: MIT (© 2026 Nigel Stuke)
 
 This repository is a fork of `zew1me/pi-buildout`. Upstream changes are ported by cherry-picking commits rather than by
-merging, so each ported commit records its upstream SHA in a `(cherry picked from commit …)` trailer, and
-[`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md) records the last synced revision and the status of each upstream commit.
+merging, so each ported commit records its upstream SHA in a `(cherry picked from commit …)` or `Upstream-Commit`
+trailer, and [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md) records the last synced revision and the status of each upstream
+commit.
 
 What was adopted, as copied code: the pi 0.84.4 and 0.85.1 `/skills` patch sets under `patches/` (the 0.84.4 set, like
 0.84.2's, was later removed at `867d931e`), including the recognized-state upgrade manifests for installs patched by
