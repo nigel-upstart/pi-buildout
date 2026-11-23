@@ -12,7 +12,7 @@ Choose either method before a `pi install npm:@upstart/...` command below.
 
 ```bash
 umt artifacts --tools npm
-pi install npm:@upstart/pi-router-otel@0.1.1-alpha.8
+pi install npm:@upstart/pi-router-otel@0.1.1-alpha.9
 ```
 
 The [UMT artifacts command](https://github.com/teamupstart/umt/blob/main/cmd/umt-go/artifacts.go) uses read-only SSO
@@ -50,12 +50,12 @@ write-capable SSO role are a separate, later checkpoint below.
 
 | Package                                        | Contents                                                         | Activation                                                                      |
 | ---------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `@upstart/pi-router-otel@0.1.1-alpha.8`        | Router and OTel together, with their shared runtime dependencies | `pi install npm:@upstart/pi-router-otel@0.1.1-alpha.8`                          |
+| `@upstart/pi-router-otel@0.1.1-alpha.9`        | Router and OTel together, with their shared runtime dependencies | `pi install npm:@upstart/pi-router-otel@0.1.1-alpha.9`                          |
 | `@upstart/pi-clear@0.1.0-alpha.1`              | Clear                                                            | `pi install npm:@upstart/pi-clear@0.1.0-alpha.1`                                |
 | `@upstart/pi-effort@0.1.0-alpha.2`             | Effort                                                           | `pi install npm:@upstart/pi-effort@0.1.0-alpha.2`                               |
 | `@upstart/pi-markdown-backlinks@0.1.0-alpha.1` | Backlinks                                                        | `pi install npm:@upstart/pi-markdown-backlinks@0.1.0-alpha.1`                   |
-| `@upstart/pi-subagents@0.1.0-alpha.3`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.3`                            |
-| `@upstart/pi-skills-patch@0.1.0-alpha.3`       | Versioned `/skills` patch and patch-only CLI                     | `npm install -g @upstart/pi-skills-patch@0.1.0-alpha.3`, then `pi-skills-patch` |
+| `@upstart/pi-subagents@0.1.0-alpha.4`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.4`                            |
+| `@upstart/pi-skills-patch@0.1.0-alpha.4`       | Versioned `/skills` patch and patch-only CLI                     | `npm install -g @upstart/pi-skills-patch@0.1.0-alpha.4`, then `pi-skills-patch` |
 
 The packages can advance independently: increment `alpha.N` for each changed package, then use `-beta.N`, `-rc.N`, or
 stable SemVer after validation. Always publish prereleases with `--tag alpha` so they do **not** become npm `latest`.
@@ -152,6 +152,6 @@ that checkout hook, so the CLI enforces equivalent manifest, registry, tag, and 
 guards protect against accidental publication to the repository's public npm registry; **they do not replace a human
 check of the artifact and identity**. The token expires after roughly 12 hours.
 
-After a publish, use `npm view @upstart/pi-router-otel@0.1.1-alpha.8 --registry "$REGISTRY"` (or the chosen package) and
+After a publish, use `npm view @upstart/pi-router-otel@0.1.1-alpha.9 --registry "$REGISTRY"` (or the chosen package) and
 test a fresh consumer install with the scoped registry/token configured. Re-run Pi's `/reload` if already running. Do
 not publish the same version to JFrog as well.
