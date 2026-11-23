@@ -1,28 +1,59 @@
 # Upstream sync log
 
 This repository is a fork of [`zew1me/pi-buildout`](https://github.com/zew1me/pi-buildout). Upstream changes are ported
-by cherry-picking with `git cherry-pick -x`, not by merging, so `git merge-base main zew1me/main` stays at `f7902c04`
-and cannot show what has been synced. Use the last synced SHA below instead. Attribution for the ported material is
-recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this-fork).
+by cherry-picking with `git cherry-pick -x` or adapting with explicit `Upstream-Commit` trailers, not by merging, so
+`git merge-base main zew1me/main` stays at `f7902c04` and cannot show what has been synced. Use the last synced SHA
+below instead. Attribution for the ported material is recorded in
+[`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this-fork).
 
 ## Current state
 
 | Field               | Value                                                                       |
 | ------------------- | --------------------------------------------------------------------------- |
-| Upstream remote     | `upstream` → <https://github.com/zew1me/pi-buildout.git>                    |
+| Upstream source     | <https://github.com/zew1me/pi-buildout.git>, fetched into `zew1me/main`     |
 | Upstream branch     | `main`                                                                      |
-| Last synced SHA     | `7965f313e6c2219a9e88310e202c6f97e0b2d431` (2026-11-11), selectively ported |
-| Last sync date      | 2026-11-12                                                                  |
-| Previous sync point | `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28)                     |
-| Sync branch         | `chore/sync-upstream-7965f313`                                              |
+| Last synced SHA     | `18417b62c5286706746168c2efcf07a7a13a7290` (2026-11-21), selectively ported |
+| Last sync date      | 2026-11-23                                                                  |
+| Previous sync point | `7965f313e6c2219a9e88310e202c6f97e0b2d431` (2026-11-11)                     |
+| Sync branch         | `chore/sync-upstream-pi-1.6.0`                                              |
 | Outbound fixes owed | None identified in this sync                                                |
 
 To find the next batch of upstream work:
 
 ```bash
-git fetch upstream
-git log --oneline 7965f313e6c2219a9e88310e202c6f97e0b2d431..upstream/main
+git fetch https://github.com/zew1me/pi-buildout.git main:refs/remotes/zew1me/main
+git log --oneline 18417b62c5286706746168c2efcf07a7a13a7290..zew1me/main
 ```
+
+The local remote named `upstream` currently points at `nigel-upstart/pi-buildout`, not the external source; the explicit
+URL and `zew1me/main` reference above avoid syncing the fork back into itself.
+
+## 2026-11-23 selective sync (`18417b62`)
+
+Every upstream mainline commit since `7965f313` was compared with the fork. The two selected adoptions are separate
+commits with `Upstream-Commit` trailers and attribution in the same change.
+
+| Upstream                                   | Change                         | Disposition                                                                                                                                                 |
+| ------------------------------------------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4c8ab1ea600d9303376cc9a3a7aa56e63b6f213` | Pi 1.5.2 skills (#90)          | Already equivalent in local `0704169` / #154; no duplicate adoption                                                                                         |
+| `18afa44d84d2fdede1842791f3688708b574ffd7` | Automatic alpha releases (#92) | Adopted only independent patch-builder Git-environment isolation and unsigned baseline, with original regression coverage; public alpha automation rejected |
+| `18417b62c5286706746168c2efcf07a7a13a7290` | Pi 1.6.0 skills (#93)          | Adapted version inputs/integration/docs and isolated CI smoke; regenerated artifacts using the fork overlay, retaining all older versions                   |
+
+Pi 1.6.0 keeps the same 48-line runtime seam and byte-identical shared skill-management modules and CLI/RPC wrappers as
+this fork's 1.5.2 artifacts. The trust-scoped CLI, resolved-path and portable-persistence behavior, Windows-tilde
+semantics, all seven older supported patches (including 1.0.4 and 1.5.0) and their migrations remain unchanged.
+Upstream's 1.0.4 retirement and generated patch bytes were intentionally not copied.
+
+Public npm auto-release workflows, preparation scripts, scope changes, and release documentation were not adopted.
+Manual package-selective internal CodeArtifact publishing, router/OTel, and development pins remain unchanged. This sync
+neither installs into live Pi nor merges the draft PR.
+
+Verification: clean Pi 1.6.0 source build reproduces all four pre-existing runtime files; generated patch applies and
+matches its checksums. `patches:check --all` reports no drift for all eight supported versions and round-trips every
+older `pre-expansion` migration. `npm run check` passes formatting, generated evidence, ESLint/Markdown/shell lint,
+TypeScript, the full offline suite (1,195 passed; 16 skipped), knip, and secretlint. That full run includes isolated
+1.6.0 catalog/activation/CLI and bundled-entrypoint checks; the skipped cases are missing older real packages and the
+explicitly excluded provider-backed routing evaluation.
 
 ## 2026-11-12 selective sync (`7965f313`)
 
