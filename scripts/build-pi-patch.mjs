@@ -341,6 +341,9 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
   git("init", "--quiet");
   git("config", "user.email", "patch-build@example.invalid");
   git("config", "user.name", "patch build");
+  const disabledHooks = join(repo, ".git", "disabled-hooks");
+  mkdirSync(disabledHooks);
+  git("config", "core.hooksPath", disabledHooks);
 
   const tracked = manifest.trackedFiles.map((entry) => entry.path);
   for (const path of tracked) {
@@ -358,7 +361,7 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
   }
   git("add", "--all");
 
-  return execFileSync("git", ["diff", "--cached", "--no-color", "--binary"], {
+  return execFileSync("git", ["diff", "--cached", "--no-color", "--binary", "--src-prefix=a/", "--dst-prefix=b/"], {
     cwd: repo,
     env,
     encoding: "utf-8",

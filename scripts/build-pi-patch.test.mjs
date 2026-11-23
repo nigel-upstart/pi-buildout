@@ -215,15 +215,22 @@ for (const version of overlayVersions) {
   });
 }
 
-test("buildUnifiedDiff isolates hook Git state and disables global commit signing", (t) => {
+test("buildUnifiedDiff isolates hook Git state, signing, hooks, and diff prefixes", (t) => {
   const root = mkdtempSync(join(tmpdir(), "pi-diff-isolation-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, "home");
   const parent = join(root, "parent");
   const baseline = join(root, "baseline");
   const patched = join(root, "patched");
-  for (const directory of [home, parent, baseline, patched]) mkdirSync(directory);
-  writeFileSync(join(home, ".gitconfig"), "[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = missing-pi-test-signer\n");
+  const hooks = join(root, "hooks");
+  const emptyHooks = join(root, "empty-hooks");
+  const hookMarker = join(root, "hook-executed");
+  for (const directory of [home, parent, baseline, patched, hooks, emptyHooks]) mkdirSync(directory);
+  writeFileSync(join(hooks, "prepare-commit-msg"), `#!/bin/sh\necho ran > "${hookMarker}"\nexit 9\n`, { mode: 0o755 });
+  writeFileSync(
+    join(home, ".gitconfig"),
+    `[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = missing-pi-test-signer\n[diff]\n\tnoPrefix = true\n[core]\n\thooksPath = ${hooks}\n`,
+  );
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   Object.assign(env, { HOME: home, XDG_CONFIG_HOME: home });
   const git = (...args) => execFileSync("git", args, { cwd: parent, env, encoding: "utf8" });
@@ -233,6 +240,8 @@ test("buildUnifiedDiff isolates hook Git state and disables global commit signin
   git(
     "-c",
     "commit.gpgSign=false",
+    "-c",
+    `core.hooksPath=${emptyHooks}`,
     "-c",
     "user.name=test",
     "-c",
@@ -274,6 +283,7 @@ test("buildUnifiedDiff isolates hook Git state and disables global commit signin
   );
   assert.match(patchText, /--- a\/example\.js\n\+\+\+ b\/example\.js/u);
   assert.match(patchText, /-before\n\+after/u);
+  assert.equal(existsSync(hookMarker), false, "developer hooks never run in the temporary repository");
   assert.equal(git("rev-parse", "HEAD"), head, "the invoking repository's HEAD stays untouched");
   assert.deepEqual(readFileSync(join(parent, ".git/index")), index, "the invoking index stays untouched");
   assert.equal(readFileSync(join(parent, "keep.txt"), "utf8"), "staged\n");

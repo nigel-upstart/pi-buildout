@@ -1002,6 +1002,12 @@ index, and worktree remain untouched. This adoption is independent of upstream's
 workflow, preparation script, and release documentation, none of which were adopted; manual internal CodeArtifact
 publishing and development pins remain unchanged. The root `LICENSE` retains the source's MIT notice.
 
+A follow-up adds original handling for global `core.hooksPath` and `diff.noPrefix`: temporary commits use an empty hook
+directory and diffs force installer-compatible `a/` and `b/` prefixes. Conceptual review input came from the
+[CodeRabbit](https://www.coderabbit.ai/) CLI's review of fork revision `1895427`; no code or license notice was supplied
+or copied. The same regression fixture now uses a rejecting global commit hook and prefix-suppressing global config, and
+verifies canonical patch application and that no developer hook ran.
+
 ### Managed-install discovery (`f594d8305`)
 
 Modified code and copied regression tests from MIT-licensed `zew1me/pi-buildout`,
