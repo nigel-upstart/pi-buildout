@@ -1,23 +1,23 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import fc from "fast-check";
+import { fastCheckOptions } from "../fast-check-options.mjs";
 import { conservativeFeatures } from "./features.ts";
 import {
-  chooseSecondaryGrace,
+  DEFAULT_SECONDARY_RECONCILIATION_POLICY,
   decideSecondaryCorrection,
   estimateCacheSwitchPenaltyUsd,
   reconciliationDelta,
 } from "./reconciliation.ts";
 
 const policy = {
-  maxGraceMs: 90,
   secondaryDeadlineMs: 60,
-  lowPenaltyUsd: 0.001,
-  mediumPenaltyUsd: 0.01,
-  lowPenaltyGraceMs: 10,
-  mediumPenaltyGraceMs: 30,
-  highPenaltyGraceMs: 90,
   materialCorrectionBenefitUsd: 0.02,
-  safetyCorrectionBenefitUsd: 25,
+};
+
+const sameArchetype = {
+  incumbent: "median_repository_implementation",
+  corrected: "median_repository_implementation",
 };
 
 function routeChoice(overrides = {}) {
@@ -77,37 +77,16 @@ function features(overrides = {}) {
 }
 
 describe("secondary reconciliation policy", () => {
-  it("chooses no grace when no reusable cache value is at risk", () => {
-    const registry = [
-      registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
-      registryEntry("anthropic", "claude-opus-5-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
-    ];
-
-    const grace = chooseSecondaryGrace({ cachedTokens: 0, expectedReuseRatio: 0 }, routeChoice(), registry, policy);
-
-    assert.deepEqual(grace, {
-      graceMs: 0,
-      expectedReusableTokens: 0,
-      plausibleCacheMissPenaltyUsd: 0,
+  it("defaults to a background deadline and one material correction benefit", () => {
+    assert.deepEqual(DEFAULT_SECONDARY_RECONCILIATION_POLICY, {
+      secondaryDeadlineMs: 15_000,
+      materialCorrectionBenefitUsd: 0.02,
     });
-  });
-
-  it("caps cache-priced grace by both operator policy and the secondary deadline", () => {
-    const registry = [
-      registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
-      registryEntry("anthropic", "claude-opus-5-5", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }),
-    ];
-
-    const grace = chooseSecondaryGrace(
-      { cachedTokens: 1_000_000, expectedReuseRatio: 1 },
-      routeChoice(),
-      registry,
-      policy,
-    );
-
-    assert.equal(grace.graceMs, 60);
-    assert.equal(grace.expectedReusableTokens, 1_000_000);
-    assert.ok(grace.plausibleCacheMissPenaltyUsd > policy.mediumPenaltyUsd);
+    assert.equal(Object.isFrozen(DEFAULT_SECONDARY_RECONCILIATION_POLICY), true);
+    assert.deepEqual(decideSecondaryCorrection({ material: true, reasons: ["effort_changed"] }, 0), {
+      action: "accept",
+      expectedBenefitUsd: 0.02,
+    });
   });
 
   it("prices the corrected route's cache-miss penalty against the incumbent cache-read value", () => {
@@ -140,7 +119,7 @@ describe("secondary reconciliation policy", () => {
     const incumbent = routeChoice();
     // Same provider and model, e.g. an effort-only correction: the existing cache is preserved, so
     // pricing a fresh cache write here would reject a correction that costs nothing.
-    const corrected = routeChoice({ effort: "high" });
+    const corrected = routeChoice({ effort: "max" });
     const registry = [
       registryEntry("openai-codex", "gpt-6-sol", { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
     ];
@@ -165,48 +144,193 @@ describe("secondary reconciliation policy", () => {
     );
   });
 
-  it("accepts only material or safety-relevant corrections whose benefit exceeds cache cost", () => {
+  it("normalizes cache estimates and never charges a negative rate difference", () => {
     const incumbent = routeChoice();
-    const sameRoute = routeChoice();
-    const newProfile = routeChoice({
-      modelId: "claude-opus-5-5",
-      logicalModelId: "claude-opus-5-5",
-      vendor: "anthropic",
-      profileId: "anthropic-opus-5-stack-v1",
+    const corrected = routeChoice({ provider: "anthropic", modelId: "claude-opus-5-5" });
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -2_000_000, max: 2_000_000 }),
+        fc.integer({ min: -100, max: 200 }),
+        fc.integer({ min: 0, max: 100 }),
+        fc.integer({ min: 0, max: 100 }),
+        (cachedTokens, reusePercent, cacheRead, cacheWrite) => {
+          const cache = { cachedTokens, expectedReuseRatio: reusePercent / 100 };
+          const registry = [
+            registryEntry(incumbent.provider, incumbent.modelId, { cacheRead, cacheWrite: 0 }),
+            registryEntry(corrected.provider, corrected.modelId, { cacheRead: 0, cacheWrite }),
+          ];
+          const expected =
+            ((Math.max(0, cachedTokens) * Math.min(1, Math.max(0, cache.expectedReuseRatio))) / 1_000_000) *
+            Math.max(0, cacheWrite - cacheRead);
+          const penalty = estimateCacheSwitchPenaltyUsd(cache, incumbent, corrected, registry);
+          assert.equal(penalty, expected);
+          assert.equal(estimateCacheSwitchPenaltyUsd(cache, incumbent, incumbent, registry), 0);
+        },
+      ),
+      fastCheckOptions,
+    );
+  });
+
+  it("ignores non-finite cache estimates", () => {
+    const incumbent = routeChoice();
+    const corrected = routeChoice({ modelId: "other-model" });
+    const registry = [registryEntry(corrected.provider, corrected.modelId, { cacheRead: 0, cacheWrite: 10 })];
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      assert.equal(
+        estimateCacheSwitchPenaltyUsd({ cachedTokens: value, expectedReuseRatio: 1 }, incumbent, corrected, registry),
+        0,
+      );
+      assert.equal(
+        estimateCacheSwitchPenaltyUsd(
+          { cachedTokens: 1_000_000, expectedReuseRatio: value },
+          incumbent,
+          corrected,
+          registry,
+        ),
+        0,
+      );
+    }
+  });
+
+  it("rejects an unchanged route even without a cache penalty", () => {
+    const delta = reconciliationDelta(features(), features(), routeChoice(), routeChoice(), sameArchetype);
+    assert.deepEqual(delta, { material: false, reasons: [] });
+    assert.deepEqual(decideSecondaryCorrection(delta, 0, policy), {
+      action: "reject",
+      reason: "no_material_delta",
+      expectedBenefitUsd: 0,
     });
+  });
 
-    const sameArchetype = {
-      incumbent: "median_repository_implementation",
-      corrected: "median_repository_implementation",
-    };
-    const none = reconciliationDelta(features(), features(), incumbent, sameRoute, sameArchetype);
-    assert.equal(none.material, false);
-    assert.equal(decideSecondaryCorrection(none, 0, policy).reason, "no_material_delta");
+  for (const [overrides, reason] of [
+    [{ profileId: "other-profile" }, "prompt_profile_changed"],
+    [{ logicalModelId: "other-model" }, "logical_model_changed"],
+    [{ effort: "max" }, "effort_changed"],
+    [{ ability: 4 }, "capability_band_changed"],
+  ]) {
+    it(`detects a material ${reason} correction`, () => {
+      const delta = reconciliationDelta(features(), features(), routeChoice(), routeChoice(overrides), sameArchetype);
+      assert.deepEqual(delta, { material: true, reasons: [reason] });
+      assert.equal(decideSecondaryCorrection(delta, 0, policy).action, "accept");
+    });
+  }
 
-    const material = reconciliationDelta(features(), features(), incumbent, newProfile, sameArchetype);
-    assert.deepEqual(material.reasons, ["prompt_profile_changed", "logical_model_changed"]);
-
-    const archetypeOnly = reconciliationDelta(features(), features(), incumbent, sameRoute, {
-      incumbent: "median_repository_implementation",
+  it("treats an archetype-only correction as material even on the same endpoint", () => {
+    const delta = reconciliationDelta(features(), features(), routeChoice(), routeChoice(), {
+      ...sameArchetype,
       corrected: "implementation_planning",
     });
-    assert.equal(archetypeOnly.material, true);
-    assert.equal(archetypeOnly.safetyRelevant, false);
-    assert.deepEqual(archetypeOnly.reasons, ["archetype_changed"]);
-    assert.equal(decideSecondaryCorrection(material, 0.03, policy).reason, "cache_penalty_exceeds_benefit");
+    assert.deepEqual(delta, { material: true, reasons: ["archetype_changed"] });
+    assert.equal(decideSecondaryCorrection(delta, 0, policy).action, "accept");
+  });
 
-    const safety = reconciliationDelta(
-      features({ risk: "medium" }),
-      features({
-        risk: "critical",
-        verificationStrength: "security_and_policy",
-        independenceRequirement: "different_vendor_review",
-      }),
-      incumbent,
-      sameRoute,
-      sameArchetype,
+  for (const [overrides, reason] of [
+    [{ decompositionRecommended: true }, "decomposition_required"],
+    [{ independenceRequirement: "different_vendor_review" }, "independence_changed"],
+  ]) {
+    it(`treats ${reason} alone as a material routing requirement change`, () => {
+      const delta = reconciliationDelta(features(), features(overrides), routeChoice(), routeChoice(), sameArchetype);
+      assert.deepEqual(delta, { material: true, reasons: [reason] });
+      assert.equal(decideSecondaryCorrection(delta, 0, policy).action, "accept");
+    });
+  }
+
+  it("preserves archetype and routing requirement changes as material deltas", () => {
+    const delta = reconciliationDelta(
+      features(),
+      features({ decompositionRecommended: true, independenceRequirement: "different_vendor_review" }),
+      routeChoice(),
+      routeChoice(),
+      { ...sameArchetype, corrected: "implementation_planning" },
     );
-    assert.equal(safety.safetyRelevant, true);
-    assert.equal(decideSecondaryCorrection(safety, 0.03, policy).action, "accept");
+    assert.deepEqual(delta, {
+      material: true,
+      reasons: ["archetype_changed", "decomposition_required", "independence_changed"],
+    });
+    assert.deepEqual(decideSecondaryCorrection(delta, 0.03, policy), {
+      action: "reject",
+      reason: "cache_penalty_exceeds_benefit",
+      expectedBenefitUsd: policy.materialCorrectionBenefitUsd,
+    });
+  });
+
+  it("does not treat safety-only feature changes as routing corrections or boost their benefit", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          risk: fc.constantFrom("low", "medium", "high", "critical"),
+          actionMode: fc.constantFrom(
+            "information_only",
+            "local_read",
+            "reversible_mutation",
+            "external_side_effect",
+            "destructive",
+          ),
+          verificationStrength: fc.constantFrom(
+            "none",
+            "self_check",
+            "unit_tests",
+            "integration_tests",
+            "security_and_policy",
+          ),
+          reviewIntent: fc.boolean(),
+        }),
+        (overrides) => {
+          const primary = features();
+          const corrected = features(overrides);
+          const unchanged = reconciliationDelta(primary, corrected, routeChoice(), routeChoice(), sameArchetype);
+          assert.deepEqual(unchanged, { material: false, reasons: [] });
+          assert.equal(decideSecondaryCorrection(unchanged, 0, policy).reason, "no_material_delta");
+          const changed = reconciliationDelta(
+            primary,
+            corrected,
+            routeChoice(),
+            routeChoice({ effort: "max" }),
+            sameArchetype,
+          );
+          assert.deepEqual(changed, { material: true, reasons: ["effort_changed"] });
+          assert.deepEqual(decideSecondaryCorrection(changed, 0.03, policy), {
+            action: "reject",
+            reason: "cache_penalty_exceeds_benefit",
+            expectedBenefitUsd: policy.materialCorrectionBenefitUsd,
+          });
+        },
+      ),
+      fastCheckOptions,
+    );
+  });
+
+  it("accepts exactly when a material correction's benefit exceeds cache cost, regardless of background deadline", () => {
+    fc.assert(
+      fc.property(
+        fc.boolean(),
+        fc.integer({ min: 0, max: 100_000 }),
+        fc.integer({ min: 0, max: 100_000 }),
+        fc.integer({ min: 0, max: 60_000 }),
+        (material, benefitCents, penaltyCents, secondaryDeadlineMs) => {
+          const delta = { material, reasons: material ? ["effort_changed"] : [] };
+          const materialCorrectionBenefitUsd = benefitCents / 100;
+          const penalty = penaltyCents / 100;
+          const decision = decideSecondaryCorrection(delta, penalty, {
+            secondaryDeadlineMs,
+            materialCorrectionBenefitUsd,
+          });
+          assert.equal(decision.expectedBenefitUsd, material ? materialCorrectionBenefitUsd : 0);
+          assert.equal(decision.action, material && benefitCents > penaltyCents ? "accept" : "reject");
+          if (decision.action === "reject") {
+            assert.equal(decision.reason, material ? "cache_penalty_exceeds_benefit" : "no_material_delta");
+          }
+          assert.equal(
+            decideSecondaryCorrection(delta, materialCorrectionBenefitUsd, {
+              ...policy,
+              materialCorrectionBenefitUsd,
+            }).action,
+            "reject",
+            "equal cache cost and benefit must not trigger a correction",
+          );
+        },
+      ),
+      fastCheckOptions,
+    );
   });
 });

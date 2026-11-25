@@ -1,28 +1,99 @@
 # Upstream sync log
 
 This repository is a fork of [`zew1me/pi-buildout`](https://github.com/zew1me/pi-buildout). Upstream changes are ported
-by cherry-picking with `git cherry-pick -x`, not by merging, so `git merge-base main zew1me/main` stays at `f7902c04`
-and cannot show what has been synced. Use the last synced SHA below instead. Attribution for the ported material is
-recorded in [`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this-fork).
+by cherry-picking with `git cherry-pick -x` or adapting with explicit `Upstream-Commit` trailers, not by merging, so
+`git merge-base main zew1me/main` stays at `f7902c04` and cannot show what has been synced. Use the last synced SHA
+below instead. Attribution for the ported material is recorded in
+[`ATTRIBUTION.md`](ATTRIBUTION.md#zew1mepi-buildout-upstream-of-this-fork).
 
 ## Current state
 
-| Field               | Value                                                   |
-| ------------------- | ------------------------------------------------------- |
-| Upstream remote     | `zew1me` → <https://github.com/zew1me/pi-buildout.git>  |
-| Upstream branch     | `main`                                                  |
-| Last synced SHA     | `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28) |
-| Last sync date      | 2026-09-29                                              |
-| Previous sync point | `502c13a0402362d8cda667a1115fc176e0ffa120` (2026-09-22) |
-| Sync branch         | `chore/sync-upstream-zew1me`                            |
-| Outbound fixes owed | None from the current support update                    |
+| Field               | Value                                                                       |
+| ------------------- | --------------------------------------------------------------------------- |
+| Upstream source     | <https://github.com/zew1me/pi-buildout.git>, fetched into `zew1me/main`     |
+| Upstream branch     | `main`                                                                      |
+| Last synced SHA     | `18417b62c5286706746168c2efcf07a7a13a7290` (2026-11-21), selectively ported |
+| Last sync date      | 2026-11-23                                                                  |
+| Previous sync point | `7965f313e6c2219a9e88310e202c6f97e0b2d431` (2026-11-11)                     |
+| Sync branch         | `chore/sync-upstream-pi-1.6.0`                                              |
+| Outbound fixes owed | None identified in this sync                                                |
 
 To find the next batch of upstream work:
 
 ```bash
-git fetch zew1me
-git log --oneline 867d931ee84de52e46e1b456d95338c236a804d5..zew1me/main
+git fetch https://github.com/zew1me/pi-buildout.git main:refs/remotes/zew1me/main \
+  && git log --oneline 18417b62c5286706746168c2efcf07a7a13a7290..zew1me/main
 ```
+
+The local remote named `upstream` currently points at `nigel-upstart/pi-buildout`, not the external source; the explicit
+URL and `zew1me/main` reference above avoid syncing the fork back into itself.
+
+## 2026-11-23 selective sync (`18417b62`)
+
+Every upstream mainline commit since `7965f313` was compared with the fork. The two selected adoptions are separate
+commits with `Upstream-Commit` trailers and attribution in the same change.
+
+| Upstream                                   | Change                         | Disposition                                                                                                                                                 |
+| ------------------------------------------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4c8ab1ea600d9303376cc9a3a7aa56e63b6f213` | Pi 1.5.2 skills (#90)          | Already equivalent in local `0704169` / #154; no duplicate adoption                                                                                         |
+| `18afa44d84d2fdede1842791f3688708b574ffd7` | Automatic alpha releases (#92) | Adopted only independent patch-builder Git-environment isolation and unsigned baseline, with original regression coverage; public alpha automation rejected |
+| `18417b62c5286706746168c2efcf07a7a13a7290` | Pi 1.6.0 skills (#93)          | Adapted version inputs/integration/docs and isolated CI smoke; regenerated artifacts using the fork overlay, retaining all older versions                   |
+
+Pi 1.6.0 keeps the same 48-line runtime seam and byte-identical shared skill-management modules and CLI/RPC wrappers as
+this fork's 1.5.2 artifacts. The trust-scoped CLI, resolved-path and portable-persistence behavior, Windows-tilde
+semantics, all seven older supported patches (including 1.0.4 and 1.5.0) and their migrations remain unchanged.
+Upstream's 1.0.4 retirement and generated patch bytes were intentionally not copied.
+
+Public npm auto-release workflows, preparation scripts, scope changes, and release documentation were not adopted.
+Manual package-selective internal CodeArtifact publishing, router/OTel, and development pins remain unchanged. This sync
+neither installs into live Pi nor merges the draft PR.
+
+Verification: clean Pi 1.6.0 source build reproduces all four pre-existing runtime files; generated patch applies and
+matches its checksums. `patches:check --all` reports no drift for all eight supported versions and round-trips every
+older `pre-expansion` migration. `npm run check` passes formatting, generated evidence, ESLint/Markdown/shell lint,
+TypeScript, the full offline suite (1,195 passed; 16 skipped), knip, and secretlint. That full run includes isolated
+1.6.0 catalog/activation/CLI and bundled-entrypoint checks; the skipped cases are missing older real packages and the
+explicitly excluded provider-backed routing evaluation.
+
+## 2026-11-12 selective sync (`7965f313`)
+
+All upstream mainline commits since the previous checkpoint were compared with the fork's current implementation.
+Representative equivalents are committed separately; already-present behavior is recorded rather than reintroduced.
+
+| Upstream   | Change                                                | Disposition                                                                                                                                                 |
+| ---------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0ab8b5bc` | Pi 0.99.2 and 1.0.3 patches (#70)                     | 1.0.3 already in `d8231cdb` (#90); retired 0.99.2 not restored                                                                                              |
+| `3b57a458` | Pi 1.0.4 patch (#71)                                  | Already in `60c5c721` (#95)                                                                                                                                 |
+| `6b47f96c` | Pi 1.0.1 development minimum (#73)                    | Equivalent support update `86fae744` (#113); newer 1.3.0 pins retained                                                                                      |
+| `fe4aa4bb` | Pi 1.1.0 patch (#72)                                  | Already in `cbeb426e` (#106)                                                                                                                                |
+| `8993c4a1` | Retire pre-1.0.0 patches (#75)                        | Already removed by `86fae744` (#113)                                                                                                                        |
+| `a5983a48` | Pi 1.3.0 patch (#77)                                  | Already in `a5edd8ba` (#126)                                                                                                                                |
+| `c543eeaa` | Expand skill paths and persist portable entries (#74) | Adapted source/tests; all seven supported versions regenerated with fork-specific migrations                                                                |
+| `59d2979a` | Carry path expansion into 1.3.0 (#78)                 | Included in the same representative path-behavior port; local 1.4.0/1.5.0/1.5.2 included too                                                                |
+| `dabb54b1` | npm publication (#79)                                 | Selectively adapted manifest validation, script-enabled packing, verified archive publication, and consumer-archive tests; internal release policy retained |
+| `e60cfcca` | Drop pre-1.0.3 support (#80)                          | Artifact retirement already equivalent; keep the fork's 1.0.1 patch-only discovery floor and 1.2.0 extension floor                                          |
+| `edcd1c14` | Pi 1.4.0 patch (#82)                                  | Already in `7ef2339c` / #148; newer 1.5.0/1.5.2 support retained                                                                                            |
+| `c5cb5cb4` | Legacy extension ownership (#87)                      | Existing checks retained; copied/adapted exhaustive ownership and replacement-race tests                                                                    |
+| `c541ff59` | Shell-free patch application (#88)                    | Existing stdin/argument-array implementation retained; hostile-path and failure regressions ported                                                          |
+| `60d9503a` | Unsampled live descendant escalation (#83)            | Equivalent in `107f1c74` (#145), including later lifecycle fixes                                                                                            |
+| `f594d830` | Intended-package discovery (#86)                      | Adapted positive managed-install recognition, pointer/package version agreement, fail-closed behavior, and fixtures                                         |
+| `cd2ea61a` | Pinned real-Pi RPC fixtures (#85)                     | Adapted version assertion, early cleanup, bounded tests, abort-aware waits; retained canary overrides and auth-bridge isolation                             |
+| `aea28633` | RPC failure diagnostics (#84)                         | Equivalent in `0f992fbc` (#118); final-only wait behavior retained                                                                                          |
+| `7965f313` | Creation without parent conversation (#89)            | Already in `fe4e325a` (#138); generic signaling and newer lifecycle safeguards retained                                                                     |
+
+The path port preserves project-trust semantics and the 48-line runtime seam budget. Each supported version recognizes
+its previously shipped patched state through `pre-expansion` manifests and upgrade patches; upstream checksum bytes were
+not substituted for this fork's shipped artifacts. Regeneration checks, migration round trips, and real-package
+catalog/dispatch/entrypoint suites passed for all seven versions. An existing RPC abort-race fixture was also made
+explicit-control-only after the full suite exposed its 150ms auto-completion race under load; production RPC behavior
+was not changed.
+
+Public npm publication, trusted publishing/provenance, upstream scope/names, automatic version-driven releases, and
+non-alpha channels are not adopted. CodeArtifact publishing remains manual and package-selective. Registry conflict,
+idempotency, and backward-tag preflight from upstream are deferred: its unauthenticated public-registry lookup is not
+compatible with this fork's authenticated internal registry. The selected local safeguards do not claim to make
+multi-package publication atomic or to reconcile remote registry state. Separate dry runs remain previews, not approvals
+bound to a later invocation's tarballs.
 
 ## 2026-10-08 supported Pi baseline (#109)
 

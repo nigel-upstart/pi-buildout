@@ -20,22 +20,59 @@ The extension's `subagent` tool supports `create`, `list`, `status`, `wait`, `st
 `stop`. Creation is asynchronous and returns a direct-child id. `wait` is explicit and bounded: timing out never stops
 the child.
 
+## Waiting for results versus inspecting diagnostics
+
+Use the existing `wait` action when this turn needs a child's result. A settled wait returns status metadata and only
+the bounded `lastAssistantText` (up to 45,000 characters), not the delegated task or working transcript. If there is no
+final assistant text, or the latest turn failed, stopped, or still has queued messages, it returns metadata only; it
+never substitutes stale final text or transcript text. Final text is the current operation's completed, non-empty
+response: working text before a tool call, an empty final message, interrupted work, and an earlier operation's answer
+do not count. Failure/stopped state and errors remain visible, so “settled” does not imply success. Usage metadata is
+retained.
+
+When an answer completes during an interrupt attempt, it stays hidden until the abort outcome is known. An explicit
+abort rejection restores the completed answer; a successful abort discards it. An unknown outcome such as an RPC timeout
+keeps it hidden, including after a late abort response, until new work is sent. Work queued with `steer` or `follow_up`
+after such an outcome becomes the current operation when the child starts it, matched by the text Pi actually queues
+after input handlers and prompt expansion. A queue request that times out may still be accepted late, so only an
+explicit rejection drops it, and an explicitly rejected interrupt retry leaves that queued work recoverable.
+
+A timeout returns a concise still-active receipt and status metadata only—no partial assistant output, task echo,
+transcript, tool arguments, or stderr. It does not stop or interrupt the child. Call `wait` again for the result.
+Cancellation likewise does not stop the child. These output rules apply to both the displayed content and result
+details.
+
+Use `status` explicitly for diagnostics, including the task, transcript tail, current tool, and stderr. Its behavior is
+unchanged. There is no output-mode parameter or transcript-tail selection API.
+
 ## Context and model selection
 
-Before launch, the extension creates an in-memory copy of the prior context and runs Pi's real `AgentSession.compact()`
-path (the SDK equivalent of `/compact`) with task-specific instructions. The current delegation turn is excluded because
-its task is supplied separately; this prevents a child from recursively replaying the parent's orchestration request. A
-synthetic retained boundary allows even small parent sessions to be compacted. Only that compacted context and the
-delegated task are sent into a new child session; the parent session file is never resumed, forked, or replaced by the
-child. Context seeding fails open: if compaction fails, the child launches with only its task and a fresh context—never
-an unreviewed raw parent transcript.
+`create` accepts optional `contextMode: "task_compacted" | "none"`. The default, `task_compacted`, preserves existing
+behavior. Before launch, the extension creates an in-memory copy of the prior context and runs Pi's real
+`AgentSession.compact()` path (the SDK equivalent of `/compact`) with task-specific instructions. The current delegation
+turn is excluded because its task is supplied separately; this prevents a child from recursively replaying the parent's
+orchestration request. A synthetic retained boundary allows even small parent sessions to be compacted. Only that
+compacted context and the delegated task are sent into a new child session; the parent session file is never resumed,
+forked, or replaced by the child. Context seeding fails open: if compaction fails, the child launches with only its task
+and a fresh context—never an unreviewed raw parent transcript.
 
-If either model or effort is omitted, a classifier call sees the task, the compacted context, and all authenticated
-models (including capabilities, context size, and pricing). Its choice is validated against Pi's model registry. If
-classification fails, missing values inherit the parent model and effort. Explicit user choices are never silently
-replaced; invalid or unauthenticated explicit models fail creation.
+With `contextMode: "none"`, creation skips parent-transcript access for compaction and skips compaction entirely: no
+compaction model call is made. The child receives only the supplied task, with no parent-context wrapper. Supply all
+requirements in that task. Intentionally omitted context is not reported as a compaction failure. Create details, child
+snapshots, `list`, and `status` identify the selected `contextMode`.
+
+If either model or effort is omitted, a classifier call sees the task, the compacted context (empty in `none` mode), and
+all authenticated models (including capabilities, context size, and pricing). Its choice is validated against Pi's model
+registry. If classification fails, missing values inherit the parent model and effort. Explicit user choices are never
+silently replaced; invalid or unauthenticated explicit models fail creation. In `none` mode, automatic selection still
+works on the task and catalog alone, without parent messages or a parent summary. Supplying both model and effort
+bypasses classification as before.
 
 ## Isolation and inheritance
+
+`contextMode: "none"` is **not a sandbox or an isolation boundary**. It omits inherited parent conversation only; it
+does not change filesystem access, credentials, project context/AGENTS, settings, skills, or extension loading. Model
+and effort selection, authentication, cancellation, limits, and process cleanup remain the same in both modes.
 
 - Children run as independent Pi RPC processes in the same working directory.
 - Normal Pi discovery remains enabled, so children inherit the skills, extensions, MCP adapters, project instructions,
@@ -43,8 +80,18 @@ replaced; invalid or unauthenticated explicit models fail creation.
 - The extension itself is explicitly loaded so every child can create its own children.
 - Each extension process keeps a private registry containing only its direct children. There is no child-to-parent or
   sibling messaging API.
-- Child output is retained privately and enters parent model context only when the parent explicitly calls `status` or
-  `wait`.
+- Lineage follows pi-durable's owner edges. Each child receives its owner chain (child ids from the root session's
+  direct child down to itself) in `PI_SIMPLE_SUBAGENT_LINEAGE`, and `status`, `wait`, and pushed results report it. A
+  nested child also reports, over the RPC `setStatus` sub-protocol, how many results its own children still owe it. The
+  parent treats a child as settled only once that subtree is idle, so a child that delegates and ends its turn is not
+  mistaken for finished: `wait` and the completion push both deliver the answer it gives after its own children report
+  back. A failed or stopped child settles regardless of what it last reported.
+- Child output is retained privately and enters parent model context when the parent explicitly calls `status` or
+  `wait`, or when a background subagent settles and pushes its completion notification. A settled `wait`, `interrupt`,
+  or `stop` consumes the current operation, so it is not also pushed. Pushed answers use the same bound as `wait` and
+  omit stderr.
+- One-shot runs (`pi -p` print mode and `--mode json`) exit after the final reply, and shutdown stops every child, so no
+  push can arrive. In those modes the `create` result tells the model to call `wait` for each child before replying.
 - `status` reports the transcript tail, active tool, turns, tool calls, queued messages, token usage, cost, context
   utilization, and compaction count when available.
 - Parent control uses the child's one-way RPC stdin: `steer`, `follow_up`, `interrupt`, and `stop`.
@@ -57,6 +104,7 @@ Even full fan-out is therefore bounded to 56 child processes per root tree.
 
 ```json
 { "action": "create", "task": "Review the diff", "model": "gpt-5.6-luna", "effort": "high" }
+{ "action": "create", "task": "Review src/auth.ts using only this task", "contextMode": "none" }
 { "action": "status", "id": "a1b2c3d4e5" }
 { "action": "wait", "id": "a1b2c3d4e5", "timeoutMs": 120000 }
 { "action": "steer", "id": "a1b2c3d4e5", "task": "Focus on data races" }
@@ -75,3 +123,28 @@ standard `npm test` glob.
 node --test extensions/subagents/*.test.mjs
 pi -e extensions/subagents/index.ts --list-models > /dev/null
 ```
+
+## Generic extension signaling
+
+After session start, the manager answers the verified tintinweb 0.22.0 protocol-2 subset: `subagents:rpc:ping`, `spawn`,
+`consume`, `stop`, with per-request `:reply:<requestId>` envelopes and `subagents:completed`/`failed` events. Every
+request requires a unique nonempty `requestId`. Spawn uses top-level `type: "general-purpose"`, `prompt`, and
+`options: {description, model, thinkingLevel, isolated: true, inheritContext: false, signal?}`. Both model and effort
+are explicit (no second classifier); unknown optional fields are ignored, invalid required fields return an error.
+Isolated signaling accepts only models in Pi's bundled catalog with the same API and endpoint; extension-only models,
+custom catalog entries, and endpoint overrides are rejected before launch. Model definitions and custom streaming
+implementations are not bridged.
+
+The isolated launch disables discovered/configured extensions, MCP, skills, templates, themes, context files, and
+`SYSTEM.md`/`APPEND_SYSTEM.md` prompt files, loading only the explicit minimal auth bridge. This is resource selection,
+not an OS/credential sandbox. Ordinary `subagent` tool defaults are unchanged; `contextMode: none` alone is not
+extension isolation. Signaling children are one-task runs and are stopped before terminal delivery. Results contain
+final assistant text only. Consume marks the settled result synchronously, suppressing proactive parent notification; an
+unconsumed completed or failed result is pushed directly to the parent session, bounded and without stderr, while the
+event keeps the full payload. A `stopped` or `aborted` terminal that the caller requested through `stop` or its own
+signal is not pushed: the caller already knows the outcome, and the `subagents:failed` event still reports it.
+Stop/signal terminate only owned children. Cancellation remains effective during cleanup: abort takes precedence over
+stop, and either suppresses the final answer until the terminal event is published. Publication commits the terminal
+state synchronously; later stop requests are rejected and later aborts cannot change the published result. Session
+shutdown suppresses publication entirely. There are no reviewer roles or verdict semantics. Several simultaneous manager
+responders are unsupported.

@@ -12,7 +12,7 @@ Choose either method before a `pi install npm:@upstart/...` command below.
 
 ```bash
 umt artifacts --tools npm
-pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4
+pi install npm:@upstart/pi-router-otel@0.1.1-alpha.9
 ```
 
 The [UMT artifacts command](https://github.com/teamupstart/umt/blob/main/cmd/umt-go/artifacts.go) uses read-only SSO
@@ -50,12 +50,12 @@ write-capable SSO role are a separate, later checkpoint below.
 
 | Package                                        | Contents                                                         | Activation                                                                      |
 | ---------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `@upstart/pi-router-otel@0.1.1-alpha.4`        | Router and OTel together, with their shared runtime dependencies | `pi install npm:@upstart/pi-router-otel@0.1.1-alpha.4`                          |
-| `@upstart/pi-clear@0.1.0-alpha.0`              | Clear                                                            | `pi install npm:@upstart/pi-clear@0.1.0-alpha.0`                                |
-| `@upstart/pi-effort@0.1.0-alpha.0`             | Effort                                                           | `pi install npm:@upstart/pi-effort@0.1.0-alpha.0`                               |
-| `@upstart/pi-markdown-backlinks@0.1.0-alpha.0` | Backlinks                                                        | `pi install npm:@upstart/pi-markdown-backlinks@0.1.0-alpha.0`                   |
-| `@upstart/pi-subagents@0.1.0-alpha.1`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.1`                            |
-| `@upstart/pi-skills-patch@0.1.0-alpha.2`       | Versioned `/skills` patch and patch-only CLI                     | `npm install -g @upstart/pi-skills-patch@0.1.0-alpha.2`, then `pi-skills-patch` |
+| `@upstart/pi-router-otel@0.1.1-alpha.9`        | Router and OTel together, with their shared runtime dependencies | `pi install npm:@upstart/pi-router-otel@0.1.1-alpha.9`                          |
+| `@upstart/pi-clear@0.1.0-alpha.1`              | Clear                                                            | `pi install npm:@upstart/pi-clear@0.1.0-alpha.1`                                |
+| `@upstart/pi-effort@0.1.0-alpha.2`             | Effort                                                           | `pi install npm:@upstart/pi-effort@0.1.0-alpha.2`                               |
+| `@upstart/pi-markdown-backlinks@0.1.0-alpha.1` | Backlinks                                                        | `pi install npm:@upstart/pi-markdown-backlinks@0.1.0-alpha.1`                   |
+| `@upstart/pi-subagents@0.1.0-alpha.4`          | Subagents                                                        | `pi install npm:@upstart/pi-subagents@0.1.0-alpha.4`                            |
+| `@upstart/pi-skills-patch@0.1.0-alpha.4`       | Versioned `/skills` patch and patch-only CLI                     | `npm install -g @upstart/pi-skills-patch@0.1.0-alpha.4`, then `pi-skills-patch` |
 
 The packages can advance independently: increment `alpha.N` for each changed package, then use `-beta.N`, `-rc.N`, or
 stable SemVer after validation. Always publish prereleases with `--tag alpha` so they do **not** become npm `latest`.
@@ -96,6 +96,16 @@ Repeat `--package` to select more packages. After reviewing the dry-run output a
 repository's fixed CodeArtifact URL; it does not choose or bump versions. Authenticate npm against that registry using
 the setup below first. Publishing is a write operation and must be explicitly requested with `--publish`.
 
+With `--publish`, the CLI packs and validates **all selected packages before the first registry write**, then publishes
+those exact tarballs rather than repacking their directories. A temporary integrity receipt records each package's name,
+version, archive filename, and SHA-512 integrity. The CLI checks archive hashes and embedded manifests before
+publication and rechecks each archive's hash immediately before publishing it. Temporary archives and receipts are
+automatically removed when the command returns, including on errors. Separate dry runs remain previews; they do not
+create a persistent receipt or bind a later publish invocation to previously reviewed bytes.
+
+This is local archive validation, not registry preflight: the CLI does not query existing versions, reconcile version
+conflicts, or reconcile dist-tags. Keep the human availability, identity, and artifact checkpoints above.
+
 These are the underlying AWS/npm operations, **not** `umt` or changes to a persistent `~/.npmrc`. Set `RW_PROFILE` to
 the publish-capable SSO profile actually configured on the machine (create one interactively with
 `aws configure sso --profile ...` if needed). Keep the terminal private; never echo or commit the token. Use a working
@@ -132,14 +142,16 @@ done
 npm run release:packages -- --package router-otel --publish
 
 # Or use npm directly for one package, if needed:
-(cd packages/pi-router-otel && PI_CODEARTIFACT_PUBLISH=1 npm publish --registry "$REGISTRY" --tag alpha)
+(cd packages/pi-router-otel && PI_CODEARTIFACT_PUBLISH=1 npm publish --registry "$REGISTRY" --tag alpha --ignore-scripts=false)
 ```
 
-The `prepublishOnly` gate refuses publishing unless the effective registry is that exact CodeArtifact endpoint, the
-package version has an `-alpha.N` suffix, `--tag alpha` is present, and `PI_CODEARTIFACT_PUBLISH=1` is set. This guards
-against publishing accidentally to the repository's public npm registry; **it does not replace a human check of the
-artifact and identity**. The token expires after roughly 12 hours.
+For direct directory publishing, the `prepublishOnly` gate requires the selected package's expected `@upstart` identity,
+a non-private manifest, a strict `-alpha.N` version, the exact CodeArtifact endpoint, `--tag alpha`, and
+`PI_CODEARTIFACT_PUBLISH=1`. Keep lifecycle scripts enabled when using npm directly. Tarball publishing does not run
+that checkout hook, so the CLI enforces equivalent manifest, registry, tag, and explicit opt-in checks itself. These
+guards protect against accidental publication to the repository's public npm registry; **they do not replace a human
+check of the artifact and identity**. The token expires after roughly 12 hours.
 
-After a publish, use `npm view @upstart/pi-router-otel@0.1.1-alpha.4 --registry "$REGISTRY"` (or the chosen package) and
+After a publish, use `npm view @upstart/pi-router-otel@0.1.1-alpha.9 --registry "$REGISTRY"` (or the chosen package) and
 test a fresh consumer install with the scoped registry/token configured. Re-run Pi's `/reload` if already running. Do
 not publish the same version to JFrog as well.

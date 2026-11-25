@@ -1,3 +1,6 @@
+export const CONTEXT_MODES = ["task_compacted", "none"] as const;
+export type ContextMode = (typeof CONTEXT_MODES)[number];
+
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
@@ -35,6 +38,36 @@ export function truncateMiddle(text: string, maxChars: number): string {
   const remaining = Math.max(0, maxChars - marker.length);
   const head = Math.floor(remaining * 0.35);
   return text.slice(0, head) + marker + text.slice(text.length - (remaining - head));
+}
+
+/** Bound for a child's final answer whenever it enters parent model context (wait or completion push). */
+export const MAX_WAIT_TEXT_CHARS = 45_000;
+
+const MAX_LINEAGE_ID_CHARS = 64;
+
+/**
+ * Parses the owner chain a parent passed to this process: child ids from the root session's direct child down to this
+ * process. Malformed or oversized input yields an empty lineage rather than trusting it.
+ */
+export function parseLineage(raw: string | undefined, maxDepth: number): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      Array.isArray(parsed) &&
+      parsed.length <= maxDepth &&
+      parsed.every((id) => typeof id === "string" && /^[\w-]+$/.test(id) && id.length <= MAX_LINEAGE_ID_CHARS)
+    )
+      return parsed as string[];
+  } catch {
+    // Fall through: an unreadable lineage is treated as absent.
+  }
+  return [];
+}
+
+/** Process diagnostics embed the child's stderr as a JSON string; parent context keeps the summary, status keeps all. */
+export function withoutStderr(error: string): string {
+  return error.replace(/, stderr="(?:[^"\\]|\\.)*"/g, "");
 }
 
 export function extractTextContent(content: unknown): string {

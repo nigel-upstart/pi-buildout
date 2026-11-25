@@ -6,7 +6,6 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CLASSIFIER_CONFIDENCE_THRESHOLD } from "./classifier.ts";
 import { ARCHETYPES } from "./core/archetype.ts";
 import type { Archetype } from "./core/archetype.ts";
 import { validateFallbackTopology } from "./core/fallback.ts";
@@ -26,7 +25,7 @@ import type { EndpointHealthRecord } from "./core/health.ts";
 import { canonicalVendor, isStandaloneReviewRequest } from "./core/routing.ts";
 import { canonicalModelId, isFlatRateProvider, matchesScope } from "./core/scope.ts";
 import type { ScopePatternSource } from "./core/scope.ts";
-import { isLeaseLifecycle, isSafetyEvidenceLog } from "./core/safety.ts";
+import { isLeaseLifecycle, isSafetyEvidenceLog, migrateLifecycle } from "./core/safety.ts";
 import { localRepoKey, normalizeGitRemoteUrl, parseRouterMode, resolveStartMode } from "./core/start-mode.ts";
 import type { StartModeResolution } from "./core/start-mode.ts";
 import type { RegistryModelSnapshot, RouteRequirements } from "./core/routing.ts";
@@ -146,8 +145,7 @@ function isRouteChoice(value: unknown, archetype: Archetype): boolean {
   );
 }
 
-function isTaskLease(value: unknown, depth = 0): value is TaskLease {
-  if (depth > 1) return false;
+function isTaskLease(value: unknown): value is TaskLease {
   const lease = object(value);
   if (!lease || typeof lease.archetype !== "string" || !ARCHETYPES.includes(lease.archetype as Archetype)) return false;
   const archetype = lease.archetype as Archetype;
@@ -170,10 +168,7 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     lease.reviewCompleted !== undefined ||
     !isLeaseLifecycle(lease.lifecycle) ||
     !isSafetyEvidenceLog(lease.safetyEvidence) ||
-    (lease.lifecycle.phase === "review" &&
-      (archetype !== "code_review" || lease.parentLease === undefined || lease.parentTaskId === undefined)) ||
-    (lease.lifecycle.phase !== "review" && lease.parentLease !== undefined) ||
-    (archetype === "code_review" && lease.lifecycle.phase !== "review" && lease.parentTaskId !== undefined) ||
+    lease.parentLease !== undefined ||
     typeof lease.promptProfileId !== "string" ||
     object(lease.selected)?.profileId !== lease.promptProfileId ||
     typeof lease.modelSnapshotId !== "string" ||
@@ -182,20 +177,26 @@ function isTaskLease(value: unknown, depth = 0): value is TaskLease {
     // next user turn create a fresh lease rather than degrading silently.
     lease.policyVersion !== POLICY_VERSION ||
     typeof lease.lastPromptFingerprint !== "string" ||
+    (lease.reviewTaskContext !== undefined &&
+      (typeof lease.reviewTaskContext !== "string" || lease.reviewTaskContext.length > 6000)) ||
     typeof lease.manualOverride !== "boolean" ||
+    (lease.reviewAttemptKeys !== undefined &&
+      (!Array.isArray(lease.reviewAttemptKeys) ||
+        lease.reviewAttemptKeys.length > 64 ||
+        !lease.reviewAttemptKeys.every((key) => typeof key === "string" && /^[a-f0-9]{64}$/.test(key)))) ||
+    (lease.advisoryStepsNoted !== undefined &&
+      (!Array.isArray(lease.advisoryStepsNoted) ||
+        lease.advisoryStepsNoted.length > 3 ||
+        !lease.advisoryStepsNoted.every((step) =>
+          ["action_plan", "plan_review_wait", "completion_evidence"].includes(String(step)),
+        ))) ||
     (lease.planValidationRepairAttempted !== undefined && typeof lease.planValidationRepairAttempted !== "boolean")
   ) {
     return false;
   }
   const candidate = lease as unknown as TaskLease;
   if (validateFallbackTopology(candidate).length > 0) return false;
-  if (lease.parentLease === undefined) return lease.parentTaskId === undefined || depth === 0;
-  return (
-    isTaskLease(lease.parentLease, depth + 1) &&
-    lease.parentTaskId === lease.parentLease.taskId &&
-    lease.lifecycle.taskFingerprint === lease.parentLease.lifecycle.taskFingerprint &&
-    lease.parentLease.lifecycle.phase !== "review"
-  );
+  return true;
 }
 
 /**
@@ -215,19 +216,33 @@ export function restoreLeaseState(entries: readonly unknown[], defaultMode: Leas
     if (entry?.type !== "custom" || entry.customType !== "model-router-state") continue;
     const data = object(entry.data);
     const mode = data?.mode === "off" || data?.mode === "shadow" || data?.mode === "active" ? data.mode : defaultMode;
-    const active = isTaskLease(data?.active) ? data.active : undefined;
-    const family = active?.lifecycle.phase === "review" && active.parentLease ? active.parentLease : active;
-    const pending = data?.secondarySafetyPending;
-    // Legacy low-confidence leases cannot prove that their runtime-only latch was resolved.
-    const safetyKnown =
-      pending === undefined
-        ? !family || family.features.confidence >= CLASSIFIER_CONFIDENCE_THRESHOLD
-        : typeof pending === "boolean";
+    const raw = object(data?.active);
+    // A legacy generated review cannot resume safely; recover its builder and discard grant state.
+    const parent = object(raw?.parentLease);
+    const legacyReview = object(raw?.lifecycle)?.phase === "review";
+    const legacyParent = parent && migrateLifecycle(parent.lifecycle) !== parent.lifecycle;
+    const unwrapped = Boolean(parent && (legacyReview || legacyParent));
+    const source = unwrapped ? parent : raw;
+    // Legacy reviewer tool results updated only the child, which starts from the parent's evidence, so the
+    // child's validated log is the task's newest evidence. Carry it onto the recovered builder, as hand-back does.
+    const childEvidence =
+      unwrapped &&
+      object(raw?.lifecycle)?.taskFingerprint === object(parent?.lifecycle)?.taskFingerprint &&
+      isSafetyEvidenceLog(raw?.safetyEvidence)
+        ? raw.safetyEvidence
+        : undefined;
+    const migrated = source
+      ? {
+          ...source,
+          lifecycle: migrateLifecycle(source.lifecycle),
+          ...(childEvidence ? { safetyEvidence: childEvidence } : {}),
+        }
+      : undefined;
+    const active = isTaskLease(migrated) ? migrated : undefined;
     return {
       mode,
-      ...(active && safetyKnown ? { active } : {}),
+      ...(active ? { active } : {}),
       manualOverride: data?.manualOverride === true,
-      ...(pending === true ? { secondarySafetyPending: true } : {}),
     };
   }
   return { mode: defaultMode, manualOverride: false };
@@ -717,7 +732,8 @@ export function cacheEstimate(entries: readonly unknown[]): { cachedTokens: numb
     const input = typeof usage?.input === "number" ? Math.max(0, usage.input) : 0;
     return {
       cachedTokens,
-      expectedReuseRatio: input > 0 ? Math.min(1, cachedTokens / input) : 0,
+      // Input and cache-read tokens are counted separately: a fully cached prompt reports input 0.
+      expectedReuseRatio: input > 0 ? Math.min(1, cachedTokens / input) : cachedTokens > 0 ? 1 : 0,
     };
   }
   return { cachedTokens: 0, expectedReuseRatio: 0 };

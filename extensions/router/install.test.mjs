@@ -67,7 +67,7 @@ describe("extension installer", () => {
     // them, not from this repository's development tree. Both paths are canonicalized because the
     // macOS temporary directory is reached through a /var -> /private/var symlink.
     const installedModules = await realpath(join(router, "node_modules"));
-    const resolver = createRequire(join(router, "core", "shell.ts"));
+    const resolver = createRequire(join(router, "core", "lease-machine.ts"));
     for (const dependency of dependencies) {
       const resolved = await realpath(resolver.resolve(dependency));
       assert.ok(

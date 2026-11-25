@@ -67,9 +67,10 @@ Follow-up work adopted three conceptual patterns: explicit, bounded result waiti
 (tokens, cost, context utilization, compactions, and active tool); and treating an output-limit stop with no assistant
 text as a failed child run rather than a successful empty result. They were implemented as original code inside the
 existing single-tool RPC design. No tintinweb code was copied or modified. Major pieces intentionally not adopted
-include named/default agent types, custom agent frontmatter, proactive completion notifications, FleetView/widget UI,
-scheduling, event-bus RPC, persistent memory, worktree isolation, skill preloading, and its three-tool Claude
-Code-compatible surface.
+include named/default agent types, custom agent frontmatter, FleetView/widget UI, scheduling, event-bus RPC, persistent
+memory, worktree isolation, skill preloading, and its three-tool Claude Code-compatible surface. Proactive completion
+notifications (result push when unconsumed, and for settled background tool children) were adopted as original code in
+`extensions/subagents/signaling.ts` and `extensions/subagents/index.ts`.
 
 ## Subagent delegation design (`specs/subagents/modern-layer-design.md`, DRAFT)
 
@@ -122,11 +123,89 @@ research and intended reuse, not a claim that code has landed. No upstream code 
   flags, and RPC operations against recorded 1.2.0 sources; no live floor-runtime execution is claimed. Pi session
   custom entries support parent scheduling state; explicit resource loading supports router-free children. Child-task
   classification/model-effort selection runs in the parent before spawn, reusing existing routing and explicit override
-  precedence without switching the builder. No child lineage, opaque startup metadata API, or child-router factory is
-  adopted. These are API references and original design, not copied upstream implementation. Stale-while-refresh
-  discovery and delta-scaled review budgets are operator-directed original design, not attributed upstream behavior.
-  Workflow layout draws from this repository’s `.github/workflows/patch-drift.yml`; new action versions and org
-  allowlist compatibility remain implementation-time checks. No networked pre-commit hook is proposed.
+  precedence without switching the builder. No routing or reviewer child lineage, opaque startup metadata API, or
+  child-router factory is adopted; the ordinary tool's subtree-idle owner chain is recorded separately below. These are
+  API references and original design, not copied upstream implementation. Stale-while-refresh discovery and delta-scaled
+  review budgets are operator-directed original design, not attributed upstream behavior. Workflow layout draws from
+  this repository’s `.github/workflows/patch-drift.yml`; new action versions and org allowlist compatibility remain
+  implementation-time checks. No networked pre-commit hook is proposed.
+
+## Subagent lineage and subtree idle (`extensions/subagents`)
+
+- `earendil-works/pi` `packages/durable` (`@earendil-works/pi-durable` 1.0.0) — <https://github.com/earendil-works/pi>,
+  tag `v1.0.0` (`a13d35a742c6ef8462812a28fbe1d8c8b7431c32`), MIT. Studied `src/types.ts` (`ConversationRecord.owner`,
+  "creator edge used for attribution, subtree abort, and subtree idle waits"), `docs/spec.md` ownership traversal and
+  idle sections, and `test/examples/22-subagent-foreground.ts` and `23-subagent-background.ts` (owner edges, background
+  boundaries, and the reporter that posts each answer back once as a follow-up). Conceptual inspiration only; no code
+  was copied. Used: each child records its owner chain, and a parent treats a child as settled only once the child's
+  owned subtree is idle, so a child that delegates and ends its turn is not mistaken for finished. Our mechanism is
+  original: the chain travels down in `PI_SIMPLE_SUBAGENT_LINEAGE`, and a nested child reports the results its own
+  children still owe it up through Pi's RPC extension-UI `setStatus` sub-protocol, which the parent confirms with
+  `get_state` because Pi runs extension handlers before writing the triggering event. Not adopted: durable `Harness`,
+  storage, tasks, replay, background-boundary semantics, anchor/reporter tasks, or durable's choice to remove the
+  subagent tool from children (this extension keeps bounded recursive delegation).
+- `earendil-works/pi` `packages/coding-agent` — `docs/rpc-extension-ui.md` and `src/modes/rpc/rpc-mode.ts` at the floor
+  release `v1.2.0` (`06a466935536f8c9bcacb2d5efc0fc021be1bdff`) and installed 1.3.0, and `src/core/agent-session.ts`
+  event ordering, MIT. API reference only: `setStatus` is forwarded on stdout as a fire-and-forget
+  `extension_ui_request`.
+
+## Generic compatible subagent signaling
+
+The implementation in `extensions/subagents/signaling.ts` is an original compatible implementation of the documented
+`tintinweb/pi-subagents` protocol-2 subset (MIT), not copied code. Sources: <https://github.com/tintinweb/pi-subagents>,
+release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`) and documentation/source snapshot
+`ca93a5247e72e7053fcd10bea7125d6c4205f949`, `docs/rpc.md`, `src/cross-extension-rpc.ts`, and terminal emission in
+`src/index.ts`. Used: ping/spawn/consume/stop names, reply envelopes, generic task/model/thinking options, final
+results, synchronous consumption, and proactive parent notifications when unconsumed (suppressing caller-requested
+stop/abort terminals is an original refinement). Not adopted: steer, workflow/profile systems, registry singleton,
+scheduling, worktrees, or protocol dialect shims. Pi 1.2.0 source `06a466935536f8c9bcacb2d5efc0fc021be1bdff` and
+installed 1.3.0 CLI resource suppression flags establish the isolated launch behavior, including empty `--system-prompt`
+and `--append-system-prompt` overrides to exclude ambient prompt files independently of context files; no Pi code was
+copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters and provider documentation informed the fail-closed
+isolated-model validation: only bundled provider/model/API/endpoint entries are accepted, because the auth bridge does
+not reproduce parent extension registrations or endpoint overrides. This is conceptual API use, not copied code; custom
+model/provider configuration transport and ambient extension loading remain intentionally excluded. Child cleanup
+precedes terminal delivery as an original integration safeguard against overlapping fallback work. Cancellation is
+rechecked after cleanup and committed synchronously with terminal publication; this lifecycle safeguard is original, not
+an upstream state machine or lock implementation. Pi's installed 1.5.0 `docs/extensions.md` and
+`examples/extensions/event-bus.ts` were consulted as API references for `pi.events`
+([canonical repository](https://github.com/earendil-works/pi), MIT); no example code was copied or adapted.
+
+The router's caller side, `extensions/router/signaling-runner.ts`, is also original code written against the same
+tintinweb sources. It was checked against release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`, MIT):
+`src/cross-extension-rpc.ts` (`handleRpc` microtask replies, omitted void `data`, error envelopes), `src/index.ts`
+(`buildEventData` terminal payloads and emit-before-notify consumption), `src/usage.ts` (`toReportedUsage`), and
+`docs/rpc.md`. Used: per-request reply channels, ping protocol 2, generic `general-purpose` spawn fields, description
+correlation, synchronous consume, and stop. Test fixtures reproduce those released envelope shapes, including terminal
+usage before or without spawn acceptance. Malformed acceptance retains already observed terminal usage without accepting
+advice or permitting replacement. Bounded cancellation/deadline usage drainage, generation-guarded telemetry error
+handling after shutdown, and cleanup-before-fallback regressions are original implementation work, not copied upstream
+code. Pi's installed 1.3.0 SDK and extension docs (canonical repository and MIT license recorded above) informed
+listener lifetimes, disposal, and persisted lease history; no Pi code was copied. Not adopted: steer, `subagents:ready`,
+the `Symbol.for` registry, compiled `structuredOutput`, workflows, scheduling, worktrees, resume, or any multi-manager
+election.
+
+Builder-steered discovery (`extensions/router/discovery.ts`, `builder-runner.ts`) is original code. Its test fixture
+reproduces the parameter shape and the published `isolated` description of tintinweb's normal `Agent` tool from the same
+`v0.22.0` release `src/index.ts` (MIT). Nothing tintinweb-specific is in the runtime: any tool qualifies only through
+its own published schema and documentation. Stale-while-refresh generations, declarative call plans, and candidate
+quarantine follow the approved design. No upstream code was copied. Installed Pi 1.3.0 `docs/sdk.md`,
+`docs/extensions.md`, `docs/session-format.md`, and `examples/sdk/13-session-runtime.ts` (canonical Pi repository,
+release revision and MIT license above) informed the session-replacement integration: capture plain session identity,
+invalidate discovery before contexts expire, and discard late publication/telemetry failure effects across generations.
+The reset retains an abort-ignoring flight until settlement rather than adopting a new session runtime or copying
+upstream lifecycle code; private context revival and eager discovery retries remain intentionally excluded. Installed Pi
+1.3.0 `ToolResultEventBase`, `AgentSession._afterToolCall`, `NestedToolCallRunner`, and the agent-core
+finalization/event sequence were also inspected as API evidence: executed-input observation precedes execution-end
+mutation accounting, and tool-result usage is execution-local while nested totals are merged later into transcript
+messages. The original router now exempts only revalidated orchestration from implementation evidence and counts only
+reported, correlated call usage once. No upstream code was copied; tool-result rewriting, usage estimates from prose or
+details, and accounting of unrelated/outer-wrapper totals were not adopted. Follow-up accounting separates observed call
+IDs from single-verdict ownership, excludes native nested descendants, and drains stale usage for one second without
+admitting new call IDs after the delegation run settles; the run-overlap guard remains independent. This and eager
+synchronous-classifier rejection cleanup are original repository safeguards using the same documented API boundaries,
+not copied Pi lifecycle/usage code. No manager adapter, new transport, estimated usage, or post-grace accounting
+recovery was adopted.
 
 ## Routing layer (`extensions/router`)
 
@@ -148,7 +227,82 @@ of first resort.
 - Minimum supported router host: published Pi `1.2.0` changelog identifies PR #10739 as the release that introduced
   custom-start preparation and busy-start semantics.
 
+Published Pi `1.3.0` (MIT; canonical repository above) was also inspected for async router correction boundaries:
+`dist/core/agent-session.js` tool hooks, next-turn refresh, forced-prompt projection, run preparation, and model/effort
+setters; and `docs/extensions.md` event and prompt/tool-delta contracts. This conceptual inspection established that
+model/effort can refresh between requests but the router's forced prompt has no public mid-run setter. The original
+router implementation therefore defers the whole tuple until idle or a new run start. Private setters, mutation of
+retained prompt event objects, abort/resume handoffs, and secondary safety latches were not adopted.
+
+The same published `1.3.0` model/effort setters and `ThinkingLevelSelectEvent` declaration were inspected for
+operator-effort recovery races. The original router guards distinguish its own effort echoes and the model switch's
+post-authentication default-effort echo from operator effort changes during authentication; no upstream setter
+implementation or private API was adopted. The published `1.3.0` `AgentSession.setThinkingLevel` and
+`ExtensionRunner.emit` were also inspected: the event is emitted without being awaited and each earlier handler is
+awaited, so the router records each expected effort echo, including the model switch's default-effort change, by its
+observed level transition and consumes it on arrival instead of relying on a synchronous flag window.
+
 No Pi code, issue prose, or documentation prose was copied or modified.
+
+### Pi host contract canary
+
+- Sources: published `@earendil-works/pi-coding-agent` (with lockstep `pi-ai`, `pi-agent-core`, `pi-tui`, `pi-codemode`,
+  `pi-mcp`, and `pi-telemetry`) `1.2.0` (tag `v1.2.0`, commit `06a466935536f8c9bcacb2d5efc0fc021be1bdff`) and `1.3.0`
+  (tag `v1.3.0`, commit `71023aec1546d6d677a65669c5665c0927ce0dd0`); `docs/sdk.md`, `docs/extensions.md`,
+  `docs/custom-provider.md`, `docs/models.md`, and `examples/sdk/06-extensions.ts` and `12-full-control.ts` from the
+  installed `1.3.0` package
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`, `packages/ai`,
+  `packages/agent-core`)
+- License declared by the repository and packages: MIT
+
+Use: `extensions/router/pi-contract.test.mjs`, the shared offline fixture `extensions/router/fixtures/pi-sdk.mjs`, and
+`scripts/pi-contract-canary.mjs` assert Pi behavior the router depends on, as documented by those docs and declared in
+the packages' `dist/core/extensions/types.d.ts`, `dist/core/model-runtime.d.ts`, `dist/core/event-bus.js`, and
+`dist/core/extensions/loader.js` at both versions: the private `ModelRegistry.runtime` field behind
+`ExtensionContext.modelRegistry`; runtime API-key resolution through a registered `ProviderConfig.streamSimple` custom
+API (used as the no-network fake provider, following the custom-provider stream contract); `ToolInfo` fields from
+`getAllTools()` and active-tool membership by exposure; `before_agent_start` `messageType: "custom"` for
+`sendMessage(..., { triggerTurn: true })`; `tool_result` fields for direct and `ctx.executeTool()` nested calls; and the
+event bus's synchronous `EventEmitter` delivery and reload-time listener invalidation. The full-control example's
+empty-resource `ResourceLoader` shape was already adopted by `review-runner.ts`; inline `extensionFactories` follow the
+extensions example. The merged separate-session reviewer's provider-error, aborted-usage, and pending-auth cancellation
+tests also use this shared custom API fixture rather than replacing the parent runtime's stream method.
+
+Only behavior was used: no Pi code, tests, or documentation prose was copied or modified. Intentionally not adopted: a
+public `ctx.modelRegistry.streamSimple()`-backed agent loop replacing the accepted private runtime field, Pi's own
+provider test suites, `RpcClient`, a historical version matrix, and any upstream `main` (unreleased) lane.
+
+### Pi tool-argument validation and coercion contract
+
+- Sources: published `@earendil-works/pi-ai` `1.5.0` (tag `v1.5.0`, commit `f9a26365568127461c47a07a37dcb42c140a3ac5`)
+  `dist/utils/validation.js` and `@earendil-works/pi-schema` `1.5.0` `dist/coerce.js` (whose coercion rules are declared
+  as ported from TypeBox 1.3.27 `Value.Convert`, MIT, with `LICENSES/typebox-LICENSE`); `pi-ai` `1.2.0` and `1.3.0`
+  `dist/utils/validation.js` (TypeBox `Value.Convert` for TypeBox-authored schemas, primitive coercion for plain JSON
+  Schema)
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/ai`, `packages/schema`)
+- License declared by the repository and packages: MIT
+
+Use: `extensions/router/pi-tool-arguments.test.mjs` asserts the observed behavior of the public `validateToolArguments`
+at the floor, pinned, and latest Pi: which classifier, planning, reviewer, and subagent arguments are normalized or
+rejected, that the result is a copy that leaves the transcript's arguments unchanged, and the documented pre-1.5
+difference for plain JSON Schema. Only behavior was used: no Pi, pi-schema, or TypeBox code, tests, or prose was copied
+or modified. Intentionally not adopted: pi-schema as a local validator, coercing local validation of persisted or
+restored data, assertions on host error wording, and Pi's own validation test suites. Review follow-up also inspected Pi
+`1.3.0`'s published `dist/compat.js` and `dist/providers/faux.js` to capture the actual post-clone classifier response
+through the public API-provider stream, rather than testing the untouched input fixture. Pi `1.5.0`'s `docs/sdk.md`,
+`docs/custom-provider.md`, and `examples/sdk/{06-extensions,12-full-control}.ts` informed the real in-memory router
+session that verifies emitted telemetry. These are conceptual API uses, not copied implementation; production
+transports, live inference, and persistent session storage are intentionally excluded.
+
+### Pi Codex classifier reasoning effort
+
+- Source: published `@earendil-works/pi-ai` `1.3.0` (tag `v1.3.0`, commit `71023aec1546d6d677a65669c5665c0927ce0dd0`),
+  README and `dist/api/openai-codex-responses.{js,d.ts}` at <https://github.com/earendil-works/pi> (`packages/ai`, MIT).
+
+Used as an API reference: low-level `complete()` forwards the Codex-specific `reasoningEffort` option, which the adapter
+serializes as `reasoning.effort`. The regression exercises the installed adapter's HTTP serialization with mocked
+transport. No upstream code or tests were copied or modified. The adapter's transport implementation and any migration
+to `completeSimple()` were not adopted.
 
 ### Pi model catalog: GPT-6.1 Sol pricing
 
@@ -163,6 +317,17 @@ Use: the router's `gpt-6.1-sol` generation proxy (`extensions/router/core/eviden
 read 0.1, output 10 USD per million tokens). Only those numeric facts were used; no catalog file or Pi code was copied.
 The behavioral prior is intentionally not taken from Pi: it remains a temporary proxy from the router's existing
 measured GPT-5.6/6.0 Sol evidence until GPT-6.1 Sol has rollout evidence of its own.
+
+### OpenAI GPT-6.2 model catalog
+
+- Sources: [GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol) and
+  [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), reviewed 2026-11-19
+- The pages have no pinned revision and declare no separate source license.
+
+The router uses the published model IDs and token rates to add Sol and Astra to their respective routing ladders. Sol
+retains the GPT-6.1 Sol price prior. Astra uses the previous Astra rollout cost as a conservative estimate. The router
+uses its own existing evidence and resolves endpoints through Pi's scoped registry. The integration adopts the catalog
+facts and leaves out provider-specific configuration, prompting examples, and API client code.
 
 ### `maximhq/bifrost`
 
@@ -250,7 +415,7 @@ from a local research corpus and the public benchmark captures it aggregates.
 
 - Source: local `llm-effectiveness` research corpus (`~/outputs/llm-effectiveness`), normalization version `2.0`
 - Initial revision reviewed: capture dated 2026-07-25, spend data through 2026-07-19
-- Latest revision reviewed:
+- September revision reviewed:
   [`teamupstart/ai-acceleration` PR #650](https://github.com/teamupstart/ai-acceleration/pull/650) at
   `a99c2d0145952f99ad92f6d786ef0aa19fa15c97`, report data through 2026-09-22; latest remote `main` reviewed at
   [`392b967c5ec3ea8d63078ddbc31a8b16a1f22836`](https://github.com/teamupstart/ai-acceleration/commit/392b967c5ec3ea8d63078ddbc31a8b16a1f22836)
@@ -310,6 +475,40 @@ Intentionally not adopted: no raw benchmark score is copied into runtime policy,
 incompatible benchmarks, no Artificial Analysis GitHub Copilot price is treated as a real cost, and no
 unsupported-vendor model (Kimi, Grok, GLM, Muse) is made a routing candidate. Benchmark pass rates are treated strictly
 as pre-telemetry ordering priors and never as the router's acceptance signal.
+
+### November model-policy refresh
+
+- Source: [`teamupstart/ai-acceleration` LLM Effectiveness report][nov-report], revision
+  `036e072f667b012b548c8fc3766d8f36856efdfc`, normalization `2.2`, data through 2026-11-23.
+- Measurements used: [CursorBench 4.1](https://cursor.com/evals) and
+  [Artificial Analysis Intelligence Index v5](https://artificialanalysis.ai/) captured 2026-11-20;
+  [Terminal-Bench 4.1](https://www.tbench.ai/?efforts=all&version=4.1) captured 2026-11-23;
+  [DataCurve DeepSWE v1.1](https://deepswe.datacurve.ai/data/v1.1) capture from 2026-09-22.
+- License: internal report; no license identified for the benchmark captures used here.
+
+Use: selected exact-effort `model_consensus.performance_best` values are transcribed into
+[`effectiveness-data.ts`](extensions/router/core/effectiveness-data.ts) as ability-band inputs. The application policy
+uses the Terminal-Bench Sol/Astra/Opus comparison and the CursorBench Haiku/Sonnet/Neon cost and step tradeoff as
+qualitative priors. The existing Terra rollout prior is repriced using the 5.6 max token totals in
+`datacurve_deepswe_v1.1/derived/rollout_metrics_by_config.csv` and 5.6/6.1 rates in
+`artificialanalysis.ai/pricing-source-data.csv`; only price changes, not measured behavior. The report's leaderboard
+algorithm, data pipeline, blanket Opus recommendation, raw benchmark data, and website code were not copied. Task cost,
+step count, model output throughput, and cross-source percentiles do not stand in for router latency, success, or
+same-task reliability.
+
+Classifier compatibility references: [Claude Sonnet 5.5 release notes][sonnet55-tool-use], [Amazon Bedrock adaptive
+thinking][bedrock-adaptive-thinking], and the MIT-licensed
+[`earendil-works/pi` v1.3.0](https://github.com/earendil-works/pi/tree/v1.3.0) and
+[v1.6.0](https://github.com/earendil-works/pi/tree/v1.6.0) `pi-ai` completion interface. The provider docs (no revision
+or license declared) inform `auto` tool choice, `between_tools` thinking, low effort, and the Converse field placement.
+The Pi API is called rather than reimplemented. No documentation prose, SDK code, or native classifier API
+implementation was copied.
+
+[nov-report]:
+  https://github.com/teamupstart/ai-acceleration/tree/036e072f667b012b548c8fc3766d8f36856efdfc/llm_effectiveness
+[sonnet55-tool-use]:
+  https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5#forced-tool-use-is-not-supported
+[bedrock-adaptive-thinking]: https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html
 
 ### Scoped-model analysis refresh
 
@@ -495,25 +694,123 @@ are reused byte-for-byte from 1.1.0 because Pi 1.3.0's `src/cli.ts`, `src/rpc-en
 unchanged. The published `dist/bundle/cli.js` loader remains unchanged and checksum-pinned. Upstream changes elsewhere
 in 1.3.0, including those near the seams, were not adopted. No complete Pi source checkout is committed.
 
+## Pi 1.4.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.4.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `4a080252f06caf63a525d7873c5d94d3c23887e0` (`v1.4.0`)
+- Source archive: `pi-1.4.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.4.0.tgz`, pinned by SHA-256 and registry integrity
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.4.0/integration.patch`](pi-overlay/versions/1.4.0/integration.patch) adapts the existing opt-in
+skills seam to Pi 1.4.0's MIT-licensed TypeScript sources and documentation. The generated
+[`skills.patch`](patches/pi-1.4.0/skills.patch) modifies the resource loader, slash-command list, CLI and interactive
+entry points, and skill documentation. These are modified-code patches containing upstream context, not merely
+conceptual inspiration. The skill-management modules remain this repository's original implementation, reusing Pi's
+package/resource discovery, project-trust, and locking APIs. Catalog skills remain inactive until explicitly enabled;
+explicit `--skill` paths still load with `--no-skills`. Original hand-written entrypoint wrappers route CLI and RPC
+execution through the patched unbundled runtime while preserving process setup; the published CLI loader stays unchanged
+and checksum-pinned. Pi's automatic loading of all discovered skills, generated bundle chunks, and unrelated 1.4.0
+behavior are not adopted into this overlay. No complete upstream source checkout is committed; the upstream MIT notice
+is retained in the root `LICENSE`, which also ships with the standalone patch package.
+
+## Pi 1.5.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.5.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `f9a26365568127461c47a07a37dcb42c140a3ac5` (`v1.5.0`), the commit the lightweight release
+  tag points to; the npm registry publishes no `gitHead` for this release, and the commit is unsigned
+- Source archive: `pi-1.5.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.5.0.tgz`, pinned by SHA-256 and registry integrity
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.5.0/integration.patch`](pi-overlay/versions/1.5.0/integration.patch) is the 1.3.0 seam rebased
+onto Pi 1.5.0's MIT-licensed TypeScript sources and documentation. The only changed line is the `utils/paths.ts` import
+in `interactive-mode.ts`, which keeps upstream's new `shortenHomePath` import beside the seam's `resolvePath`; other
+differences are hunk positions, context lines, and blob indexes. The generated
+[`skills.patch`](patches/pi-1.5.0/skills.patch) modifies the published resource loader, slash-command list, CLI and
+interactive entry points, and skill documentation, within the same 48-line seam budget. It adds this repository's
+original skill-management modules, which compile byte-identically to the 1.3.0 output, and reuses Pi's package/resource
+discovery, project-trust, and `proper-lockfile` APIs. It keeps catalog skills inactive until explicitly enabled,
+preserves explicit `--skill` paths with `--no-skills`, and does not copy Pi's automatic skill loading or its skill
+implementation. The original `cli-runtime.js` and `rpc-entry.js` wrappers are reused byte-for-byte from 1.3.0 because Pi
+1.5.0's `src/cli.ts`, `src/rpc-entry.ts`, and `src/cli/setup.ts` are unchanged. The published `dist/bundle/cli.js`
+loader remains unchanged and checksum-pinned. Upstream changes elsewhere in 1.5.0, including those near the seams, were
+not adopted. No complete Pi source checkout is committed.
+
+## Pi 1.5.2 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.5.2`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `b4afdddf44e059c67ccf5097e5317d913521b470` (`v1.5.2`), the release tag's commit; the npm
+  registry publishes no `gitHead` for this release
+- Source archive: `pi-1.5.2-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.5.2.tgz`, pinned by SHA-256 and registry integrity
+- License declared by the package: MIT
+
+[`pi-overlay/versions/1.5.2/integration.patch`](pi-overlay/versions/1.5.2/integration.patch) rebases the 1.5.0 seam onto
+Pi 1.5.2's MIT-licensed TypeScript sources and documentation. Only hunk positions and blob indexes change. The generated
+[`skills.patch`](patches/pi-1.5.2/skills.patch) modifies the published resource loader, slash-command list, CLI and
+interactive dispatch, and skill documentation within the same 48-line seam budget. These are modified-code patches
+containing upstream context, not merely conceptual inspiration. The shared skill-management modules remain this
+repository's original implementation and reuse Pi's resource discovery, project-trust, and locking APIs; they compile
+byte-identically to 1.5.0. The original CLI/RPC wrappers are reused byte-for-byte because upstream's entrypoint sources
+and setup are unchanged. The published CLI loader stays unchanged and checksum-pinned. Pi's automatic activation of
+catalog skills, generated bundle chunks, and unrelated auth, session-fork, and UI changes are not copied into the
+overlay; those features remain upstream's implementation in the host package. No complete upstream checkout is
+committed. The upstream MIT notice remains in root `LICENSE` and ships with the standalone patch package.
+
+## Pi 1.6.0 `/skills` runtime patch
+
+- Source: `@earendil-works/pi-coding-agent@1.6.0`
+- Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
+- Upstream revision reviewed: `faac585884ae2c013a6b1400f3e9e77f10b34bac` (`v1.6.0`)
+- Source archive: `pi-1.6.0-source.tar.gz`, verified against the release's published `SHA256SUMS`
+- npm tarball: `pi-coding-agent-1.6.0.tgz`, pinned by SHA-256 and registry integrity
+- Declared license: MIT
+- Port source: MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+  `18417b62c5286706746168c2efcf07a7a13a7290` (`#93`); the root `LICENSE` retains its notice.
+
+Copied and modified code: the [1.6.0 integration patch](pi-overlay/versions/1.6.0/integration.patch), pinned input
+manifest, and CLI/RPC replacements adapt the existing seam to Pi 1.6.0's TypeScript sources and skill documentation. The
+[generated patch](patches/pi-1.6.0/skills.patch) is regenerated here, not copied from the port source, using the fork's
+shared overlay with its trust-scoped CLI, resolved-path handling, portable persistence, and Windows-tilde semantics
+intact. It modifies the resource loader, slash-command list, CLI and interactive entry points, and docs, within the same
+48-line runtime seam budget, and adds this repository's skill-management modules. It reuses Pi's package/resource
+discovery, trust APIs, and the previously attributed `proper-lockfile` pattern. The unchanged compile-cache loader is
+checksum-pinned; the CLI/RPC wrappers retain process markers and HTTP-dispatcher setup. The patch README, overlay
+documentation, and isolated 1.6.0 runtime smoke steps in the patch-drift workflow are adapted from the port source. The
+fork retains regeneration for every supported version and its multi-package test fixture interface, rather than
+upstream's reduced version matrix and single-package environment variables.
+
+Intentionally not adopted: upstream's removal of Pi 1.0.4, its generated skill-management bytes, Pi's automatic
+skill-loading policy, or unrelated 1.6.0 runtime behavior. All historical supported patches, manual internal publishing,
+router/OTel, and development pins remain unchanged; no source checkout or bundled chunks are vendored.
+
 ## Pi `/skills` TypeScript overlay
 
 - Source: `@earendil-works/pi-coding-agent@0.85.1`, `@earendil-works/pi-coding-agent@0.87.1`,
   `@earendil-works/pi-coding-agent@1.0.3`, `@earendil-works/pi-coding-agent@1.0.4`,
-  `@earendil-works/pi-coding-agent@1.1.0`, and `@earendil-works/pi-coding-agent@1.3.0`
+  `@earendil-works/pi-coding-agent@1.1.0`, `@earendil-works/pi-coding-agent@1.3.0`, and
+  `@earendil-works/pi-coding-agent@1.4.0`, `@earendil-works/pi-coding-agent@1.5.0`,
+  `@earendil-works/pi-coding-agent@1.5.2`, and `@earendil-works/pi-coding-agent@1.6.0`
 - Canonical repository: <https://github.com/earendil-works/pi> (`packages/coding-agent`)
 - Upstream revisions reviewed: `d981de1229ef899957bbe968bc8dcda02a21f477` (`v0.85.1`),
   `f07218c4d4bbc12bef056a7058c3dd49dfe41abe` (`v0.87.1`), `d78dc83d633229d12f8b79631384c4c2717c399f` (`v1.0.3`),
   `7c10bd4337495ee613f2224843ecdf349b80d1df` (`v1.0.4`), and `abe508e1b89912adde45528136c3221eb69acdd7` (`v1.1.0`),
   taken from the corresponding signed release tag, and `71023aec1546d6d677a65669c5665c0927ce0dd0` (`v1.3.0`), taken from
-  its lightweight, unsigned release tag
+  its lightweight, unsigned release tag; the 1.4.0, 1.5.0, 1.5.2, and 1.6.0 revisions are recorded above
 - Source acquired from the release assets `pi-0.85.1-source.tar.gz`, `pi-0.87.1-source.tar.gz`,
-  `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, `pi-1.1.0-source.tar.gz`, and `pi-1.3.0-source.tar.gz`, each
+  `pi-1.0.3-source.tar.gz`, `pi-1.0.4-source.tar.gz`, `pi-1.1.0-source.tar.gz`, `pi-1.3.0-source.tar.gz`, and
+  `pi-1.4.0-source.tar.gz`, `pi-1.5.0-source.tar.gz`, `pi-1.5.2-source.tar.gz`, and `pi-1.6.0-source.tar.gz`, each
   verified against upstream's published `SHA256SUMS` for that release
 - License declared by the package: MIT
 
 [`pi-overlay`](pi-overlay) is the authored form of the `/skills` runtime patch; the artifacts under
-`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, `patches/pi-1.1.0/`, and
-`patches/pi-1.3.0/` are generated from it.
+`patches/pi-0.85.1/`, `patches/pi-0.87.1/`, `patches/pi-1.0.3/`, `patches/pi-1.0.4/`, `patches/pi-1.1.0/`,
+`patches/pi-1.3.0/`, `patches/pi-1.4.0/`, `patches/pi-1.5.0/`, `patches/pi-1.5.2/`, and `patches/pi-1.6.0/` are
+generated from it.
 
 `pi-overlay/skill-management-core.ts` and `pi-overlay/skill-management.ts` are original code for this repository. They
 are a TypeScript reimplementation of the `dist/core/skill-management.js` previously authored here as JavaScript,
@@ -557,7 +854,7 @@ Ideas and API patterns used:
 
 - Extension tool registration, lifecycle shutdown hooks, resource discovery, and TUI tool rendering.
 - Runtime active-tool selection through `getActiveTools()` / `setActiveTools()`, used to expose safety validators only
-  at valid lifecycle phases, including generated review turns; stale calls retain execution-time guards.
+  at valid builder lifecycle phases; stale calls retain execution-time guards.
 - The Pi 0.85.1 and 0.87.1 versioned skills catalogs reuse `DefaultPackageManager.resolve()` and its resolved-resource
   metadata to discover package and settings skills with upstream manifest, filtering, scope, and precedence behavior.
   The catalog merge and opt-in activation logic remain original code; Pi's automatic skill loading is intentionally not
@@ -565,7 +862,34 @@ Ideas and API patterns used:
 - The Pi 0.85.1 and 0.87.1 patches adapt the synchronous `proper-lockfile` acquisition/retry and `finally` release
   pattern from Pi's trust manager so skill configuration updates serialize across processes.
 - SDK `AgentSession.compact()` with custom instructions and in-memory sessions.
+- Pi `1.3.0`'s `docs/sdk.md`, `examples/sdk/12-full-control.ts`, and published
+  `dist/core/{sdk,model-registry,model-runtime,agent-session}.js` informed the router's independent reviewer runner.
+  Canonical source: <https://github.com/earendil-works/pi/tree/v1.3.0/packages/coding-agent> (MIT). Conceptual API use:
+  in-memory sessions/settings, an empty ResourceLoader, native read-only tool selection, a custom verdict tool,
+  abort/dispose, and usage events. The runner uses a guarded, operator-approved read of ModelRegistry's private runtime
+  field to reuse model/auth access; no Pi implementation was copied. We intentionally exclude normal resource
+  inheritance, persistent reviewer transcripts, RPC subprocesses, and any subagents-extension dependency. Published Pi
+  `1.4.0`'s `docs/sdk.md`, `docs/extensions.md`, `docs/packages.md`, `docs/configuration.md`, and
+  `examples/sdk/06-extensions.ts` were also reviewed, and the runner's nine offline SDK tests were executed against the
+  installed `1.4.0` package to verify runtime reuse, isolation, cancellation, and usage. Canonical source:
+  <https://github.com/earendil-works/pi/tree/v1.4.0/packages/coding-agent> (MIT). This is API compatibility
+  verification, not copied implementation. Durable bounded review-attempt identities are original router scheduling
+  logic, not upstream session replay or persistence machinery.
+- Pi `1.3.0`'s SDK/codemode documentation and `examples/sdk/06-extensions.ts` and `14-codemode-mcp.ts` informed the
+  advisory-router regression fixture: in-memory `AgentSession`, explicit resource factories, deterministic model
+  responses, and real nested tool dispatch. This is conceptual API use, not copied Pi code; live providers, MCP
+  connections, user resources, and persistent sessions are intentionally excluded.
+- Pi `1.3.0`'s `docs/security.md`, `containerization.md`, `cli.md`, and `settings.md` informed the router's documented
+  separation between advisory prompts, native tool selection, and whole-process isolation. No documentation text or
+  isolation implementation was copied; the router does not implement a sandbox.
 - RPC JSONL framing and the `prompt`, `steer`, `follow_up`, `abort`, state, and event protocols.
+- Pi `1.3.0`'s published `dist/core/agent-session.js`, `dist/modes/rpc/rpc-mode.js`, and
+  `@earendil-works/pi-agent-core`'s `dist/agent-loop.js` informed the interrupted-child queue recovery: queued user
+  messages emit `message_start` before their assistant response, including steering within an existing run. The subagent
+  tracks that boundary to restore final-answer eligibility only when newly queued work begins. Recovery markers are
+  owned per request so handled or rejected duplicate input cannot retain a stale marker or remove another request's
+  accepted marker; transformed queue text replaces only its owner's raw marker. This is protocol compatibility
+  implemented independently; no Pi code was copied, and queue scheduling was not adopted.
 - Pi `1.1.0`'s published package layout (the `.` export resolving under `dist/`, with the `pi` bin at
   `dist/bundle/cli.js`), its `--mode rpc` CLI flags, and the `registerProvider()` API documented in
   `dist/core/extensions/types.d.ts`. `extensions/subagents/rpc.integration.test.mjs` uses these to launch the pinned Pi
@@ -607,31 +931,6 @@ MIT), which itself extends pi's skills configuration.
 - **Intentionally not adopted**: the skills catalog/activation model, session-scoped (`--session`) entries, the
   `/skills` command surface, and the enabled-entry list shape. Router start mode is a single scalar preference per
   scope, not a list, and it is not settable from a slash command.
-
-## `shell-quote` and `shlex` (router shell tokenizer dependencies)
-
-- Sources: `shell-quote` (<https://github.com/ljharb/shell-quote>, version `1.11.0`, MIT) and `shlex`
-  (<https://github.com/rgov/node-shlex>, version `3.0.0`, MIT).
-- Both are consumed as ordinary npm dependencies by `extensions/router/core/shell.ts`. No code from either package was
-  copied or modified, and both ship their own type declarations. `shell-quote` was raised to the first patched release
-  for [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv); this does not change the adopted API.
-
-What each is used for, and why both:
-
-- `shell-quote`'s `parse` supplies the token structure the read-only gate needs, classifying control operators, glob
-  patterns, and comments as distinct entries rather than as text.
-- `shlex`'s `split` supplies malformed-quoting detection, which `shell-quote` does not report: it accepts an unbalanced
-  quote silently.
-
-Behavior of both libraries that this repository deliberately compensates for, rather than relying on:
-
-- Both treat newlines and carriage returns as ordinary whitespace, so a two-line command lexes into one argument list.
-  Control characters are therefore rejected on the raw string before either lexer runs.
-- `shell-quote` performs parameter expansion during parsing and yields an empty token for an unset variable, so `$` and
-  backticks are rejected before parsing rather than interpreted.
-
-The argv policy itself — the allowed binaries, git subcommands, and per-binary flag allowlists — is original code in
-this repository and is not derived from either package.
 
 ## `pi-web-access` (removed local OpenAI auth patch)
 
@@ -718,12 +1017,14 @@ standalone patch are separate packages. The OTel source is redistributed with it
 
 - Source: `zew1me/pi-buildout`
 - Canonical repository: <https://github.com/zew1me/pi-buildout>
-- Revision last synced: `867d931ee84de52e46e1b456d95338c236a804d5` (2026-09-28)
+- Revision last selectively synced: `18417b62c5286706746168c2efcf07a7a13a7290` (2026-11-21)
+- Sync dispositions and intentional deferrals: [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md#2026-11-23-selective-sync-18417b62)
 - License declared by the source: MIT (© 2026 Nigel Stuke)
 
 This repository is a fork of `zew1me/pi-buildout`. Upstream changes are ported by cherry-picking commits rather than by
-merging, so each ported commit records its upstream SHA in a `(cherry picked from commit …)` trailer, and
-[`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md) records the last synced revision and the status of each upstream commit.
+merging, so each ported commit records its upstream SHA in a `(cherry picked from commit …)` or `Upstream-Commit`
+trailer, and [`UPSTREAM_SYNC.md`](UPSTREAM_SYNC.md) records the last synced revision and the status of each upstream
+commit.
 
 What was adopted, as copied code: the pi 0.84.4 and 0.85.1 `/skills` patch sets under `patches/` (the 0.84.4 set, like
 0.84.2's, was later removed at `867d931e`), including the recognized-state upgrade manifests for installs patched by
@@ -749,21 +1050,79 @@ The upstream pi 0.84.4 and 0.85.1 development package bumps were held back from 
 router's cost tests pin the model registry. Issue #64 later matched upstream's 0.85.1 versions after a separate router
 evidence review; only the version numbers are shared with upstream.
 
-## Effect (conceptual evaluation only)
+### Shell-free patch application regressions (`c541ff594`)
 
-- Sources: Effect documentation (<https://effect.website/docs/v4/onboarding>,
-  <https://effect.website/docs/v4/getting-started/the-effect-type>,
-  <https://effect.website/docs/v3/getting-started/why-effect>), Hacker News discussion of Effect 4.0
-  (<https://news.ycombinator.com/item?id=49925812>), and TypeScriptWorld's Effect vs fp-ts comparison
-  (<https://typescriptworld.com/effect-vs-fp-ts-error-tracking-and-the-two-learning-curves>).
-- Revision reviewed: `effect@4.0.2` (npm `latest` at 2026-10-08). License declared by the package: MIT.
+Copied regression tests from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+`c541ff5945fba2facf7946a979c36ac620493d72`, in `scripts/build-pi-patch.test.mjs`. The fork already applies patch data
+through stdin with argument arrays; two existing verification helpers are exported for tests covering hostile directory
+names, literal patch contents, forward/reverse failures, missing inputs, and migration round trips. Upstream's older
+generation pipeline and single-version artifact tests were not substituted for this fork's generation checks.
 
-Ideas studied: structuring timeouts, abort propagation, and timer cleanup as program structure; incremental adoption at
-Promise boundaries. The published `effect@4.0.2` package was installed in a scratch directory only to measure import
-time and size and to confirm the `effect/testing` `TestClock` export; it is not a dependency of this repository. No
-Effect source code or documentation text has been copied. See
-[`specs/effect-adoption-evaluation.md`](specs/effect-adoption-evaluation.md) for the evaluation and the intentionally
-unadopted parts of the library.
+### Patch-builder Git isolation (`18afa44d`)
+
+Copied and modified code from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+`18afa44d84d2fdede1842791f3688708b574ffd7`: `scripts/build-pi-patch.mjs` strips inherited `GIT_*` variables for its
+throwaway diff repository and explicitly disables signing of the baseline commit. The fork adds original regression
+coverage proving a signing-enabled global configuration cannot block generation and an invoking repository's HEAD,
+index, and worktree remain untouched. This adoption is independent of upstream's automatic public npm alpha-release
+workflow, preparation script, and release documentation, none of which were adopted; manual internal CodeArtifact
+publishing and development pins remain unchanged. The root `LICENSE` retains the source's MIT notice.
+
+A follow-up adds original handling for global `core.hooksPath` and `diff.noPrefix`: temporary commits use an empty hook
+directory and diffs force installer-compatible `a/` and `b/` prefixes. Conceptual review input came from the
+[CodeRabbit](https://www.coderabbit.ai/) CLI's reviews of fork revisions `1895427` and `59f5696`; no code or license
+notice was supplied or copied. The same regression fixture now uses a rejecting global commit hook and
+prefix-suppressing global config, and verifies canonical patch application and that no developer hook ran. Git's config
+serializer writes fixture hook paths containing `#`, so the regression does not silently test a truncated path. The
+upstream-check example also stops on fetch failure rather than inspecting a stale ref.
+
+### Managed-install discovery (`f594d8305`)
+
+Modified code and copied regression tests from MIT-licensed `zew1me/pi-buildout`,
+<https://github.com/zew1me/pi-buildout>, revision `f594d83056dc61913145833f0e5a2ff395586925`:
+`scripts/install-extensions.sh` positively recognizes managed launchers or metadata, verifies the pointer against the
+active package version, and fails closed when a recognized install is broken. `scripts/install-discovery.test.mjs`
+covers managed layouts, unrelated sibling installs, exact package identity, Homebrew, and shim fallback. Existing
+fixture launchers now identify themselves explicitly. Unlike upstream, extension-only installation still discovers Pi
+and checks the fork's router host-version floor; upstream's discovery bypass was intentionally not adopted.
+
+### Legacy ownership regression coverage (`c5cb5cb44`)
+
+Adapted copied tests from MIT-licensed `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>, revision
+`c5cb5cb446f2666d5c9d4892abcf1c24c0bc1a5a`. `scripts/install-ownership.test.mjs` checks unknown legacy files, symlinks,
+directories, and ownership changes during extension replacement. The fork already implements preflight and deletion-time
+ownership checks; the tests retain its Pi discovery requirement, router installation, and optional OTel packaging.
+Upstream's extension-only discovery bypass and installer replacement were not adopted.
+
+### Compatible release-safety port (`dabb54b1d`, npm publication #79)
+
+- Source: `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>
+- Revision reviewed: `dabb54b1d753ffb60f5fe36da48828bb77a08028`
+- Declared license: MIT (© 2026 Nigel Stuke); the root `LICENSE` retains its copyright and permission notice.
+
+Copied and modified code, not conceptual inspiration alone: `scripts/release-packages.mjs` adapts upstream's strict
+release-manifest/version validation, explicit lifecycle-script enabling for packing, SHA-512 archive integrity helpers,
+release receipts, and validation of every selected archive before publication. The guard in
+`scripts/check-release-registry.mjs` shares this fork's selected-package identity and alpha-only validation. The port
+retains manual `--package` selection, explicit `--publish` approval, `@upstart` identities, and the fixed internal
+CodeArtifact endpoint. Tarball publication adds explicit CLI policy checks and embedded-manifest validation because npm
+cannot be relied on to execute the checkout's `prepublishOnly` hook for a tarball. Receipts bind the packed bytes within
+one publish invocation; earlier dry runs remain previews, not persistent approvals.
+
+`scripts/release-package.test.mjs` and `scripts/release-publish.test.mjs` adapt upstream's extracted consumer-archive,
+minimal-payload, import-closure, Pi-loader, and modified-archive regression-test patterns. The fork extends coverage to
+all six packages, including the combined router/OTel package, vendored Apache notices, NodeNext `.js` imports resolving
+to shipped `.ts` sources, isolated disposable checkouts, and equivalent CLI/lifecycle guards. Pi's MIT-licensed SDK,
+extension, and package documentation and SDK extension example from `@earendil-works/pi-coding-agent@1.5.2`
+(<https://github.com/earendil-works/pi>) were reviewed for loader behavior and host-provided dependencies; no Pi loader
+or SDK implementation code was copied.
+
+Intentionally not adopted: public npm publishing, public-access metadata, trusted-publishing/OIDC or provenance CI,
+automatic main-branch releases, Git-base/version-bump release selection, stable/beta/rc channels, or recursive staging
+of router evaluation/test trees. Registry version preflight, conflict reconciliation, identical-version recovery, and
+backward-dist-tag network policy are deferred rather than imported into this manual CodeArtifact workflow. Consumer
+setup, human checkpoints, and independent package versions remain unchanged; `packages/README.md` documents the local
+archive safeguards and temporary receipt lifecycle.
 
 ## Pi 1.1.0 supported-install discovery and registry refresh
 
@@ -795,8 +1154,77 @@ patch artifacts and overlays were removed; historical attribution above remains 
   2026-10-07. Consumed as a development dependency, with no upstream source copied or modified.
 
 Conceptual use: XState's synchronous actor transitions, guarded statecharts, and cancellable promise children provide
-one lease owner and a secondary classifier scoped to the builder's review family. fast-check generates JSON inputs,
-state-transition sequences, and adversarial schedules for actual router handlers and their ledger/model waits. The
-machine, adapter integration, and properties are original code. We did not adopt XState's persisted snapshot format, v6
-alpha APIs, a global asynchronous handler queue, or make the telemetry ledger a state source. We did not copy fast-check
-examples or its implementation; the existing Node test runner remains in place.
+one builder lease owner and a secondary classifier scoped to that task. fast-check generates state-transition sequences
+and adversarial schedules for actual router handlers and their ledger/model waits. The machine, adapter integration, and
+properties are original code. We did not adopt XState's persisted snapshot format, v6 alpha APIs, a global asynchronous
+handler queue, or make the telemetry ledger a state source. We did not copy fast-check examples or its implementation;
+the existing Node test runner remains in place.
+
+## Upstream RPC integration test hardening and fixture isolation
+
+- Source: `zew1me/pi-buildout` commit `cd2ea61a5c73ee266821cfd292b36faca3b55a49` (`#85`)
+- Canonical repository: <https://github.com/zew1me/pi-buildout>
+- License: MIT (© 2026 Nigel Stuke)
+
+The RPC integration test in `extensions/subagents/rpc.integration.test.mjs` was enhanced with test-hardening
+improvements ported from upstream. Changes include pinned Pi version assertion (respecting the canary
+`PI_TEST_PACKAGE_ENTRY` override), early cleanup registration before resource acquisition, timeout and abort-signal
+awareness in the `waitFor` polling function, explicit server connection cleanup with `closeAllConnections()`, and
+expanded test options for longer timeouts. Both the main RPC protocol test and the isolation regression test receive
+these robustness improvements. The real-RPC integration test exercises the documented RPC patterns against the pinned Pi
+CLI with a test-only provider registered through `ExtensionAPI.registerProvider` and a deterministic loopback streaming
+endpoint; no Pi provider or RPC client code was copied. The isolation test fixture with ambient extension/context
+loading, control, and isolated verification remains original code.
+
+The port retains the fork's `isolatedChildArgs`/auth-bridge launch path in both protocol and isolation coverage; Pi's
+pinned runtime is asserted unless the contract canary supplies an explicit package override.
+
+## Upstream `/skills` path expansion and portable persistence
+
+- Source: `zew1me/pi-buildout`, <https://github.com/zew1me/pi-buildout>
+- Revisions reviewed: `c543eeaa071c973b09bfaed19c012a06b804a9b2` (`#74`) and `59d2979a0a7832e435c8a5db7a3dd35067244610`
+  (`#78`)
+- Declared license: MIT (© 2026 Nigel Stuke); the repository's MIT license notice is retained.
+
+Copied and adapted code, not conceptual inspiration alone: the shared skill-management overlay and focused tests now
+expand `$NAME`/`${NAME}` path references, preserve portable configuration spellings for load-time expansion, persist
+checkout-local repository paths relative to the checkout root, match equivalent real paths, and diagnose unresolved
+variables and legacy relative entries. The upstream skill guidance, documentation seam, and catalog regression fixtures
+were adapted to this fork's per-version test loop. The second revision supplies the Pi 1.3.0 documentation/migration
+pattern; its Git-hook environment isolation was already implemented locally.
+
+This fork preserves `commandNeedsProjectTrust`, catalog precedence, serialized configuration updates, and the local
+Windows/path-identity regressions. It generates all artifacts and recognized `pre-expansion` migrations from this fork's
+actual shipped trees for Pi 1.0.3, 1.0.4, 1.1.0, 1.3.0, 1.4.0, 1.5.0, and 1.5.2. Upstream's generated patch bytes and
+old-state checksums were intentionally not copied, because they omit the fork's trust changes. No retired version,
+dependency baseline change, installer policy change, or unrelated upstream feature was adopted in this behavior port.
+
+Verification covers every retained version: clean-source builds reproduce the published baseline, regeneration reports
+no artifact drift, all seven `pre-expansion` migrations round-trip to their exact shipped checksums, and the runtime
+catalog/dispatch suites exercise recognized-state upgrades, variable expansion on reload, unset-variable diagnostics,
+equivalent-path removal, cross-clone repository paths, catalog trust/precedence, saved distrust, and path aliases. The
+shared core additionally checks portable versus `$PWD`/`$OLDPWD` persistence, literal dollar paths, session mutations,
+and the retained Windows path regressions. Baselines and CLI/RPC wrappers are unchanged; the upstream seam stays at 48
+edited runtime lines per version.
+
+Review hardening is original fork code: checkout-relative activation now requires that checkout's project-trust
+decision, resolved command targets are not expanded a second time, and Windows home-relative paths follow Pi's native
+separator semantics. The latter behavior was checked against MIT-licensed Pi 1.5.2 `dist/utils/paths.js` at the already
+recorded `b4afdddf44e059c67ccf5097e5317d913521b470` release, <https://github.com/earendil-works/pi>; no Pi path-helper
+code was copied. CLI examples quote variable paths so shells preserve their portable spelling.
+
+## Effect (conceptual evaluation only)
+
+- Sources: Effect documentation (<https://effect.website/docs/v4/onboarding>,
+  <https://effect.website/docs/v4/getting-started/the-effect-type>,
+  <https://effect.website/docs/v3/getting-started/why-effect>), Hacker News discussion of Effect 4.0
+  (<https://news.ycombinator.com/item?id=49925812>), and TypeScriptWorld's Effect vs fp-ts comparison
+  (<https://typescriptworld.com/effect-vs-fp-ts-error-tracking-and-the-two-learning-curves>).
+- Revision reviewed: `effect@4.0.2` (npm `latest` at 2026-10-08). License declared by the package: MIT.
+
+Ideas studied: structuring timeouts, abort propagation, and timer cleanup as program structure; incremental adoption at
+Promise boundaries. The published `effect@4.0.2` package was installed in a scratch directory only to measure import
+time and size and to confirm the `effect/testing` `TestClock` export; it is not a dependency of this repository. No
+Effect source code or documentation text has been copied. See
+[`specs/effect-adoption-evaluation.md`](specs/effect-adoption-evaluation.md) for the evaluation and the intentionally
+unadopted parts of the library.

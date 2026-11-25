@@ -335,10 +335,15 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
   const repo = join(workDir, "diff-repo");
   rmSync(repo, { recursive: true, force: true });
   mkdirSync(repo, { recursive: true });
-  const git = (...args) => runOrThrow("git", args, { cwd: repo, stdio: "ignore" });
+  // Git hooks export repository-specific variables; the temporary repository must not inherit them.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  const git = (...args) => runOrThrow("git", args, { cwd: repo, env, stdio: "ignore" });
   git("init", "--quiet");
   git("config", "user.email", "patch-build@example.invalid");
   git("config", "user.name", "patch build");
+  const disabledHooks = join(repo, ".git", "disabled-hooks");
+  mkdirSync(disabledHooks);
+  git("config", "core.hooksPath", disabledHooks);
 
   const tracked = manifest.trackedFiles.map((entry) => entry.path);
   for (const path of tracked) {
@@ -348,7 +353,7 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
     cpSync(from, join(repo, path));
   }
   git("add", "--all");
-  git("commit", "--quiet", "--message", "baseline");
+  git("-c", "commit.gpgSign=false", "commit", "--quiet", "--message", "baseline");
 
   for (const path of tracked) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
@@ -356,15 +361,16 @@ export function buildUnifiedDiff(workDir, baselineRoot, patchedRoot, manifest) {
   }
   git("add", "--all");
 
-  return execFileSync("git", ["diff", "--cached", "--no-color", "--binary"], {
+  return execFileSync("git", ["diff", "--cached", "--no-color", "--binary", "--src-prefix=a/", "--dst-prefix=b/"], {
     cwd: repo,
+    env,
     encoding: "utf-8",
     maxBuffer: 64 * 1024 * 1024,
   });
 }
 
 /** Applies the generated patch to a fresh baseline copy and confirms it reproduces `patched.sha256`. */
-function assertPatchApplies(workDir, baselineRoot, patchText, patchedManifest) {
+export function assertPatchApplies(workDir, baselineRoot, patchText, patchedManifest) {
   const stage = join(workDir, "apply-check");
   rmSync(stage, { recursive: true, force: true });
   cpSync(baselineRoot, stage, { recursive: true });
@@ -388,7 +394,7 @@ function assertPatchApplies(workDir, baselineRoot, patchText, patchedManifest) {
  * `patched.sha256` and hard-exits when a state manifest has neither a checksum nor an absent entry for a
  * path, so an incomplete state artifact breaks installation for everyone, not only for upgraders.
  */
-function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
+export function assertUpgradeStatesRoundTrip(workDir, patchedRoot, outputDir) {
   const installerPaths = parseChecksumManifest(readFileSync(join(outputDir, "patched.sha256"), "utf-8")).map(
     (entry) => entry.path,
   );

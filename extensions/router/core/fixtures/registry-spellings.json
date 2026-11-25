@@ -280,6 +280,14 @@
     "modelId": "gpt-6-sol"
   },
   {
+    "provider": "openai",
+    "modelId": "gpt-6.2-astra"
+  },
+  {
+    "provider": "openai",
+    "modelId": "gpt-6.2-sol"
+  },
+  {
     "provider": "openai-codex",
     "modelId": "gpt-5.4-mini"
   },
@@ -302,5 +310,29 @@
   {
     "provider": "openai-codex",
     "modelId": "gpt-6.1-sol"
+  },
+  {
+    "provider": "openai-codex",
+    "modelId": "gpt-6.1-terra"
+  },
+  {
+    "provider": "amazon-bedrock",
+    "modelId": "global.openai.gpt-6.1-terra"
+  },
+  {
+    "provider": "anthropic",
+    "modelId": "claude-haiku-5-5"
+  },
+  {
+    "provider": "github-copilot",
+    "modelId": "claude-haiku-5.5"
+  },
+  {
+    "provider": "google-vertex",
+    "modelId": "gemini-4-neon"
+  },
+  {
+    "provider": "github-copilot",
+    "modelId": "gemini-4-neon"
   }
 ]

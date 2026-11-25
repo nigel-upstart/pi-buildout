@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { applyPatchFile } from "./build-pi-patch.mjs";
+import { applyPatchFile, sortVersions } from "./build-pi-patch.mjs";
 import { findCleanPackage, patchDirectoryFor, patchVersions, repositoryRoot } from "./skills-patch-packages.mjs";
 
 // The catalog fixture replaces HOME, but the installer locates pi through PI_PACKAGE_DIR and
@@ -74,18 +74,20 @@ function testEnvironment(overrides = {}) {
   return env;
 }
 
-async function runPatchedCli(target, args, { agentDir, cwd, home = process.env.HOME }) {
+async function runPatchedCli(target, args, { agentDir, cwd, home = process.env.HOME, input, env = {} }) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [join(target, "dist", "bundle", "cli.js"), ...args], {
       cwd,
       env: testEnvironment({
         ...(home === undefined ? {} : { HOME: home }),
+        ...env,
         PI_CODING_AGENT_DIR: agentDir,
         PI_OFFLINE: "1",
         PI_SKIP_VERSION_CHECK: "1",
       }),
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -342,7 +344,7 @@ for (const version of patchVersions()) {
       const normalizedConfig = JSON.parse(await readFile(join(normalizedPathAgentDir, "skills.json"), "utf8"));
       const canonicalCwd = await realpath(cwd);
       assert.deepEqual(normalizedConfig.enabled, [
-        homeSkill,
+        "~/skills/home-skill",
         join(canonicalCwd, "relative-skill"),
         join(canonicalCwd, "bare-relative-skill"),
       ]);
@@ -356,7 +358,7 @@ for (const version of patchVersions()) {
       });
       assert.equal(removedBare.code, 0, removedBare.stderr);
       assert.deepEqual(JSON.parse(await readFile(join(normalizedPathAgentDir, "skills.json"), "utf8")).enabled, [
-        homeSkill,
+        "~/skills/home-skill",
         join(canonicalCwd, "relative-skill"),
       ]);
 
@@ -453,6 +455,104 @@ for (const version of patchVersions()) {
       assert.deepEqual(new Set(repoConfig[repoKey].enabled), new Set([...seededEntries, ...concurrentSources]));
       assert.equal(await exists(`${repoConfigPath}.lock`), false);
 
+      // `/skills` arguments never pass through a shell, so the module expands variables itself. A spelling that
+      // resolves now is persisted as typed and expanded again whenever skills load.
+      const variableRoot = join(fixtureRoot, "variable-paths");
+      const variableSkill = join(variableRoot, "skills", "expanded");
+      await writeSkill(variableSkill, "expanded-variable", "variable fixture");
+      const variableAgentDir = join(variableRoot, "agent");
+      const variableOptions = {
+        agentDir: variableAgentDir,
+        cwd,
+        env: { PI_SKILLS_FIXTURE: join(variableRoot, "skills") },
+      };
+      const variableAdd = await runPatchedCli(
+        patchedPackage,
+        ["skills", "add", "${PI_SKILLS_FIXTURE}/expanded", "--global"],
+        variableOptions,
+      );
+      assert.equal(variableAdd.code, 0, variableAdd.stderr);
+      const variableConfig = JSON.parse(await readFile(join(variableAgentDir, "skills.json"), "utf8"));
+      assert.deepEqual(variableConfig.enabled, ["${PI_SKILLS_FIXTURE}/expanded"]);
+      const previousVariable = process.env.PI_SKILLS_FIXTURE;
+      try {
+        process.env.PI_SKILLS_FIXTURE = join(variableRoot, "skills");
+        const variableLoader = new DefaultResourceLoader({
+          cwd,
+          agentDir: variableAgentDir,
+          settingsManager: SettingsManager.create(cwd, variableAgentDir, { projectTrusted: false }),
+        });
+        await variableLoader.reload();
+        assert.deepEqual(
+          variableLoader.getSkills().skills.map((skill) => skill.name),
+          ["expanded-variable"],
+        );
+        const movedRoot = join(variableRoot, "moved");
+        await writeSkill(join(movedRoot, "expanded"), "expanded-after-reload", "reload fixture");
+        process.env.PI_SKILLS_FIXTURE = movedRoot;
+        await variableLoader.reload();
+        assert.deepEqual(
+          variableLoader.getSkills().skills.map((skill) => skill.name),
+          ["expanded-after-reload"],
+        );
+        assert.deepEqual(JSON.parse(await readFile(join(variableAgentDir, "skills.json"), "utf8")).enabled, [
+          "${PI_SKILLS_FIXTURE}/expanded",
+        ]);
+      } finally {
+        if (previousVariable === undefined) delete process.env.PI_SKILLS_FIXTURE;
+        else process.env.PI_SKILLS_FIXTURE = previousVariable;
+      }
+      const variableRemove = await runPatchedCli(
+        patchedPackage,
+        ["skills", "remove", "$PI_SKILLS_FIXTURE/expanded", "--global"],
+        variableOptions,
+      );
+      assert.equal(variableRemove.code, 0, variableRemove.stderr);
+      assert.deepEqual(JSON.parse(await readFile(join(variableAgentDir, "skills.json"), "utf8")).enabled, []);
+      const unsetVariable = await runPatchedCli(
+        patchedPackage,
+        ["skills", "add", "$PI_SKILLS_UNSET_FIXTURE/expanded", "--global"],
+        variableOptions,
+      );
+      assert.equal(unsetVariable.code, 1);
+      assert.match(unsetVariable.stderr, /environment variable \$PI_SKILLS_UNSET_FIXTURE is not set/u);
+
+      // A checkout-relative entry follows the remote identity, but activating another clone's
+      // files requires that clone's own project-trust decision.
+      const cloneRoot = join(fixtureRoot, "clones");
+      const [firstClone, secondClone] = [join(cloneRoot, "first"), join(cloneRoot, "second")];
+      const cloneAgentDir = join(cloneRoot, "agent");
+      for (const clone of [firstClone, secondClone]) {
+        await mkdir(clone, { recursive: true });
+        await runGit(clone, ["init", "--quiet"]);
+        await runGit(clone, ["remote", "add", "origin", "https://example.com/org/cloned.git"]);
+        await writeSkill(join(clone, ".agents", "skills", "cloned"), "cloned-skill", "clone fixture");
+      }
+      const cloneAdd = await runPatchedCli(patchedPackage, ["skills", "add", "./.agents/skills/cloned", "--repo"], {
+        agentDir: cloneAgentDir,
+        cwd: firstClone,
+      });
+      assert.equal(cloneAdd.code, 0, cloneAdd.stderr);
+      const cloneConfig = JSON.parse(await readFile(join(cloneAgentDir, "repo-skills.json"), "utf8"));
+      assert.deepEqual(cloneConfig["example.com:org/cloned"].enabled, [".agents/skills/cloned"]);
+      const cloneLoader = new DefaultResourceLoader({
+        cwd: secondClone,
+        agentDir: cloneAgentDir,
+        settingsManager: SettingsManager.create(secondClone, cloneAgentDir, { projectTrusted: false }),
+      });
+      await cloneLoader.reload();
+      assert.deepEqual(cloneLoader.getSkills().skills, [], "an untrusted clone cannot supply active skill metadata");
+      const trustedCloneLoader = new DefaultResourceLoader({
+        cwd: secondClone,
+        agentDir: cloneAgentDir,
+        settingsManager: SettingsManager.create(secondClone, cloneAgentDir, { projectTrusted: true }),
+      });
+      await trustedCloneLoader.reload();
+      assert.deepEqual(
+        trustedCloneLoader.getSkills().skills.map((skill) => [skill.name, skill.filePath]),
+        [["cloned-skill", join(await realpath(secondClone), ".agents", "skills", "cloned", "SKILL.md")]],
+      );
+
       // Entry resolution lives in the skill-management module, so DefaultResourceLoader keeps no skill API.
       const entryContext = { cwd, agentDir, settingsManager, resolveResourcePath: (path) => path };
       for (const name of ["package-manifest", "setting-project"]) {
@@ -466,6 +566,46 @@ for (const version of patchVersions()) {
         loader.getSkills().skills.map((skill) => skill.name),
         ["package-directory", "setting-global"],
         "catalog discovery does not activate skills that were not explicitly enabled",
+      );
+
+      // Exercise each activation surface against the real versioned loader, not just the shared core.
+      const optInAgentDir = join(fixtureRoot, "opt-in-agent");
+      const catalogOnlySkill = join(optInAgentDir, "skills", "catalog-only");
+      const repoSkill = join(fixtureRoot, "repo-enabled");
+      await writeSkill(catalogOnlySkill, "catalog-only", "inactive until explicitly enabled");
+      await writeSkill(repoSkill, "repo-enabled", "repository activation fixture");
+      const optInSettings = SettingsManager.create(cwd, optInAgentDir, { projectTrusted: false });
+      const optInOptions = { cwd, agentDir: optInAgentDir, settingsManager: optInSettings };
+      const defaultLoader = new DefaultResourceLoader(optInOptions);
+      await defaultLoader.reload();
+      assert.deepEqual(defaultLoader.getSkills().skills, [], "discovered directory skills start inactive");
+
+      await runGit(cwd, ["remote", "add", "origin", "https://example.com/other/repo.git"]);
+      await runGit(cwd, ["remote", "add", "upstream", "ssh://git@example.com:22/org/repo.git"]);
+      await writeJson(join(optInAgentDir, "skills.json"), { enabled: ["catalog-only"] });
+      await writeJson(join(optInAgentDir, "repo-skills.json"), {
+        "example.com:org/repo": { enabled: [repoSkill] },
+      });
+      await defaultLoader.reload();
+      assert.deepEqual(
+        defaultLoader.getSkills().skills.map((skill) => skill.name),
+        ["catalog-only", "repo-enabled"],
+        "global and repository activation use the canonical upstream identity",
+      );
+
+      const disabledLoader = new DefaultResourceLoader({ ...optInOptions, noSkills: true });
+      await disabledLoader.reload();
+      assert.deepEqual(disabledLoader.getSkills().skills, [], "--no-skills suppresses both persisted scopes");
+      const explicitLoader = new DefaultResourceLoader({
+        ...optInOptions,
+        noSkills: true,
+        additionalSkillPaths: [repoSkill],
+      });
+      await explicitLoader.reload();
+      assert.deepEqual(
+        explicitLoader.getSkills().skills.map((skill) => skill.name),
+        ["repo-enabled"],
+        "explicit session/CLI skill paths survive --no-skills",
       );
 
       const untrustedSettings = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
@@ -485,6 +625,220 @@ for (const version of patchVersions()) {
       } else {
         process.env.HOME = previousHome;
       }
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+/** True when `version` is `minimum` or newer. */
+function isAtLeast(version, minimum) {
+  return sortVersions([version, minimum])[0] === minimum;
+}
+
+/**
+ * Starts the patched host in RPC mode with an extension that records `ctx.isProjectTrusted()` at session start.
+ * RPC mode starts a session without a model or provider request, so this stays offline.
+ */
+let trustProbeRuns = 0;
+async function probeHostProjectTrust(patchedPackage, { agentDir, cwd, home, probeRoot }) {
+  trustProbeRuns += 1;
+  const extension = join(probeRoot, "trust-probe.mjs");
+  const output = join(probeRoot, `trust-${String(trustProbeRuns)}.json`);
+  await mkdir(probeRoot, { recursive: true });
+  await writeFile(
+    extension,
+    `import { writeFileSync } from "node:fs";\n` +
+      `export default function (pi) {\n` +
+      `  pi.on("session_start", (_event, ctx) => {\n` +
+      `    writeFileSync(process.env.PI_TRUST_PROBE_OUTPUT, JSON.stringify({ trusted: ctx.isProjectTrusted() }));\n` +
+      `  });\n` +
+      `}\n`,
+  );
+  const result = await runPatchedCli(patchedPackage, ["--mode", "rpc", "--no-session", "--extension", extension], {
+    agentDir,
+    cwd,
+    home,
+    input: `${JSON.stringify({ type: "get_state" })}\n`,
+    env: { PI_TRUST_PROBE_OUTPUT: output },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(await readFile(output, "utf8")).trusted;
+}
+
+// Regressions for upstream fixes that cross the patched seams: saved project distrust, skill diagnostic labels,
+// and path identity between catalog names and explicit paths. Assertions about the fixed upstream behaviour run
+// only for the versions that carry the fix; older versioned patches keep their own upstream behaviour.
+for (const version of patchVersions()) {
+  const patchDirectory = patchDirectoryFor(version);
+
+  test(`pi ${version}: saved distrust, skill diagnostics, and path aliases survive the patched seams`, async (t) => {
+    const { packageRoot, problem } = await findCleanPackage(version);
+    if (packageRoot === undefined) {
+      t.skip(problem);
+      return;
+    }
+
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "pi-skills-regressions-"));
+    const patchedPackage = join(temporaryRoot, "package");
+    const fixtureRoot = join(temporaryRoot, "fixtures");
+    const home = join(fixtureRoot, "home");
+    const agentDir = join(fixtureRoot, "agent");
+    const previousHome = process.env.HOME;
+    const previousGitEnvironment = new Map(gitEnvironmentKeys.map((key) => [key, process.env[key]]));
+
+    try {
+      for (const key of gitEnvironmentKeys) delete process.env[key];
+      process.env.HOME = home;
+      await mkdir(home, { recursive: true });
+      try {
+        await copyPackage(packageRoot, patchedPackage, patchDirectory);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+          t.skip("the patch utility is unavailable");
+          return;
+        }
+        throw error;
+      }
+
+      const moduleUrl = (relativePath) => pathToFileURL(join(patchedPackage, relativePath)).href;
+      const [{ SettingsManager }, { DefaultResourceLoader }, { ProjectTrustStore }, { resolveProjectTrusted }] =
+        await Promise.all([
+          import(moduleUrl("dist/core/settings-manager.js")),
+          import(moduleUrl("dist/core/resource-loader.js")),
+          import(moduleUrl("dist/core/trust-manager.js")),
+          import(moduleUrl("dist/core/project-trust.js")),
+        ]);
+
+      // Pi 1.5.0 (#10947): a saved "do not trust" decision holds for a project whose only project resource is
+      // AGENTS.md. `pi skills` resolves trust through resolveProjectTrusted; the host's ctx.isProjectTrusted()
+      // comes from the patched main.js and is what the subagents extension maps to --approve/--no-approve.
+      await writeSkill(join(agentDir, "skills", "global-only"), "global-only", "user catalog skill");
+      const distrusted = await realpath(await mkdtemp(join(fixtureRoot, "distrusted-")));
+      const undecided = await realpath(await mkdtemp(join(fixtureRoot, "undecided-")));
+      for (const project of [distrusted, undecided]) {
+        await runGit(project, ["init", "--quiet"]);
+        await writeFile(join(project, "AGENTS.md"), "# Project instructions\n");
+      }
+      const trustStore = new ProjectTrustStore(agentDir);
+      trustStore.set(distrusted, false);
+      const probeRoot = join(fixtureRoot, "probe");
+      if (isAtLeast(version, "1.5.0")) {
+        assert.equal(
+          await resolveProjectTrusted({ cwd: distrusted, trustStore, defaultProjectTrust: "always" }),
+          false,
+          "the skills CLI trust resolution honours a saved distrust decision",
+        );
+        assert.equal(
+          await probeHostProjectTrust(patchedPackage, { agentDir, cwd: distrusted, home, probeRoot }),
+          false,
+          "the patched host reports the saved distrust to extensions",
+        );
+      }
+      assert.equal(
+        await probeHostProjectTrust(patchedPackage, { agentDir, cwd: undecided, home, probeRoot }),
+        true,
+        "a project with no trust-requiring resources and no saved decision stays trusted",
+      );
+
+      // Adding project-local skills to the distrusted project must not surface them through the patched catalog.
+      await writeSkill(join(distrusted, ".pi", "skills", "project-config"), "project-config", "project .pi skill");
+      await writeSkill(join(distrusted, ".agents", "skills", "project-agents"), "project-agents", "project skill");
+      const distrustedList = await runPatchedCli(patchedPackage, ["skills", "list"], {
+        agentDir,
+        cwd: distrusted,
+        home,
+      });
+      assert.equal(distrustedList.code, 0, distrustedList.stderr);
+      assert.deepEqual(distrustedList.stdout.trim().split("\n"), ["global-only\tuser catalog skill"]);
+      const projectAdd = await runPatchedCli(patchedPackage, ["skills", "add", "project-agents", "--global"], {
+        agentDir,
+        cwd: distrusted,
+        home,
+      });
+      assert.equal(projectAdd.code, 1, "a distrusted project-local skill is not in the catalog");
+      assert.equal(
+        await probeHostProjectTrust(patchedPackage, { agentDir, cwd: distrusted, home, probeRoot }),
+        false,
+        "the host stays untrusted once project-local skills exist",
+      );
+
+      // Pi 1.5.0 (#11521): non-collision skill warnings, including the overlay's unresolved-entry warning, render
+      // under [Skill warnings]; real name collisions stay distinguishable as collision diagnostics.
+      const diagnosticsAgentDir = join(fixtureRoot, "diagnostics-agent");
+      const duplicateA = join(fixtureRoot, "duplicates", "a", "duplicate");
+      const duplicateB = join(fixtureRoot, "duplicates", "b", "duplicate");
+      const invalid = join(fixtureRoot, "invalid", "bad-name");
+      await Promise.all([
+        writeSkill(duplicateA, "duplicate", "first duplicate"),
+        writeSkill(duplicateB, "duplicate", "second duplicate"),
+        writeSkill(invalid, "Bad_Name", "invalid name fixture"),
+      ]);
+      await writeJson(join(diagnosticsAgentDir, "skills.json"), {
+        enabled: ["missing-skill", duplicateA, duplicateB, invalid],
+      });
+      const diagnosticsLoader = new DefaultResourceLoader({
+        cwd: undecided,
+        agentDir: diagnosticsAgentDir,
+        settingsManager: SettingsManager.create(undecided, diagnosticsAgentDir, { projectTrusted: false }),
+      });
+      await diagnosticsLoader.reload();
+      const { diagnostics } = diagnosticsLoader.getSkills();
+      assert.ok(
+        diagnostics.some(
+          (d) =>
+            d.type === "warning" && d.message === "Active skill could not be resolved" && d.path === "missing-skill",
+        ),
+        "an unresolved active entry is a warning, not a collision",
+      );
+      assert.ok(
+        diagnostics.some((d) => d.type === "warning" && d.path === join(invalid, "SKILL.md")),
+        "upstream validation warnings still reach the loader",
+      );
+      assert.deepEqual(
+        diagnostics.filter((d) => d.type === "collision").map((d) => d.collision?.name),
+        ["duplicate"],
+        "only the real name collision is a collision",
+      );
+      const interactive = await readFile(join(patchedPackage, "dist/modes/interactive/interactive-mode.js"), "utf8");
+      const patchText = await readFile(join(patchDirectory, "skills.patch"), "utf8");
+      assert.doesNotMatch(patchText, /\[Skill (?:warnings|conflicts)\]/u, "the patch never rewrites the label");
+      if (isAtLeast(version, "1.5.0")) {
+        assert.match(interactive, /\[Skill warnings\]/u);
+        assert.doesNotMatch(interactive, /\[Skill conflicts\]/u);
+      }
+
+      // Pi 1.5.0 (#10488) folds path identity through getResourcePathKey. A skill activated by catalog name and
+      // by an aliased path must still load once through the patched resolver and loader merge.
+      const aliasAgentDir = join(fixtureRoot, "alias-agent");
+      const aliasedSkill = join(aliasAgentDir, "skills", "aliased");
+      await writeSkill(aliasedSkill, "aliased", "path identity fixture");
+      const alias = join(fixtureRoot, "alias-link");
+      await symlink(aliasedSkill, alias, process.platform === "win32" ? "junction" : "dir");
+      await writeJson(join(aliasAgentDir, "skills.json"), { enabled: ["aliased", alias, `${aliasedSkill}/`] });
+      const aliasLoader = new DefaultResourceLoader({
+        cwd: undecided,
+        agentDir: aliasAgentDir,
+        settingsManager: SettingsManager.create(undecided, aliasAgentDir, { projectTrusted: false }),
+        additionalSkillPaths: [aliasedSkill],
+      });
+      await aliasLoader.reload();
+      assert.deepEqual(
+        aliasLoader.getSkills().skills.map((skill) => skill.name),
+        ["aliased"],
+        "the same user skill reached by name, alias, and session path loads once",
+      );
+      assert.deepEqual(
+        aliasLoader.getSkills().diagnostics.filter((d) => d.type === "collision"),
+        [],
+        "aliases of one skill are not reported as a collision",
+      );
+    } finally {
+      for (const [key, value] of previousGitEnvironment) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await rm(temporaryRoot, { recursive: true, force: true });
     }
   });

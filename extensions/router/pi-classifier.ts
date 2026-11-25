@@ -1,4 +1,4 @@
-import { complete, validateToolArguments } from "@earendil-works/pi-ai/compat";
+import { completeSimple, validateToolArguments } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, Tool } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -38,25 +38,31 @@ type ClassifierModel = {
 };
 
 // Logical classifier tiers are resolved only against the operator's scoped registry snapshot.
-// Luna remains preferred over Haiku regardless of endpoint cost; the shared endpoint comparator
-// orders alternatives serving the same logical model. We do not guess an older Sonnet ID: an exact
-// endpoint must canonicalize to one of these validated logical model IDs. GPT-5.6 Luna stays listed
-// after GPT-6 Luna because many scoped registries (including every Amazon Bedrock region today) still
-// serve only the 5.6 generation; dropping it silently pushed every primary onto Haiku.
-// Microsoft's MAI-Code Flash is a Luna-class fast model reached through GitHub Copilot, so it is the
-// next primary once every Luna endpoint has failed, ahead of Haiku. Gemini 3.5 Flash Lite is the
-// last-resort primary. Every classifier call runs at low reasoning effort regardless of tier.
+// Scoped Luna latest and Haiku latest aliases lead, followed by the versioned stack.
+// The shared endpoint comparator orders alternatives serving the same logical model. We do not
+// invent aliases or guess an older Sonnet ID: an endpoint must canonicalize to a listed ID.
+// GPT-5.6 Luna remains behind GPT-6 Luna for scoped registries still serving the older generation.
+// MAI-Code Flash follows the versioned Lunas, then Haiku 5.5 and Gemini 3.5 Flash Lite.
+// Haiku 4.5 and then Sonnet 5.5 are the last-resort primaries.
+// Keep classifier effort independent of the effort chosen for the agent that runs the task.
+const CLASSIFIER_EFFORT = "low";
 const PRIMARY_CLASSIFIER_TIERS = [
+  "gpt-luna-latest",
+  "claude-haiku-latest",
   "gpt-6-luna",
   "gpt-5.6-luna",
   "mai-code-1.1-flash",
-  "claude-haiku-4-5",
+  "claude-haiku-5-5",
   "gemini-3.5-flash-lite",
+  "claude-haiku-4-5",
+  "claude-sonnet-5-5",
 ] as const;
 
 // Microsoft tiers that may reconcile a non-Microsoft primary. Listed after the stronger established
 // vendors' tiers, so they are consulted only when those are unreachable.
 const MICROSOFT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = ["mai-code-1.1-flash"];
+
+const ANTHROPIC_SECONDARY_CLASSIFIER_TIERS = ["claude-sonnet-5-5", "claude-sonnet-5"] as const;
 
 // OpenAI tiers that may reconcile a non-OpenAI primary, in preference order. More than one tier is
 // listed so a single rate-limited or unscoped OpenAI model cannot leave the safety latch unresolved.
@@ -84,21 +90,27 @@ const GOOGLE_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
 // back to DEFAULT_SECONDARY_CLASSIFIER_TIERS, which preserves the provider-diversity rule because
 // resolveSecondary rejects any candidate sharing the primary's vendor.
 const SECONDARY_CLASSIFIER_TIERS_BY_PRIMARY_VENDOR: Partial<Record<ModelVendor, readonly string[]>> = {
-  openai: ["claude-sonnet-5", ...GOOGLE_SECONDARY_CLASSIFIER_TIERS, ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS],
+  openai: [
+    ...ANTHROPIC_SECONDARY_CLASSIFIER_TIERS,
+    ...GOOGLE_SECONDARY_CLASSIFIER_TIERS,
+    ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS,
+  ],
   anthropic: [
     ...OPENAI_SECONDARY_CLASSIFIER_TIERS,
     ...GOOGLE_SECONDARY_CLASSIFIER_TIERS,
     ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS,
   ],
-  google: [...OPENAI_SECONDARY_CLASSIFIER_TIERS, "claude-sonnet-5", ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS],
+  google: [
+    ...OPENAI_SECONDARY_CLASSIFIER_TIERS,
+    ...ANTHROPIC_SECONDARY_CLASSIFIER_TIERS,
+    ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS,
+  ],
   // A Microsoft primary uses DEFAULT_SECONDARY_CLASSIFIER_TIERS, which already filters out MAI.
 };
 
-// Used when the primary's vendor declares no secondary tier of its own. Both entries are validated
-// logical model IDs drawn from the tiers above; vendor diversity is still enforced at selection time
-// rather than assumed here, so whichever entry shares the primary's vendor is skipped.
+// If a primary vendor has no dedicated list, use the shared tiers and skip its own vendor at runtime.
 const DEFAULT_SECONDARY_CLASSIFIER_TIERS: readonly string[] = [
-  "claude-sonnet-5",
+  ...ANTHROPIC_SECONDARY_CLASSIFIER_TIERS,
   ...OPENAI_SECONDARY_CLASSIFIER_TIERS,
   ...GOOGLE_SECONDARY_CLASSIFIER_TIERS,
   ...MICROSOFT_SECONDARY_CLASSIFIER_TIERS,
@@ -130,10 +142,10 @@ function resolveClassifierTier(registry: readonly RegistryModelSnapshot[], logic
   const candidates: ClassifierModel[] = [];
   for (const endpoint of registry) {
     if (!endpoint.available || canonicalModelId(endpoint.modelId) !== logicalModelId) continue;
-    // Classification is enforced through a forced tool call, so an endpoint without tool support
-    // cannot serve this tier at all. Routing excludes these as `tools_unsupported`; the classifier
-    // must not admit one just because it is scoped in and healthy.
     if (!endpoint.toolCapable) continue;
+    // Do not let a reasoner that only supports higher efforts consume the classifier's latency
+    // budget. Non-reasoning fallback models can still return the required structured tool call.
+    if (endpoint.reasoning && !endpoint.supportedEfforts.includes(CLASSIFIER_EFFORT)) continue;
     if (!healthVerdict(endpoint.health).usable) continue;
     let endpointEffectiveCost: number | undefined;
     try {
@@ -214,7 +226,8 @@ export function transportFromCandidates(
 async function callClassifierModel(
   ctx: ExtensionContext,
   candidate: ClassifierModel,
-  request: ClassifierRequest,
+  request: Pick<ClassifierRequest, "systemPrompt" | "userPrompt" | "signal">,
+  tool: Tool = CLASSIFIER_TOOL,
 ): Promise<ClassifierTransportResult> {
   const model = ctx.modelRegistry.find(candidate.model.provider, candidate.model.id);
   if (!model) throw new Error(`Classifier endpoint disappeared from registry: ${candidateLabel(candidate)}`);
@@ -226,7 +239,7 @@ async function callClassifierModel(
   // mirrors the agent session's own request path, which also applies a resolved base URL override.
   const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
   const started = performance.now();
-  const response = await complete(
+  const response = await completeSimple(
     requestModel,
     {
       systemPrompt: request.systemPrompt,
@@ -237,7 +250,7 @@ async function callClassifierModel(
           timestamp: Date.now(),
         },
       ],
-      tools: [CLASSIFIER_TOOL],
+      tools: [tool],
     },
     {
       ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
@@ -246,8 +259,8 @@ async function callClassifierModel(
       ...(request.signal ? { signal: request.signal } : {}),
       maxTokens: 4_096,
       maxRetries: 1,
-      reasoning: "low",
-      onPayload: (payload) => requireToolCall(payload, model.api, CLASSIFIER_TOOL_NAME),
+      reasoning: CLASSIFIER_EFFORT,
+      onPayload: (payload) => requireToolCall(payload, model.api, tool.name, candidate.model.id),
     },
   );
   if (response.stopReason === "aborted") {
@@ -258,13 +271,11 @@ async function callClassifierModel(
   if (response.stopReason === "error") {
     throw new Error(response.errorMessage ?? "Classifier stopped with error");
   }
-  const toolCall = response.content.find(
-    (content) => content.type === "toolCall" && content.name === CLASSIFIER_TOOL_NAME,
-  );
+  const toolCall = response.content.find((content) => content.type === "toolCall" && content.name === tool.name);
   if (toolCall?.type !== "toolCall") {
-    throw new Error("Classifier did not return the required report_task_features tool call");
+    throw new Error(`Classifier did not return the required ${tool.name} tool call`);
   }
-  const validatedArguments: unknown = validateToolArguments(CLASSIFIER_TOOL, toolCall);
+  const validatedArguments: unknown = validateToolArguments(tool, toolCall);
   return {
     arguments: validatedArguments,
     provider: candidate.model.provider,
@@ -279,6 +290,27 @@ async function callClassifierModel(
       cost: response.usage.cost.total,
     },
   };
+}
+
+/** One schema-validated structured answer from the primary classifier tiers (manager discovery). */
+export async function callStructuredWithPi(input: {
+  ctx: ExtensionContext;
+  registry: readonly RegistryModelSnapshot[];
+  tool: Tool;
+  systemPrompt: string;
+  userPrompt: string;
+  signal: AbortSignal;
+}): Promise<unknown> {
+  const failures: string[] = [];
+  for (const candidate of selectClassifierModels(input.registry).primary) {
+    try {
+      return (await callClassifierModel(input.ctx, candidate, input, input.tool)).arguments;
+    } catch (error) {
+      if (input.signal.aborted || isClassifierCancellationError(error)) throw error;
+      failures.push(`${candidateLabel(candidate)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`No ${input.tool.name} candidate succeeded: ${failures.join(" | ") || "none configured"}`);
 }
 
 function transportFor(ctx: ExtensionContext, candidates: readonly ClassifierModel[]): ClassifierTransport {

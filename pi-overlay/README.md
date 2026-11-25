@@ -39,16 +39,17 @@ New logic goes in `skill-management*.ts`. Upstream files get imports and a call 
 
 Measured against each clean package, edits to pre-existing upstream files:
 
-| Pre-existing upstream file                   | 1.0.3  | 1.0.4  | 1.1.0  | 1.3.0  |
-| -------------------------------------------- | ------ | ------ | ------ | ------ |
-| `dist/core/resource-loader.js`               | 16     | 16     | 16     | 16     |
-| `dist/core/slash-commands.js`                | 1      | 1      | 1      | 1      |
-| `dist/main.js`                               | 5      | 5      | 5      | 5      |
-| `dist/modes/interactive/interactive-mode.js` | 26     | 26     | 26     | 26     |
-| **Total**                                    | **48** | **48** | **48** | **48** |
+| Pre-existing upstream file                   | All eight supported versions |
+| -------------------------------------------- | ---------------------------- |
+| `dist/core/resource-loader.js`               | 16                           |
+| `dist/core/slash-commands.js`                | 1                            |
+| `dist/main.js`                               | 5                            |
+| `dist/modes/interactive/interactive-mode.js` | 26                           |
+| **Total**                                    | **48**                       |
 
 The supported seams make the same calls and compile the shared `skill-management-core.ts` and `skill-management.ts` to
-byte-identical `dist/core/skill-management*.js`.
+byte-identical `dist/core/skill-management*.js`. Pi 1.6.0 rebases the integration context around the changed
+model-resolver import in `main.ts`; the shared fork overlay and CLI/RPC wrappers are unchanged.
 
 The budget counts only files where upstream code is edited in place. Files the patch _adds_ are ours; `docs/skills.md`
 and the two bundled entrypoints are replaced wholesale rather than surgically edited, so none of them belong in a number
@@ -79,15 +80,31 @@ Registering `/skills` from a Pi **extension** was evaluated and rejected. The ex
 is the whole point of the `resource-loader` change — and cannot serve non-interactive `pi skills …`. Worth revisiting if
 Pi ever exposes the resource loader to extensions.
 
+## Portable path behavior and upgrades
+
+The shared core expands `$NAME`/`${NAME}` path references at load/reload time, keeps portable `~`/variable spellings,
+and persists checkout-local repository paths relative to the checkout root. Each checkout must independently be trusted
+before its checkout-relative entries activate. Session inputs expand immediately; `$PWD`/`$OLDPWD` paths are frozen
+rather than retained as portable spellings. Unset variables remain literal and are named in unresolved-path diagnostics.
+Catalog names and project-trust policy are unchanged.
+
+All seven retained versions carry `pre-expansion-patched.sha256` and `pre-expansion-upgrade.patch`, generated from this
+fork's previously shipped package trees. Upstream's state hashes cannot substitute for these because the fork retains
+its own trust-scoped CLI behavior. The builder verifies reverse migration to the exact old checksums; the catalog tests
+exercise recognized-state installation, idempotency, and unknown/mixed-state rejection.
+
 ## Source acquisition
 
 Per version, `versions/<version>/upstream.json` pins the inputs. Two properties make this reproducible:
 
 - **The exact upstream commit is published.** Each pinned revision matches `ATTRIBUTION.md` exactly. For 1.0.3 and
   1.0.4, it is the npm registry's `gitHead` (`1.0.3` → `d78dc83d633229d12f8b79631384c4c2717c399f`, `1.0.4` →
-  `7c10bd4337495ee613f2224843ecdf349b80d1df`). The registry publishes no `gitHead` for 1.1.0 or 1.3.0, so their
-  revisions are the commits the release tags point to (`1.1.0` → `abe508e1b89912adde45528136c3221eb69acdd7`, `1.3.0` →
-  `71023aec1546d6d677a65669c5665c0927ce0dd0`).
+  `7c10bd4337495ee613f2224843ecdf349b80d1df`). The registry publishes no `gitHead` for 1.1.0, 1.3.0, 1.5.0, or 1.5.2, so
+  their revisions are the commits the release tags point to (`1.1.0` → `abe508e1b89912adde45528136c3221eb69acdd7`,
+  `1.3.0` → `71023aec1546d6d677a65669c5665c0927ce0dd0`), Pi 1.4.0 pins release revision
+  `4a080252f06caf63a525d7873c5d94d3c23887e0`, and Pi 1.5.0 pins release revision
+  `f9a26365568127461c47a07a37dcb42c140a3ac5`. Pi 1.5.2 pins release revision `b4afdddf44e059c67ccf5097e5317d913521b470`;
+  Pi 1.6.0 pins release revision `faac585884ae2c013a6b1400f3e9e77f10b34bac`.
 - **Upstream ships a deterministic source archive.** Each GitHub release carries `pi-<version>-source.tar.gz` (built by
   upstream's `scripts/create-source-archive.sh`) alongside a `SHA256SUMS`. GitHub's _auto-generated_ tag tarballs are
   not byte-stable and are deliberately not used.
@@ -98,7 +115,7 @@ no upstream source.
 
 ## Reproducibility
 
-For 1.0.3, 1.0.4, 1.1.0, and 1.3.0, the clean build reproduces all four pre-existing runtime files tracked by each patch
+For all eight supported versions, the clean build reproduces all four pre-existing runtime files tracked by each patch
 byte-for-byte before the overlay is applied. No normalization is applied. If that ever stops holding, generation fails
 rather than emitting a patch carrying toolchain noise.
 
@@ -106,17 +123,20 @@ The pipeline never rebuilds `dist/bundle/` or its content-hashed chunks. It repl
 with the small wrappers in `replacements/`; baseline hashes come from the npm tarball. The published
 `dist/bundle/cli.js` loader keeps Node's compile cache and `require()` dispatch. It is declared with
 `"source": "unchanged"`: both checksum manifests pin it, so a loader that bypasses the replaced runtime is rejected. The
-Pi 1.1.0 and 1.3.0 RPC wrapper preserves upstream's process markers and HTTP-dispatcher setup; 1.3.0 reuses the 1.1.0
-wrappers byte-for-byte because upstream's entrypoint sources and loader are unchanged.
+Pi 1.1.0, 1.3.0, 1.4.0, 1.5.0, 1.5.2, and 1.6.0 RPC wrappers preserve upstream's process markers and HTTP-dispatcher
+setup; 1.3.0, 1.4.0, 1.5.0, 1.5.2, and 1.6.0 reuse the 1.1.0 wrappers byte-for-byte because upstream's entrypoint
+sources and loader are unchanged.
 
 `workspaceBuildOrder` follows upstream's root build script. Pi 1.0.3 builds `packages/codemode`, `packages/mcp`, and
 `packages/durable` before the agent package. Pi 1.0.4 and 1.1.0 also build `packages/env` before `packages/agent`. Pi
 1.3.0 keeps that order but no longer builds `packages/protocol`, `packages/client`, or `packages/server`, which its
-source archive no longer contains.
+source archive no longer contains. Pi 1.4.0 puts `packages/telemetry` first, ahead of `packages/chord` and
+`packages/tui`, and otherwise retains the 1.3.0 order. Pi 1.5.0 adds `packages/schema` and builds `packages/telemetry`
+and `packages/schema` before `packages/chord`. Pi 1.5.2 and 1.6.0 retain the 1.5.0 build order.
 
 `npm run patches:build` and `npm run patches:check` pass `--all`, so every version under `versions/` is regenerated and
 checked, not only the one the development dependencies pin. Use `node scripts/build-pi-patch.mjs --version <version>`
 for a single version.
 
-Pi 1.0.3, 1.0.4, 1.1.0, and 1.3.0 build with the released `typescript` `7.0.2` (`tsc`). If a pinned compiler is
-withdrawn or its emit changes, reproducibility breaks; the scheduled drift job is the detector.
+All eight supported versions build with the released `typescript` `7.0.2` (`tsc`). If a pinned compiler is withdrawn or
+its emit changes, reproducibility breaks; the scheduled drift job is the detector.

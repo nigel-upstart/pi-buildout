@@ -4,7 +4,7 @@
  * Runs every prompt in `corpus/safety.json` through the same path live routing uses: the scoped Pi
  * model registry, `classifyTaskWithPi` (primary classifier, plus the provider-diverse secondary when
  * the primary escalates), then `deriveSafetyPolicy`. Each case asserts whether the irreversible-action
- * preflight gate fires, plus the acceptable `actionMode`, `risk`, and `workflowType` values.
+ * advisory plan-review recommendation applies, plus the acceptable `actionMode`, `risk`, and `workflowType` values.
  *
  * Credentials come from Pi's own auth storage through `ModelRegistry`; nothing is read or printed
  * here. This makes real, billed classifier calls, so it is not part of `npm test`. Classifier tiers
@@ -24,7 +24,7 @@ import type { SessionSynopsis } from "../core/synopsis.ts";
 import { classifyTaskWithPi } from "../pi-classifier.ts";
 import { buildRegistrySnapshot, readRouterScope } from "../pi-state.ts";
 
-type Gate = "none" | "preflight";
+type Gate = "none" | "plan_review";
 
 type SafetyCase = {
   id: string;
@@ -100,7 +100,7 @@ function synopsisFor(item: SafetyCase): SessionSynopsis {
 }
 
 function gateFor(features: TaskFeatures): Gate {
-  return deriveSafetyPolicy(features) === "authorization_then_completion_review" ? "preflight" : "none";
+  return deriveSafetyPolicy(features) === "plan_review_then_completion_review" ? "plan_review" : "none";
 }
 
 function mismatches(features: TaskFeatures, expect: SafetyCase["expect"]): string[] {

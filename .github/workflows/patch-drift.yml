@@ -53,3 +53,18 @@ jobs:
       # one the development dependencies pin.
       - name: Regenerate every version's patch and compare against the committed artifacts
         run: npm run patches:check
+      - name: Install isolated Pi 1.6.0 runtime fixture
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pi-skills-test" --ignore-scripts --no-audit --no-fund \
+            --registry=https://registry.npmjs.org/ @earendil-works/pi-coding-agent@1.6.0
+          # The fixture finder requires a node_modules directory at the package root; npm may hoist all dependencies.
+          package="$RUNNER_TEMP/pi-skills-test/node_modules/@earendil-works/pi-coding-agent"
+          if [ ! -d "$package/node_modules" ]; then
+            ln -s "$RUNNER_TEMP/pi-skills-test/node_modules" "$package/node_modules"
+          fi
+      - name: Verify Pi 1.6.0 catalog, activation, CLI, and bundled entrypoints
+        env:
+          PI_SKILLS_TEST_PACKAGES: ${{ runner.temp }}/pi-skills-test/node_modules/@earendil-works/pi-coding-agent
+        run: >-
+          node --test scripts/skills-catalog.test.mjs scripts/skills-patch-dispatch.test.mjs
+          scripts/skills-patch-entrypoint.test.mjs

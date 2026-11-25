@@ -2,7 +2,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { extractTextContent, appendBoundedTail } from "./helpers.ts";
-import type { ThinkingLevel } from "./helpers.ts";
+import type { ContextMode, ThinkingLevel } from "./helpers.ts";
 
 const MAX_JSONL_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_TRANSCRIPT_CHARS = 120_000;
@@ -10,6 +10,11 @@ const MAX_STDERR_CHARS = 64_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const FORCE_KILL_DELAY_MS = 3_000;
 const TERMINAL_CLEANUP_TIMEOUT_MS = 10_000;
+/** RPC `setStatus` key a nested child uses to report subagents it still owes an answer for. */
+export const DESCENDANT_STATUS_KEY = "pi-simple-subagent:descendants";
+
+// Only an explicit RPC rejection proves that an abort did not take effect.
+class RpcRejectionError extends Error {}
 
 function processListInvocation(): { command: string; args: string[]; timeout: number } {
   return process.platform === "win32"
@@ -111,6 +116,7 @@ export type ChildLaunchOptions = {
   model: string;
   effort: ThinkingLevel;
   contextSummary: string;
+  contextMode?: ContextMode;
   cwd: string;
   command: string;
   args: string[];
@@ -118,6 +124,8 @@ export type ChildLaunchOptions = {
   ownsProcessGroup?: boolean;
   classification: "explicit" | "classified" | "fallback";
   classificationRationale?: string;
+  /** Child ids from the root session's direct child down to this child, inclusive. */
+  lineage?: string[];
 };
 
 export type ChildSessionStats = {
@@ -183,6 +191,7 @@ export type ChildSnapshot = {
   state: ChildState;
   model: string;
   effort: ThinkingLevel;
+  contextMode: ContextMode;
   classification: ChildLaunchOptions["classification"];
   classificationRationale?: string;
   pid?: number;
@@ -192,10 +201,15 @@ export type ChildSnapshot = {
   toolCalls: number;
   currentTool?: { name: string; argsPreview: string; startedAt: number };
   pendingMessages: number;
+  /** Delegated work the child reported as still owed to it; its current answer is interim until this reaches 0. */
+  activeDescendants: number;
+  lineage: string[];
   compactions: number;
   stats?: ChildSessionStats;
   sessionFile?: string;
   lastAssistantText?: string;
+  /** The current operation's successful final answer; absent while working, after interruption, or if empty. */
+  finalAssistantText?: string;
   transcriptTail: string;
   stderr?: string;
   error?: string;
@@ -240,8 +254,35 @@ export class ManagedSubagent {
   private stderr = "";
   private error: string | undefined;
   private lastAssistantText: string | undefined;
+  private finalAssistantText: string | undefined;
+  // An interrupted operation can still deliver its start and final messages. Queued work only restores answer
+  // eligibility when its user message starts, because the interrupted run's agent_start may arrive late.
+  private interruptedOperation = false;
+  // Each request owns its marker, even when several requests have identical text.
+  private queuedAfterInterrupt = new Map<object, string>();
+  // Pi can transform queued input, so each guarded queue request claims the next queue_update addition, which is
+  // the exact text its message_start will carry. Uncertain outcomes keep the claim open for late acceptance.
+  private queueClaims = new Set<object>();
+  private queuedTexts: string[] = [];
+  // Never expose this candidate while abort is pending; serialized control keeps it within this operation.
+  private abortAttempt:
+    | {
+        wasInterrupted: boolean;
+        finalAssistantText: string | undefined;
+        queuedAfterInterrupt: Map<object, string>;
+        queueClaims: Set<object>;
+        queuedWorkStarted: boolean;
+      }
+    | undefined;
   private sessionFile: string | undefined;
   private pendingMessages = 0;
+  // Counts events that change run state or the queue. A get_state reply only describes the child as of the events
+  // parsed before it, so it must not overwrite a later agent_start, agent_settled, or queue_update.
+  private lifecycleSequence = 0;
+  private readonly responseLifecycle = new WeakMap<object, number>();
+  private activeDescendants = 0;
+  // A cleared descendant report is only trusted after get_state confirms the child did not start a turn for it.
+  private descendantConfirmations = 0;
   private turns = 0;
   private toolCalls = 0;
   private activeTools = new Map<string, NonNullable<ChildSnapshot["currentTool"]>>();
@@ -299,6 +340,9 @@ export class ManagedSubagent {
   }
 
   async start(): Promise<void> {
+    this.finalAssistantText = undefined;
+    this.interruptedOperation = false;
+    this.clearQueuedRecovery();
     await this.request({ type: "prompt", message: buildKickoffPrompt(this.task, this.options.contextSummary) });
     if (this.state === "starting") this.state = "running";
     this.touch();
@@ -308,8 +352,11 @@ export class ManagedSubagent {
     return this.serializeControl(async () => {
       this.assertControllable();
       if (this.state === "running" || this.state === "interrupting") {
-        await this.request({ type: "steer", message });
+        await this.queueMessage("steer", message);
       } else {
+        this.finalAssistantText = undefined;
+        this.interruptedOperation = false;
+        this.clearQueuedRecovery();
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -321,8 +368,11 @@ export class ManagedSubagent {
     return this.serializeControl(async () => {
       this.assertControllable();
       if (this.state === "running" || this.state === "interrupting") {
-        await this.request({ type: "follow_up", message });
+        await this.queueMessage("follow_up", message);
       } else {
+        this.finalAssistantText = undefined;
+        this.interruptedOperation = false;
+        this.clearQueuedRecovery();
         await this.request({ type: "prompt", message });
         this.state = "running";
       }
@@ -335,7 +385,20 @@ export class ManagedSubagent {
       this.assertControllable();
       if (this.state === "idle") return;
       const previousState = this.state;
+      // Queued work belongs to this abort; only an explicit rejection can hand it back.
+      this.abortAttempt = {
+        wasInterrupted: this.interruptedOperation,
+        finalAssistantText: this.finalAssistantText,
+        queuedAfterInterrupt: this.queuedAfterInterrupt,
+        queueClaims: this.queueClaims,
+        queuedWorkStarted: false,
+      };
+      this.queuedAfterInterrupt = new Map();
+      this.queueClaims = new Set();
       this.state = "interrupting";
+      // Interrupted work has no final answer, even if the abort races a completed message.
+      this.finalAssistantText = undefined;
+      this.interruptedOperation = true;
       this.touch();
       try {
         await this.request({ type: "abort" });
@@ -343,9 +406,10 @@ export class ManagedSubagent {
         // which case no later agent_settled event is guaranteed.
         this.finishInterrupt();
       } catch (error) {
-        this.restoreInterrupt(previousState);
+        this.restoreInterrupt(previousState, error instanceof RpcRejectionError);
         throw error;
       } finally {
+        this.abortAttempt = undefined;
         this.touch();
       }
     });
@@ -355,15 +419,7 @@ export class ManagedSubagent {
     return this.serializeControl(async () => {
       if (this.state === "stopped" || this.state === "failed") return;
       try {
-        const response = await this.request({ type: "get_state" }, 3_000);
-        const data = response.data as Record<string, unknown> | undefined;
-        if (data) {
-          this.pendingMessages =
-            typeof data.pendingMessageCount === "number" ? data.pendingMessageCount : this.pendingMessages;
-          this.sessionFile = typeof data.sessionFile === "string" ? data.sessionFile : this.sessionFile;
-          if (data.isStreaming === true) this.state = "running";
-          else if (this.state !== "starting") this.state = "idle";
-        }
+        this.applyStateReply(await this.request({ type: "get_state" }, 3_000));
       } catch {
         // Cached state remains useful if a refresh races process shutdown.
       }
@@ -376,6 +432,20 @@ export class ManagedSubagent {
       }
       this.touch();
     });
+  }
+
+  private applyStateReply(response: Record<string, unknown>): void {
+    const data = response.data as Record<string, unknown> | undefined;
+    if (!data) return;
+    this.sessionFile = typeof data.sessionFile === "string" ? data.sessionFile : this.sessionFile;
+    // The reply resolves before the rest of its stdout chunk is parsed, so lifecycle events after it are newer, and a
+    // child that failed or stopped while the request was in flight keeps that terminal state.
+    if (this.responseLifecycle.get(response) !== this.lifecycleSequence) return;
+    if (this.state === "stopped" || this.state === "failed") return;
+    this.pendingMessages =
+      typeof data.pendingMessageCount === "number" ? data.pendingMessageCount : this.pendingMessages;
+    if (data.isStreaming === true) this.state = "running";
+    else if (this.state !== "starting") this.state = "idle";
   }
 
   waitForIdle(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
@@ -437,6 +507,7 @@ export class ManagedSubagent {
       state: this.state,
       model: this.model,
       effort: this.effort,
+      contextMode: this.options.contextMode ?? "task_compacted",
       classification: this.classification,
       ...(this.classificationRationale ? { classificationRationale: this.classificationRationale } : {}),
       ...(this.proc.pid ? { pid: this.proc.pid } : {}),
@@ -446,10 +517,13 @@ export class ManagedSubagent {
       toolCalls: this.toolCalls,
       ...(currentTool ? { currentTool: { ...currentTool } } : {}),
       pendingMessages: this.pendingMessages,
+      activeDescendants: this.activeDescendants,
+      lineage: [...(this.options.lineage ?? [this.id])],
       compactions: this.compactions,
       ...(this.stats ? { stats: this.stats } : {}),
       ...(this.sessionFile ? { sessionFile: this.sessionFile } : {}),
       ...(this.lastAssistantText ? { lastAssistantText: this.lastAssistantText } : {}),
+      ...(this.finalAssistantText ? { finalAssistantText: this.finalAssistantText } : {}),
       transcriptTail: this.transcript,
       ...(this.stderr.trim() ? { stderr: this.stderr.trim() } : {}),
       ...(this.error ? { error: this.error } : {}),
@@ -466,14 +540,101 @@ export class ManagedSubagent {
   }
 
   private isSettled(): boolean {
-    return this.state === "failed" || this.state === "stopped" || (this.state === "idle" && this.pendingMessages === 0);
+    if (this.state === "failed" || this.state === "stopped") return true;
+    return (
+      this.state === "idle" &&
+      this.pendingMessages === 0 &&
+      this.activeDescendants === 0 &&
+      this.descendantConfirmations === 0
+    );
+  }
+
+  private updateDescendants(statusText: unknown): void {
+    const reported = typeof statusText === "string" ? Number(statusText) : 0;
+    const active = Number.isSafeInteger(reported) && reported > 0 ? reported : 0;
+    const cleared = this.activeDescendants > 0 && active === 0;
+    this.activeDescendants = active;
+    if (cleared) {
+      // Pi runs extension handlers before writing the event, so the clear can precede the agent_start of the turn a
+      // grandchild result just triggered. A get_state round trip is ordered after that turn's start.
+      this.descendantConfirmations++;
+      void this.refresh().finally(() => {
+        this.descendantConfirmations--;
+        this.touch();
+      });
+    }
+    this.touch();
+  }
+
+  private async queueMessage(type: "steer" | "follow_up", message: string): Promise<void> {
+    // Register before writing: the child's queue_update and message_start can precede the RPC acknowledgement.
+    const claim = this.interruptedOperation ? {} : undefined;
+    if (claim) {
+      this.queuedAfterInterrupt.set(claim, message);
+      this.queueClaims.add(claim);
+    }
+    try {
+      const response = await this.request({ type, message });
+      const data = response.data as Record<string, unknown> | undefined;
+      // An input handler consumed the message, so no queue entry will arrive.
+      if (claim && data?.disposition === "handled") {
+        this.queuedAfterInterrupt.delete(claim);
+        this.queueClaims.delete(claim);
+      }
+    } catch (error) {
+      // Timeouts and write failures do not prove rejection; Pi can still accept the message late.
+      if (claim && error instanceof RpcRejectionError) {
+        this.queuedAfterInterrupt.delete(claim);
+        this.queueClaims.delete(claim);
+      }
+      throw error;
+    }
+  }
+
+  private clearQueuedRecovery(): void {
+    this.queuedAfterInterrupt.clear();
+    this.queueClaims.clear();
+  }
+
+  // Attribute new queue entries to outstanding guarded requests, using the transformed text Pi will deliver.
+  private recordQueueUpdate(queued: string[]): void {
+    const previous = [...this.queuedTexts];
+    this.queuedTexts = queued;
+    const recovery = this.abortAttempt ?? {
+      queueClaims: this.queueClaims,
+      queuedAfterInterrupt: this.queuedAfterInterrupt,
+    };
+    for (const text of queued) {
+      const index = previous.indexOf(text);
+      if (index !== -1) {
+        previous.splice(index, 1);
+        continue;
+      }
+      const [claim] = recovery.queueClaims;
+      if (!claim) return;
+      recovery.queueClaims.delete(claim);
+      recovery.queuedAfterInterrupt.set(claim, text);
+    }
   }
 
   private finishInterrupt(): void {
     if (this.state === "interrupting") this.state = "idle";
   }
 
-  private restoreInterrupt(previousState: ChildState): void {
+  private restoreInterrupt(previousState: ChildState, explicitlyRejected: boolean): void {
+    // Timeouts, write failures and shutdown cannot establish whether the abort took effect.
+    const attempt = this.abortAttempt;
+    if (explicitlyRejected && attempt && !this.terminationStarted) {
+      // Queued work that started during the rejected attempt is the current operation.
+      const answerEligible = attempt.queuedWorkStarted || !attempt.wasInterrupted;
+      this.interruptedOperation = !answerEligible;
+      if (answerEligible) {
+        this.finalAssistantText = attempt.finalAssistantText;
+      } else {
+        this.queuedAfterInterrupt = attempt.queuedAfterInterrupt;
+        this.queueClaims = attempt.queueClaims;
+      }
+    }
     if (this.state === "interrupting") this.state = previousState;
   }
 
@@ -629,12 +790,21 @@ export class ManagedSubagent {
       clearTimeout(pending.timer);
       this.pending.delete(event.id);
       if (event.success === false)
-        pending.reject(new Error(typeof event.error === "string" ? event.error : `${pending.command} failed.`));
-      else pending.resolve(event);
+        pending.reject(
+          new RpcRejectionError(typeof event.error === "string" ? event.error : `${pending.command} failed.`),
+        );
+      else {
+        this.responseLifecycle.set(event, this.lifecycleSequence);
+        pending.resolve(event);
+      }
       return;
     }
     if (event.type === "extension_ui_request" && typeof event.id === "string") {
       const method = event.method;
+      if (method === "setStatus" && event.statusKey === DESCENDANT_STATUS_KEY) {
+        this.updateDescendants(event.statusText);
+        return;
+      }
       if (method === "select" || method === "confirm" || method === "input" || method === "editor") {
         this.proc.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: event.id, cancelled: true })}\n`);
         this.appendTranscript(`\n[extension dialog cancelled: ${method}]\n`);
@@ -649,9 +819,13 @@ export class ManagedSubagent {
   private handleEvent(event: Record<string, unknown>): void {
     switch (event.type) {
       case "agent_start":
+        this.lifecycleSequence++;
         this.state = "running";
+        this.finalAssistantText = undefined;
+        if (this.abortAttempt) this.abortAttempt.finalAssistantText = undefined;
         break;
       case "agent_settled":
+        this.lifecycleSequence++;
         this.activeTools.clear();
         if (this.state !== "failed" && this.state !== "stopped") this.state = "idle";
         break;
@@ -659,9 +833,11 @@ export class ManagedSubagent {
         this.turns++;
         break;
       case "queue_update": {
-        const steering = Array.isArray(event.steering) ? event.steering.length : 0;
-        const followUp = Array.isArray(event.followUp) ? event.followUp.length : 0;
-        this.pendingMessages = steering + followUp;
+        this.lifecycleSequence++;
+        const steering = Array.isArray(event.steering) ? (event.steering as unknown[]) : [];
+        const followUp = Array.isArray(event.followUp) ? (event.followUp as unknown[]) : [];
+        this.pendingMessages = steering.length + followUp.length;
+        this.recordQueueUpdate([...steering, ...followUp].filter((text) => typeof text === "string"));
         break;
       }
       case "message_update": {
@@ -669,11 +845,35 @@ export class ManagedSubagent {
         if (delta?.type === "text_delta" && typeof delta.delta === "string") this.appendTranscript(delta.delta);
         break;
       }
+      case "message_start": {
+        const message = event.message as Record<string, unknown> | undefined;
+        if (message?.role !== "user") break;
+        const text = extractTextContent(message.content);
+        const attempt = this.abortAttempt;
+        if (attempt && [...attempt.queuedAfterInterrupt.values()].includes(text)) {
+          // The pending abort may still stop this work; only an explicit rejection makes it current.
+          attempt.queuedWorkStarted = true;
+          attempt.finalAssistantText = undefined;
+        } else if ([...this.queuedAfterInterrupt.values()].includes(text)) {
+          this.interruptedOperation = false;
+          this.clearQueuedRecovery();
+          this.finalAssistantText = undefined;
+        }
+        break;
+      }
       case "message_end": {
         const message = event.message as Record<string, unknown> | undefined;
         if (message?.role === "assistant") {
           const text = extractTextContent(message.content);
           if (text) this.lastAssistantText = appendBoundedTail("", text, MAX_TRANSCRIPT_CHARS);
+          // Only a completed, non-empty response is the operation's answer; working text before a tool call,
+          // aborted partial text, and an empty final message are diagnostics.
+          const finalText =
+            message.stopReason === "stop" && text.trim()
+              ? appendBoundedTail("", text, MAX_TRANSCRIPT_CHARS)
+              : undefined;
+          this.finalAssistantText = this.interruptedOperation ? undefined : finalText;
+          if (this.abortAttempt) this.abortAttempt.finalAssistantText = finalText;
           if (message.stopReason === "error") {
             this.fail(
               typeof message.errorMessage === "string" ? message.errorMessage : "Child model returned an error.",

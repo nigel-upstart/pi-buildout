@@ -8,6 +8,7 @@ import {
   findRequestedModel,
   formatModelCatalog,
   parseClassifierDecision,
+  parseLineage,
   parseModelRequest,
   safeTerminalText,
   supportedThinkingLevels,
@@ -178,4 +179,14 @@ test("auth bridge forwards api key and headers, and rejects header injection", a
   );
   assert.deepEqual(run({ PI_SIMPLE_SUBAGENT_AUTH_PROVIDER: "corporate-ai" }), []);
   assert.equal(process.env.PI_SIMPLE_SUBAGENT_API_KEY, undefined);
+});
+
+test("lineage parser accepts a bounded owner chain and treats anything else as absent", () => {
+  assert.deepEqual(parseLineage(undefined, 3), []);
+  assert.deepEqual(parseLineage('["a1b2c3", "d4e5f6"]', 3), ["a1b2c3", "d4e5f6"]);
+  assert.deepEqual(parseLineage("not json", 3), []);
+  assert.deepEqual(parseLineage('{"id":"a"}', 3), []);
+  assert.deepEqual(parseLineage('["a","b","c","d"]', 3), [], "deeper than the depth cap");
+  assert.deepEqual(parseLineage('["ok", "has space"]', 3), []);
+  assert.deepEqual(parseLineage(JSON.stringify(["x".repeat(65)]), 3), []);
 });

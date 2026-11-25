@@ -16,7 +16,11 @@ type TelemetryEventKind =
   | "route_decision"
   | "attempt_completed"
   | "fallback"
-  | "outcome";
+  | "outcome"
+  | "advisory_step_skipped";
+
+/** Correction application/deferral boundary; absent on legacy records. */
+export type SecondarySwapBoundary = "idle" | "next_run" | "dropped" | "rejected";
 
 export type RouterTelemetryEvent = {
   version: 1;
@@ -41,7 +45,7 @@ export type RouterTelemetryEvent = {
   data: Record<string, unknown>;
 };
 
-export type ClassifierInvocationPurpose = "continuity" | "fresh_task" | "secondary_reconciliation";
+export type ClassifierInvocationPurpose = "continuity" | "fresh_task" | "secondary_reconciliation" | "review_child";
 type ClassifierInvocationOutcome = "success" | "timeout" | "error";
 type ClassifierInvocationResolution = "classified" | "failed_closed" | "retained_continuity" | "new_task" | "none";
 type ClassifierAttemptOutcome = "valid" | "invalid" | "error" | "cancelled" | "incomplete";

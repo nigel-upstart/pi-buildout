@@ -127,22 +127,47 @@ is_pi_package() {
   ' "$1/package.json"
 }
 
+is_managed_launcher() {
+  local launcher=$1 managed_root=$2
+  # Inspect only: never source or execute a launcher to discover its package.
+  if [[ -f "$launcher" ]] && grep -Fq 'PI_MANAGED_INSTALL_ROOT=' "$launcher" \
+    && grep -Fq '/install/current-version' "$launcher"; then
+    return 0
+  fi
+  [[ -f "$managed_root/managed-install.json" ]] && node -e '
+    try {
+      const marker = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8").replace(/^\uFEFF/, ""));
+      process.exit(marker.kind === "pi-managed-install" && marker.schemaVersion === 1 && marker.layout === "releases-v1" ? 0 : 1);
+    }
+    catch { process.exit(1); }
+  ' "$managed_root/managed-install.json"
+}
+
 find_pi_package() {
   local path package_dir managed_root managed_version
   path=$(realpath "$1" 2> /dev/null) || return 1
-  # The managed bin is a shell launcher, not a link into node_modules. Follow its
-  # current-version file, never the install project's own package.json.
+  # Managed launchers live beside install/, rather than inside the active package.
+  # Recognize them positively, even when install/ is missing; an unrelated sibling
+  # install path must not hijack ordinary wrapper/shim discovery.
   managed_root="$(dirname "$path")/../install"
-  if [[ -f "$managed_root/current-version" ]]; then
-    managed_version=$(cat "$managed_root/current-version")
-    if [[ "$managed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
-      package_dir="$managed_root/releases/$managed_version/node_modules/@earendil-works/pi-coding-agent"
-      if is_pi_package "$package_dir"; then
-        printf '%s\n' "$(realpath "$package_dir")"
-        return 0
+  if is_managed_launcher "$path" "$managed_root"; then
+    if [[ -f "$managed_root/current-version" ]]; then
+      managed_version=$(< "$managed_root/current-version")
+      if [[ "$managed_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+        package_dir="$managed_root/releases/$managed_version/node_modules/@earendil-works/pi-coding-agent"
+        if is_pi_package "$package_dir" && node -e '
+          try {
+            const manifest = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            process.exit(manifest.version === process.argv[2] ? 0 : 1);
+          }
+          catch { process.exit(1); }
+        ' "$package_dir/package.json" "$managed_version"; then
+          printf '%s\n' "$(realpath "$package_dir")"
+          return 0
+        fi
       fi
     fi
-    printf 'Could not locate the active managed Pi package under %s.\n' "$managed_root" >&2
+    printf 'Could not locate the active managed Pi package under %s. Repair the managed install or set PI_PACKAGE_DIR.\n' "$managed_root" >&2
     return 2
   fi
   # Homebrew's wrapper lives in <formula>/bin while the package is nested under
@@ -212,14 +237,12 @@ PI_PACKAGE_DIR=${PI_PACKAGE_DIR:-}
 if [[ -z "$PI_PACKAGE_DIR" ]]; then
   PI_BIN=$(command -v pi || true)
   if [[ -n "$PI_BIN" ]]; then
-    if ! PI_PACKAGE_DIR=$(find_pi_package "$PI_BIN"); then
-      # A broken managed install must not redirect patching to a different global Pi.
-      # Ordinary unresolved version-manager shims can still use npm's global root.
-      PI_PACKAGE_DIR=
-      resolved_bin=$(realpath "$PI_BIN" 2> /dev/null || true)
-      if [[ -n "$resolved_bin" && -f "$(dirname "$resolved_bin")/../install/current-version" ]]; then
-        exit 1
-      fi
+    discovery_status=0
+    PI_PACKAGE_DIR=$(find_pi_package "$PI_BIN") || discovery_status=$?
+    # A positively recognized but broken managed install must not redirect patching
+    # to an unrelated global Pi. Ordinary version-manager shims retain that fallback.
+    if ((discovery_status == 2)); then
+      exit 1
     fi
   fi
   # Version-manager shims may not point into the package; use npm's global root.

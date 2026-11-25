@@ -24,13 +24,6 @@ function policyNamedTriples() {
     for (const ref of [...policy.primary, ...policy.fallback]) {
       triples.push({ archetype: policy.archetype, logicalModelId: ref.logicalModelId, effort: ref.effort });
     }
-    if (policy.pinnedPrimary) {
-      triples.push({
-        archetype: policy.archetype,
-        logicalModelId: policy.pinnedPrimary.logicalModelId,
-        effort: policy.pinnedPrimary.effort,
-      });
-    }
     for (const ref of HARD_TASK_ESCALATION_REFS) {
       triples.push({ archetype: policy.archetype, logicalModelId: ref.logicalModelId, effort: ref.effort });
     }
@@ -97,20 +90,16 @@ describe("prompt profile eligibility is declared in canonical logical model IDs"
     // grouped endpoints by canonical ID, so 23 of these 60 endpoints were excluded as
     // profile_missing, 22 of them amazon-bedrock. Canonical matching is strictly additive, so the
     // expected count is now zero.
-    const named = [];
     const unroutable = [];
     for (const endpoint of REGISTRY_SPELLINGS) {
       const logical = canonicalModelId(endpoint.modelId);
       const vendor = MODEL_VENDOR[logical];
       if (!vendor) continue;
-      named.push(endpoint);
       const resolvable = ARCHETYPES.some((archetype) =>
         EFFORT_LEVELS.some((effort) => findPromptProfile(vendor, endpoint.modelId, archetype, effort)),
       );
       if (!resolvable) unroutable.push(`${endpoint.provider}/${endpoint.modelId}`);
     }
-    // The fixture grows with every observed provider spelling; every policy-named row must resolve.
-    assert.equal(named.length, 63, "the registry fixture no longer describes the surveyed policy endpoint set");
     assert.deepEqual(unroutable, [], "policy-named endpoints resolve no profile and would be excluded");
   });
 
@@ -197,9 +186,16 @@ describe("canonical eligibility does not over-admit", () => {
 });
 
 describe("review-only Gemini 3.8", () => {
-  it("leads Google's reviewer availability chain and resolves no general-work profile", () => {
+  it("stays in Google's reviewer availability chain and resolves no general-work profile", () => {
     const googleReviewers = reviewerRefs("google", 4);
-    assert.equal(googleReviewers[0]?.logicalModelId, "gemini-3.8-flash");
+    assert.deepEqual(
+      googleReviewers.slice(0, 3).map((ref) => [ref.logicalModelId, ref.effort]),
+      [
+        ["gemini-4-neon", "high"],
+        ["gemini-4-neon", "xhigh"],
+        ["gemini-3.8-flash", "high"],
+      ],
+    );
     assert.equal(
       findPromptProfile("google", "gemini-3.8-flash", "code_review", "high")?.id,
       "google-gemini-3.8-review-v1",

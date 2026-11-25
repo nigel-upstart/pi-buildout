@@ -113,7 +113,10 @@ test("installer locates pi through the managed launcher shim", async (context) =
   );
   await mkdir(join(agentDirectory, "bin"), { recursive: true });
   await mkdir(packageDirectory, { recursive: true });
-  await writeFile(join(agentDirectory, "bin", "pi"), "#!/bin/sh\nexit 0\n");
+  await writeFile(
+    join(agentDirectory, "bin", "pi"),
+    "#!/bin/sh\n# PI_MANAGED_INSTALL_ROOT=\n# /install/current-version\nexit 99\n",
+  );
   await chmod(join(agentDirectory, "bin", "pi"), 0o755);
   // A failed managed lookup must not be rescued by a real globally installed Pi.
   await writeFile(join(agentDirectory, "bin", "npm"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });

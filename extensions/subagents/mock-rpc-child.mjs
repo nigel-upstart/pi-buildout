@@ -6,6 +6,19 @@ let streaming = false;
 let prompts = 0;
 let activeOperation = 0;
 let abortFails = false;
+let lateFinal = false;
+let abortTimesOut = false;
+/** @type {{ type: string, message: string } | undefined} */
+let queuedWork;
+let holdAbort = false;
+/** @type {{ id: unknown } | undefined} */
+let heldAbort;
+/** @type {string | undefined} */
+let nextQueueDisposition;
+/** Delays get_state replies so a test can hold open the gap before a confirmation arrives. */
+let stateReplyDelayMs = 0;
+/** Writes the next get_state reply and the run's completion in one stdout chunk. */
+let settleWithStateReply = false;
 
 /** @param {unknown} value */
 function send(value) {
@@ -22,18 +35,169 @@ const UNEXPECTED_EXITS = [
   },
 ];
 
-const input = readline.createInterface({ input: process.stdin });
-input.on("line", (line) => {
-  const command = JSON.parse(line);
-  if (command.type === "extension_ui_response") return;
-  if (command.type === "get_state") {
+/** @param {{ id: unknown }} command */
+function handleAbort(command) {
+  if (lateFinal) {
+    // Deliver the completed operation before either abort outcome, without relying on timers.
+    streaming = false;
+    activeOperation++;
+    send({ type: "agent_start" });
+    send({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "late-answer" }], stopReason: "stop" },
+    });
+    send({ type: "agent_settled" });
+  }
+  if (holdAbort) {
+    heldAbort = command;
+    return;
+  }
+  if (abortFails) {
+    send({ id: command.id, type: "response", command: "abort", success: false, error: "mock abort failure" });
+    return;
+  }
+  if (abortTimesOut) {
+    // Model an abort that returns after its idle deadline while the run is still active.
+    send({ id: command.id, type: "response", command: "abort", success: true });
+    return;
+  }
+  streaming = false;
+  activeOperation++;
+  send({ id: command.id, type: "response", command: "abort", success: true });
+  send({ type: "agent_settled" });
+}
+
+/** @param {{ id: unknown, type: string, message: string }} command */
+function handleQueuedWork(command) {
+  if (abortTimesOut) {
+    queuedWork = command;
+    send({ type: "queue_update", steering: [], followUp: [command.message] });
+    // Neither a delayed start nor the old user message makes this late answer eligible.
+    send({ type: "agent_start" });
+    send({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "old task" }] } });
+    send({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "late-answer" }], stopReason: "stop" },
+    });
+  }
+  send({ id: command.id, type: "response", command: command.type, success: true });
+}
+
+/** @param {{ id: unknown, type: string }} command */
+function finishQueuedWork(command) {
+  if (!queuedWork) return;
+  // Follow-ups can start another run; steering can begin within the existing run.
+  if (queuedWork.type === "follow_up") send({ type: "agent_start" });
+  send({ type: "queue_update", steering: [], followUp: [] });
+  send({ type: "message_start", message: { role: "user", content: [{ type: "text", text: queuedWork.message }] } });
+  send({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "queued-answer" }], stopReason: "stop" },
+  });
+  queuedWork = undefined;
+  streaming = false;
+  send({ type: "agent_settled" });
+  send({ id: command.id, type: "response", command: command.type, success: true });
+}
+
+/** @param {{ id: unknown, type: string, message: string }} command */
+function handleControlCommand(command) {
+  if (command.type === "abort") handleAbort(command);
+  else if (command.type === "steer" || command.type === "follow_up") {
+    if (abortTimesOut) handleQueuedWork(command);
+    else handleQueue(command);
+  } else if (command.type === "finish_queued") finishQueuedWork(command);
+  else return false;
+  return true;
+}
+
+/** @param {{ type: string, id: unknown, events?: unknown[], success?: boolean, disposition?: string }} command */
+function handleAbortTestControl(command) {
+  if (command.type === "set_queue_disposition") {
+    nextQueueDisposition = command.disposition;
+    send({ id: command.id, type: "response", success: true });
+    return true;
+  }
+  if (command.type === "emit_events") {
+    for (const event of command.events ?? []) send(event);
+    send({ id: command.id, type: "response", success: true });
+    return true;
+  }
+  if (command.type === "release_abort") {
+    if (heldAbort) {
+      send({
+        id: heldAbort.id,
+        type: "response",
+        command: "abort",
+        success: command.success,
+        error: "mock abort failure",
+      });
+      heldAbort = undefined;
+    }
+    send({ id: command.id, type: "response", success: true });
+    return true;
+  }
+  return false;
+}
+
+/** @param {{ type: string, id: unknown, message?: unknown }} command */
+function handleQueue(command) {
+  const message = String(command.message);
+  const disposition = nextQueueDisposition;
+  nextQueueDisposition = undefined;
+  if (disposition === "handled") {
+    send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition } });
+    return;
+  }
+  if (message.includes("HOLD_QUEUE")) return;
+  if (disposition === "rejected" || message.includes("REJECT_QUEUE")) {
+    send({ id: command.id, type: "response", command: command.type, success: false, error: "mock queue rejection" });
+    return;
+  }
+  if (message.includes("EXPAND_QUEUE")) {
+    // Pi announces the transformed queue entry before acknowledging the request.
+    const queued = [`expanded: ${message}`];
+    send({
+      type: "queue_update",
+      steering: command.type === "steer" ? queued : [],
+      followUp: command.type === "follow_up" ? queued : [],
+    });
+  }
+  send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition: "queued" } });
+}
+
+/** @param {{ id: unknown }} command */
+function handleGetState(command) {
+  if (settleWithStateReply) {
+    settleWithStateReply = false;
+    const answer = { role: "assistant", content: [{ type: "text", text: "chunked-answer" }], stopReason: "stop" };
+    const lines = [
+      { id: command.id, type: "response", command: "get_state", success: true, data: { isStreaming: true } },
+      { type: "message_end", message: answer },
+      { type: "agent_settled" },
+    ];
+    streaming = false;
+    process.stdout.write(lines.map((line) => JSON.stringify(line) + "\n").join(""));
+    return;
+  }
+  const reply = () =>
     send({
       id: command.id,
       type: "response",
       command: "get_state",
       success: true,
-      data: { isStreaming: streaming, pendingMessageCount: 0, sessionFile: "/tmp/mock-child.jsonl" },
+      data: { isStreaming: streaming, pendingMessageCount: queuedWork ? 1 : 0, sessionFile: "/tmp/mock-child.jsonl" },
     });
+  if (stateReplyDelayMs > 0) setTimeout(reply, stateReplyDelayMs);
+  else reply();
+}
+
+const input = readline.createInterface({ input: process.stdin });
+input.on("line", (line) => {
+  const command = JSON.parse(line);
+  if (command.type === "extension_ui_response" || handleAbortTestControl(command)) return;
+  if (command.type === "get_state") {
+    handleGetState(command);
     return;
   }
   if (command.type === "get_session_stats") {
@@ -50,21 +214,7 @@ input.on("line", (line) => {
     });
     return;
   }
-  if (command.type === "abort") {
-    if (abortFails) {
-      send({ id: command.id, type: "response", command: "abort", success: false, error: "mock abort failure" });
-      return;
-    }
-    streaming = false;
-    activeOperation++;
-    send({ id: command.id, type: "response", command: "abort", success: true });
-    send({ type: "agent_settled" });
-    return;
-  }
-  if (command.type === "steer" || command.type === "follow_up") {
-    send({ id: command.id, type: "response", command: command.type, success: true });
-    return;
-  }
+  if (handleControlCommand(command)) return;
   if (command.type === "timeout") {
     process.stderr.write("mock timeout diagnostic\n");
     return;
@@ -80,14 +230,24 @@ input.on("line", (line) => {
     const operation = ++activeOperation;
     streaming = true;
     abortFails = String(command.message).includes("ABORT_FAIL");
+    lateFinal = String(command.message).includes("LATE_FINAL");
+    abortTimesOut = String(command.message).includes("ABORT_TIMEOUT");
+    holdAbort = String(command.message).includes("HOLD_ABORT");
     send({ id: command.id, type: "response", command: "prompt", success: true });
     send({ type: "agent_start" });
+    if (String(command.message).includes("SETTLE_WITH_STATE")) {
+      // Completion arrives in the same chunk as the next get_state reply instead of from the timer.
+      settleWithStateReply = true;
+      return;
+    }
     if (String(command.message).includes("SLOW_WAIT")) {
       send({ type: "tool_execution_start", toolCallId: "slow-tool", toolName: "bash", args: { command: "sleep" } });
     }
     setTimeout(
       () => {
-        if (operation !== activeOperation || !streaming) return;
+        // Abort-race fixtures finish through explicit control, not this ordinary
+        // response timer. A busy parent may not issue abort within 150ms.
+        if (operation !== activeOperation || !streaming || abortTimesOut || holdAbort || lateFinal) return;
         if (String(command.message).includes("ABORTED_COMPACT")) {
           // An aborted compaction must not count toward the compaction total.
           send({ type: "compaction_end", aborted: true, result: undefined });
@@ -127,11 +287,61 @@ input.on("line", (line) => {
             send({ type: "agent_settled" });
           });
           return;
+        } else if (String(command.message).includes("OWE_DESCENDANT")) {
+          // A nested child that delegates, ends its turn with interim text, and later resumes on the pushed result.
+          const owe = (/** @type {string | undefined} */ statusText) =>
+            send({
+              type: "extension_ui_request",
+              id: `status-${String(Date.now())}`,
+              method: "setStatus",
+              statusKey: "pi-simple-subagent:descendants",
+              ...(statusText ? { statusText } : {}),
+            });
+          owe("1");
+          send({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "waiting on grandchild" }],
+              stopReason: "stop",
+            },
+          });
+          send({ type: "turn_end" });
+          streaming = false;
+          send({ type: "agent_settled" });
+          if (String(command.message).includes("OWE_DESCENDANT_EXIT")) {
+            process.exit(3);
+          }
+          setTimeout(() => {
+            // Pi runs extension handlers first: the clear is written before the triggered turn's agent_start.
+            streaming = true;
+            // Hold the confirmation past the resumed turn: only the parent's wait for it bridges the gap.
+            stateReplyDelayMs = 300;
+            owe(undefined);
+            setTimeout(() => {
+              send({ type: "agent_start" });
+              send({
+                type: "message_end",
+                message: { role: "assistant", content: [{ type: "text", text: "real-answer" }], stopReason: "stop" },
+              });
+              send({ type: "turn_end" });
+              streaming = false;
+              send({ type: "agent_settled" });
+            }, 150);
+          }, 60);
+          return;
         } else if (String(command.message).includes("FAIL_MODEL")) {
           send({
             type: "message_end",
             message: { role: "assistant", content: [], stopReason: "error", errorMessage: "mock model failure" },
           });
+        } else if (String(command.message).includes("WORKING_THEN_EMPTY")) {
+          send({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "working-note" }], stopReason: "toolUse" },
+          });
+          send({ type: "message_end", message: { role: "assistant", content: [], stopReason: "stop" } });
+          send({ type: "turn_end" });
         } else if (String(command.message).includes("EMPTY_LENGTH")) {
           send({
             type: "message_end",
