@@ -149,7 +149,10 @@ export function registerSignaling(
       result,
       ...(error ? { error } : {}),
     });
-    if (!record.consumed && !isClosed()) {
+    // The caller asked for a stop or abort, so it already knows the outcome; only a result or failure it did not
+    // consume is news to the parent session.
+    const callerCancelled = status === "stopped" || status === "aborted";
+    if (!record.consumed && !callerCancelled && !isClosed()) {
       record.delivered = notifyParentSession(ctx, options?.pi, {
         id: record.child.id,
         name: record.description,

@@ -517,3 +517,67 @@ test("a throwing parent delivery never rejects the signaling watcher", async () 
   assert.equal(terminal.length, 1);
   await close();
 });
+
+test("a caller's own stop or abort emits the failed event but pushes nothing to the parent session", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg) {
+      sent.push(msg);
+    },
+  });
+  const ids = ["cancel1", "cancel2"];
+  const close = registerSignaling(
+    events,
+    testCtx,
+    async () => {
+      /** @type {(value: boolean) => void} */
+      let release;
+      const settled = new Promise((resolve) => {
+        release = resolve;
+      });
+      return {
+        ...child(),
+        id: ids.shift(),
+        waitForIdle: (/** @type {number} */ _timeout, /** @type {AbortSignal | undefined} */ signal) =>
+          new Promise((resolve, reject) => {
+            void settled.then(resolve);
+            signal?.addEventListener("abort", () => reject(new Error("wait aborted")), { once: true });
+          }),
+        stop: async () => {
+          release(true);
+        },
+      };
+    },
+    { pi: testPi },
+  );
+  /** @type {Payload[]} */
+  const failed = [];
+  // No consume: the caller relies on its own control request rather than claiming the result.
+  events.on("subagents:failed", (/** @type {Payload} */ value) => failed.push(value));
+
+  await rpc(events, "spawn", request());
+  assert.deepEqual(await rpc(events, "stop", { agentId: "cancel1" }), { success: true });
+  const running = new AbortController();
+  await rpc(events, "spawn", { ...request(), options: { ...request().options, signal: running.signal } });
+  running.abort();
+  for (let i = 0; i < 50 && failed.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.deepEqual(
+    failed.map((event) => event.status),
+    ["stopped", "aborted"],
+  );
+  assert.equal(sent.length, 0, "caller-initiated cancellation must not start a parent turn");
+  assert.equal(notifications.length, 0);
+  await close();
+});

@@ -156,18 +156,19 @@ The implementation in `extensions/subagents/signaling.ts` is an original compati
 release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`) and documentation/source snapshot
 `ca93a5247e72e7053fcd10bea7125d6c4205f949`, `docs/rpc.md`, `src/cross-extension-rpc.ts`, and terminal emission in
 `src/index.ts`. Used: ping/spawn/consume/stop names, reply envelopes, generic task/model/thinking options, final
-results, synchronous consumption, and proactive parent notifications when unconsumed. Not adopted: steer,
-workflow/profile systems, registry singleton, scheduling, worktrees, or protocol dialect shims. Pi 1.2.0 source
-`06a466935536f8c9bcacb2d5efc0fc021be1bdff` and installed 1.3.0 CLI resource suppression flags establish the isolated
-launch behavior, including empty `--system-prompt` and `--append-system-prompt` overrides to exclude ambient prompt
-files independently of context files; no Pi code was copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters
-and provider documentation informed the fail-closed isolated-model validation: only bundled provider/model/API/endpoint
-entries are accepted, because the auth bridge does not reproduce parent extension registrations or endpoint overrides.
-This is conceptual API use, not copied code; custom model/provider configuration transport and ambient extension loading
-remain intentionally excluded. Child cleanup precedes terminal delivery as an original integration safeguard against
-overlapping fallback work. Cancellation is rechecked after cleanup and committed synchronously with terminal
-publication; this lifecycle safeguard is original, not an upstream state machine or lock implementation. Pi's installed
-1.5.0 `docs/extensions.md` and `examples/extensions/event-bus.ts` were consulted as API references for `pi.events`
+results, synchronous consumption, and proactive parent notifications when unconsumed (suppressing caller-requested
+stop/abort terminals is an original refinement). Not adopted: steer, workflow/profile systems, registry singleton,
+scheduling, worktrees, or protocol dialect shims. Pi 1.2.0 source `06a466935536f8c9bcacb2d5efc0fc021be1bdff` and
+installed 1.3.0 CLI resource suppression flags establish the isolated launch behavior, including empty `--system-prompt`
+and `--append-system-prompt` overrides to exclude ambient prompt files independently of context files; no Pi code was
+copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters and provider documentation informed the fail-closed
+isolated-model validation: only bundled provider/model/API/endpoint entries are accepted, because the auth bridge does
+not reproduce parent extension registrations or endpoint overrides. This is conceptual API use, not copied code; custom
+model/provider configuration transport and ambient extension loading remain intentionally excluded. Child cleanup
+precedes terminal delivery as an original integration safeguard against overlapping fallback work. Cancellation is
+rechecked after cleanup and committed synchronously with terminal publication; this lifecycle safeguard is original, not
+an upstream state machine or lock implementation. Pi's installed 1.5.0 `docs/extensions.md` and
+`examples/extensions/event-bus.ts` were consulted as API references for `pi.events`
 ([canonical repository](https://github.com/earendil-works/pi), MIT); no example code was copied or adapted.
 
 The router's caller side, `extensions/router/signaling-runner.ts`, is also original code written against the same
