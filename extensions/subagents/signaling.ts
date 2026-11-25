@@ -19,6 +19,8 @@ type RecordState = {
   terminal: boolean;
   consumed: boolean;
   stopRequested: boolean;
+  delivered: boolean;
+  release?: ((delivered: boolean) => void) | undefined;
 };
 type Bus = ExtensionAPI["events"];
 
@@ -73,6 +75,8 @@ export type SubagentNotification = {
   result?: string | undefined;
   error?: string | undefined;
   stats?: ChildSessionStats | undefined;
+  /** Owner chain from the root session's direct child down to the reporting child. */
+  lineage?: string[] | undefined;
 };
 
 export const SUBAGENT_NOTIFICATION_TYPE = "subagent-notification";
@@ -81,8 +85,8 @@ export function notifyParentSession(
   ctx: { ui?: { notify(message: string, level?: "info" | "warning" | "error"): void } } | undefined,
   pi: Pick<ExtensionAPI, "sendMessage"> | undefined,
   notification: SubagentNotification,
-): void {
-  const { id, name, status, stats } = notification;
+): boolean {
+  const { id, name, status, stats, lineage } = notification;
   // Parent context gets the same bounds as wait; signaling consumers still receive the full event payload.
   const trimmed = notification.result?.trim();
   const result = trimmed ? truncateMiddle(trimmed, MAX_WAIT_TEXT_CHARS) : undefined;
@@ -103,17 +107,22 @@ export function notifyParentSession(
           ...(result ? { result } : {}),
           ...(stats ? { stats } : {}),
           ...(error ? { error } : {}),
+          ...(lineage?.length ? { lineage } : {}),
         },
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
+    return Boolean(pi);
   } catch {
     // A replaced or closed session cannot take the message; delivery must never reject a background watcher.
+    return false;
   }
 }
 
 export type SignalingOptions = {
   pi?: Pick<ExtensionAPI, "sendMessage">;
+  /** Counts a spawned child as owed to this session's parent until its result is consumed or delivered. */
+  trackDescendant?: () => (delivered: boolean) => void;
 };
 
 export function registerSignaling(
@@ -141,12 +150,13 @@ export function registerSignaling(
       ...(error ? { error } : {}),
     });
     if (!record.consumed && !isClosed()) {
-      notifyParentSession(ctx, options?.pi, {
+      record.delivered = notifyParentSession(ctx, options?.pi, {
         id: record.child.id,
         name: record.description,
         status,
         result,
         ...(error ? { error } : {}),
+        lineage: record.child.snapshot().lineage,
       });
     }
   };
@@ -209,10 +219,13 @@ export function registerSignaling(
         terminal: false,
         consumed: false,
         stopRequested: false,
+        delivered: false,
+        release: options?.trackDescendant?.(),
       };
       records.set(child.id, record);
       // Subscribe/watch before acceptance reply; completion may legitimately arrive first.
       const watching = watch(record, controller).finally(() => {
+        record.release?.(record.delivered);
         request.signal?.removeEventListener("abort", abort);
         controllers.delete(controller);
         watchers.delete(watching);

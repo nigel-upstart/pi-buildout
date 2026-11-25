@@ -10,6 +10,8 @@ const MAX_STDERR_CHARS = 64_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const FORCE_KILL_DELAY_MS = 3_000;
 const TERMINAL_CLEANUP_TIMEOUT_MS = 10_000;
+/** RPC `setStatus` key a nested child uses to report subagents it still owes an answer for. */
+export const DESCENDANT_STATUS_KEY = "pi-simple-subagent:descendants";
 
 // Only an explicit RPC rejection proves that an abort did not take effect.
 class RpcRejectionError extends Error {}
@@ -122,6 +124,8 @@ export type ChildLaunchOptions = {
   ownsProcessGroup?: boolean;
   classification: "explicit" | "classified" | "fallback";
   classificationRationale?: string;
+  /** Child ids from the root session's direct child down to this child, inclusive. */
+  lineage?: string[];
 };
 
 export type ChildSessionStats = {
@@ -197,6 +201,9 @@ export type ChildSnapshot = {
   toolCalls: number;
   currentTool?: { name: string; argsPreview: string; startedAt: number };
   pendingMessages: number;
+  /** Delegated work the child reported as still owed to it; its current answer is interim until this reaches 0. */
+  activeDescendants: number;
+  lineage: string[];
   compactions: number;
   stats?: ChildSessionStats;
   sessionFile?: string;
@@ -269,6 +276,9 @@ export class ManagedSubagent {
     | undefined;
   private sessionFile: string | undefined;
   private pendingMessages = 0;
+  private activeDescendants = 0;
+  // A cleared descendant report is only trusted after get_state confirms the child did not start a turn for it.
+  private descendantConfirmations = 0;
   private turns = 0;
   private toolCalls = 0;
   private activeTools = new Map<string, NonNullable<ChildSnapshot["currentTool"]>>();
@@ -497,6 +507,8 @@ export class ManagedSubagent {
       toolCalls: this.toolCalls,
       ...(currentTool ? { currentTool: { ...currentTool } } : {}),
       pendingMessages: this.pendingMessages,
+      activeDescendants: this.activeDescendants,
+      lineage: [...(this.options.lineage ?? [this.id])],
       compactions: this.compactions,
       ...(this.stats ? { stats: this.stats } : {}),
       ...(this.sessionFile ? { sessionFile: this.sessionFile } : {}),
@@ -518,7 +530,30 @@ export class ManagedSubagent {
   }
 
   private isSettled(): boolean {
-    return this.state === "failed" || this.state === "stopped" || (this.state === "idle" && this.pendingMessages === 0);
+    if (this.state === "failed" || this.state === "stopped") return true;
+    return (
+      this.state === "idle" &&
+      this.pendingMessages === 0 &&
+      this.activeDescendants === 0 &&
+      this.descendantConfirmations === 0
+    );
+  }
+
+  private updateDescendants(statusText: unknown): void {
+    const reported = typeof statusText === "string" ? Number(statusText) : 0;
+    const active = Number.isSafeInteger(reported) && reported > 0 ? reported : 0;
+    const cleared = this.activeDescendants > 0 && active === 0;
+    this.activeDescendants = active;
+    if (cleared) {
+      // Pi runs extension handlers before writing the event, so the clear can precede the agent_start of the turn a
+      // grandchild result just triggered. A get_state round trip is ordered after that turn's start.
+      this.descendantConfirmations++;
+      void this.refresh().finally(() => {
+        this.descendantConfirmations--;
+        this.touch();
+      });
+    }
+    this.touch();
   }
 
   private async queueMessage(type: "steer" | "follow_up", message: string): Promise<void> {
@@ -753,6 +788,10 @@ export class ManagedSubagent {
     }
     if (event.type === "extension_ui_request" && typeof event.id === "string") {
       const method = event.method;
+      if (method === "setStatus" && event.statusKey === DESCENDANT_STATUS_KEY) {
+        this.updateDescendants(event.statusText);
+        return;
+      }
       if (method === "select" || method === "confirm" || method === "input" || method === "editor") {
         this.proc.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: event.id, cancelled: true })}\n`);
         this.appendTranscript(`\n[extension dialog cancelled: ${method}]\n`);

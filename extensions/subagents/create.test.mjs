@@ -68,6 +68,7 @@ const mocks = {
   `,
   "./rpc.ts": `
     const f = globalThis[${JSON.stringify(fixtureKey)}];
+    export const DESCENDANT_STATUS_KEY = "pi-simple-subagent:descendants";
     export class ManagedSubagent {
       constructor(options) { this.options = options; f.launches.push(options); }
       async start() { await f.start?.(); }
@@ -80,8 +81,10 @@ const mocks = {
         if (f.wait) return f.wait(timeoutMs, signal);
         // Like the real child: settled resolves true, a bounded wait on active work times out, and the
         // background watcher's hour-long wait on active work stays pending instead of spinning.
-        const { state, pendingMessages } = this.snapshot();
-        const settled = state === 'failed' || state === 'stopped' || (state === 'idle' && pendingMessages === 0);
+        const { state, pendingMessages, activeDescendants } = this.snapshot();
+        const settled =
+          state === 'failed' || state === 'stopped' ||
+          (state === 'idle' && pendingMessages === 0 && activeDescendants === 0);
         if (settled) return Promise.resolve(true);
         if (timeoutMs < 3_600_000) return Promise.resolve(false);
         return new Promise((_resolve, reject) => {
@@ -96,7 +99,8 @@ const mocks = {
         return { id: o.id, name: o.name, task: o.task, state: 'running', model: o.model,
           effort: o.effort, contextMode: o.contextMode ?? 'task_compacted', classification: o.classification,
           startedAt: Date.now(), updatedAt: Date.now(), turns: 0, toolCalls: 0,
-          pendingMessages: 0, compactions: 0, transcriptTail: '', ...f.snapshot };
+          pendingMessages: 0, activeDescendants: 0, lineage: o.lineage ?? [o.id], compactions: 0,
+          transcriptTail: '', ...f.snapshot };
       }
     }
   `,
@@ -149,6 +153,8 @@ async function harness(t, forbidHistory = false) {
   const notifications = [];
   /** @type {{ msg: any, opts: any }[]} */
   const sentMessages = [];
+  /** @type {{ key: string, text: string | undefined }[]} */
+  const statuses = [];
   subagentsExtension(
     /** @type {import('@earendil-works/pi-coding-agent').ExtensionAPI} */ (
       /** @type {unknown} */ ({
@@ -193,6 +199,9 @@ async function harness(t, forbidHistory = false) {
         notify(/** @type {string} */ msg, /** @type {string} */ level) {
           notifications.push({ msg, level });
         },
+        setStatus(/** @type {string} */ key, /** @type {string | undefined} */ text) {
+          statuses.push({ key, text });
+        },
       },
       modelRegistry: {
         runtime: {},
@@ -206,7 +215,7 @@ async function harness(t, forbidHistory = false) {
   const registered = tool;
   /** @param {Record<string, unknown>} args @param {AbortSignal} [signal] */
   const execute = (args, signal) => registered.execute("test-call", args, signal, undefined, ctx);
-  return { execute, tool: registered, ctx, lifecycle, events, notifications, sentMessages };
+  return { execute, tool: registered, ctx, lifecycle, events, notifications, sentMessages, statuses };
 }
 
 /** @param {{emit: Function, on: Function}} events @param {string} method @param {Record<string, unknown>} fields */
@@ -906,4 +915,95 @@ test("a watcher that observes restarted work keeps waiting instead of dropping t
   assert.equal(sentMessages[0]?.msg.details.result, "Final after restart");
 
   await lifecycle.session_shutdown?.({}, ctx);
+});
+
+/** Runs `body` as a nested child process would: depth and owner chain come from the parent's environment. */
+async function asNestedChild(/** @type {string[]} */ lineage, /** @type {() => Promise<void>} */ body) {
+  const saved = [process.env.PI_SIMPLE_SUBAGENT_DEPTH, process.env.PI_SIMPLE_SUBAGENT_LINEAGE];
+  process.env.PI_SIMPLE_SUBAGENT_DEPTH = String(lineage.length);
+  process.env.PI_SIMPLE_SUBAGENT_LINEAGE = JSON.stringify(lineage);
+  try {
+    await body();
+  } finally {
+    for (const [key, value] of [
+      ["PI_SIMPLE_SUBAGENT_DEPTH", saved[0]],
+      ["PI_SIMPLE_SUBAGENT_LINEAGE", saved[1]],
+    ]) {
+      if (value === undefined) Reflect.deleteProperty(process.env, /** @type {string} */ (key));
+      else process.env[/** @type {string} */ (key)] = value;
+    }
+  }
+}
+
+test("children inherit the owner chain and report it with their pushed result", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+  await execute({ action: "create", task: "Root task", model: "test/model", effort: "high", contextMode: "none" });
+  const launched = fixture.launches[0];
+  assert.ok(launched);
+  assert.deepEqual(launched.lineage, [launched.id]);
+  assert.equal(launched.env.PI_SIMPLE_SUBAGENT_LINEAGE, JSON.stringify([launched.id]));
+  assert.equal(launched.env.PI_SIMPLE_SUBAGENT_DEPTH, "1");
+
+  fixture.snapshot = { state: "idle", finalAssistantText: "Done" };
+  resolvers[0]?.(true);
+  await settleTicks(() => sentMessages.length > 0);
+  assert.deepEqual(sentMessages[0]?.msg.details.lineage, [launched.id]);
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("the root session never reports owed descendants", async (t) => {
+  const { execute, statuses, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  queuedWaits();
+  await execute({ action: "create", task: "Root task", model: "test/model", effort: "high", contextMode: "none" });
+  assert.deepEqual(statuses, []);
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("a nested child extends its lineage and owes its parent each delegated result until its turn starts", async (t) => {
+  await asNestedChild(["rootchild"], async () => {
+    const { execute, sentMessages, statuses, ctx, lifecycle } = await harness(t, true);
+    await lifecycle.session_start?.({}, ctx);
+    const resolvers = queuedWaits();
+    await execute({ action: "create", task: "Grandchild", model: "test/model", effort: "high", contextMode: "none" });
+    const launched = fixture.launches[0];
+    assert.ok(launched);
+    assert.deepEqual(launched.lineage, ["rootchild", launched.id]);
+    assert.equal(launched.env.PI_SIMPLE_SUBAGENT_DEPTH, "2");
+    assert.deepEqual(statuses, [{ key: "pi-simple-subagent:descendants", text: "1" }]);
+
+    // The grandchild's push triggers this child's next turn; it is still owed until that turn starts.
+    fixture.snapshot = { state: "idle", finalAssistantText: "Grandchild answer" };
+    resolvers[0]?.(true);
+    await settleTicks(() => sentMessages.length > 0);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(statuses.length, 1, "delivery alone does not clear the owed count");
+
+    lifecycle.agent_start?.({}, ctx);
+    assert.equal(statuses.length, 1, "the clear waits until Pi has written the turn start");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(statuses.at(-1), { key: "pi-simple-subagent:descendants", text: undefined });
+    await lifecycle.session_shutdown?.({}, ctx);
+  });
+});
+
+test("a delegated result consumed by wait stops being owed without a turn", async (t) => {
+  await asNestedChild(["rootchild"], async () => {
+    const { execute, statuses, ctx, lifecycle } = await harness(t, true);
+    await lifecycle.session_start?.({}, ctx);
+    const resolvers = queuedWaits();
+    await execute({ action: "create", task: "Grandchild", model: "test/model", effort: "high", contextMode: "none" });
+    const id = fixture.launches[0]?.id;
+    assert.ok(id);
+    fixture.snapshot = { state: "idle", finalAssistantText: "Grandchild answer" };
+    const waiting = execute({ action: "wait", id });
+    resolvers[1]?.(true);
+    await waiting;
+    resolvers[0]?.(true);
+    await settleTicks(() => statuses.length > 1);
+    assert.deepEqual(statuses.at(-1), { key: "pi-simple-subagent:descendants", text: undefined });
+    await lifecycle.session_shutdown?.({}, ctx);
+  });
 });

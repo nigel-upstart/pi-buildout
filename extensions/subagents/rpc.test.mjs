@@ -892,3 +892,48 @@ test("managed child preserves terminal model failures after agent_settled", asyn
   assert.equal(snapshot.state, "failed");
   assert.equal(snapshot.error, "mock model failure");
 });
+
+/** @param {string} task */
+function owingChild(task) {
+  return new ManagedSubagent({
+    id: "owing",
+    name: "owing-child",
+    task,
+    model: "test/model",
+    effort: "high",
+    contextSummary: "",
+    contextMode: "none",
+    cwd: process.cwd(),
+    command: process.execPath,
+    args: [mockPath],
+    env: { ...process.env },
+    lineage: ["owing"],
+    classification: "explicit",
+  });
+}
+
+test("a child owing a delegated result is not settled on its interim reply", async (t) => {
+  const child = owingChild("OWE_DESCENDANT");
+  t.after(async () => child.stop());
+  await child.start();
+  await sleep(35);
+  let snapshot = child.snapshot();
+  assert.equal(snapshot.state, "idle");
+  assert.equal(snapshot.activeDescendants, 1);
+  assert.deepEqual(snapshot.lineage, ["owing"]);
+  assert.equal(await child.waitForIdle(20), false, "interim reply with an owed descendant is not settled");
+
+  // The clear arrives before the triggered turn's agent_start; get_state confirmation must bridge that gap.
+  assert.equal(await child.waitForIdle(2_000), true);
+  snapshot = child.snapshot();
+  assert.equal(snapshot.activeDescendants, 0);
+  assert.equal(snapshot.finalAssistantText, "real-answer");
+});
+
+test("a failed child settles even while it still reports owed descendants", async (t) => {
+  const child = owingChild("OWE_DESCENDANT_EXIT");
+  t.after(async () => child.stop());
+  await child.start();
+  assert.equal(await child.waitForIdle(2_000), true);
+  assert.equal(child.snapshot().state, "failed");
+});

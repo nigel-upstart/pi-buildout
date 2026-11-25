@@ -28,13 +28,14 @@ import {
   findRequestedModel,
   formatModelCatalog,
   parseClassifierDecision,
+  parseLineage,
   parseModelRequest,
   safeTerminalText,
   truncateMiddle,
   withoutStderr,
 } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
-import { ManagedSubagent } from "./rpc.ts";
+import { DESCENDANT_STATUS_KEY, ManagedSubagent } from "./rpc.ts";
 import { isolatedChildArgs, notifyParentSession, registerSignaling } from "./signaling.ts";
 import type { ChildSnapshot } from "./rpc.ts";
 
@@ -45,6 +46,7 @@ const MAX_NESTED_CHILDREN = 2;
 const MAX_RETAINED_CHILDREN = 32;
 const MAX_DEPTH = 3;
 const DEPTH_ENV = "PI_SIMPLE_SUBAGENT_DEPTH";
+const LINEAGE_ENV = "PI_SIMPLE_SUBAGENT_LINEAGE";
 const AUTH_PROVIDER_ENV = "PI_SIMPLE_SUBAGENT_AUTH_PROVIDER";
 const AUTH_KEY_ENV = "PI_SIMPLE_SUBAGENT_API_KEY";
 const AUTH_HEADERS_ENV = "PI_SIMPLE_SUBAGENT_AUTH_HEADERS";
@@ -121,6 +123,11 @@ type Selection = {
 function currentDepth(): number {
   const value = Number(process.env[DEPTH_ENV] ?? "0");
   return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/** Owner chain of this process: child ids from the root session's direct child down to this process. */
+function currentLineage(): string[] {
+  return parseLineage(process.env[LINEAGE_ENV], MAX_DEPTH);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -404,6 +411,7 @@ function stringProviderHeaders(headers: Record<string, string | null> | undefine
 
 function childEnvironment(
   depth: number,
+  lineage: string[],
   provider: string,
   auth: { apiKey?: string; headers?: Record<string, string> },
 ): NodeJS.ProcessEnv {
@@ -418,6 +426,7 @@ function childEnvironment(
     ),
   );
   env[DEPTH_ENV] = String(depth);
+  env[LINEAGE_ENV] = JSON.stringify(lineage);
   // Bridge the API key together with the resolved request headers: registering a
   // provider replaces its whole stored request config, so an API key alone would
   // drop configured (or `authHeader`-derived) headers in the child.
@@ -462,7 +471,7 @@ function formatSnapshot(snapshot: ChildSnapshot): string {
   const lines = [
     `Subagent ${snapshot.id} (${truncateMiddle(snapshot.name, 200)})`,
     `state=${snapshot.state} model=${snapshot.model} effort=${snapshot.effort} age=${String(age)}s turns=${String(snapshot.turns)} tools=${String(snapshot.toolCalls)} queued=${String(snapshot.pendingMessages)}`,
-    `contextMode=${snapshot.contextMode}`,
+    `contextMode=${snapshot.contextMode} lineage=${snapshot.lineage.join(">")} owedDescendants=${String(snapshot.activeDescendants)}`,
     `selection=${snapshot.classification}${snapshot.classificationRationale ? ` — ${snapshot.classificationRationale}` : ""}`,
     `task: ${truncateMiddle(snapshot.task, 4_000)}`,
   ];
@@ -505,11 +514,17 @@ function waitSnapshot(snapshot: ChildSnapshot, settled: boolean) {
     turns: snapshot.turns,
     toolCalls: snapshot.toolCalls,
     pendingMessages: snapshot.pendingMessages,
+    activeDescendants: snapshot.activeDescendants,
+    lineage: snapshot.lineage,
     compactions: snapshot.compactions,
     stats: snapshot.stats,
     sessionFile: snapshot.sessionFile,
     ...(snapshot.error ? { error: withoutStderr(snapshot.error) } : {}),
-    ...(settled && snapshot.state === "idle" && snapshot.pendingMessages === 0 && snapshot.finalAssistantText?.trim()
+    ...(settled &&
+    snapshot.state === "idle" &&
+    snapshot.pendingMessages === 0 &&
+    snapshot.activeDescendants === 0 &&
+    snapshot.finalAssistantText?.trim()
       ? { lastAssistantText: truncateMiddle(snapshot.finalAssistantText.trim(), MAX_WAIT_TEXT_CHARS) }
       : {}),
   };
@@ -524,6 +539,8 @@ function formatWaitSnapshot(snapshot: ReturnType<typeof waitSnapshot>): string {
       `usage: tokens=${formatTokenCount(snapshot.stats.tokens.total)} cost=$${snapshot.stats.cost.toFixed(4)} compactions=${String(snapshot.compactions)}`,
     );
   }
+  if (snapshot.activeDescendants > 0)
+    lines.push(`waiting on ${String(snapshot.activeDescendants)} of its own subagent result(s)`);
   if (snapshot.error) lines.push(`error: ${snapshot.error}`);
   if (snapshot.lastAssistantText) lines.push(`\nFinal assistant text:\n${snapshot.lastAssistantText}`);
   return lines.join("\n");
@@ -538,6 +555,49 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   const pendingWaits = new Map<string, Set<Promise<void>>>();
   let pendingCreates = 0;
   let shuttingDown = false;
+
+  // Subtree idle, after pi-durable's owner edges: a nested child reports how many of its own children still owe it an
+  // answer, so its parent does not take an interim "waiting on a subagent" reply as the child's result.
+  let owedDescendants = 0;
+  // Results already pushed into this session whose triggered turn has not started; they still owe this child's parent.
+  let deliveredBeforeTurn = 0;
+  let reportedDescendants = 0;
+  let statusUi: ExtensionContext["ui"] | undefined;
+  const publishDescendants = () => {
+    if (currentDepth() === 0) return;
+    const owed = owedDescendants + deliveredBeforeTurn;
+    if (owed === reportedDescendants) return;
+    reportedDescendants = owed;
+    try {
+      statusUi?.setStatus(DESCENDANT_STATUS_KEY, owed > 0 ? String(owed) : undefined);
+    } catch {
+      // A closed session has no parent left to report to.
+    }
+  };
+  /** Counts one delegated result as owed until it is consumed or delivered; the release is idempotent. */
+  const trackDescendant = () => {
+    owedDescendants++;
+    publishDescendants();
+    let released = false;
+    return (delivered: boolean) => {
+      if (released) return;
+      released = true;
+      owedDescendants--;
+      if (delivered) deliveredBeforeTurn++;
+      publishDescendants();
+    };
+  };
+  const onTurnStarted = () => {
+    if (deliveredBeforeTurn === 0) return;
+    const started = deliveredBeforeTurn;
+    // Pi runs extension handlers before it writes the event, so clear only after this turn's start reaches the parent.
+    setImmediate(() => {
+      deliveredBeforeTurn -= Math.min(started, deliveredBeforeTurn);
+      publishDescendants();
+    });
+  };
+  pi.on("agent_start", onTurnStarted);
+  pi.on("turn_start", onTurnStarted);
 
   const assertCreationActive = () => {
     if (shuttingDown) throw new Error("Session shutdown interrupted subagent creation.");
@@ -604,6 +664,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       if (!childAuth.ok) throw new Error(`Could not resolve child model auth: ${childAuth.error}`);
       const childHeaders = stringProviderHeaders(childAuth.headers);
       const id = shortId();
+      const lineage = [...currentLineage(), id];
       const name = childName(params.name, id);
       const existingSessionId = ctx.sessionManager.getSessionId();
       const parentSessionId = existingSessionId ? existingSessionId : "ephemeral";
@@ -640,11 +701,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         cwd: ctx.cwd,
         command: invocation.command,
         args: invocation.args,
-        env: childEnvironment(depth + 1, selection.model.provider, {
+        env: childEnvironment(depth + 1, lineage, selection.model.provider, {
           ...(childAuth.apiKey ? { apiKey: childAuth.apiKey } : {}),
           ...(childHeaders ? { headers: childHeaders } : {}),
         }),
         ownsProcessGroup: depth === 0,
+        lineage,
         classification: selection.source,
         ...(selection.rationale ? { classificationRationale: selection.rationale } : {}),
       });
@@ -719,34 +781,40 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     const watch = { controller: new AbortController(), consumed: false };
     toolWatches.set(child.id, watch);
     const current = () => !shuttingDown && !watch.consumed && !watch.controller.signal.aborted;
+    const release = trackDescendant();
     void (async () => {
+      let delivered = false;
       try {
         if (!(await operationEnded(child, current, watch.controller.signal))) return;
         watch.consumed = true;
         const snapshot = child.snapshot();
         const settled = waitSnapshot(snapshot, true);
-        notifyParentSession(childCtx, pi, {
+        delivered = notifyParentSession(childCtx, pi, {
           id: child.id,
           name: child.name,
           status: snapshot.state === "idle" ? "completed" : snapshot.state,
           result: settled.lastAssistantText,
           error: settled.error,
           stats: snapshot.stats,
+          lineage: snapshot.lineage,
         });
       } catch {
         /* Superseded or shut down while waiting. */
+      } finally {
+        release(delivered);
       }
     })();
   };
 
   let closeSignaling: (() => Promise<void>) | undefined;
   pi.on("session_start", async (_event, ctx) => {
+    statusUi = ctx.ui;
     await closeSignaling?.();
     closeSignaling = registerSignaling(
       pi.events,
       ctx,
       async (request, childCtx, signal) => (await launch(request, childCtx, signal)).child,
-      { pi },
+      { pi, trackDescendant },
     );
   });
 
@@ -767,6 +835,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // This is a tagged action dispatcher; splitting it would obscure the shared ownership checks.
     // eslint-disable-next-line sonarjs/cognitive-complexity
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      statusUi = ctx.ui;
       if (params.action === "create") {
         // The ordinary tool never isolates resources; only the signaling subset does.
         const { child, contextMode, compactionFallback } = await launch({ ...params, isolated: false }, ctx, signal);

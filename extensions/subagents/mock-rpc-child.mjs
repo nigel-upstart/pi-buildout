@@ -15,6 +15,8 @@ let holdAbort = false;
 let heldAbort;
 /** @type {string | undefined} */
 let nextQueueDisposition;
+/** Delays get_state replies so a test can hold open the gap before a confirmation arrives. */
+let stateReplyDelayMs = 0;
 
 /** @param {unknown} value */
 function send(value) {
@@ -167,13 +169,16 @@ input.on("line", (line) => {
   const command = JSON.parse(line);
   if (command.type === "extension_ui_response" || handleAbortTestControl(command)) return;
   if (command.type === "get_state") {
-    send({
-      id: command.id,
-      type: "response",
-      command: "get_state",
-      success: true,
-      data: { isStreaming: streaming, pendingMessageCount: queuedWork ? 1 : 0, sessionFile: "/tmp/mock-child.jsonl" },
-    });
+    const reply = () =>
+      send({
+        id: command.id,
+        type: "response",
+        command: "get_state",
+        success: true,
+        data: { isStreaming: streaming, pendingMessageCount: queuedWork ? 1 : 0, sessionFile: "/tmp/mock-child.jsonl" },
+      });
+    if (stateReplyDelayMs > 0) setTimeout(reply, stateReplyDelayMs);
+    else reply();
     return;
   }
   if (command.type === "get_session_stats") {
@@ -257,6 +262,49 @@ input.on("line", (line) => {
             streaming = false;
             send({ type: "agent_settled" });
           });
+          return;
+        } else if (String(command.message).includes("OWE_DESCENDANT")) {
+          // A nested child that delegates, ends its turn with interim text, and later resumes on the pushed result.
+          const owe = (/** @type {string | undefined} */ statusText) =>
+            send({
+              type: "extension_ui_request",
+              id: `status-${String(Date.now())}`,
+              method: "setStatus",
+              statusKey: "pi-simple-subagent:descendants",
+              ...(statusText ? { statusText } : {}),
+            });
+          owe("1");
+          send({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "waiting on grandchild" }],
+              stopReason: "stop",
+            },
+          });
+          send({ type: "turn_end" });
+          streaming = false;
+          send({ type: "agent_settled" });
+          if (String(command.message).includes("OWE_DESCENDANT_EXIT")) {
+            process.exit(3);
+          }
+          setTimeout(() => {
+            // Pi runs extension handlers first: the clear is written before the triggered turn's agent_start.
+            streaming = true;
+            // Hold the confirmation past the resumed turn: only the parent's wait for it bridges the gap.
+            stateReplyDelayMs = 300;
+            owe(undefined);
+            setTimeout(() => {
+              send({ type: "agent_start" });
+              send({
+                type: "message_end",
+                message: { role: "assistant", content: [{ type: "text", text: "real-answer" }], stopReason: "stop" },
+              });
+              send({ type: "turn_end" });
+              streaming = false;
+              send({ type: "agent_settled" });
+            }, 150);
+          }, 60);
           return;
         } else if (String(command.message).includes("FAIL_MODEL")) {
           send({

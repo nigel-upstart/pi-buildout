@@ -49,8 +49,10 @@ first ping reply wins; multi-manager installations are not a target.
 **Finalized:** no router result rewriting; our wait returns final status/answer only; discovery is stale-while-refresh
 with a 60-second deadline; reviews use one delta-scaled 5-minute–4-hour budget. Child-task routing now runs in the
 parent before spawn, passing an explicit model/effort pair into a no-router child. A bounded parent lifecycle guard
-prevents advice-triggered rereview; no child marker/lineage subsystem is required. The router/subagents supported host
-range `>=1.2.0 <2.0.0` is approved, with floor release tests required. Only budget tuning remains an operator choice.
+prevents advice-triggered rereview; no child marker/lineage subsystem is required for routing or review. (The ordinary
+`subagent` tool separately carries an owner-chain lineage for subtree-idle completion, after pi-durable's owner edges;
+it carries no routing, role, or reviewer state.) The router/subagents supported host range `>=1.2.0 <2.0.0` is approved,
+with floor release tests required. Only budget tuning remains an operator choice.
 
 ## 1. Context and problem statement
 
@@ -981,7 +983,8 @@ Isolation here excludes extensions, not operating-system credentials/filesystem 
 - **DECISION-6:** discovery/review clocks separate; shared delta-scaled 5-minute–4-hour review budget, unknown scopes
   use ceiling, no overlapping replacement without terminal proof. Exact slope remains tunable.
 - **DECISION-7 — SUPERSEDED/RESOLVED:** no child router or reviewer lineage. Pre-spawn parent selection plus verified
-  isolation and bounded parent stage/attempt/continuation guard replace it.
+  isolation and bounded parent stage/attempt/continuation guard replace it. The ordinary tool's owner-chain lineage
+  (subtree-idle completion only) is outside this decision and never selects routing or review behavior.
 - **DECISION-9 — RESOLVED:** tool without established no-router isolation is unsuitable for automatic reviews; use SDK.
   This is internal runner selection, not builder tool enforcement or a restriction on ordinary delegation.
 - **Failure state — RESOLVED:** no signaling operational breaker or consecutive transient thresholds. Only verified
