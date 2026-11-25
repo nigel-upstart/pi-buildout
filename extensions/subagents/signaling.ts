@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { THINKING_LEVELS } from "./helpers.ts";
+import { MAX_WAIT_TEXT_CHARS, THINKING_LEVELS, truncateMiddle, withoutStderr } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
-import type { ManagedSubagent } from "./rpc.ts";
+import type { ChildSessionStats, ManagedSubagent } from "./rpc.ts";
 
 /** Verified tintinweb 0.22.0/protocol 2 subset. No role or workflow semantics. */
 type Spawn = {
@@ -19,6 +19,8 @@ type RecordState = {
   terminal: boolean;
   consumed: boolean;
   stopRequested: boolean;
+  delivered: boolean;
+  release?: ((delivered: boolean) => void) | undefined;
 };
 type Bus = ExtensionAPI["events"];
 
@@ -66,7 +68,73 @@ export function isolatedChildArgs(authBridge: string): string[] {
   ];
 }
 
-export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: Launch): () => Promise<void> {
+export type SubagentNotification = {
+  id: string;
+  name: string;
+  status: string;
+  result?: string | undefined;
+  error?: string | undefined;
+  stats?: ChildSessionStats | undefined;
+  /** Owner chain from the root session's direct child down to the reporting child. */
+  lineage?: string[] | undefined;
+};
+
+export const SUBAGENT_NOTIFICATION_TYPE = "subagent-notification";
+
+export function notifyParentSession(
+  ctx: { ui?: { notify(message: string, level?: "info" | "warning" | "error"): void } } | undefined,
+  pi: Pick<ExtensionAPI, "sendMessage"> | undefined,
+  notification: SubagentNotification,
+): boolean {
+  const { id, name, status, stats, lineage } = notification;
+  // Parent context gets the same bounds as wait; signaling consumers still receive the full event payload.
+  const trimmed = notification.result?.trim();
+  const result = trimmed ? truncateMiddle(trimmed, MAX_WAIT_TEXT_CHARS) : undefined;
+  const error = notification.error ? withoutStderr(notification.error) : undefined;
+  const label = name ? `${id} (${name})` : id;
+  const statusMsg = `Subagent ${label} ${status}${error ? `: ${error}` : ""}.`;
+  try {
+    ctx?.ui?.notify(statusMsg, status === "completed" ? "info" : "warning");
+  } catch {
+    // A UI toast is optional; its failure must not cost the parent the result.
+  }
+  try {
+    pi?.sendMessage(
+      {
+        customType: SUBAGENT_NOTIFICATION_TYPE,
+        content: result ? `${statusMsg}\n<subagent_result>\n${result}\n</subagent_result>` : statusMsg,
+        display: true,
+        details: {
+          id,
+          name,
+          status,
+          ...(result ? { result } : {}),
+          ...(stats ? { stats } : {}),
+          ...(error ? { error } : {}),
+          ...(lineage?.length ? { lineage } : {}),
+        },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+    return Boolean(pi);
+  } catch {
+    // A replaced or closed session cannot take the message; delivery must never reject a background watcher.
+    return false;
+  }
+}
+
+export type SignalingOptions = {
+  pi?: Pick<ExtensionAPI, "sendMessage">;
+  /** Counts a spawned child as owed to this session's parent until its result is consumed or delivered. */
+  trackDescendant?: () => (delivered: boolean) => void;
+};
+
+export function registerSignaling(
+  events: Bus,
+  ctx: ExtensionContext,
+  launch: Launch,
+  options?: SignalingOptions,
+): () => Promise<void> {
   const records = new Map<string, RecordState>();
   const controllers = new Set<AbortController>();
   const watchers = new Set<Promise<void>>();
@@ -75,15 +143,29 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
   const isClosed = () => closed;
   const emitTerminal = (record: RecordState, status: "completed" | "stopped" | "aborted" | "error", error?: string) => {
     record.terminal = true;
+    const result = status === "completed" ? (record.child.snapshot().finalAssistantText ?? "") : "";
     // Synchronous emit: a listener's consume request mutates `consumed` before this returns.
     events.emit(status === "completed" ? "subagents:completed" : "subagents:failed", {
       id: record.child.id,
       type: "general-purpose",
       description: record.description,
       status,
-      result: status === "completed" ? (record.child.snapshot().finalAssistantText ?? "") : "",
+      result,
       ...(error ? { error } : {}),
     });
+    // The caller asked for a stop or abort, so it already knows the outcome; only a result or failure it did not
+    // consume is news to the parent session.
+    const callerCancelled = status === "stopped" || status === "aborted";
+    if (!record.consumed && !callerCancelled && !isClosed()) {
+      record.delivered = notifyParentSession(ctx, options?.pi, {
+        id: record.child.id,
+        name: record.description,
+        status,
+        result,
+        ...(error ? { error } : {}),
+        lineage: record.child.snapshot().lineage,
+      });
+    }
   };
   type Terminal = [status: "completed" | "stopped" | "aborted" | "error", error?: string];
   const cancellationOutcome = (record: RecordState, controller: AbortController): Terminal | undefined => {
@@ -144,10 +226,13 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
         terminal: false,
         consumed: false,
         stopRequested: false,
+        delivered: false,
+        release: options?.trackDescendant?.(),
       };
       records.set(child.id, record);
       // Subscribe/watch before acceptance reply; completion may legitimately arrive first.
       const watching = watch(record, controller).finally(() => {
+        record.release?.(record.delivered);
         request.signal?.removeEventListener("abort", abort);
         controllers.delete(controller);
         watchers.delete(watching);
@@ -199,7 +284,7 @@ export function registerSignaling(events: Bus, ctx: ExtensionContext, launch: La
     const record = own(raw);
     if (!record.terminal) throw new Error("Agent not found or still running");
     record.consumed = true;
-    // This manager does not auto-notify; consumption never injects parent context.
+    // Consumption marks the result as claimed by the caller, suppressing proactive parent notification.
   });
   handle("stop", async (raw) => {
     const record = own(raw);

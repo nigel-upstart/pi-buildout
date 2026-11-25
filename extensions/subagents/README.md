@@ -80,8 +80,18 @@ and effort selection, authentication, cancellation, limits, and process cleanup 
 - The extension itself is explicitly loaded so every child can create its own children.
 - Each extension process keeps a private registry containing only its direct children. There is no child-to-parent or
   sibling messaging API.
-- Child output is retained privately and enters parent model context only when the parent explicitly calls `status` or
-  `wait`.
+- Lineage follows pi-durable's owner edges. Each child receives its owner chain (child ids from the root session's
+  direct child down to itself) in `PI_SIMPLE_SUBAGENT_LINEAGE`, and `status`, `wait`, and pushed results report it. A
+  nested child also reports, over the RPC `setStatus` sub-protocol, how many results its own children still owe it. The
+  parent treats a child as settled only once that subtree is idle, so a child that delegates and ends its turn is not
+  mistaken for finished: `wait` and the completion push both deliver the answer it gives after its own children report
+  back. A failed or stopped child settles regardless of what it last reported.
+- Child output is retained privately and enters parent model context when the parent explicitly calls `status` or
+  `wait`, or when a background subagent settles and pushes its completion notification. A settled `wait`, `interrupt`,
+  or `stop` consumes the current operation, so it is not also pushed. Pushed answers use the same bound as `wait` and
+  omit stderr.
+- One-shot runs (`pi -p` print mode and `--mode json`) exit after the final reply, and shutdown stops every child, so no
+  push can arrive. In those modes the `create` result tells the model to call `wait` for each child before replying.
 - `status` reports the transcript tail, active tool, turns, tool calls, queued messages, token usage, cost, context
   utilization, and compaction count when available.
 - Parent control uses the child's one-way RPC stdin: `steer`, `follow_up`, `interrupt`, and `stop`.
@@ -129,7 +139,10 @@ The isolated launch disables discovered/configured extensions, MCP, skills, temp
 `SYSTEM.md`/`APPEND_SYSTEM.md` prompt files, loading only the explicit minimal auth bridge. This is resource selection,
 not an OS/credential sandbox. Ordinary `subagent` tool defaults are unchanged; `contextMode: none` alone is not
 extension isolation. Signaling children are one-task runs and are stopped before terminal delivery. Results contain
-final assistant text only. Consume marks the settled result synchronously; this manager never auto-notifies the parent.
+final assistant text only. Consume marks the settled result synchronously, suppressing proactive parent notification; an
+unconsumed completed or failed result is pushed directly to the parent session, bounded and without stderr, while the
+event keeps the full payload. A `stopped` or `aborted` terminal that the caller requested through `stop` or its own
+signal is not pushed: the caller already knows the outcome, and the `subagents:failed` event still reports it.
 Stop/signal terminate only owned children. Cancellation remains effective during cleanup: abort takes precedence over
 stop, and either suppresses the final answer until the terminal event is published. Publication commits the terminal
 state synchronously; later stop requests are rejected and later aborts cannot change the published result. Session

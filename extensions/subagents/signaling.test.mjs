@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { registerSignaling } from "./signaling.ts";
+import { SUBAGENT_NOTIFICATION_TYPE, registerSignaling } from "./signaling.ts";
 
 /** @typedef {Record<string, any>} Payload */
 /** Handlers only touch the context through the injected launcher. */
@@ -331,4 +331,277 @@ test("consume before settlement is rejected and nothing emits after close", asyn
   release(true);
   await closing;
   assert.equal(terminal.length, 0);
+});
+
+test("unconsumed completed child pushes result message to parent session and notifies UI", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+      sent.push({ msg, opts });
+    },
+  });
+  const close = registerSignaling(events, testCtx, async () => child({ finalAssistantText: "ALL DONE" }), {
+    pi: testPi,
+  });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.level, "info");
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.msg.customType, SUBAGENT_NOTIFICATION_TYPE);
+  assert.equal(sent[0]?.msg.details.status, "completed");
+  assert.ok(sent[0]?.msg.details.result);
+  assert.deepEqual(sent[0]?.opts, { deliverAs: "followUp", triggerTurn: true });
+
+  await close();
+});
+
+test("unconsumed failed child pushes error message to parent session", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+      sent.push({ msg, opts });
+    },
+  });
+  let stopped = false;
+  const failedChild = {
+    id: "failed-child",
+    async waitForIdle() {
+      return true;
+    },
+    async refresh() {},
+    async stop() {
+      stopped = true;
+    },
+    snapshot() {
+      return { state: stopped ? "stopped" : "failed", error: "Connection reset", transcriptTail: "" };
+    },
+  };
+  const close = registerSignaling(events, testCtx, async () => /** @type {any} */ (failedChild), { pi: testPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.level, "warning");
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.msg.customType, SUBAGENT_NOTIFICATION_TYPE);
+  assert.equal(sent[0]?.msg.details.status, "error");
+  assert.ok(sent[0]?.msg.details.error);
+
+  await close();
+});
+
+test("consumed child suppresses parent session message and UI notification", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+      sent.push({ msg, opts });
+    },
+  });
+  events.on("subagents:completed", (/** @type {Payload} */ value) => {
+    void rpc(events, "consume", { agentId: value.id });
+  });
+  const close = registerSignaling(events, testCtx, async () => child({ finalAssistantText: "CLAIMED BY ROUTER" }), {
+    pi: testPi,
+  });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 0, "consumed result must not notify UI");
+  assert.equal(sent.length, 0, "consumed result must not push message to parent session");
+
+  await close();
+});
+
+test("pushed parent message is bounded and stderr-free while the signaling event keeps the full payload", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const sent = [];
+  /** @type {Payload[]} */
+  const terminal = [];
+  events.on("subagents:completed", (/** @type {Payload} */ value) => terminal.push(value));
+  events.on("subagents:failed", (/** @type {Payload} */ value) => terminal.push(value));
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg) {
+      sent.push(msg);
+    },
+  });
+  const long = "begin-" + "x".repeat(60_000) + "-end";
+  const close = registerSignaling(events, ctx, async () => child({ finalAssistantText: long }), { pi: testPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(terminal[0]?.result, long, "consumers still receive the full result");
+  assert.ok(sent[0]?.details.result.length <= 45_000);
+  assert.match(sent[0]?.details.result, /^begin-/);
+  assert.match(sent[0]?.details.result, /-end$/);
+  assert.ok(sent[0]?.content.length < 46_000);
+  await close();
+
+  const failing = {
+    ...child(),
+    snapshot() {
+      return {
+        state: "failed",
+        error: 'Subagent process closed unexpectedly (exitCode=1, stderr="stderr-sentinel").',
+        transcriptTail: "",
+      };
+    },
+  };
+  sent.length = 0;
+  terminal.length = 0;
+  const closeFailed = registerSignaling(events, ctx, async () => failing, { pi: testPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.match(terminal[0]?.error, /stderr-sentinel/, "consumers keep the full diagnostic");
+  assert.doesNotMatch(JSON.stringify(sent), /stderr-sentinel/);
+  assert.match(sent[0]?.content, /closed unexpectedly/);
+  await closeFailed();
+});
+
+test("a throwing parent delivery never rejects the signaling watcher", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const terminal = [];
+  events.on("subagents:completed", (/** @type {Payload} */ value) => terminal.push(value));
+  const throwingCtx = /** @type {any} */ ({
+    ui: {
+      notify() {
+        throw new Error("stale ctx");
+      },
+    },
+  });
+  const throwingPi = /** @type {any} */ ({
+    sendMessage() {
+      throw new Error("stale pi");
+    },
+  });
+  const close = registerSignaling(events, throwingCtx, async () => child(), { pi: throwingPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && terminal.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(terminal.length, 1);
+  await close();
+});
+
+test("a caller's own stop or abort emits the failed event but pushes nothing to the parent session", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg) {
+      sent.push(msg);
+    },
+  });
+  const ids = ["cancel1", "cancel2"];
+  const close = registerSignaling(
+    events,
+    testCtx,
+    async () => {
+      /** @type {(value: boolean) => void} */
+      let release;
+      const settled = new Promise((resolve) => {
+        release = resolve;
+      });
+      return {
+        ...child(),
+        id: ids.shift(),
+        waitForIdle: (/** @type {number} */ _timeout, /** @type {AbortSignal | undefined} */ signal) =>
+          new Promise((resolve, reject) => {
+            void settled.then(resolve);
+            signal?.addEventListener("abort", () => reject(new Error("wait aborted")), { once: true });
+          }),
+        stop: async () => {
+          release(true);
+        },
+      };
+    },
+    { pi: testPi },
+  );
+  /** @type {Payload[]} */
+  const failed = [];
+  // No consume: the caller relies on its own control request rather than claiming the result.
+  events.on("subagents:failed", (/** @type {Payload} */ value) => failed.push(value));
+
+  await rpc(events, "spawn", request());
+  assert.deepEqual(await rpc(events, "stop", { agentId: "cancel1" }), { success: true });
+  const running = new AbortController();
+  await rpc(events, "spawn", { ...request(), options: { ...request().options, signal: running.signal } });
+  running.abort();
+  for (let i = 0; i < 50 && failed.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.deepEqual(
+    failed.map((event) => event.status),
+    ["stopped", "aborted"],
+  );
+  assert.equal(sent.length, 0, "caller-initiated cancellation must not start a parent turn");
+  assert.equal(notifications.length, 0);
+  await close();
+});
+
+test("a throwing UI notification still delivers the result to the parent session", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const sent = [];
+  const throwingUi = /** @type {any} */ ({
+    ui: {
+      notify() {
+        throw new Error("stale ui");
+      },
+    },
+  });
+  const workingPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg) {
+      sent.push(msg);
+    },
+  });
+  const close = registerSignaling(events, throwingUi, async () => child(), { pi: workingPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.details.result, "FINAL");
+  await close();
 });

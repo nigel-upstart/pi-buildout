@@ -68,19 +68,39 @@ const mocks = {
   `,
   "./rpc.ts": `
     const f = globalThis[${JSON.stringify(fixtureKey)}];
+    export const DESCENDANT_STATUS_KEY = "pi-simple-subagent:descendants";
     export class ManagedSubagent {
       constructor(options) { this.options = options; f.launches.push(options); }
       async start() { await f.start?.(); }
       async stop() { f.stops++; }
       async refresh() {}
-      async waitForIdle(timeoutMs, signal) { return f.wait ? f.wait(timeoutMs, signal) : true; }
+      async steer(task) {}
+      async followUp(task) {}
+      async interrupt() {}
+      waitForIdle(timeoutMs, signal) {
+        if (f.wait) return f.wait(timeoutMs, signal);
+        // Like the real child: settled resolves true, a bounded wait on active work times out, and the
+        // background watcher's hour-long wait on active work stays pending instead of spinning.
+        const { state, pendingMessages, activeDescendants } = this.snapshot();
+        const settled =
+          state === 'failed' || state === 'stopped' ||
+          (state === 'idle' && pendingMessages === 0 && activeDescendants === 0);
+        if (settled) return Promise.resolve(true);
+        if (timeoutMs < 3_600_000) return Promise.resolve(false);
+        return new Promise((_resolve, reject) => {
+          const abort = () => reject(new Error('Subagent wait was aborted; the child is still running.'));
+          if (signal?.aborted) abort();
+          else signal?.addEventListener('abort', abort, { once: true });
+        });
+      }
       isAlive() { return true; }
       snapshot() {
         const o = this.options;
         return { id: o.id, name: o.name, task: o.task, state: 'running', model: o.model,
           effort: o.effort, contextMode: o.contextMode ?? 'task_compacted', classification: o.classification,
           startedAt: Date.now(), updatedAt: Date.now(), turns: 0, toolCalls: 0,
-          pendingMessages: 0, compactions: 0, transcriptTail: '', ...f.snapshot };
+          pendingMessages: 0, activeDescendants: 0, lineage: o.lineage ?? [o.id], compactions: 0,
+          transcriptTail: '', ...f.snapshot };
       }
     }
   `,
@@ -129,6 +149,12 @@ async function harness(t, forbidHistory = false) {
       return () => emitter.off(name, callback);
     },
   };
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {{ msg: any, opts: any }[]} */
+  const sentMessages = [];
+  /** @type {{ key: string, text: string | undefined }[]} */
+  const statuses = [];
   subagentsExtension(
     /** @type {import('@earendil-works/pi-coding-agent').ExtensionAPI} */ (
       /** @type {unknown} */ ({
@@ -140,6 +166,9 @@ async function harness(t, forbidHistory = false) {
         },
         events,
         getThinkingLevel: () => "high",
+        sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+          sentMessages.push({ msg, opts });
+        },
       })
     ),
   );
@@ -166,6 +195,14 @@ async function harness(t, forbidHistory = false) {
       model,
       sessionManager,
       isProjectTrusted: () => false,
+      ui: {
+        notify(/** @type {string} */ msg, /** @type {string} */ level) {
+          notifications.push({ msg, level });
+        },
+        setStatus(/** @type {string} */ key, /** @type {string | undefined} */ text) {
+          statuses.push({ key, text });
+        },
+      },
       modelRegistry: {
         runtime: {},
         getAvailable: () => [model],
@@ -178,7 +215,7 @@ async function harness(t, forbidHistory = false) {
   const registered = tool;
   /** @param {Record<string, unknown>} args @param {AbortSignal} [signal] */
   const execute = (args, signal) => registered.execute("test-call", args, signal, undefined, ctx);
-  return { execute, tool: registered, ctx, lifecycle, events };
+  return { execute, tool: registered, ctx, lifecycle, events, notifications, sentMessages, statuses };
 }
 
 /** @param {{emit: Function, on: Function}} events @param {string} method @param {Record<string, unknown>} fields */
@@ -598,4 +635,401 @@ test("signaling spawn launches an isolated task-only child with the explicit pai
     "ordinary child keeps its manager extension",
   );
   await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("settled background tool child pushes completion message into parent session when not waited on", async (t) => {
+  const { execute, notifications, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Background task",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+
+  assert.equal(sentMessages.length, 0, "no message while still running");
+
+  fixture.snapshot = {
+    state: "idle",
+    finalAssistantText: "Task completed successfully",
+  };
+  resolveWait?.(true);
+  for (let i = 0; i < 50 && sentMessages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.level, "info");
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.customType, "subagent-notification");
+  assert.equal(sentMessages[0]?.msg.details.status, "completed");
+  assert.ok(sentMessages[0]?.msg.details.result);
+  assert.deepEqual(sentMessages[0]?.opts, { deliverAs: "followUp", triggerTurn: true });
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+/** Each waitForIdle call gets its own resolver, in call order: the background watcher first, then any wait. */
+function queuedWaits() {
+  /** @type {((value: boolean) => void)[]} */
+  const resolvers = [];
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolvers.push(resolve);
+    });
+  return resolvers;
+}
+
+/** @param {() => boolean} [until] */
+async function settleTicks(until) {
+  for (let i = 0; i < 25 && !until?.(); i++) await new Promise((resolve) => setTimeout(resolve, 2));
+}
+
+test("settled wait consumes the child and suppresses the background push message", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({
+    action: "create",
+    task: "Background task to wait on",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  const waitPromise = execute({ action: "wait", id });
+  assert.equal(resolvers.length, 2, "watcher and wait are both waiting");
+  fixture.snapshot = {
+    state: "idle",
+    finalAssistantText: "Delivered via wait",
+  };
+  // The watcher's poll observes the settlement first; the wait's own poll lands a few ticks later.
+  resolvers[0]?.(true);
+  await settleTicks();
+  resolvers[1]?.(true);
+  const waited = await waitPromise;
+  assert.match(JSON.stringify(waited.content), /Delivered via wait/);
+
+  await settleTicks();
+  assert.equal(sentMessages.length, 0, "wait consumption suppresses background notification");
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("a wait that times out does not swallow the background push", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({ action: "create", task: "Slow task", model: "test/model", effort: "high", contextMode: "none" });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  const waitPromise = execute({ action: "wait", id, timeoutMs: 5 });
+  fixture.snapshot = { state: "idle", finalAssistantText: "Pushed after timeout" };
+  resolvers[0]?.(true);
+  await settleTicks();
+  assert.equal(sentMessages.length, 0, "watcher defers to the in-flight wait");
+  resolvers[1]?.(false);
+  await waitPromise;
+
+  await settleTicks(() => sentMessages.length > 0);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.result, "Pushed after timeout");
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("interrupt does not push a completed notification", async (t) => {
+  const { execute, sentMessages, notifications, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({
+    action: "create",
+    task: "Task to interrupt",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  await execute({ action: "interrupt", id });
+  fixture.snapshot = { state: "idle" };
+  resolvers[0]?.(true);
+  await settleTicks();
+
+  assert.equal(sentMessages.length, 0, "an interrupted child has no answer to push");
+  assert.equal(notifications.length, 0);
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("stopped child does not push a completion message", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Task to stop",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  fixture.snapshot = { state: "stopped" };
+  await execute({ action: "stop", id });
+
+  resolveWait?.(true);
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(sentMessages.length, 0, "stopped child must not push completion message");
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("follow_up rearms completion watcher and pushes next result", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Initial task",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  const waitPromise = execute({ action: "wait", id });
+  fixture.snapshot = {
+    state: "idle",
+    pendingMessages: 0,
+    finalAssistantText: "First answer",
+  };
+  resolveWait?.(true);
+  await waitPromise;
+  assert.equal(sentMessages.length, 0);
+
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+  await execute({ action: "follow_up", id, task: "Second task" });
+
+  fixture.snapshot = {
+    state: "idle",
+    pendingMessages: 0,
+    finalAssistantText: "Second answer",
+  };
+  resolveWait?.(true);
+  for (let i = 0; i < 50 && sentMessages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.status, "completed");
+  assert.ok(sentMessages[0]?.msg.details.result);
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("queued messages defer the push until the queue drains, without exposing interim text", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({
+    action: "create",
+    task: "Task with pending messages",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  fixture.snapshot = {
+    state: "idle",
+    pendingMessages: 2,
+    finalAssistantText: "Ineligible partial text",
+    lastAssistantText: "Ineligible partial text",
+  };
+  resolvers[0]?.(true);
+  await settleTicks(() => resolvers.length > 1);
+  assert.equal(sentMessages.length, 0, "queued work is not a completed operation");
+  assert.equal(resolvers.length, 2, "the watcher keeps waiting for the same operation");
+
+  fixture.snapshot = { state: "idle", pendingMessages: 0, finalAssistantText: "Answer after the queue" };
+  resolvers[1]?.(true);
+  await settleTicks(() => sentMessages.length > 0);
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.result, "Answer after the queue");
+  assert.doesNotMatch(JSON.stringify(sentMessages), /Ineligible partial text/);
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("a watcher that observes restarted work keeps waiting instead of dropping the push", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({ action: "create", task: "Task", model: "test/model", effort: "high", contextMode: "none" });
+  fixture.snapshot = { state: "running" };
+  resolvers[0]?.(true);
+  await settleTicks(() => resolvers.length > 1);
+  assert.equal(sentMessages.length, 0);
+
+  fixture.snapshot = { state: "idle", finalAssistantText: "Final after restart" };
+  resolvers[1]?.(true);
+  await settleTicks(() => sentMessages.length > 0);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.result, "Final after restart");
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+/** Runs `body` as a nested child process would: depth and owner chain come from the parent's environment. */
+async function asNestedChild(/** @type {string[]} */ lineage, /** @type {() => Promise<void>} */ body) {
+  const saved = [process.env.PI_SIMPLE_SUBAGENT_DEPTH, process.env.PI_SIMPLE_SUBAGENT_LINEAGE];
+  process.env.PI_SIMPLE_SUBAGENT_DEPTH = String(lineage.length);
+  process.env.PI_SIMPLE_SUBAGENT_LINEAGE = JSON.stringify(lineage);
+  try {
+    await body();
+  } finally {
+    for (const [key, value] of [
+      ["PI_SIMPLE_SUBAGENT_DEPTH", saved[0]],
+      ["PI_SIMPLE_SUBAGENT_LINEAGE", saved[1]],
+    ]) {
+      if (value === undefined) Reflect.deleteProperty(process.env, /** @type {string} */ (key));
+      else process.env[/** @type {string} */ (key)] = value;
+    }
+  }
+}
+
+test("children inherit the owner chain and report it with their pushed result", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+  await execute({ action: "create", task: "Root task", model: "test/model", effort: "high", contextMode: "none" });
+  const launched = fixture.launches[0];
+  assert.ok(launched);
+  assert.deepEqual(launched.lineage, [launched.id]);
+  assert.equal(launched.env.PI_SIMPLE_SUBAGENT_LINEAGE, JSON.stringify([launched.id]));
+  assert.equal(launched.env.PI_SIMPLE_SUBAGENT_DEPTH, "1");
+
+  fixture.snapshot = { state: "idle", finalAssistantText: "Done" };
+  resolvers[0]?.(true);
+  await settleTicks(() => sentMessages.length > 0);
+  assert.deepEqual(sentMessages[0]?.msg.details.lineage, [launched.id]);
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("the root session never reports owed descendants", async (t) => {
+  const { execute, statuses, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  queuedWaits();
+  await execute({ action: "create", task: "Root task", model: "test/model", effort: "high", contextMode: "none" });
+  assert.deepEqual(statuses, []);
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("a nested child extends its lineage and owes its parent each delegated result until its turn starts", async (t) => {
+  await asNestedChild(["rootchild"], async () => {
+    const { execute, sentMessages, statuses, ctx, lifecycle } = await harness(t, true);
+    await lifecycle.session_start?.({}, ctx);
+    const resolvers = queuedWaits();
+    await execute({ action: "create", task: "Grandchild", model: "test/model", effort: "high", contextMode: "none" });
+    const launched = fixture.launches[0];
+    assert.ok(launched);
+    assert.deepEqual(launched.lineage, ["rootchild", launched.id]);
+    assert.equal(launched.env.PI_SIMPLE_SUBAGENT_DEPTH, "2");
+    assert.deepEqual(statuses, [{ key: "pi-simple-subagent:descendants", text: "1" }]);
+
+    // The grandchild's push triggers this child's next turn; it is still owed until that turn starts.
+    fixture.snapshot = { state: "idle", finalAssistantText: "Grandchild answer" };
+    resolvers[0]?.(true);
+    await settleTicks(() => sentMessages.length > 0);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(statuses.length, 1, "delivery alone does not clear the owed count");
+
+    lifecycle.agent_start?.({}, ctx);
+    assert.equal(statuses.length, 1, "the clear waits until Pi has written the turn start");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(statuses.at(-1), { key: "pi-simple-subagent:descendants", text: undefined });
+    await lifecycle.session_shutdown?.({}, ctx);
+  });
+});
+
+test("a delegated result consumed by wait stops being owed without a turn", async (t) => {
+  await asNestedChild(["rootchild"], async () => {
+    const { execute, statuses, ctx, lifecycle } = await harness(t, true);
+    await lifecycle.session_start?.({}, ctx);
+    const resolvers = queuedWaits();
+    await execute({ action: "create", task: "Grandchild", model: "test/model", effort: "high", contextMode: "none" });
+    const id = fixture.launches[0]?.id;
+    assert.ok(id);
+    fixture.snapshot = { state: "idle", finalAssistantText: "Grandchild answer" };
+    const waiting = execute({ action: "wait", id });
+    resolvers[1]?.(true);
+    await waiting;
+    resolvers[0]?.(true);
+    await settleTicks(() => statuses.length > 1);
+    assert.deepEqual(statuses.at(-1), { key: "pi-simple-subagent:descendants", text: undefined });
+    await lifecycle.session_shutdown?.({}, ctx);
+  });
+});
+
+test("one-shot print and JSON runs tell the model to wait because exit stops the child", async (t) => {
+  for (const mode of ["print", "json", "tui", "rpc"]) {
+    const { execute, ctx, lifecycle } = await harness(t, true);
+    Object.assign(ctx, { mode });
+    await lifecycle.session_start?.({}, ctx);
+    queuedWaits();
+    const result = await execute({
+      action: "create",
+      task: "Task",
+      model: "test/model",
+      effort: "high",
+      contextMode: "none",
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    if (mode === "print" || mode === "json") {
+      assert.match(text, /one-shot run/);
+      assert.match(text, /Call subagent wait with id \S+ \(repeat it if it times out\) before replying/);
+      assert.doesNotMatch(text, /automatically pushed/);
+    } else {
+      assert.match(text, /automatically pushed/);
+      assert.doesNotMatch(text, /one-shot/);
+    }
+    await lifecycle.session_shutdown?.({}, ctx);
+  }
 });

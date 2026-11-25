@@ -15,6 +15,10 @@ let holdAbort = false;
 let heldAbort;
 /** @type {string | undefined} */
 let nextQueueDisposition;
+/** Delays get_state replies so a test can hold open the gap before a confirmation arrives. */
+let stateReplyDelayMs = 0;
+/** Writes the next get_state reply and the run's completion in one stdout chunk. */
+let settleWithStateReply = false;
 
 /** @param {unknown} value */
 function send(value) {
@@ -162,11 +166,21 @@ function handleQueue(command) {
   send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition: "queued" } });
 }
 
-const input = readline.createInterface({ input: process.stdin });
-input.on("line", (line) => {
-  const command = JSON.parse(line);
-  if (command.type === "extension_ui_response" || handleAbortTestControl(command)) return;
-  if (command.type === "get_state") {
+/** @param {{ id: unknown }} command */
+function handleGetState(command) {
+  if (settleWithStateReply) {
+    settleWithStateReply = false;
+    const answer = { role: "assistant", content: [{ type: "text", text: "chunked-answer" }], stopReason: "stop" };
+    const lines = [
+      { id: command.id, type: "response", command: "get_state", success: true, data: { isStreaming: true } },
+      { type: "message_end", message: answer },
+      { type: "agent_settled" },
+    ];
+    streaming = false;
+    process.stdout.write(lines.map((line) => JSON.stringify(line) + "\n").join(""));
+    return;
+  }
+  const reply = () =>
     send({
       id: command.id,
       type: "response",
@@ -174,6 +188,16 @@ input.on("line", (line) => {
       success: true,
       data: { isStreaming: streaming, pendingMessageCount: queuedWork ? 1 : 0, sessionFile: "/tmp/mock-child.jsonl" },
     });
+  if (stateReplyDelayMs > 0) setTimeout(reply, stateReplyDelayMs);
+  else reply();
+}
+
+const input = readline.createInterface({ input: process.stdin });
+input.on("line", (line) => {
+  const command = JSON.parse(line);
+  if (command.type === "extension_ui_response" || handleAbortTestControl(command)) return;
+  if (command.type === "get_state") {
+    handleGetState(command);
     return;
   }
   if (command.type === "get_session_stats") {
@@ -211,6 +235,11 @@ input.on("line", (line) => {
     holdAbort = String(command.message).includes("HOLD_ABORT");
     send({ id: command.id, type: "response", command: "prompt", success: true });
     send({ type: "agent_start" });
+    if (String(command.message).includes("SETTLE_WITH_STATE")) {
+      // Completion arrives in the same chunk as the next get_state reply instead of from the timer.
+      settleWithStateReply = true;
+      return;
+    }
     if (String(command.message).includes("SLOW_WAIT")) {
       send({ type: "tool_execution_start", toolCallId: "slow-tool", toolName: "bash", args: { command: "sleep" } });
     }
@@ -257,6 +286,49 @@ input.on("line", (line) => {
             streaming = false;
             send({ type: "agent_settled" });
           });
+          return;
+        } else if (String(command.message).includes("OWE_DESCENDANT")) {
+          // A nested child that delegates, ends its turn with interim text, and later resumes on the pushed result.
+          const owe = (/** @type {string | undefined} */ statusText) =>
+            send({
+              type: "extension_ui_request",
+              id: `status-${String(Date.now())}`,
+              method: "setStatus",
+              statusKey: "pi-simple-subagent:descendants",
+              ...(statusText ? { statusText } : {}),
+            });
+          owe("1");
+          send({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "waiting on grandchild" }],
+              stopReason: "stop",
+            },
+          });
+          send({ type: "turn_end" });
+          streaming = false;
+          send({ type: "agent_settled" });
+          if (String(command.message).includes("OWE_DESCENDANT_EXIT")) {
+            process.exit(3);
+          }
+          setTimeout(() => {
+            // Pi runs extension handlers first: the clear is written before the triggered turn's agent_start.
+            streaming = true;
+            // Hold the confirmation past the resumed turn: only the parent's wait for it bridges the gap.
+            stateReplyDelayMs = 300;
+            owe(undefined);
+            setTimeout(() => {
+              send({ type: "agent_start" });
+              send({
+                type: "message_end",
+                message: { role: "assistant", content: [{ type: "text", text: "real-answer" }], stopReason: "stop" },
+              });
+              send({ type: "turn_end" });
+              streaming = false;
+              send({ type: "agent_settled" });
+            }, 150);
+          }, 60);
           return;
         } else if (String(command.message).includes("FAIL_MODEL")) {
           send({

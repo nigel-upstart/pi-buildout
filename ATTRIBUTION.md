@@ -67,9 +67,10 @@ Follow-up work adopted three conceptual patterns: explicit, bounded result waiti
 (tokens, cost, context utilization, compactions, and active tool); and treating an output-limit stop with no assistant
 text as a failed child run rather than a successful empty result. They were implemented as original code inside the
 existing single-tool RPC design. No tintinweb code was copied or modified. Major pieces intentionally not adopted
-include named/default agent types, custom agent frontmatter, proactive completion notifications, FleetView/widget UI,
-scheduling, event-bus RPC, persistent memory, worktree isolation, skill preloading, and its three-tool Claude
-Code-compatible surface.
+include named/default agent types, custom agent frontmatter, FleetView/widget UI, scheduling, event-bus RPC, persistent
+memory, worktree isolation, skill preloading, and its three-tool Claude Code-compatible surface. Proactive completion
+notifications (result push when unconsumed, and for settled background tool children) were adopted as original code in
+`extensions/subagents/signaling.ts` and `extensions/subagents/index.ts`.
 
 ## Subagent delegation design (`specs/subagents/modern-layer-design.md`, DRAFT)
 
@@ -122,11 +123,31 @@ research and intended reuse, not a claim that code has landed. No upstream code 
   flags, and RPC operations against recorded 1.2.0 sources; no live floor-runtime execution is claimed. Pi session
   custom entries support parent scheduling state; explicit resource loading supports router-free children. Child-task
   classification/model-effort selection runs in the parent before spawn, reusing existing routing and explicit override
-  precedence without switching the builder. No child lineage, opaque startup metadata API, or child-router factory is
-  adopted. These are API references and original design, not copied upstream implementation. Stale-while-refresh
-  discovery and delta-scaled review budgets are operator-directed original design, not attributed upstream behavior.
-  Workflow layout draws from this repository’s `.github/workflows/patch-drift.yml`; new action versions and org
-  allowlist compatibility remain implementation-time checks. No networked pre-commit hook is proposed.
+  precedence without switching the builder. No routing or reviewer child lineage, opaque startup metadata API, or
+  child-router factory is adopted; the ordinary tool's subtree-idle owner chain is recorded separately below. These are
+  API references and original design, not copied upstream implementation. Stale-while-refresh discovery and delta-scaled
+  review budgets are operator-directed original design, not attributed upstream behavior. Workflow layout draws from
+  this repository’s `.github/workflows/patch-drift.yml`; new action versions and org allowlist compatibility remain
+  implementation-time checks. No networked pre-commit hook is proposed.
+
+## Subagent lineage and subtree idle (`extensions/subagents`)
+
+- `earendil-works/pi` `packages/durable` (`@earendil-works/pi-durable` 1.0.0) — <https://github.com/earendil-works/pi>,
+  tag `v1.0.0` (`a13d35a742c6ef8462812a28fbe1d8c8b7431c32`), MIT. Studied `src/types.ts` (`ConversationRecord.owner`,
+  "creator edge used for attribution, subtree abort, and subtree idle waits"), `docs/spec.md` ownership traversal and
+  idle sections, and `test/examples/22-subagent-foreground.ts` and `23-subagent-background.ts` (owner edges, background
+  boundaries, and the reporter that posts each answer back once as a follow-up). Conceptual inspiration only; no code
+  was copied. Used: each child records its owner chain, and a parent treats a child as settled only once the child's
+  owned subtree is idle, so a child that delegates and ends its turn is not mistaken for finished. Our mechanism is
+  original: the chain travels down in `PI_SIMPLE_SUBAGENT_LINEAGE`, and a nested child reports the results its own
+  children still owe it up through Pi's RPC extension-UI `setStatus` sub-protocol, which the parent confirms with
+  `get_state` because Pi runs extension handlers before writing the triggering event. Not adopted: durable `Harness`,
+  storage, tasks, replay, background-boundary semantics, anchor/reporter tasks, or durable's choice to remove the
+  subagent tool from children (this extension keeps bounded recursive delegation).
+- `earendil-works/pi` `packages/coding-agent` — `docs/rpc-extension-ui.md` and `src/modes/rpc/rpc-mode.ts` at the floor
+  release `v1.2.0` (`06a466935536f8c9bcacb2d5efc0fc021be1bdff`) and installed 1.3.0, and `src/core/agent-session.ts`
+  event ordering, MIT. API reference only: `setStatus` is forwarded on stdout as a fire-and-forget
+  `extension_ui_request`.
 
 ## Generic compatible subagent signaling
 
@@ -135,18 +156,19 @@ The implementation in `extensions/subagents/signaling.ts` is an original compati
 release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`) and documentation/source snapshot
 `ca93a5247e72e7053fcd10bea7125d6c4205f949`, `docs/rpc.md`, `src/cross-extension-rpc.ts`, and terminal emission in
 `src/index.ts`. Used: ping/spawn/consume/stop names, reply envelopes, generic task/model/thinking options, final
-results, and synchronous consumption. Not adopted: steer, workflow/profile systems, registry singleton, scheduling,
-worktrees, proactive parent notifications, or protocol dialect shims. Pi 1.2.0 source
-`06a466935536f8c9bcacb2d5efc0fc021be1bdff` and installed 1.3.0 CLI resource suppression flags establish the isolated
-launch behavior, including empty `--system-prompt` and `--append-system-prompt` overrides to exclude ambient prompt
-files independently of context files; no Pi code was copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters
-and provider documentation informed the fail-closed isolated-model validation: only bundled provider/model/API/endpoint
-entries are accepted, because the auth bridge does not reproduce parent extension registrations or endpoint overrides.
-This is conceptual API use, not copied code; custom model/provider configuration transport and ambient extension loading
-remain intentionally excluded. Child cleanup precedes terminal delivery as an original integration safeguard against
-overlapping fallback work. Cancellation is rechecked after cleanup and committed synchronously with terminal
-publication; this lifecycle safeguard is original, not an upstream state machine or lock implementation. Pi's installed
-1.5.0 `docs/extensions.md` and `examples/extensions/event-bus.ts` were consulted as API references for `pi.events`
+results, synchronous consumption, and proactive parent notifications when unconsumed (suppressing caller-requested
+stop/abort terminals is an original refinement). Not adopted: steer, workflow/profile systems, registry singleton,
+scheduling, worktrees, or protocol dialect shims. Pi 1.2.0 source `06a466935536f8c9bcacb2d5efc0fc021be1bdff` and
+installed 1.3.0 CLI resource suppression flags establish the isolated launch behavior, including empty `--system-prompt`
+and `--append-system-prompt` overrides to exclude ambient prompt files independently of context files; no Pi code was
+copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters and provider documentation informed the fail-closed
+isolated-model validation: only bundled provider/model/API/endpoint entries are accepted, because the auth bridge does
+not reproduce parent extension registrations or endpoint overrides. This is conceptual API use, not copied code; custom
+model/provider configuration transport and ambient extension loading remain intentionally excluded. Child cleanup
+precedes terminal delivery as an original integration safeguard against overlapping fallback work. Cancellation is
+rechecked after cleanup and committed synchronously with terminal publication; this lifecycle safeguard is original, not
+an upstream state machine or lock implementation. Pi's installed 1.5.0 `docs/extensions.md` and
+`examples/extensions/event-bus.ts` were consulted as API references for `pi.events`
 ([canonical repository](https://github.com/earendil-works/pi), MIT); no example code was copied or adapted.
 
 The router's caller side, `extensions/router/signaling-runner.ts`, is also original code written against the same
