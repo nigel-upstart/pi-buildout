@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { registerSignaling } from "./signaling.ts";
+import { SUBAGENT_NOTIFICATION_TYPE, registerSignaling } from "./signaling.ts";
 
 /** @typedef {Record<string, any>} Payload */
 /** Handlers only touch the context through the injected launcher. */
@@ -331,4 +331,120 @@ test("consume before settlement is rejected and nothing emits after close", asyn
   release(true);
   await closing;
   assert.equal(terminal.length, 0);
+});
+
+test("unconsumed completed child pushes result message to parent session and notifies UI", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+      sent.push({ msg, opts });
+    },
+  });
+  const close = registerSignaling(events, testCtx, async () => child({ finalAssistantText: "ALL DONE" }), {
+    pi: testPi,
+  });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.level, "info");
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.msg.customType, SUBAGENT_NOTIFICATION_TYPE);
+  assert.equal(sent[0]?.msg.details.status, "completed");
+  assert.ok(sent[0]?.msg.details.result);
+  assert.deepEqual(sent[0]?.opts, { deliverAs: "followUp", triggerTurn: true });
+
+  await close();
+});
+
+test("unconsumed failed child pushes error message to parent session", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+      sent.push({ msg, opts });
+    },
+  });
+  let stopped = false;
+  const failedChild = {
+    id: "failed-child",
+    async waitForIdle() {
+      return true;
+    },
+    async refresh() {},
+    async stop() {
+      stopped = true;
+    },
+    snapshot() {
+      return { state: stopped ? "stopped" : "failed", error: "Connection reset", transcriptTail: "" };
+    },
+  };
+  const close = registerSignaling(events, testCtx, async () => /** @type {any} */ (failedChild), { pi: testPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.level, "warning");
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.msg.customType, SUBAGENT_NOTIFICATION_TYPE);
+  assert.equal(sent[0]?.msg.details.status, "error");
+  assert.ok(sent[0]?.msg.details.error);
+
+  await close();
+});
+
+test("consumed child suppresses parent session message and UI notification", async () => {
+  const events = bus();
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {Payload[]} */
+  const sent = [];
+  const testCtx = /** @type {any} */ ({
+    ui: {
+      notify(/** @type {string} */ msg, /** @type {string} */ level) {
+        notifications.push({ msg, level });
+      },
+    },
+  });
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+      sent.push({ msg, opts });
+    },
+  });
+  events.on("subagents:completed", (/** @type {Payload} */ value) => {
+    void rpc(events, "consume", { agentId: value.id });
+  });
+  const close = registerSignaling(events, testCtx, async () => child({ finalAssistantText: "CLAIMED BY ROUTER" }), {
+    pi: testPi,
+  });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 0, "consumed result must not notify UI");
+  assert.equal(sent.length, 0, "consumed result must not push message to parent session");
+
+  await close();
 });

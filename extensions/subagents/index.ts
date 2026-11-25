@@ -33,7 +33,7 @@ import {
 } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
 import { ManagedSubagent } from "./rpc.ts";
-import { isolatedChildArgs, registerSignaling } from "./signaling.ts";
+import { isolatedChildArgs, notifyParentSession, registerSignaling } from "./signaling.ts";
 import type { ChildSnapshot } from "./rpc.ts";
 
 const MAX_CLASSIFIER_CONTEXT_CHARS = 24_000;
@@ -550,6 +550,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     for (const [id] of removable) {
       if (children.size <= MAX_RETAINED_CHILDREN) break;
       children.delete(id);
+      childOperations.delete(id);
+      consumedOperations.delete(id);
     }
   };
 
@@ -670,6 +672,53 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     }
   };
 
+  const childOperations = new Map<string, number>();
+  const consumedOperations = new Map<string, number>();
+
+  const watchToolChild = (child: ManagedSubagent, childCtx: ExtensionContext, op: number) => {
+    void (async () => {
+      try {
+        while (!shuttingDown && !(await child.waitForIdle(3_600_000))) {
+          /* background task wait */
+        }
+        if (shuttingDown) return;
+        await child.refresh();
+      } catch {
+        /* wait aborted or failed */
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      if (shuttingDown) return;
+      if ((childOperations.get(child.id) ?? 1) !== op) return;
+      if ((consumedOperations.get(child.id) ?? 0) >= op) return;
+      const snapshot = child.snapshot();
+      if (
+        snapshot.state === "stopped" ||
+        snapshot.state === "running" ||
+        snapshot.state === "starting" ||
+        snapshot.state === "interrupting"
+      )
+        return;
+      consumedOperations.set(child.id, op);
+
+      const isEligibleResult =
+        snapshot.state === "idle" && snapshot.pendingMessages === 0 && Boolean(snapshot.finalAssistantText?.trim());
+      const status = snapshot.state === "idle" ? "completed" : snapshot.state;
+      const result =
+        isEligibleResult && snapshot.finalAssistantText
+          ? truncateMiddle(snapshot.finalAssistantText.trim(), MAX_WAIT_TEXT_CHARS)
+          : undefined;
+      const error = snapshot.error ? withoutStderr(snapshot.error) : undefined;
+      notifyParentSession(childCtx, pi, {
+        id: child.id,
+        name: child.name,
+        status,
+        result,
+        error,
+        stats: snapshot.stats,
+      });
+    })();
+  };
+
   let closeSignaling: (() => Promise<void>) | undefined;
   pi.on("session_start", async (_event, ctx) => {
     await closeSignaling?.();
@@ -677,6 +726,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       pi.events,
       ctx,
       async (request, childCtx, signal) => (await launch(request, childCtx, signal)).child,
+      { pi },
     );
   });
 
@@ -684,13 +734,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     name: "subagent",
     label: "Subagent",
     description:
-      "Create and control isolated, asynchronous child Pi sessions. Use action=create whenever the user naturally asks to create a subagent, ask a subagent to do work, or delegate work. Preserve any user-requested model and effort. Creation defaults to contextMode=task_compacted for task-specific parent conversation context; contextMode=none skips parent conversation and compaction, starting with only the supplied task. Neither mode isolates files, credentials, project instructions, settings, skills, or extensions. Creation automatically classifies model/effort when either is omitted and returns immediately with an id. Use status to spy on a direct child's transcript and usage, wait only when the current request needs its result synchronously (status metadata and bounded final assistant text only; timeout returns metadata without partial output, and can be followed by another wait), steer to interrupt its direction at the next turn boundary, follow_up to queue later work, interrupt to abort the current operation while retaining the session, and stop to terminate it. Each process can see and control only children it created; child results never enter the parent context unless status or wait is explicitly requested.",
+      "Create and control isolated, asynchronous child Pi sessions. Use action=create whenever the user naturally asks to create a subagent, ask a subagent to do work, or delegate work. Preserve any user-requested model and effort. Creation defaults to contextMode=task_compacted for task-specific parent conversation context; contextMode=none skips parent conversation and compaction, starting with only the supplied task. Neither mode isolates files, credentials, project instructions, settings, skills, or extensions. Creation automatically classifies model/effort when either is omitted and returns immediately with an id. Use status to spy on a direct child's transcript and usage, wait only when the current request needs its result synchronously (status metadata and bounded final assistant text only; timeout returns metadata without partial output, and can be followed by another wait), steer to interrupt its direction at the next turn boundary, follow_up to queue later work, interrupt to abort the current operation while retaining the session, and stop to terminate it. Each process can see and control only children it created; child completion results are automatically pushed to the parent session when settled, or can be inspected synchronously with status or wait.",
     promptSnippet:
       "Create, inspect, wait for, steer, queue messages for, interrupt, or stop isolated asynchronous child Pi sessions",
     promptGuidelines: [
       "Use subagent with action=create when the user asks in natural language to create, ask, launch, or delegate to a subagent; pass through any explicit model and reasoning effort.",
       "For creation without parent conversation, set contextMode=none and supply the complete task. The default task_compacted preserves task-specific context; none skips compaction but does not isolate files, credentials, project instructions, settings, skills, or extensions.",
-      "Use subagent status for transcript diagnostics. Use subagent wait only when this turn must consume the result: it returns status metadata and bounded final assistant text, never the task or working transcript. A timeout returns metadata only without stopping the child; wait again as needed. Child completion is intentionally not pushed into the parent conversation.",
+      "Use subagent status for transcript diagnostics. Use subagent wait only when this turn must consume the result synchronously: it returns status metadata and bounded final assistant text, never the task or working transcript. A timeout returns metadata only without stopping the child; wait again as needed. Settled background subagents push their completion message into the parent conversation when not waited on.",
     ],
     parameters: SubagentParameters,
 
@@ -700,6 +750,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       if (params.action === "create") {
         // The ordinary tool never isolates resources; only the signaling subset does.
         const { child, contextMode, compactionFallback } = await launch({ ...params, isolated: false }, ctx, signal);
+        const op = 1;
+        childOperations.set(child.id, op);
+        watchToolChild(child, ctx, op);
         const warning = compactionFallback
           ? " Targeted compaction failed open, so the child started with fresh context."
           : "";
@@ -707,7 +760,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `Created ${child.id} (${child.name}) with ${child.model} at ${child.effort} effort.${warning} It is running asynchronously; use subagent status with id=${child.id} to spy, or wait only when this turn needs the result.`,
+              text: `Created ${child.id} (${child.name}) with ${child.model} at ${child.effort} effort.${warning} It is running asynchronously in the background. When it finishes, its result will be automatically pushed into this conversation. You can create other subagents in parallel, continue with other tasks, or use wait only if this turn strictly requires the result.`,
             },
           ],
           details: { action: "create", child: snapshotSummary(child.snapshot()), contextMode, compactionFallback },
@@ -747,6 +800,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const settled = await child.waitForIdle(params.timeoutMs ?? 120_000, signal);
         await child.refresh();
         const snapshot = waitSnapshot(child.snapshot(), settled);
+        if (settled) {
+          consumedOperations.set(child.id, childOperations.get(child.id) ?? 1);
+        }
         const heading = settled
           ? `Subagent ${params.id} settled.`
           : `Wait timed out; subagent ${params.id} is still active. Wait again for its result.`;
@@ -759,6 +815,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         if (!params.task?.trim()) throw new Error(`${params.action} requires a non-empty task/message.`);
         if (params.action === "steer") await child.steer(params.task.trim());
         else await child.followUp(params.task.trim());
+        const op = (childOperations.get(child.id) ?? 1) + 1;
+        childOperations.set(child.id, op);
+        watchToolChild(child, ctx, op);
         return {
           content: [
             { type: "text", text: `${params.action === "steer" ? "Steered" : "Queued a follow-up for"} ${params.id}.` },
@@ -778,6 +837,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           details: { action: "interrupt", child: snapshotSummary(child.snapshot()) },
         };
       }
+      consumedOperations.set(child.id, childOperations.get(child.id) ?? 1);
       await child.stop();
       const stoppedSnapshot = snapshotSummary(child.snapshot());
       pruneChildren();
@@ -810,6 +870,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    childOperations.clear();
+    consumedOperations.clear();
     await closeSignaling?.();
     await Promise.allSettled([...children.values()].map((child) => child.stop()));
     children.clear();

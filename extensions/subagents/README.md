@@ -80,8 +80,8 @@ and effort selection, authentication, cancellation, limits, and process cleanup 
 - The extension itself is explicitly loaded so every child can create its own children.
 - Each extension process keeps a private registry containing only its direct children. There is no child-to-parent or
   sibling messaging API.
-- Child output is retained privately and enters parent model context only when the parent explicitly calls `status` or
-  `wait`.
+- Child output is retained privately and enters parent model context when the parent explicitly calls `status` or
+  `wait`, or when a background subagent settles and pushes its completion notification.
 - `status` reports the transcript tail, active tool, turns, tool calls, queued messages, token usage, cost, context
   utilization, and compaction count when available.
 - Parent control uses the child's one-way RPC stdin: `steer`, `follow_up`, `interrupt`, and `stop`.
@@ -129,9 +129,9 @@ The isolated launch disables discovered/configured extensions, MCP, skills, temp
 `SYSTEM.md`/`APPEND_SYSTEM.md` prompt files, loading only the explicit minimal auth bridge. This is resource selection,
 not an OS/credential sandbox. Ordinary `subagent` tool defaults are unchanged; `contextMode: none` alone is not
 extension isolation. Signaling children are one-task runs and are stopped before terminal delivery. Results contain
-final assistant text only. Consume marks the settled result synchronously; this manager never auto-notifies the parent.
-Stop/signal terminate only owned children. Cancellation remains effective during cleanup: abort takes precedence over
-stop, and either suppresses the final answer until the terminal event is published. Publication commits the terminal
-state synchronously; later stop requests are rejected and later aborts cannot change the published result. Session
-shutdown suppresses publication entirely. There are no reviewer roles or verdict semantics. Several simultaneous manager
-responders are unsupported.
+final assistant text only. Consume marks the settled result synchronously, suppressing proactive parent notification; an
+unconsumed terminal result is pushed directly to the parent session. Stop/signal terminate only owned children.
+Cancellation remains effective during cleanup: abort takes precedence over stop, and either suppresses the final answer
+until the terminal event is published. Publication commits the terminal state synchronously; later stop requests are
+rejected and later aborts cannot change the published result. Session shutdown suppresses publication entirely. There
+are no reviewer roles or verdict semantics. Several simultaneous manager responders are unsupported.

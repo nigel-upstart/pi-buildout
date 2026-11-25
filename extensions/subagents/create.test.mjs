@@ -73,6 +73,8 @@ const mocks = {
       async start() { await f.start?.(); }
       async stop() { f.stops++; }
       async refresh() {}
+      async steer(task) {}
+      async followUp(task) {}
       async waitForIdle(timeoutMs, signal) { return f.wait ? f.wait(timeoutMs, signal) : true; }
       isAlive() { return true; }
       snapshot() {
@@ -129,6 +131,10 @@ async function harness(t, forbidHistory = false) {
       return () => emitter.off(name, callback);
     },
   };
+  /** @type {{ msg: string, level: string }[]} */
+  const notifications = [];
+  /** @type {{ msg: any, opts: any }[]} */
+  const sentMessages = [];
   subagentsExtension(
     /** @type {import('@earendil-works/pi-coding-agent').ExtensionAPI} */ (
       /** @type {unknown} */ ({
@@ -140,6 +146,9 @@ async function harness(t, forbidHistory = false) {
         },
         events,
         getThinkingLevel: () => "high",
+        sendMessage(/** @type {any} */ msg, /** @type {any} */ opts) {
+          sentMessages.push({ msg, opts });
+        },
       })
     ),
   );
@@ -166,6 +175,11 @@ async function harness(t, forbidHistory = false) {
       model,
       sessionManager,
       isProjectTrusted: () => false,
+      ui: {
+        notify(/** @type {string} */ msg, /** @type {string} */ level) {
+          notifications.push({ msg, level });
+        },
+      },
       modelRegistry: {
         runtime: {},
         getAvailable: () => [model],
@@ -178,7 +192,7 @@ async function harness(t, forbidHistory = false) {
   const registered = tool;
   /** @param {Record<string, unknown>} args @param {AbortSignal} [signal] */
   const execute = (args, signal) => registered.execute("test-call", args, signal, undefined, ctx);
-  return { execute, tool: registered, ctx, lifecycle, events };
+  return { execute, tool: registered, ctx, lifecycle, events, notifications, sentMessages };
 }
 
 /** @param {{emit: Function, on: Function}} events @param {string} method @param {Record<string, unknown>} fields */
@@ -597,5 +611,200 @@ test("signaling spawn launches an isolated task-only child with the explicit pai
     ordinary.args.some((arg) => /index\.ts$/.test(arg)),
     "ordinary child keeps its manager extension",
   );
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("settled background tool child pushes completion message into parent session when not waited on", async (t) => {
+  const { execute, notifications, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Background task",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+
+  assert.equal(sentMessages.length, 0, "no message while still running");
+
+  fixture.snapshot = {
+    state: "idle",
+    finalAssistantText: "Task completed successfully",
+  };
+  resolveWait?.(true);
+  for (let i = 0; i < 50 && sentMessages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.level, "info");
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.customType, "subagent-notification");
+  assert.equal(sentMessages[0]?.msg.details.status, "completed");
+  assert.ok(sentMessages[0]?.msg.details.result);
+  assert.deepEqual(sentMessages[0]?.opts, { deliverAs: "followUp", triggerTurn: true });
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("settled wait consumes the child and suppresses the background push message", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Background task to wait on",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  const waitPromise = execute({ action: "wait", id });
+  fixture.snapshot = {
+    state: "idle",
+    finalAssistantText: "Delivered via wait",
+  };
+  resolveWait?.(true);
+  await waitPromise;
+
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(sentMessages.length, 0, "wait consumption suppresses background notification");
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("stopped child does not push a completion message", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Task to stop",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  fixture.snapshot = { state: "stopped" };
+  await execute({ action: "stop", id });
+
+  resolveWait?.(true);
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(sentMessages.length, 0, "stopped child must not push completion message");
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("follow_up rearms completion watcher and pushes next result", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Initial task",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  const waitPromise = execute({ action: "wait", id });
+  fixture.snapshot = {
+    state: "idle",
+    pendingMessages: 0,
+    finalAssistantText: "First answer",
+  };
+  resolveWait?.(true);
+  await waitPromise;
+  assert.equal(sentMessages.length, 0);
+
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+  await execute({ action: "follow_up", id, task: "Second task" });
+
+  fixture.snapshot = {
+    state: "idle",
+    pendingMessages: 0,
+    finalAssistantText: "Second answer",
+  };
+  resolveWait?.(true);
+  for (let i = 0; i < 50 && sentMessages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.status, "completed");
+  assert.ok(sentMessages[0]?.msg.details.result);
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("ineligible results do not push assistant text", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+
+  /** @type {((value: boolean) => void) | undefined} */
+  let resolveWait;
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolveWait = resolve;
+    });
+
+  await execute({
+    action: "create",
+    task: "Task with pending messages",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  fixture.snapshot = {
+    state: "idle",
+    pendingMessages: 2,
+    finalAssistantText: "Ineligible partial text",
+    lastAssistantText: "Ineligible partial text",
+  };
+  resolveWait?.(true);
+  for (let i = 0; i < 50 && sentMessages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.result, undefined);
+
   await lifecycle.session_shutdown?.({}, ctx);
 });

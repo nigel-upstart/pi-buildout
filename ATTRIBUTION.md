@@ -67,9 +67,10 @@ Follow-up work adopted three conceptual patterns: explicit, bounded result waiti
 (tokens, cost, context utilization, compactions, and active tool); and treating an output-limit stop with no assistant
 text as a failed child run rather than a successful empty result. They were implemented as original code inside the
 existing single-tool RPC design. No tintinweb code was copied or modified. Major pieces intentionally not adopted
-include named/default agent types, custom agent frontmatter, proactive completion notifications, FleetView/widget UI,
-scheduling, event-bus RPC, persistent memory, worktree isolation, skill preloading, and its three-tool Claude
-Code-compatible surface.
+include named/default agent types, custom agent frontmatter, FleetView/widget UI, scheduling, event-bus RPC, persistent
+memory, worktree isolation, skill preloading, and its three-tool Claude Code-compatible surface. Proactive completion
+notifications (result push when unconsumed, and for settled background tool children) were adopted as original code in
+`extensions/subagents/signaling.ts` and `extensions/subagents/index.ts`.
 
 ## Subagent delegation design (`specs/subagents/modern-layer-design.md`, DRAFT)
 
@@ -135,8 +136,8 @@ The implementation in `extensions/subagents/signaling.ts` is an original compati
 release `v0.22.0` (`85a704cb8f35c96c0cabfa665b572bab296942e5`) and documentation/source snapshot
 `ca93a5247e72e7053fcd10bea7125d6c4205f949`, `docs/rpc.md`, `src/cross-extension-rpc.ts`, and terminal emission in
 `src/index.ts`. Used: ping/spawn/consume/stop names, reply envelopes, generic task/model/thinking options, final
-results, and synchronous consumption. Not adopted: steer, workflow/profile systems, registry singleton, scheduling,
-worktrees, proactive parent notifications, or protocol dialect shims. Pi 1.2.0 source
+results, synchronous consumption, and proactive parent notifications when unconsumed. Not adopted: steer,
+workflow/profile systems, registry singleton, scheduling, worktrees, or protocol dialect shims. Pi 1.2.0 source
 `06a466935536f8c9bcacb2d5efc0fc021be1bdff` and installed 1.3.0 CLI resource suppression flags establish the isolated
 launch behavior, including empty `--system-prompt` and `--append-system-prompt` overrides to exclude ambient prompt
 files independently of context files; no Pi code was copied. Pi 1.3.0's published `pi-ai/providers/all` catalog getters
