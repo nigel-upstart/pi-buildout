@@ -1212,3 +1212,19 @@ decision, resolved command targets are not expanded a second time, and Windows h
 separator semantics. The latter behavior was checked against MIT-licensed Pi 1.5.2 `dist/utils/paths.js` at the already
 recorded `b4afdddf44e059c67ccf5097e5317d913521b470` release, <https://github.com/earendil-works/pi>; no Pi path-helper
 code was copied. CLI examples quote variable paths so shells preserve their portable spelling.
+
+## Effect (conceptual evaluation only)
+
+- Sources: Effect documentation (<https://effect.website/docs/v4/onboarding>,
+  <https://effect.website/docs/v4/getting-started/the-effect-type>,
+  <https://effect.website/docs/v3/getting-started/why-effect>), Hacker News discussion of Effect 4.0
+  (<https://news.ycombinator.com/item?id=49925812>), and TypeScriptWorld's Effect vs fp-ts comparison
+  (<https://typescriptworld.com/effect-vs-fp-ts-error-tracking-and-the-two-learning-curves>).
+- Revision reviewed: `effect@4.0.2` (npm `latest` at 2026-10-08). License declared by the package: MIT.
+
+Ideas studied: structuring timeouts, abort propagation, and timer cleanup as program structure; incremental adoption at
+Promise boundaries. The published `effect@4.0.2` package was installed in a scratch directory only to measure import
+time and size and to confirm the `effect/testing` `TestClock` export; it is not a dependency of this repository. No
+Effect source code or documentation text has been copied. See
+[`specs/effect-adoption-evaluation.md`](specs/effect-adoption-evaluation.md) for the evaluation and the intentionally
+unadopted parts of the library.
