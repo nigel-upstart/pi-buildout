@@ -937,3 +937,14 @@ test("a failed child settles even while it still reports owed descendants", asyn
   assert.equal(await child.waitForIdle(2_000), true);
   assert.equal(child.snapshot().state, "failed");
 });
+
+test("a get_state reply does not overwrite a settle parsed later in the same chunk", async (t) => {
+  const child = owingChild("SETTLE_WITH_STATE");
+  t.after(async () => child.stop());
+  await child.start();
+  await child.refresh();
+  const snapshot = child.snapshot();
+  assert.equal(snapshot.state, "idle", "the stale isStreaming reply must not restore running");
+  assert.equal(snapshot.finalAssistantText, "chunked-answer");
+  assert.equal(await child.waitForIdle(200), true);
+});

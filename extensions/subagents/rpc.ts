@@ -276,6 +276,10 @@ export class ManagedSubagent {
     | undefined;
   private sessionFile: string | undefined;
   private pendingMessages = 0;
+  // Counts events that change run state or the queue. A get_state reply only describes the child as of the events
+  // parsed before it, so it must not overwrite a later agent_start, agent_settled, or queue_update.
+  private lifecycleSequence = 0;
+  private readonly responseLifecycle = new WeakMap<object, number>();
   private activeDescendants = 0;
   // A cleared descendant report is only trusted after get_state confirms the child did not start a turn for it.
   private descendantConfirmations = 0;
@@ -415,15 +419,7 @@ export class ManagedSubagent {
     return this.serializeControl(async () => {
       if (this.state === "stopped" || this.state === "failed") return;
       try {
-        const response = await this.request({ type: "get_state" }, 3_000);
-        const data = response.data as Record<string, unknown> | undefined;
-        if (data) {
-          this.pendingMessages =
-            typeof data.pendingMessageCount === "number" ? data.pendingMessageCount : this.pendingMessages;
-          this.sessionFile = typeof data.sessionFile === "string" ? data.sessionFile : this.sessionFile;
-          if (data.isStreaming === true) this.state = "running";
-          else if (this.state !== "starting") this.state = "idle";
-        }
+        this.applyStateReply(await this.request({ type: "get_state" }, 3_000));
       } catch {
         // Cached state remains useful if a refresh races process shutdown.
       }
@@ -436,6 +432,20 @@ export class ManagedSubagent {
       }
       this.touch();
     });
+  }
+
+  private applyStateReply(response: Record<string, unknown>): void {
+    const data = response.data as Record<string, unknown> | undefined;
+    if (!data) return;
+    this.sessionFile = typeof data.sessionFile === "string" ? data.sessionFile : this.sessionFile;
+    // The reply resolves before the rest of its stdout chunk is parsed, so lifecycle events after it are newer, and a
+    // child that failed or stopped while the request was in flight keeps that terminal state.
+    if (this.responseLifecycle.get(response) !== this.lifecycleSequence) return;
+    if (this.state === "stopped" || this.state === "failed") return;
+    this.pendingMessages =
+      typeof data.pendingMessageCount === "number" ? data.pendingMessageCount : this.pendingMessages;
+    if (data.isStreaming === true) this.state = "running";
+    else if (this.state !== "starting") this.state = "idle";
   }
 
   waitForIdle(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
@@ -783,7 +793,10 @@ export class ManagedSubagent {
         pending.reject(
           new RpcRejectionError(typeof event.error === "string" ? event.error : `${pending.command} failed.`),
         );
-      else pending.resolve(event);
+      else {
+        this.responseLifecycle.set(event, this.lifecycleSequence);
+        pending.resolve(event);
+      }
       return;
     }
     if (event.type === "extension_ui_request" && typeof event.id === "string") {
@@ -806,11 +819,13 @@ export class ManagedSubagent {
   private handleEvent(event: Record<string, unknown>): void {
     switch (event.type) {
       case "agent_start":
+        this.lifecycleSequence++;
         this.state = "running";
         this.finalAssistantText = undefined;
         if (this.abortAttempt) this.abortAttempt.finalAssistantText = undefined;
         break;
       case "agent_settled":
+        this.lifecycleSequence++;
         this.activeTools.clear();
         if (this.state !== "failed" && this.state !== "stopped") this.state = "idle";
         break;
@@ -818,6 +833,7 @@ export class ManagedSubagent {
         this.turns++;
         break;
       case "queue_update": {
+        this.lifecycleSequence++;
         const steering = Array.isArray(event.steering) ? (event.steering as unknown[]) : [];
         const followUp = Array.isArray(event.followUp) ? (event.followUp as unknown[]) : [];
         this.pendingMessages = steering.length + followUp.length;

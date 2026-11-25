@@ -95,6 +95,10 @@ export function notifyParentSession(
   const statusMsg = `Subagent ${label} ${status}${error ? `: ${error}` : ""}.`;
   try {
     ctx?.ui?.notify(statusMsg, status === "completed" ? "info" : "warning");
+  } catch {
+    // A UI toast is optional; its failure must not cost the parent the result.
+  }
+  try {
     pi?.sendMessage(
       {
         customType: SUBAGENT_NOTIFICATION_TYPE,

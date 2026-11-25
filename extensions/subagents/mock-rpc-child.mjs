@@ -17,6 +17,8 @@ let heldAbort;
 let nextQueueDisposition;
 /** Delays get_state replies so a test can hold open the gap before a confirmation arrives. */
 let stateReplyDelayMs = 0;
+/** Writes the next get_state reply and the run's completion in one stdout chunk. */
+let settleWithStateReply = false;
 
 /** @param {unknown} value */
 function send(value) {
@@ -164,21 +166,38 @@ function handleQueue(command) {
   send({ id: command.id, type: "response", command: command.type, success: true, data: { disposition: "queued" } });
 }
 
+/** @param {{ id: unknown }} command */
+function handleGetState(command) {
+  if (settleWithStateReply) {
+    settleWithStateReply = false;
+    const answer = { role: "assistant", content: [{ type: "text", text: "chunked-answer" }], stopReason: "stop" };
+    const lines = [
+      { id: command.id, type: "response", command: "get_state", success: true, data: { isStreaming: true } },
+      { type: "message_end", message: answer },
+      { type: "agent_settled" },
+    ];
+    streaming = false;
+    process.stdout.write(lines.map((line) => JSON.stringify(line) + "\n").join(""));
+    return;
+  }
+  const reply = () =>
+    send({
+      id: command.id,
+      type: "response",
+      command: "get_state",
+      success: true,
+      data: { isStreaming: streaming, pendingMessageCount: queuedWork ? 1 : 0, sessionFile: "/tmp/mock-child.jsonl" },
+    });
+  if (stateReplyDelayMs > 0) setTimeout(reply, stateReplyDelayMs);
+  else reply();
+}
+
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const command = JSON.parse(line);
   if (command.type === "extension_ui_response" || handleAbortTestControl(command)) return;
   if (command.type === "get_state") {
-    const reply = () =>
-      send({
-        id: command.id,
-        type: "response",
-        command: "get_state",
-        success: true,
-        data: { isStreaming: streaming, pendingMessageCount: queuedWork ? 1 : 0, sessionFile: "/tmp/mock-child.jsonl" },
-      });
-    if (stateReplyDelayMs > 0) setTimeout(reply, stateReplyDelayMs);
-    else reply();
+    handleGetState(command);
     return;
   }
   if (command.type === "get_session_stats") {
@@ -216,6 +235,11 @@ input.on("line", (line) => {
     holdAbort = String(command.message).includes("HOLD_ABORT");
     send({ id: command.id, type: "response", command: "prompt", success: true });
     send({ type: "agent_start" });
+    if (String(command.message).includes("SETTLE_WITH_STATE")) {
+      // Completion arrives in the same chunk as the next get_state reply instead of from the timer.
+      settleWithStateReply = true;
+      return;
+    }
     if (String(command.message).includes("SLOW_WAIT")) {
       send({ type: "tool_execution_start", toolCallId: "slow-tool", toolName: "bash", args: { command: "sleep" } });
     }

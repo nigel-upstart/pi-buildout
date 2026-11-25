@@ -581,3 +581,27 @@ test("a caller's own stop or abort emits the failed event but pushes nothing to 
   assert.equal(notifications.length, 0);
   await close();
 });
+
+test("a throwing UI notification still delivers the result to the parent session", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const sent = [];
+  const throwingUi = /** @type {any} */ ({
+    ui: {
+      notify() {
+        throw new Error("stale ui");
+      },
+    },
+  });
+  const workingPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg) {
+      sent.push(msg);
+    },
+  });
+  const close = registerSignaling(events, throwingUi, async () => child(), { pi: workingPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.details.result, "FINAL");
+  await close();
+});
