@@ -130,6 +130,11 @@ function currentLineage(): string[] {
   return parseLineage(process.env[LINEAGE_ENV], MAX_DEPTH);
 }
 
+/** Print and JSON modes answer one prompt and exit; session shutdown then stops every child. */
+function isOneShotRun(ctx: ExtensionContext): boolean {
+  return ctx.mode === "print" || ctx.mode === "json";
+}
+
 function throwIfAborted(signal: AbortSignal | undefined): void {
   signal?.throwIfAborted();
 }
@@ -828,7 +833,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     promptGuidelines: [
       "Use subagent with action=create when the user asks in natural language to create, ask, launch, or delegate to a subagent; pass through any explicit model and reasoning effort.",
       "For creation without parent conversation, set contextMode=none and supply the complete task. The default task_compacted preserves task-specific context; none skips compaction but does not isolate files, credentials, project instructions, settings, skills, or extensions.",
-      "Use subagent status for transcript diagnostics. Use subagent wait only when this turn must consume the result synchronously: it returns status metadata and bounded final assistant text, never the task or working transcript. A timeout returns metadata only without stopping the child; wait again as needed. Settled background subagents push their completion message into the parent conversation when not waited on.",
+      "Use subagent status for transcript diagnostics. Use subagent wait only when this turn must consume the result synchronously: it returns status metadata and bounded final assistant text, never the task or working transcript. A timeout returns metadata only without stopping the child; wait again as needed. Settled background subagents push their completion message into the parent conversation when not waited on. In one-shot print or JSON runs there is no later turn and exit stops every child, so always wait for each child's result before the final reply.",
     ],
     parameters: SubagentParameters,
 
@@ -843,13 +848,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const warning = compactionFallback
           ? " Targeted compaction failed open, so the child started with fresh context."
           : "";
+        const created = `Created ${child.id} (${child.name}) with ${child.model} at ${child.effort} effort.${warning}`;
+        // Print and JSON runs end after one reply and shutdown stops every child, so no push can ever arrive.
+        const delivery = isOneShotRun(ctx)
+          ? `This is a one-shot run: Pi exits after your final reply and stops every subagent, so its result is never pushed back. Call subagent wait with id ${child.id} (repeat it if it times out) before replying, or the subagent is killed and its work is lost. You can create other subagents first and wait for each.`
+          : "It is running asynchronously in the background. When it finishes, its result will be automatically pushed into this conversation. You can create other subagents in parallel, continue with other tasks, or use wait only if this turn strictly requires the result.";
         return {
-          content: [
-            {
-              type: "text",
-              text: `Created ${child.id} (${child.name}) with ${child.model} at ${child.effort} effort.${warning} It is running asynchronously in the background. When it finishes, its result will be automatically pushed into this conversation. You can create other subagents in parallel, continue with other tasks, or use wait only if this turn strictly requires the result.`,
-            },
-          ],
+          content: [{ type: "text", text: `${created} ${delivery}` }],
           details: { action: "create", child: snapshotSummary(child.snapshot()), contextMode, compactionFallback },
         };
       }

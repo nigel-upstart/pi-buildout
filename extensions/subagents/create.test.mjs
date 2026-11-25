@@ -1007,3 +1007,29 @@ test("a delegated result consumed by wait stops being owed without a turn", asyn
     await lifecycle.session_shutdown?.({}, ctx);
   });
 });
+
+test("one-shot print and JSON runs tell the model to wait because exit stops the child", async (t) => {
+  for (const mode of ["print", "json", "tui", "rpc"]) {
+    const { execute, ctx, lifecycle } = await harness(t, true);
+    Object.assign(ctx, { mode });
+    await lifecycle.session_start?.({}, ctx);
+    queuedWaits();
+    const result = await execute({
+      action: "create",
+      task: "Task",
+      model: "test/model",
+      effort: "high",
+      contextMode: "none",
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    if (mode === "print" || mode === "json") {
+      assert.match(text, /one-shot run/);
+      assert.match(text, /Call subagent wait with id \S+ \(repeat it if it times out\) before replying/);
+      assert.doesNotMatch(text, /automatically pushed/);
+    } else {
+      assert.match(text, /automatically pushed/);
+      assert.doesNotMatch(text, /one-shot/);
+    }
+    await lifecycle.session_shutdown?.({}, ctx);
+  }
+});

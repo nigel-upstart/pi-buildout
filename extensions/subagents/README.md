@@ -90,6 +90,8 @@ and effort selection, authentication, cancellation, limits, and process cleanup 
   `wait`, or when a background subagent settles and pushes its completion notification. A settled `wait`, `interrupt`,
   or `stop` consumes the current operation, so it is not also pushed. Pushed answers use the same bound as `wait` and
   omit stderr.
+- One-shot runs (`pi -p` print mode and `--mode json`) exit after the final reply, and shutdown stops every child, so no
+  push can arrive. In those modes the `create` result tells the model to call `wait` for each child before replying.
 - `status` reports the transcript tail, active tool, turns, tool calls, queued messages, token usage, cost, context
   utilization, and compaction count when available.
 - Parent control uses the child's one-way RPC stdin: `steer`, `follow_up`, `interrupt`, and `stop`.
