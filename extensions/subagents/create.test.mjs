@@ -75,7 +75,21 @@ const mocks = {
       async refresh() {}
       async steer(task) {}
       async followUp(task) {}
-      async waitForIdle(timeoutMs, signal) { return f.wait ? f.wait(timeoutMs, signal) : true; }
+      async interrupt() {}
+      waitForIdle(timeoutMs, signal) {
+        if (f.wait) return f.wait(timeoutMs, signal);
+        // Like the real child: settled resolves true, a bounded wait on active work times out, and the
+        // background watcher's hour-long wait on active work stays pending instead of spinning.
+        const { state, pendingMessages } = this.snapshot();
+        const settled = state === 'failed' || state === 'stopped' || (state === 'idle' && pendingMessages === 0);
+        if (settled) return Promise.resolve(true);
+        if (timeoutMs < 3_600_000) return Promise.resolve(false);
+        return new Promise((_resolve, reject) => {
+          const abort = () => reject(new Error('Subagent wait was aborted; the child is still running.'));
+          if (signal?.aborted) abort();
+          else signal?.addEventListener('abort', abort, { once: true });
+        });
+      }
       isAlive() { return true; }
       snapshot() {
         const o = this.options;
@@ -653,16 +667,26 @@ test("settled background tool child pushes completion message into parent sessio
   await lifecycle.session_shutdown?.({}, ctx);
 });
 
+/** Each waitForIdle call gets its own resolver, in call order: the background watcher first, then any wait. */
+function queuedWaits() {
+  /** @type {((value: boolean) => void)[]} */
+  const resolvers = [];
+  fixture.wait = () =>
+    new Promise((resolve) => {
+      resolvers.push(resolve);
+    });
+  return resolvers;
+}
+
+/** @param {() => boolean} [until] */
+async function settleTicks(until) {
+  for (let i = 0; i < 25 && !until?.(); i++) await new Promise((resolve) => setTimeout(resolve, 2));
+}
+
 test("settled wait consumes the child and suppresses the background push message", async (t) => {
   const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
   await lifecycle.session_start?.({}, ctx);
-
-  /** @type {((value: boolean) => void) | undefined} */
-  let resolveWait;
-  fixture.wait = () =>
-    new Promise((resolve) => {
-      resolveWait = resolve;
-    });
+  const resolvers = queuedWaits();
 
   await execute({
     action: "create",
@@ -675,16 +699,70 @@ test("settled wait consumes the child and suppresses the background push message
   assert.ok(id);
 
   const waitPromise = execute({ action: "wait", id });
+  assert.equal(resolvers.length, 2, "watcher and wait are both waiting");
   fixture.snapshot = {
     state: "idle",
     finalAssistantText: "Delivered via wait",
   };
-  resolveWait?.(true);
+  // The watcher's poll observes the settlement first; the wait's own poll lands a few ticks later.
+  resolvers[0]?.(true);
+  await settleTicks();
+  resolvers[1]?.(true);
+  const waited = await waitPromise;
+  assert.match(JSON.stringify(waited.content), /Delivered via wait/);
+
+  await settleTicks();
+  assert.equal(sentMessages.length, 0, "wait consumption suppresses background notification");
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("a wait that times out does not swallow the background push", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({ action: "create", task: "Slow task", model: "test/model", effort: "high", contextMode: "none" });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  const waitPromise = execute({ action: "wait", id, timeoutMs: 5 });
+  fixture.snapshot = { state: "idle", finalAssistantText: "Pushed after timeout" };
+  resolvers[0]?.(true);
+  await settleTicks();
+  assert.equal(sentMessages.length, 0, "watcher defers to the in-flight wait");
+  resolvers[1]?.(false);
   await waitPromise;
 
-  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await settleTicks(() => sentMessages.length > 0);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.result, "Pushed after timeout");
 
-  assert.equal(sentMessages.length, 0, "wait consumption suppresses background notification");
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("interrupt does not push a completed notification", async (t) => {
+  const { execute, sentMessages, notifications, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({
+    action: "create",
+    task: "Task to interrupt",
+    model: "test/model",
+    effort: "high",
+    contextMode: "none",
+  });
+  const id = fixture.launches[0]?.id;
+  assert.ok(id);
+
+  await execute({ action: "interrupt", id });
+  fixture.snapshot = { state: "idle" };
+  resolvers[0]?.(true);
+  await settleTicks();
+
+  assert.equal(sentMessages.length, 0, "an interrupted child has no answer to push");
+  assert.equal(notifications.length, 0);
 
   await lifecycle.session_shutdown?.({}, ctx);
 });
@@ -773,16 +851,10 @@ test("follow_up rearms completion watcher and pushes next result", async (t) => 
   await lifecycle.session_shutdown?.({}, ctx);
 });
 
-test("ineligible results do not push assistant text", async (t) => {
+test("queued messages defer the push until the queue drains, without exposing interim text", async (t) => {
   const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
   await lifecycle.session_start?.({}, ctx);
-
-  /** @type {((value: boolean) => void) | undefined} */
-  let resolveWait;
-  fixture.wait = () =>
-    new Promise((resolve) => {
-      resolveWait = resolve;
-    });
+  const resolvers = queuedWaits();
 
   await execute({
     action: "create",
@@ -800,11 +872,38 @@ test("ineligible results do not push assistant text", async (t) => {
     finalAssistantText: "Ineligible partial text",
     lastAssistantText: "Ineligible partial text",
   };
-  resolveWait?.(true);
-  for (let i = 0; i < 50 && sentMessages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  resolvers[0]?.(true);
+  await settleTicks(() => resolvers.length > 1);
+  assert.equal(sentMessages.length, 0, "queued work is not a completed operation");
+  assert.equal(resolvers.length, 2, "the watcher keeps waiting for the same operation");
+
+  fixture.snapshot = { state: "idle", pendingMessages: 0, finalAssistantText: "Answer after the queue" };
+  resolvers[1]?.(true);
+  await settleTicks(() => sentMessages.length > 0);
 
   assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0]?.msg.details.result, undefined);
+  assert.equal(sentMessages[0]?.msg.details.result, "Answer after the queue");
+  assert.doesNotMatch(JSON.stringify(sentMessages), /Ineligible partial text/);
+
+  await lifecycle.session_shutdown?.({}, ctx);
+});
+
+test("a watcher that observes restarted work keeps waiting instead of dropping the push", async (t) => {
+  const { execute, sentMessages, ctx, lifecycle } = await harness(t, true);
+  await lifecycle.session_start?.({}, ctx);
+  const resolvers = queuedWaits();
+
+  await execute({ action: "create", task: "Task", model: "test/model", effort: "high", contextMode: "none" });
+  fixture.snapshot = { state: "running" };
+  resolvers[0]?.(true);
+  await settleTicks(() => resolvers.length > 1);
+  assert.equal(sentMessages.length, 0);
+
+  fixture.snapshot = { state: "idle", finalAssistantText: "Final after restart" };
+  resolvers[1]?.(true);
+  await settleTicks(() => sentMessages.length > 0);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0]?.msg.details.result, "Final after restart");
 
   await lifecycle.session_shutdown?.({}, ctx);
 });

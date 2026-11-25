@@ -19,6 +19,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   CONTEXT_MODES,
+  MAX_WAIT_TEXT_CHARS,
   THINKING_LEVELS,
   boundContextForModel,
   clampThinkingLevel,
@@ -30,6 +31,7 @@ import {
   parseModelRequest,
   safeTerminalText,
   truncateMiddle,
+  withoutStderr,
 } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
 import { ManagedSubagent } from "./rpc.ts";
@@ -38,7 +40,6 @@ import type { ChildSnapshot } from "./rpc.ts";
 
 const MAX_CLASSIFIER_CONTEXT_CHARS = 24_000;
 const MAX_STATUS_TEXT_CHARS = 45_000;
-const MAX_WAIT_TEXT_CHARS = 45_000;
 const MAX_ROOT_CHILDREN = 8;
 const MAX_NESTED_CHILDREN = 2;
 const MAX_RETAINED_CHILDREN = 32;
@@ -487,11 +488,6 @@ function formatSnapshot(snapshot: ChildSnapshot): string {
   return lines.join("\n");
 }
 
-/** Process diagnostics embed the child's stderr as a JSON string; wait keeps the summary, status keeps all. */
-function withoutStderr(error: string): string {
-  return error.replace(/, stderr="(?:[^"\\]|\\.)*"/g, "");
-}
-
 // Deliberately select metadata rather than spreading the diagnostic snapshot:
 // wait must not return task echoes, tool arguments, stderr, or transcript previews.
 function waitSnapshot(snapshot: ChildSnapshot, settled: boolean) {
@@ -535,6 +531,11 @@ function formatWaitSnapshot(snapshot: ReturnType<typeof waitSnapshot>): string {
 
 export default function subagentsExtension(pi: ExtensionAPI) {
   const children = new Map<string, ManagedSubagent>();
+  // One completion watcher per tool child operation. A newer operation or shutdown aborts the superseded watcher;
+  // wait, interrupt and stop mark the current one consumed so its settlement is not also pushed.
+  const toolWatches = new Map<string, { controller: AbortController; consumed: boolean }>();
+  // In-flight wait calls per child. A settled watcher defers to them so a wait, not a push, delivers the result.
+  const pendingWaits = new Map<string, Set<Promise<void>>>();
   let pendingCreates = 0;
   let shuttingDown = false;
 
@@ -550,8 +551,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     for (const [id] of removable) {
       if (children.size <= MAX_RETAINED_CHILDREN) break;
       children.delete(id);
-      childOperations.delete(id);
-      consumedOperations.delete(id);
+      // Pruned children are dead, so their watcher has settled; it keeps its own record reference.
+      toolWatches.delete(id);
     }
   };
 
@@ -672,50 +673,69 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     }
   };
 
-  const childOperations = new Map<string, number>();
-  const consumedOperations = new Map<string, number>();
+  const markConsumed = (id: string) => {
+    const watch = toolWatches.get(id);
+    if (watch) watch.consumed = true;
+  };
 
-  const watchToolChild = (child: ManagedSubagent, childCtx: ExtensionContext, op: number) => {
+  /** Registers an in-flight wait; the returned release must run once the wait has (or has not) consumed. */
+  const trackWait = (id: string): (() => void) => {
+    let resolveDone: (() => void) | undefined;
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    const waits = pendingWaits.get(id) ?? new Set<Promise<void>>();
+    pendingWaits.set(id, waits);
+    waits.add(done);
+    return () => {
+      waits.delete(done);
+      if (waits.size === 0 && pendingWaits.get(id) === waits) pendingWaits.delete(id);
+      resolveDone?.();
+    };
+  };
+
+  /** True once the watched operation ended in an answer or failure that is still this watcher's to push. */
+  const operationEnded = async (child: ManagedSubagent, current: () => boolean, signal: AbortSignal) => {
+    for (;;) {
+      while (current() && !(await child.waitForIdle(3_600_000, signal))) {
+        /* Background task may run for hours. */
+      }
+      if (!current()) return false;
+      await child.refresh();
+      // A concurrent wait owns this settlement; let it consume the result before deciding to push.
+      for (let waits = pendingWaits.get(child.id); waits?.size; waits = pendingWaits.get(child.id)) {
+        await Promise.all(waits);
+      }
+      if (!current()) return false;
+      const { state, pendingMessages } = child.snapshot();
+      if (state === "stopped") return false;
+      if (state === "failed" || (state === "idle" && pendingMessages === 0)) return true;
+      // Queued or restarted work still belongs to this operation; keep watching instead of dropping it.
+    }
+  };
+
+  const watchToolChild = (child: ManagedSubagent, childCtx: ExtensionContext) => {
+    toolWatches.get(child.id)?.controller.abort();
+    const watch = { controller: new AbortController(), consumed: false };
+    toolWatches.set(child.id, watch);
+    const current = () => !shuttingDown && !watch.consumed && !watch.controller.signal.aborted;
     void (async () => {
       try {
-        while (!shuttingDown && !(await child.waitForIdle(3_600_000))) {
-          /* background task wait */
-        }
-        if (shuttingDown) return;
-        await child.refresh();
+        if (!(await operationEnded(child, current, watch.controller.signal))) return;
+        watch.consumed = true;
+        const snapshot = child.snapshot();
+        const settled = waitSnapshot(snapshot, true);
+        notifyParentSession(childCtx, pi, {
+          id: child.id,
+          name: child.name,
+          status: snapshot.state === "idle" ? "completed" : snapshot.state,
+          result: settled.lastAssistantText,
+          error: settled.error,
+          stats: snapshot.stats,
+        });
       } catch {
-        /* wait aborted or failed */
+        /* Superseded or shut down while waiting. */
       }
-      await new Promise((resolve) => setImmediate(resolve));
-      if (shuttingDown) return;
-      if ((childOperations.get(child.id) ?? 1) !== op) return;
-      if ((consumedOperations.get(child.id) ?? 0) >= op) return;
-      const snapshot = child.snapshot();
-      if (
-        snapshot.state === "stopped" ||
-        snapshot.state === "running" ||
-        snapshot.state === "starting" ||
-        snapshot.state === "interrupting"
-      )
-        return;
-      consumedOperations.set(child.id, op);
-
-      const isEligibleResult =
-        snapshot.state === "idle" && snapshot.pendingMessages === 0 && Boolean(snapshot.finalAssistantText?.trim());
-      const status = snapshot.state === "idle" ? "completed" : snapshot.state;
-      const result =
-        isEligibleResult && snapshot.finalAssistantText
-          ? truncateMiddle(snapshot.finalAssistantText.trim(), MAX_WAIT_TEXT_CHARS)
-          : undefined;
-      const error = snapshot.error ? withoutStderr(snapshot.error) : undefined;
-      notifyParentSession(childCtx, pi, {
-        id: child.id,
-        name: child.name,
-        status,
-        result,
-        error,
-        stats: snapshot.stats,
-      });
     })();
   };
 
@@ -750,9 +770,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       if (params.action === "create") {
         // The ordinary tool never isolates resources; only the signaling subset does.
         const { child, contextMode, compactionFallback } = await launch({ ...params, isolated: false }, ctx, signal);
-        const op = 1;
-        childOperations.set(child.id, op);
-        watchToolChild(child, ctx, op);
+        watchToolChild(child, ctx);
         const warning = compactionFallback
           ? " Targeted compaction failed open, so the child started with fresh context."
           : "";
@@ -797,27 +815,29 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         };
       }
       if (params.action === "wait") {
-        const settled = await child.waitForIdle(params.timeoutMs ?? 120_000, signal);
-        await child.refresh();
-        const snapshot = waitSnapshot(child.snapshot(), settled);
-        if (settled) {
-          consumedOperations.set(child.id, childOperations.get(child.id) ?? 1);
+        // Register before the first await: the background watcher must see this wait before it can push.
+        const release = trackWait(child.id);
+        try {
+          const settled = await child.waitForIdle(params.timeoutMs ?? 120_000, signal);
+          await child.refresh();
+          const snapshot = waitSnapshot(child.snapshot(), settled);
+          if (settled) markConsumed(child.id);
+          const heading = settled
+            ? `Subagent ${params.id} settled.`
+            : `Wait timed out; subagent ${params.id} is still active. Wait again for its result.`;
+          return {
+            content: [{ type: "text", text: `${heading}\n\n${formatWaitSnapshot(snapshot)}` }],
+            details: { action: "wait", settled, child: snapshot },
+          };
+        } finally {
+          release();
         }
-        const heading = settled
-          ? `Subagent ${params.id} settled.`
-          : `Wait timed out; subagent ${params.id} is still active. Wait again for its result.`;
-        return {
-          content: [{ type: "text", text: `${heading}\n\n${formatWaitSnapshot(snapshot)}` }],
-          details: { action: "wait", settled, child: snapshot },
-        };
       }
       if (params.action === "steer" || params.action === "follow_up") {
         if (!params.task?.trim()) throw new Error(`${params.action} requires a non-empty task/message.`);
         if (params.action === "steer") await child.steer(params.task.trim());
         else await child.followUp(params.task.trim());
-        const op = (childOperations.get(child.id) ?? 1) + 1;
-        childOperations.set(child.id, op);
-        watchToolChild(child, ctx, op);
+        watchToolChild(child, ctx);
         return {
           content: [
             { type: "text", text: `${params.action === "steer" ? "Steered" : "Queued a follow-up for"} ${params.id}.` },
@@ -827,6 +847,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       }
       if (params.action === "interrupt") {
         await child.interrupt();
+        // The parent asked for the abort; the now-idle child has no answer, so do not push a "completed" turn.
+        markConsumed(child.id);
         return {
           content: [
             {
@@ -837,7 +859,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           details: { action: "interrupt", child: snapshotSummary(child.snapshot()) },
         };
       }
-      consumedOperations.set(child.id, childOperations.get(child.id) ?? 1);
+      markConsumed(child.id);
       await child.stop();
       const stoppedSnapshot = snapshotSummary(child.snapshot());
       pruneChildren();
@@ -870,8 +892,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    childOperations.clear();
-    consumedOperations.clear();
+    for (const watch of toolWatches.values()) watch.controller.abort();
+    toolWatches.clear();
     await closeSignaling?.();
     await Promise.allSettled([...children.values()].map((child) => child.stop()));
     children.clear();

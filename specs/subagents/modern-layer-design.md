@@ -375,9 +375,9 @@ recursive managers while retaining the minimal auth bridge. The exact resource-d
 verification; D's fresh-context mode alone is **not** resource isolation.
 
 Use the existing direct-child registry and process owner, not a new execution engine. Emit final answer text
-(`lastAssistantText`), never transcript tails. Provide compatible consume bookkeeping (no-op notification suppression
-where our manager never auto-notifies), and stop the exact owned child on signal abort/stop. This path does not alter
-the ordinary model-facing tool's default context/resource behavior. Unsupported workflow/profile options remain out of
+(`lastAssistantText`), never transcript tails. Provide compatible consume bookkeeping (consume suppresses the manager's
+proactive parent notification), and stop the exact owned child on signal abort/stop. This path does not alter the
+ordinary model-facing tool's default context/resource behavior. Unsupported workflow/profile options remain out of
 scope. Nothing in the manager is review-aware.
 
 ### 5.4 Our wait return path (proposed PR P1; design approved)

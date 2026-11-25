@@ -448,3 +448,72 @@ test("consumed child suppresses parent session message and UI notification", asy
 
   await close();
 });
+
+test("pushed parent message is bounded and stderr-free while the signaling event keeps the full payload", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const sent = [];
+  /** @type {Payload[]} */
+  const terminal = [];
+  events.on("subagents:completed", (/** @type {Payload} */ value) => terminal.push(value));
+  events.on("subagents:failed", (/** @type {Payload} */ value) => terminal.push(value));
+  const testPi = /** @type {any} */ ({
+    sendMessage(/** @type {any} */ msg) {
+      sent.push(msg);
+    },
+  });
+  const long = "begin-" + "x".repeat(60_000) + "-end";
+  const close = registerSignaling(events, ctx, async () => child({ finalAssistantText: long }), { pi: testPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(terminal[0]?.result, long, "consumers still receive the full result");
+  assert.ok(sent[0]?.details.result.length <= 45_000);
+  assert.match(sent[0]?.details.result, /^begin-/);
+  assert.match(sent[0]?.details.result, /-end$/);
+  assert.ok(sent[0]?.content.length < 46_000);
+  await close();
+
+  const failing = {
+    ...child(),
+    snapshot() {
+      return {
+        state: "failed",
+        error: 'Subagent process closed unexpectedly (exitCode=1, stderr="stderr-sentinel").',
+        transcriptTail: "",
+      };
+    },
+  };
+  sent.length = 0;
+  terminal.length = 0;
+  const closeFailed = registerSignaling(events, ctx, async () => failing, { pi: testPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.match(terminal[0]?.error, /stderr-sentinel/, "consumers keep the full diagnostic");
+  assert.doesNotMatch(JSON.stringify(sent), /stderr-sentinel/);
+  assert.match(sent[0]?.content, /closed unexpectedly/);
+  await closeFailed();
+});
+
+test("a throwing parent delivery never rejects the signaling watcher", async () => {
+  const events = bus();
+  /** @type {Payload[]} */
+  const terminal = [];
+  events.on("subagents:completed", (/** @type {Payload} */ value) => terminal.push(value));
+  const throwingCtx = /** @type {any} */ ({
+    ui: {
+      notify() {
+        throw new Error("stale ctx");
+      },
+    },
+  });
+  const throwingPi = /** @type {any} */ ({
+    sendMessage() {
+      throw new Error("stale pi");
+    },
+  });
+  const close = registerSignaling(events, throwingCtx, async () => child(), { pi: throwingPi });
+  await rpc(events, "spawn", request());
+  for (let i = 0; i < 50 && terminal.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(terminal.length, 1);
+  await close();
+});

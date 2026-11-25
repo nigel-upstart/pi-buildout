@@ -40,6 +40,14 @@ export function truncateMiddle(text: string, maxChars: number): string {
   return text.slice(0, head) + marker + text.slice(text.length - (remaining - head));
 }
 
+/** Bound for a child's final answer whenever it enters parent model context (wait or completion push). */
+export const MAX_WAIT_TEXT_CHARS = 45_000;
+
+/** Process diagnostics embed the child's stderr as a JSON string; parent context keeps the summary, status keeps all. */
+export function withoutStderr(error: string): string {
+  return error.replace(/, stderr="(?:[^"\\]|\\.)*"/g, "");
+}
+
 export function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";

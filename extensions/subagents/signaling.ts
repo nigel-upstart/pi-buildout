@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { THINKING_LEVELS } from "./helpers.ts";
+import { MAX_WAIT_TEXT_CHARS, THINKING_LEVELS, truncateMiddle, withoutStderr } from "./helpers.ts";
 import type { ThinkingLevel } from "./helpers.ts";
 import type { ChildSessionStats, ManagedSubagent } from "./rpc.ts";
 
@@ -82,25 +82,19 @@ export function notifyParentSession(
   pi: Pick<ExtensionAPI, "sendMessage"> | undefined,
   notification: SubagentNotification,
 ): void {
-  const { id, name, status, result, error, stats } = notification;
-  const isSuccess = status === "completed";
+  const { id, name, status, stats } = notification;
+  // Parent context gets the same bounds as wait; signaling consumers still receive the full event payload.
+  const trimmed = notification.result?.trim();
+  const result = trimmed ? truncateMiddle(trimmed, MAX_WAIT_TEXT_CHARS) : undefined;
+  const error = notification.error ? withoutStderr(notification.error) : undefined;
   const label = name ? `${id} (${name})` : id;
   const statusMsg = `Subagent ${label} ${status}${error ? `: ${error}` : ""}.`;
-
-  ctx?.ui?.notify(statusMsg, isSuccess ? "info" : "warning");
-
-  if (typeof pi?.sendMessage === "function") {
-    const lines = [statusMsg];
-    if (result?.trim()) {
-      lines.push("<subagent_result>", result.trim(), "</subagent_result>");
-    }
-    if (error && !lines.some((line) => line.includes(error))) {
-      lines.push(`Error: ${error}`);
-    }
-    pi.sendMessage(
+  try {
+    ctx?.ui?.notify(statusMsg, status === "completed" ? "info" : "warning");
+    pi?.sendMessage(
       {
         customType: SUBAGENT_NOTIFICATION_TYPE,
-        content: lines.join("\n"),
+        content: result ? `${statusMsg}\n<subagent_result>\n${result}\n</subagent_result>` : statusMsg,
         display: true,
         details: {
           id,
@@ -113,6 +107,8 @@ export function notifyParentSession(
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
+  } catch {
+    // A replaced or closed session cannot take the message; delivery must never reject a background watcher.
   }
 }
 
